@@ -1,0 +1,49 @@
+{
+  "name": "killeros",
+  "version": "1.0.0",
+  "description": "A production-hardened TUI and workflow extension for the Pi coding agent.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "coding-agent",
+    "tui"
+  ],
+  "author": "KyrosHendrix",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/KyrosHendrix/pi-KillerOS#readme",
+  "bugs": {
+    "url": "https://github.com/KyrosHendrix/pi-KillerOS/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KyrosHendrix/pi-KillerOS.git"
+  },
+  "files": [
+    "Killeros.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./Killeros.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-tui": "0.82.1",
+    "@types/node": "24.12.4",
+    "typebox": "1.1.38",
+    "typescript": "5.9.3"
+  }
+}
