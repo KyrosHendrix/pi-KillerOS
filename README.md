@@ -111,4 +111,4 @@ Pi extensions run with your user permissions. Review the source before installin
 
 ## License
 
-No license is provided. All rights are reserved by default.
+[MIT](LICENSE) © 2026 KyrosHendrix
