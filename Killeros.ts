@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
+  decodeKittyPrintable,
   Editor,
   Key,
   matchesKey,
@@ -35,30 +36,17 @@ const FOOTER_REFRESH_INTERVAL_MS = 1_000;
 
 const brand = (text: string): string => `\x1B[38;2;${BRAND_RGB}m${text}\x1B[39m`;
 
-interface LogoFrame {
-  phase: number;
-  active: "left" | "top" | "right" | "none";
-  ax: number;
-  ay: number;
-  flash: boolean;
-  white: boolean;
-}
-
-const LOGO_FRAMES: LogoFrame[] = [
-  ...Array.from({ length: 4 }, (_, ay): LogoFrame => ({ phase: 0, active: "left", ax: 2, ay, flash: false, white: false })),
-  ...Array.from({ length: 3 }, (_, ay): LogoFrame => ({ phase: 1, active: "top", ax: 2, ay, flash: false, white: false })),
-  ...Array.from({ length: 5 }, (_, ay): LogoFrame => ({ phase: 2, active: "right", ax: 5, ay, flash: false, white: false })),
-  { phase: 3, active: "none", ax: 0, ay: 0, flash: false, white: false },
-  { phase: 3, active: "none", ax: 0, ay: 0, flash: true, white: false },
-  { phase: 3, active: "none", ax: 0, ay: 0, flash: false, white: false },
-  { phase: 3, active: "none", ax: 0, ay: 0, flash: true, white: false },
-  { phase: 4, active: "none", ax: 0, ay: 0, flash: false, white: false },
-  { phase: 5, active: "none", ax: 0, ay: 0, flash: false, white: false },
-  { phase: 5, active: "none", ax: 0, ay: 0, flash: false, white: true },
-  { phase: 5, active: "none", ax: 0, ay: 0, flash: false, white: false },
-  { phase: 5, active: "none", ax: 0, ay: 0, flash: false, white: true },
-  { phase: 6, active: "none", ax: 0, ay: 0, flash: false, white: false },
-];
+const ORCA_ART = [
+  ".....g......",
+  "....ggg.....",
+  ".gggggggg..g",
+  "gbggwwgggggg",
+  ".ggwwgggg..g",
+  "...gggg.....",
+  ".....gg.....",
+] as const;
+const ORCA_WIDTH = ORCA_ART[0].length;
+const LOGO_FRAME_COUNT = ORCA_WIDTH + 3;
 
 function extractProvider(model: ExtensionContext["model"]): string {
   return model?.provider ?? "";
@@ -89,71 +77,27 @@ function padRight(text: string, width: number): string {
   return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
-function hasCell(y: number, x: number, cells: string): boolean {
-  return cells.split(" ").includes(`${y},${x}`);
-}
-
-function hasPiece(y: number, x: number, py: number, px: number, cells: string): boolean {
-  return cells.split(" ").some((item) => {
-    const [dy, dx] = item.split(",").map(Number);
-    return y === py + dy && x === px + dx;
-  });
-}
-
-type LogoColor = "cyan" | "red" | "green" | "orange" | "flash" | "white" | "brand" | "panel";
+type LogoColor = "body" | "white" | "brand" | "panel";
 
 function colorCell(color: LogoColor): string {
   switch (color) {
-    case "cyan": return `\x1B[36m${LOGO_CELL}\x1B[39m`;
-    case "red": return `\x1B[31m${LOGO_CELL}\x1B[39m`;
-    case "green": return `\x1B[32m${LOGO_CELL}\x1B[39m`;
-    case "orange":
-    case "flash": return `\x1B[33m${LOGO_CELL}\x1B[39m`;
+    case "body": return `\x1B[90m${LOGO_CELL}\x1B[39m`;
     case "white": return `\x1B[97m${LOGO_CELL}\x1B[39m`;
     case "brand": return brand(LOGO_CELL);
     default: return " ".repeat(LOGO_CELL.length);
   }
 }
 
-function logoCellColor(frame: LogoFrame, y: number, x: number): LogoColor {
-  if (frame.white) {
-    return hasCell(y, x, "3,2 3,3 3,4 4,2 4,4 5,2 5,3 5,5 6,2 6,5") ? "white" : "panel";
-  }
-  if (frame.flash && y === 6 && x >= 1 && x <= 6) return "flash";
-  if (frame.active === "left" && hasPiece(y, x, frame.ay, frame.ax, "0,0 1,0 1,1 2,0")) return "red";
-  if (frame.active === "top" && hasPiece(y, x, frame.ay, frame.ax, "0,0 0,1 0,2 1,2")) return "cyan";
-  if (frame.active === "right" && hasPiece(y, x, frame.ay, frame.ax, "0,0 1,0 2,0 2,1")) return "green";
-  if (frame.phase === 6) {
-    return hasCell(y, x, "3,2 3,3 3,4 4,4 4,2 5,2 5,3 5,5 6,2 6,5") ? "brand" : "panel";
-  }
-  if (frame.phase === 4) {
-    if (hasCell(y, x, "2,2 2,3 2,4 3,4")) return "cyan";
-    if (hasCell(y, x, "3,2 4,2 4,3 5,2")) return "red";
-    if (hasCell(y, x, "4,5 5,5")) return "green";
-    return "panel";
-  }
-  if (frame.phase >= 5) {
-    if (hasCell(y, x, "3,2 3,3 3,4 4,4")) return "cyan";
-    if (hasCell(y, x, "4,2 5,2 5,3 6,2")) return "red";
-    if (hasCell(y, x, "5,5 6,5")) return "green";
-    return "panel";
-  }
-  if (frame.phase <= 3 && hasCell(y, x, "6,1 6,2 6,3 6,4")) return "orange";
-  if (frame.phase >= 2 && hasCell(y, x, "2,2 2,3 2,4 3,4")) return "cyan";
-  if (frame.phase >= 1 && hasCell(y, x, "3,2 4,2 4,3 5,2")) return "red";
-  if (frame.phase >= 3 && hasCell(y, x, "4,5 5,5 6,5 6,6")) return "green";
-  return "panel";
-}
-
 function piLogoFrame(frameIndex: number): string[] {
-  const frame = LOGO_FRAMES[frameIndex % LOGO_FRAMES.length]!;
-  const lines: string[] = [];
-  for (let y = 1; y <= 7; y += 1) {
-    let line = "";
-    for (let x = 1; x <= 8; x += 1) line += colorCell(logoCellColor(frame, y, x));
-    lines.push(line);
-  }
-  return lines;
+  const visibleColumns = Math.min(ORCA_WIDTH, frameIndex + 1);
+  const eyeColor: LogoColor = frameIndex === ORCA_WIDTH ? "white" : "brand";
+  return ORCA_ART.map((row) => [...row].map((cell, index) => {
+    if (index >= visibleColumns) return colorCell("panel");
+    if (cell === "g") return colorCell("body");
+    if (cell === "w") return colorCell("white");
+    if (cell === "b") return colorCell(eyeColor);
+    return colorCell("panel");
+  }).join(""));
 }
 
 function borderLine(left: string, label: string, right: string, width: number): string {
@@ -248,6 +192,9 @@ function getTipLines(index: number, theme: Theme): string[] {
 }
 
 class PiStartupHeader {
+  private readonly pi: ExtensionAPI;
+  private readonly ctx: ExtensionContext;
+  private readonly tui: TUI;
   private frame = 0;
   private tipIndex = 0;
   private animationTimer?: ReturnType<typeof setInterval>;
@@ -255,19 +202,22 @@ class PiStartupHeader {
   private disposed = false;
 
   constructor(
-    private readonly pi: ExtensionAPI,
-    private readonly ctx: ExtensionContext,
-    private readonly tui: TUI,
+    pi: ExtensionAPI,
+    ctx: ExtensionContext,
+    tui: TUI,
   ) {
+    this.pi = pi;
+    this.ctx = ctx;
+    this.tui = tui;
     this.animationTimer = setInterval(() => {
       if (this.disposed) return;
-      if (this.frame >= LOGO_FRAMES.length - 1) {
+      if (this.frame >= LOGO_FRAME_COUNT - 1) {
         this.stopAnimation();
         return;
       }
       this.frame += 1;
       this.tui.requestRender();
-      if (this.frame >= LOGO_FRAMES.length - 1) this.stopAnimation();
+      if (this.frame >= LOGO_FRAME_COUNT - 1) this.stopAnimation();
     }, LOGO_ANIMATION_INTERVAL_MS);
     this.animationTimer.unref?.();
 
@@ -301,7 +251,7 @@ class PiStartupHeader {
     const cwd = formatCwd(this.ctx.cwd);
     const leftWidth = isTwoColumn ? Math.min(LEFT_PANEL_WIDTH, Math.floor(innerWidth * 0.55)) : innerWidth;
     const rightWidth = isTwoColumn ? innerWidth - leftWidth - 3 : 0;
-    const logoLines = leftWidth >= 24
+    const logoLines = leftWidth >= ORCA_WIDTH * visibleWidth(LOGO_CELL)
       ? piLogoFrame(this.frame).map((line) => center(line, leftWidth))
       : ["", "", center(brand(theme.bold("Pi Coding Agent")), leftWidth), "", "", "", ""];
     const modelText = leftWidth < 34 ? `${model} (${effort})` : `${model} with ${effort} effort`;
@@ -348,8 +298,11 @@ function isBorderLine(line: string): boolean {
 }
 
 class PiCodeEditor extends CustomEditor {
-  constructor(tui: TUI, theme: EditorTheme, private readonly appKeybindings: KeybindingsManager) {
+  private readonly appKeybindings: KeybindingsManager;
+
+  constructor(tui: TUI, theme: EditorTheme, appKeybindings: KeybindingsManager) {
     super(tui, theme, appKeybindings);
+    this.appKeybindings = appKeybindings;
   }
 
   override handleInput(data: string): void {
@@ -514,7 +467,34 @@ function rememberCustomInput(value: string): void {
 }
 
 function isPrintableInput(data: string): boolean {
-  return data.length > 0 && !/[\u0000-\u001F\u007F]/u.test(data);
+  return data.length > 0 && !/[\u0000-\u001F\u007F-\u009F]/u.test(data);
+}
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function decodeQuestionFilterInput(data: string): string | undefined {
+  const kittyPrintable = decodeKittyPrintable(data);
+  if (kittyPrintable !== undefined) return isPrintableInput(kittyPrintable) ? kittyPrintable : undefined;
+
+  const pasteStart = "\x1B[200~";
+  const pasteEnd = "\x1B[201~";
+  const startIndex = data.indexOf(pasteStart);
+  const endIndex = data.indexOf(pasteEnd, startIndex + pasteStart.length);
+  if (startIndex >= 0 && endIndex >= 0) {
+    return data
+      .slice(startIndex + pasteStart.length, endIndex)
+      .replace(/\r\n|\r|\n/gu, "")
+      .replace(/\t/gu, "    ")
+      .replace(/[\u0000-\u001F\u007F-\u009F]/gu, "");
+  }
+
+  return isPrintableInput(data) ? data : undefined;
+}
+
+function removeLastGrapheme(value: string): string {
+  const segments = [...graphemeSegmenter.segment(value)];
+  const last = segments.at(-1);
+  return last ? value.slice(0, last.index) : "";
 }
 
 function registerQuestionTool(pi: ExtensionAPI): void {
@@ -552,8 +532,6 @@ function registerQuestionTool(pi: ExtensionAPI): void {
         let optionIndex = 0;
         let editMode = false;
         let filterQuery = "";
-        let historyIndex = -1;
-        let savedDraft = "";
         let cachedWidth: number | undefined;
         let cachedLines: string[] | undefined;
         let completed = false;
@@ -576,6 +554,7 @@ function registerQuestionTool(pi: ExtensionAPI): void {
           },
         };
         const editor = new Editor(tui, editorTheme);
+        customInputHistory.forEach((value) => editor.addToHistory(value));
 
         const filteredOptions = (): DisplayOption[] => {
           const query = filterQuery.trim().toLocaleLowerCase();
@@ -605,15 +584,11 @@ function registerQuestionTool(pi: ExtensionAPI): void {
           }
           editMode = false;
           editor.setText("");
-          historyIndex = -1;
-          savedDraft = "";
           refresh();
         };
 
         const enterCustomMode = (): void => {
           editMode = true;
-          historyIndex = -1;
-          savedDraft = "";
           refresh();
         };
 
@@ -622,30 +597,6 @@ function registerQuestionTool(pi: ExtensionAPI): void {
             if (matchesKey(data, Key.escape)) {
               editMode = false;
               editor.setText("");
-              historyIndex = -1;
-              savedDraft = "";
-              refresh();
-              return;
-            }
-            if (matchesKey(data, Key.up) && customInputHistory.length > 0) {
-              if (historyIndex < 0) {
-                savedDraft = editor.getText();
-                historyIndex = customInputHistory.length - 1;
-              } else if (historyIndex > 0) {
-                historyIndex -= 1;
-              }
-              editor.setText(customInputHistory[historyIndex] ?? "");
-              refresh();
-              return;
-            }
-            if (matchesKey(data, Key.down) && historyIndex >= 0) {
-              if (historyIndex < customInputHistory.length - 1) {
-                historyIndex += 1;
-                editor.setText(customInputHistory[historyIndex] ?? "");
-              } else {
-                historyIndex = -1;
-                editor.setText(savedDraft);
-              }
               refresh();
               return;
             }
@@ -685,21 +636,23 @@ function registerQuestionTool(pi: ExtensionAPI): void {
           }
           if (matchesKey(data, Key.backspace)) {
             if (filterQuery) {
-              filterQuery = Array.from(filterQuery).slice(0, -1).join("");
+              filterQuery = removeLastGrapheme(filterQuery);
               optionIndex = 0;
               refresh();
             }
             return;
           }
-          if (/^[1-9]$/.test(data)) {
-            const selected = visibleOptions[Number(data) - 1];
+          const printableInput = decodeQuestionFilterInput(data);
+          const isPasteInput = data.includes("\x1B[200~");
+          if (!isPasteInput && printableInput && /^[1-9]$/.test(printableInput)) {
+            const selected = visibleOptions[Number(printableInput) - 1];
             if (!selected) return;
             if (selected.isOther) enterCustomMode();
             else finish({ kind: "selected", answer: selected.label, originalIndex: selected.originalIndex });
             return;
           }
-          if (isPrintableInput(data)) {
-            filterQuery += data;
+          if (printableInput) {
+            filterQuery += printableInput;
             optionIndex = 0;
             refresh();
           }
@@ -848,7 +801,7 @@ function registerAliases(pi: ExtensionAPI): void {
     await ctx.newSession();
   };
   pi.registerCommand("clear", { description: "Start a new session after confirmation", handler: startNewSession });
-  pi.registerCommand("quit", {
+  pi.registerCommand("exit", {
     description: "Quit Pi gracefully",
     handler: async (_args, ctx) => ctx.shutdown(),
   });
@@ -891,13 +844,9 @@ const COMMAND_SYNTAX_HINTS: Readonly<Record<string, string>> = {
   model: "/model [provider/model]",
   "scoped-models": "/scoped-models",
   login: "/login [provider]",
-  logout: "/logout [provider]",
   export: "/export [filename]",
   import: "/import [path]",
   name: "/name [session-name]",
-  fork: "/fork [name]",
-  clone: "/clone [name]",
-  resume: "/resume [session-id]",
 };
 
 interface TaggedAutocompleteItem extends AutocompleteItem {
@@ -1173,9 +1122,12 @@ export function formatContextProgress(tokensUsed: number | null, contextWindow: 
 
 function sumSessionCost(ctx: ExtensionContext): number {
   let total = 0;
-  for (const entry of ctx.sessionManager.getBranch()) {
-    if (entry.type === "message" && entry.message.role === "assistant") {
+  for (const entry of ctx.sessionManager.getEntries()) {
+    if (entry.type === "message" && entry.message.role === "assistant") total += entry.message.usage.cost.total;
+    else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
       total += entry.message.usage.cost.total;
+    } else if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
+      total += entry.usage.cost.total;
     }
   }
   return total;

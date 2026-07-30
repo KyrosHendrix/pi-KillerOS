@@ -14,8 +14,6 @@ The extension is strict TypeScript and uses only packages provided by Pi.
 
 ### npm
 
-After the first npm release:
-
 ```bash
 pi install npm:killeros
 ```
@@ -44,7 +42,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - `/variants` selector and direct reasoning-level arguments
 - `question` tool with filtering, keyboard selection, custom answers, history, cancellation, and resize-safe rendering
 - Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills
-- `/clear` for a confirmed new session, plus `/quit` for graceful shutdown
+- `/clear` for a confirmed new session, plus `/exit` for graceful shutdown
 - Concise system-prompt guidance without modifying completed assistant messages
 
 ## Commands
@@ -53,7 +51,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 /variants                 Open the reasoning-level selector
 /variants high            Set a reasoning level directly
 /clear                    Start a new session after confirmation
-/quit                     Quit Pi gracefully
+/exit                     Quit Pi gracefully
 ```
 
 Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. KillerOS limits choices to levels supported by the current model.
@@ -83,6 +81,7 @@ Before release, run:
 ```bash
 npm ci
 npm run check
+npm test
 npm pack --dry-run
 pi -e . --mode rpc
 ```
@@ -93,16 +92,13 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog.
 
+Choose `patch`, `minor`, or `major` for the release, then publish and push the version commit and tag:
+
 ```bash
 npm login
+npm version patch
 npm publish
-```
-
-Create and push a matching Git tag after publication:
-
-```bash
-git tag v1.0.0
-git push origin main v1.0.0
+git push origin main --follow-tags
 ```
 
 ## Security

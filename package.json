@@ -27,7 +27,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.js"
   },
   "pi": {
     "extensions": [
