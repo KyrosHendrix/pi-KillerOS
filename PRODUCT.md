@@ -1,0 +1,59 @@
+# Product
+
+<!-- impeccable:product-schema 1 -->
+
+## Platform
+
+adaptive
+
+## Users
+
+Developers using the Pi coding agent in an interactive terminal, especially those who want a more informative and controlled coding workflow.
+
+## Product Purpose
+
+KillerOS is a Pi extension that combines a custom terminal UI, reasoning controls, interactive questions, command aliases, and concise-response guidance. It should help users understand the current session and move into productive work quickly.
+
+## Positioning
+
+Unlike a standalone theme or command bundle, KillerOS coordinates the startup header, editor, footer, reasoning controls, question flow, slash completion, and response guidance as one Pi workflow layer.
+
+## Operating Context
+
+KillerOS runs inside Pi’s TUI during repository work. Users start sessions, inspect model and reasoning state, enter prompts, invoke slash commands, review agent work, and switch or clear sessions without leaving the terminal.
+
+## Capabilities and Constraints
+
+- Requires Node.js 22.19.0 or later and Pi 0.82.1 or later.
+- Full custom header, editor, footer, and interactive question behavior requires TUI mode.
+- RPC supports commands and concise prompt guidance but disables TUI components.
+- Print and JSON modes support concise prompt guidance but not interactive questions.
+- UI components must remain legible across narrow and wide terminal widths and use the packaged KillerOS theme in TUI mode.
+- Pending, successful, and failed tool calls share one neutral container surface; status remains distinguishable through restrained text and icons.
+- Active responses use a coral Spark indicator and cycle through a bounded bank of Claude-adjacent verbs; hidden reasoning uses the static `└ Thinking…` label.
+- The startup surface is a compact KillerOS card showing the active model, reasoning level, directory, context remaining, and loaded package capabilities.
+
+## Brand Commitments
+
+- Product name: KillerOS.
+- Existing accent color: RGB 215, 119, 87.
+- Existing interface language uses terminal-native text, box-drawing characters, and concise operational copy.
+- Existing voice is direct, practical, and low-ceremony.
+
+## Evidence on Hand
+
+- Product documentation and feature inventory: `README.md`.
+- Current implementation, including the startup header and terminal UI behavior: `Killeros.ts`.
+- No customer claims, testimonials, benchmarks, pricing, or external brand assets are present and none should be fabricated.
+
+## Product Principles
+
+- Get users from startup to useful work quickly.
+- Make model, reasoning, repository, and session state easy to scan.
+- Keep interaction terminal-native and keyboard-first.
+- Prefer operational clarity over decorative chrome.
+- Preserve graceful behavior across Pi’s supported modes.
+
+## Accessibility & Inclusion
+
+Use theme-aware colors, never rely on color alone to communicate state, preserve keyboard operation, and keep all rendered TUI lines within the available terminal width.

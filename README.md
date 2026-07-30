@@ -29,14 +29,16 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.0.0
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.1.0
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
 
 ## Features
 
-- Animated startup header with current model, reasoning level, and working-directory context
+- Compact KillerOS startup card with model, directory, context, and loaded capability state
+- Cohesive dark theme with coral accents and neutral tool-call containers across pending, success, and error states
+- Coral Spark activity indicator with Claude-adjacent verbs that advance between agent runs and a quiet hidden-thinking label
 - Framed multiline editor with Shift+Enter support
 - Footer with model, reasoning, context remaining, Git branch, elapsed time, and cost
 - `/variants` selector and direct reasoning-level arguments
@@ -57,6 +59,8 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. KillerOS limits choices to levels supported by the current model.
 
 ## Configuration
+
+KillerOS activates its packaged `killeros` theme when a TUI session starts. Tool-call backgrounds stay neutral across pending, successful, and failed states; restrained text and icons preserve status visibility.
 
 KillerOS displays provider costs in USD.
 
@@ -83,7 +87,7 @@ npm ci
 npm run check
 npm test
 npm pack --dry-run
-pi -e . --mode rpc
+pi -ne -e . --mode rpc
 ```
 
 The package manifest lists Pi’s built-in modules as peer dependencies, so npm does not bundle a second copy.

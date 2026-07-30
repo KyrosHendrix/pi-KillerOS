@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import Killeros from "../Killeros.ts";
+
+const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 const theme = {
   bold: (text) => text,
@@ -23,10 +26,23 @@ function createHarness() {
   const handlers = new Map();
   const tools = new Map();
   const api = {
+    getAllTools: () => [...tools.values()].map((tool) => ({
+      ...tool,
+      sourceInfo: tool.sourceInfo ?? {
+        path: `${process.cwd()}/Killeros.ts`,
+        source: "npm:killeros",
+        baseDir: process.cwd(),
+      },
+    })),
     getCommands: () => [...commands].map(([name, command]) => ({
       name,
       description: command.description,
       source: "extension",
+      sourceInfo: command.sourceInfo ?? {
+        path: `${process.cwd()}/Killeros.ts`,
+        source: "npm:killeros",
+        baseDir: process.cwd(),
+      },
     })),
     getThinkingLevel: () => "high",
     on: (event, handler) => {
@@ -62,7 +78,16 @@ function createTuiContext(entries = []) {
       setEditorComponent: (factory) => { captured.editorFactory = factory; },
       setFooter: (factory) => { captured.footerFactory = factory; },
       setHeader: (factory) => { captured.headerFactory = factory; },
-      setWorkingIndicator() {},
+      setTheme: (name) => {
+        captured.themeName = name;
+        return { success: true };
+      },
+      setHiddenThinkingLabel: (label) => { captured.hiddenThinkingLabel = label; },
+      setWorkingIndicator: (options) => { captured.workingIndicator = options; },
+      setWorkingMessage: (message) => {
+        captured.workingMessages ??= [];
+        captured.workingMessages.push(message);
+      },
       theme,
     },
   };
@@ -93,6 +118,13 @@ async function startQuestion(tool, options = [{ label: "Alpha" }]) {
   assert.ok(finish);
   return { component, finish, result };
 }
+
+test("uses one neutral background for every tool state", () => {
+  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8"));
+  assert.equal(killerosTheme.colors.toolPendingBg, "surface");
+  assert.equal(killerosTheme.colors.toolSuccessBg, "surface");
+  assert.equal(killerosTheme.colors.toolErrorBg, "surface");
+});
 
 test("registers /exit without conflicting with Pi's /quit", async () => {
   const { commands } = createHarness();
@@ -194,15 +226,67 @@ test("autocomplete omits unsupported argument hints", async () => {
   assert.ok(result.items.some((item) => item.label === "/exit"));
 });
 
-test("header falls back to text when the ORCA cannot fit", () => {
+test("activity treatment uses the Spark and cycles Claude-adjacent words", () => {
   const { handlers } = createHarness();
-  const { captured, ctx, tui } = createTuiContext();
+  const { captured, ctx } = createTuiContext();
   for (const handler of handlers.get("session_start")) handler({}, ctx);
 
+  assert.deepEqual(captured.workingIndicator, {
+    frames: ["✻", "✻", "✻", "✻"],
+    intervalMs: 180,
+  });
+  assert.equal(captured.hiddenThinkingLabel, "└ Thinking…");
+
+  for (let index = 0; index < 7; index += 1) {
+    for (const handler of handlers.get("agent_start")) handler({}, ctx);
+  }
+  assert.deepEqual(captured.workingMessages, [
+    "Brewing…",
+    "Pondering…",
+    "Tinkering…",
+    "Wrangling…",
+    "Noodling…",
+    "Cooking…",
+    "Brewing…",
+  ]);
+
+  for (const handler of handlers.get("agent_end")) handler({}, ctx);
+  assert.equal(captured.workingMessages.at(-1), undefined);
+});
+
+test("header renders the compact KillerOS card", () => {
+  const { handlers, commands, tools } = createHarness();
+  commands.set("mcp", {
+    description: "Connect to MCP servers",
+    sourceInfo: { path: "/extensions/pi-mcp-adapter/index.ts", source: "npm:pi-mcp-adapter" },
+  });
+  tools.set("web_search", {
+    name: "web_search",
+    description: "Search the web",
+    sourceInfo: { path: "/extensions/pi-web-access/index.ts", source: "npm:pi-web-access" },
+  });
+  const { captured, ctx, tui } = createTuiContext();
+  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  assert.equal(captured.themeName, "killeros");
+
   const header = captured.headerFactory(tui);
-  const narrow = header.render(26).join("\n").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
-  const narrowTwoColumn = header.render(66).join("\n").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
-  assert.match(narrow, /Pi Coding Agent/);
-  assert.match(narrowTwoColumn, /Pi Coding Agent/);
+  const strip = (line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
+  const wide = header.render(120).map(strip);
+  assert.equal(wide.length, 8);
+  assert.ok(wide.join("\n").includes(`› KillerOS ${PACKAGE_VERSION}`));
+  assert.match(wide.join("\n"), /test-model · high/);
+  assert.match(wide.join("\n"), /99% context/);
+  assert.match(wide.join("\n"), /MCP adapter · Web access/);
+  assert.doesNotMatch(wide.join("\n"), /KILLEROS/);
+  assert.ok(wide.every((line) => [...line].length === 76));
+  for (let width = 1; width <= 100; width += 1) {
+    const lines = header.render(width).map(strip);
+    assert.ok(lines.every((line) => [...line].length <= width), `header overflowed at width ${width}`);
+    if (width >= 28) {
+      assert.ok(lines.every((line) => [...line].length === Math.min(width, 76)), `header was ragged at width ${width}`);
+    }
+  }
+  assert.deepEqual(header.render(4).map(strip), ["Kill"]);
+  assert.deepEqual(header.render(0), []);
   header.dispose();
 });

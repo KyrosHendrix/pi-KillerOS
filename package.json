@@ -1,6 +1,6 @@
 {
   "name": "killeros",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "A production-hardened TUI and workflow extension for the Pi coding agent.",
   "type": "module",
   "keywords": [
@@ -21,7 +21,9 @@
   },
   "files": [
     "Killeros.ts",
-    "README.md"
+    "themes/killeros.json",
+    "README.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=22.19.0"
@@ -33,6 +35,9 @@
   "pi": {
     "extensions": [
       "./Killeros.ts"
+    ],
+    "themes": [
+      "./themes/killeros.json"
     ]
   },
   "peerDependencies": {

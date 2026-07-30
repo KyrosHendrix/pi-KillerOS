@@ -2,6 +2,10 @@ node_modules/
 .pi/
 *.tgz
 *.log
+
+# Local design studies and generated previews
+/design/
+/welcome-redesigns.html
 .env
 .env.*
 !.env.example

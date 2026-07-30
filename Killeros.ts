@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import os from "node:os";
+import { dirname, join } from "node:path";
 import {
   CustomEditor,
   DynamicBorder,
@@ -28,29 +30,24 @@ import {
 import { Type } from "typebox";
 
 const BRAND_RGB = "215;119;87";
-const LEFT_PANEL_WIDTH = 42;
-const LOGO_CELL = "███";
-const LOGO_ANIMATION_INTERVAL_MS = 120;
-const TIP_ROTATION_INTERVAL_MS = 5_000;
 const FOOTER_REFRESH_INTERVAL_MS = 1_000;
+const COMPACT_HEADER_MAX_WIDTH = 76;
 
 const brand = (text: string): string => `\x1B[38;2;${BRAND_RGB}m${text}\x1B[39m`;
 
-const ORCA_ART = [
-  ".....g......",
-  "....ggg.....",
-  ".gggggggg..g",
-  "gbggwwgggggg",
-  ".ggwwgggg..g",
-  "...gggg.....",
-  ".....gg.....",
-] as const;
-const ORCA_WIDTH = ORCA_ART[0].length;
-const LOGO_FRAME_COUNT = ORCA_WIDTH + 3;
-
-function extractProvider(model: ExtensionContext["model"]): string {
-  return model?.provider ?? "";
+function readPackageMetadata(path: string | URL): { name?: string; version?: string } {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as { name?: unknown; version?: unknown };
+    return {
+      name: typeof value.name === "string" ? value.name : undefined,
+      version: typeof value.version === "string" ? value.version : undefined,
+    };
+  } catch {
+    return {};
+  }
 }
+
+const KILLEROS_VERSION = readPackageMetadata(new URL("./package.json", import.meta.url)).version;
 
 function formatCwd(cwd: string): string {
   const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
@@ -64,226 +61,125 @@ function formatCwd(cwd: string): string {
     : cwd;
 }
 
-function center(text: string, width: number): string {
-  if (width <= 0) return "";
-  const textWidth = visibleWidth(text);
-  if (textWidth >= width) return truncateToWidth(text, width, "");
-  return `${" ".repeat(Math.floor((width - textWidth) / 2))}${text}`;
-}
-
 function padRight(text: string, width: number): string {
   if (width <= 0) return "";
   const clipped = truncateToWidth(text, width, "");
   return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
-type LogoColor = "body" | "white" | "brand" | "panel";
-
-function colorCell(color: LogoColor): string {
-  switch (color) {
-    case "body": return `\x1B[90m${LOGO_CELL}\x1B[39m`;
-    case "white": return `\x1B[97m${LOGO_CELL}\x1B[39m`;
-    case "brand": return brand(LOGO_CELL);
-    default: return " ".repeat(LOGO_CELL.length);
-  }
+interface CapabilitySourceInfo {
+  path?: string;
+  source?: string;
+  baseDir?: string;
 }
 
-function piLogoFrame(frameIndex: number): string[] {
-  const visibleColumns = Math.min(ORCA_WIDTH, frameIndex + 1);
-  const eyeColor: LogoColor = frameIndex === ORCA_WIDTH ? "white" : "brand";
-  return ORCA_ART.map((row) => [...row].map((cell, index) => {
-    if (index >= visibleColumns) return colorCell("panel");
-    if (cell === "g") return colorCell("body");
-    if (cell === "w") return colorCell("white");
-    if (cell === "b") return colorCell(eyeColor);
-    return colorCell("panel");
-  }).join(""));
+interface CompactCapability {
+  label: string;
+  version?: string;
 }
 
-function borderLine(left: string, label: string, right: string, width: number): string {
-  if (width <= 0) return "";
-  if (width === 1) return brand(truncateToWidth(left, 1, ""));
-  const edgeWidth = visibleWidth(left) + visibleWidth(right);
-  if (width <= edgeWidth) return brand(truncateToWidth(left + right, width, ""));
-  const available = width - edgeWidth;
-  const clippedLabel = truncateToWidth(label, Math.max(0, available - 2), "");
-  const labelWidth = visibleWidth(clippedLabel);
-  if (labelWidth === 0 || available < labelWidth + 2) {
-    return `${brand(left)}${brand("─".repeat(available))}${brand(right)}`;
-  }
-  const fill = available - labelWidth - 2;
-  const before = Math.min(3, fill);
-  const after = fill - before;
-  return `${brand(left)}${brand("─".repeat(before))} ${clippedLabel} ${brand("─".repeat(after))}${brand(right)}`;
+function capabilityLabel(packageName: string): string {
+  const name = packageName.replace(/^npm:/, "").split("/").at(-1) ?? packageName;
+  if (name === "pi-mcp-adapter") return "MCP adapter";
+  if (name === "pi-web-access") return "Web access";
+  return name.replace(/^pi-/, "").replace(/[-_]+/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
-function boxedLine(content: string, width: number): string {
-  if (width <= 0) return "";
-  if (width <= 2) return truncateToWidth(content, width, "");
-  return `${brand("│")}${padRight(content, width - 2)}${brand("│")}`;
-}
-
-function twoColumn(left: string, right: string, leftWidth: number, rightWidth: number): string {
-  return `${padRight(left, leftWidth)} ${brand("│")} ${padRight(right, rightWidth)}`;
-}
-
-const TIP_SETS = [
-  [
-    "",
-    "Shortcuts & Commands",
-    "/variants  — model reasoning",
-    "/compact   — compress context",
-    "/model     — choose a model",
-    "────────────────────────",
-    "Keybindings",
-    "Shift+Enter — new line",
-    "Esc         — cancel generation",
-    "Ctrl+C      — interrupt agent",
-  ],
-  [
-    "",
-    "Session",
-    "/new      — start a session",
-    "/name     — name this session",
-    "/session  — usage and stats",
-    "────────────────────────",
-    "Workflow",
-    "Give Pi a goal and constraints",
-    "Ask it to run the relevant tests",
-    "Review changes before committing",
-  ],
-  [
-    "",
-    "Useful Commands",
-    "/copy    — copy last response",
-    "/tree    — navigate branches",
-    "/reload  — reload resources",
-    "────────────────────────",
-    "Extension locations",
-    "Global: ~/.pi/agent/extensions",
-    "Project: .pi/extensions",
-    "Reload after making changes",
-  ],
-  [
-    "",
-    "Navigation",
-    "Up/Down  — command history",
-    "Tab      — autocomplete",
-    "Ctrl+L   — clear the screen",
-    "────────────────────────",
-    "Good defaults",
-    "Keep edits scoped",
-    "Test after refactoring",
-    "Verify output before committing",
-  ],
-] as const;
-
-function getTipLines(index: number, theme: Theme): string[] {
-  const selected = TIP_SETS[index % TIP_SETS.length] ?? TIP_SETS[0];
-  return selected.map((line, lineIndex) => {
-    if (lineIndex === 1 || lineIndex === 6) return brand(theme.bold(line));
-    if (line.startsWith("─")) return brand(line);
-    if (line.startsWith("/")) {
-      const [command, ...rest] = line.split(" ");
-      return `${theme.fg("accent", command ?? "")}${theme.fg("dim", ` ${rest.join(" ")}`)}`;
+function collectCompactCapabilities(pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">): CompactCapability[] {
+  const sources: CapabilitySourceInfo[] = [];
+  try {
+    for (const command of pi.getCommands()) {
+      if (command.source === "extension" && command.sourceInfo.source !== "inline") sources.push(command.sourceInfo);
     }
-    return theme.fg(lineIndex > 6 ? "muted" : "dim", line);
-  });
+  } catch {}
+  try {
+    for (const tool of pi.getAllTools()) {
+      if (tool.sourceInfo.source !== "builtin" && tool.sourceInfo.source !== "sdk") sources.push(tool.sourceInfo);
+    }
+  } catch {}
+
+  const capabilities = new Map<string, CompactCapability>();
+  for (const source of sources) {
+    const directories = [source.baseDir, source.path ? dirname(source.path) : undefined]
+      .filter((directory): directory is string => Boolean(directory));
+    let metadata: { name?: string; version?: string } = {};
+    for (const directory of new Set(directories)) {
+      metadata = readPackageMetadata(join(directory, "package.json"));
+      if (metadata.name) break;
+    }
+    const packageName = metadata.name ?? (source.source?.startsWith("npm:") ? source.source.slice(4) : undefined);
+    if (!packageName || packageName === "killeros") continue;
+    capabilities.set(packageName, { label: capabilityLabel(packageName), version: metadata.version });
+  }
+  return [...capabilities.values()].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function alignEdges(left: string, right: string, width: number): string {
+  if (width <= 0) return "";
+  const clippedRight = truncateToWidth(right, width, "");
+  const leftWidth = Math.max(0, width - visibleWidth(clippedRight) - 1);
+  const clippedLeft = truncateToWidth(left, leftWidth, "…");
+  const gap = " ".repeat(Math.max(1, width - visibleWidth(clippedLeft) - visibleWidth(clippedRight)));
+  return truncateToWidth(`${clippedLeft}${gap}${clippedRight}`, width, "");
+}
+
+function compactBoxLine(content: string, width: number, theme: Theme): string {
+  if (width < 4) return truncateToWidth(content, width, "");
+  return `${theme.fg("dim", "│")} ${padRight(content, width - 4)} ${theme.fg("dim", "│")}`;
 }
 
 class PiStartupHeader {
   private readonly pi: ExtensionAPI;
   private readonly ctx: ExtensionContext;
-  private readonly tui: TUI;
-  private frame = 0;
-  private tipIndex = 0;
-  private animationTimer?: ReturnType<typeof setInterval>;
-  private tipTimer?: ReturnType<typeof setInterval>;
-  private disposed = false;
+  private readonly capabilities: CompactCapability[];
 
-  constructor(
-    pi: ExtensionAPI,
-    ctx: ExtensionContext,
-    tui: TUI,
-  ) {
+  constructor(pi: ExtensionAPI, ctx: ExtensionContext) {
     this.pi = pi;
     this.ctx = ctx;
-    this.tui = tui;
-    this.animationTimer = setInterval(() => {
-      if (this.disposed) return;
-      if (this.frame >= LOGO_FRAME_COUNT - 1) {
-        this.stopAnimation();
-        return;
-      }
-      this.frame += 1;
-      this.tui.requestRender();
-      if (this.frame >= LOGO_FRAME_COUNT - 1) this.stopAnimation();
-    }, LOGO_ANIMATION_INTERVAL_MS);
-    this.animationTimer.unref?.();
-
-    this.tipTimer = setInterval(() => {
-      if (this.disposed) return;
-      this.tipIndex = (this.tipIndex + 1) % TIP_SETS.length;
-      this.tui.requestRender();
-    }, TIP_ROTATION_INTERVAL_MS);
-    this.tipTimer.unref?.();
+    this.capabilities = collectCompactCapabilities(pi);
   }
 
-  private stopAnimation(): void {
-    if (!this.animationTimer) return;
-    clearInterval(this.animationTimer);
-    this.animationTimer = undefined;
+  private contextText(theme: Theme): string {
+    const usage = this.ctx.getContextUsage();
+    if (!usage || usage.tokens === null) return theme.fg("dim", "context —");
+    const windowSize = usage.contextWindow > 0 ? usage.contextWindow : 128_000;
+    const percent = Math.max(0, Math.min(100, Math.round((1 - usage.tokens / windowSize) * 100)));
+    return theme.fg(percent < 20 ? "error" : percent <= 50 ? "warning" : "success", `${percent}% context`);
   }
 
   render(width: number): string[] {
     if (width <= 0) return [];
     const theme = this.ctx.ui.theme;
-    if (width < 16) return [truncateToWidth(theme.fg("accent", `Pi v${VERSION}`), width, "")];
+    if (width < 28) return [truncateToWidth(brand(theme.bold("KillerOS")), width, "")];
 
-    const innerWidth = width - 2;
-    const isTwoColumn = innerWidth >= 64;
-    const provider = extractProvider(this.ctx.model);
-    const rawModel = this.ctx.model?.id ?? this.ctx.model?.name;
-    const model = rawModel
-      ? provider && !rawModel.startsWith(`${provider}/`) ? `${provider}/${rawModel}` : rawModel
-      : "Default model";
-    const effort = this.pi.getThinkingLevel();
-    const cwd = formatCwd(this.ctx.cwd);
-    const leftWidth = isTwoColumn ? Math.min(LEFT_PANEL_WIDTH, Math.floor(innerWidth * 0.55)) : innerWidth;
-    const rightWidth = isTwoColumn ? innerWidth - leftWidth - 3 : 0;
-    const logoLines = leftWidth >= ORCA_WIDTH * visibleWidth(LOGO_CELL)
-      ? piLogoFrame(this.frame).map((line) => center(line, leftWidth))
-      : ["", "", center(brand(theme.bold("Pi Coding Agent")), leftWidth), "", "", "", ""];
-    const modelText = leftWidth < 34 ? `${model} (${effort})` : `${model} with ${effort} effort`;
-    const leftLines = [
-      ...logoLines,
-      center(theme.bold("Let's build something great"), leftWidth),
-      center(theme.fg("muted", truncateToWidth(modelText, leftWidth, "…")), leftWidth),
-      center(theme.fg("dim", truncateToWidth(cwd, leftWidth, "…")), leftWidth),
+    const panelWidth = Math.min(width, COMPACT_HEADER_MAX_WIDTH);
+    const innerWidth = panelWidth - 4;
+    const version = KILLEROS_VERSION ? theme.fg("dim", ` ${KILLEROS_VERSION}`) : "";
+    const identity = `${brand(theme.bold("› KillerOS"))}${version}`;
+    const model = this.ctx.model?.id ?? "default model";
+    const agent = `${model} · ${this.pi.getThinkingLevel()}`;
+    const directory = formatCwd(this.ctx.cwd);
+    const border = (left: string, right: string): string => theme.fg("dim", `${left}${"─".repeat(panelWidth - 2)}${right}`);
+    const lines = [
+      border("╭", "╮"),
+      compactBoxLine(alignEdges(identity, theme.fg("success", "READY"), innerWidth), panelWidth, theme),
+      compactBoxLine("", panelWidth, theme),
+      compactBoxLine(alignEdges(agent, theme.fg("dim", "/model"), innerWidth), panelWidth, theme),
+      compactBoxLine(alignEdges(directory, this.contextText(theme), innerWidth), panelWidth, theme),
     ];
-    const tipLines = isTwoColumn ? getTipLines(this.tipIndex, theme) : [];
-    const lines = [borderLine("╭", `${brand("Pi")} v${VERSION}`, "╮", width)];
-    for (let index = 0; index < leftLines.length; index += 1) {
-      const content = isTwoColumn
-        ? twoColumn(leftLines[index] ?? "", tipLines[index] ?? "", leftWidth, rightWidth)
-        : padRight(leftLines[index] ?? "", leftWidth);
-      lines.push(boxedLine(content, width));
+    if (this.capabilities.length > 0) {
+      lines.push(compactBoxLine(theme.fg("dim", "─".repeat(innerWidth)), panelWidth, theme));
+      const capabilityText = this.capabilities
+        .map((capability) => `${capability.label}${capability.version ? ` ${capability.version}` : ""}`)
+        .join(" · ");
+      lines.push(compactBoxLine(theme.fg("dim", capabilityText), panelWidth, theme));
     }
-    lines.push(borderLine("╰", "", "╯", width));
-    return lines.map((line) => truncateToWidth(line, width, ""));
+    lines.push(border("╰", "╯"));
+    return lines;
   }
 
   invalidate(): void {}
-
-  dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.stopAnimation();
-    if (this.tipTimer) {
-      clearInterval(this.tipTimer);
-      this.tipTimer = undefined;
-    }
-  }
+  dispose(): void {}
 }
 
 const ANSI_REGEX = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
@@ -372,30 +268,51 @@ function reportError(ctx: ExtensionContext, area: string, error: unknown): void 
   ctx.ui.notify(`${area}: ${message}`, "error");
 }
 
+const ACTIVITY_WORDS = ["Brewing", "Pondering", "Tinkering", "Wrangling", "Noodling", "Cooking"] as const;
+
 function registerShellUi(pi: ExtensionAPI): void {
   let activeHeader: PiStartupHeader | undefined;
+  let activityWordIndex = 0;
 
   pi.on("session_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
     try {
-      ctx.ui.setHeader((tui) => {
+      ctx.ui.setTheme("killeros");
+      ctx.ui.setHeader(() => {
         activeHeader?.dispose();
-        activeHeader = new PiStartupHeader(pi, ctx, tui);
+        activeHeader = new PiStartupHeader(pi, ctx);
         return activeHeader;
       });
       ctx.ui.setWorkingIndicator({
-        frames: ["◐", "◓", "◑", "◒"].map((frame) => ctx.ui.theme.fg("accent", frame)),
-        intervalMs: 120,
+        frames: [
+          ctx.ui.theme.fg("dim", "✻"),
+          ctx.ui.theme.fg("muted", "✻"),
+          ctx.ui.theme.fg("accent", "✻"),
+          ctx.ui.theme.fg("muted", "✻"),
+        ],
+        intervalMs: 180,
       });
+      ctx.ui.setHiddenThinkingLabel("└ Thinking…");
       ctx.ui.setEditorComponent((tui, theme, keybindings) => new PiCodeEditor(tui, theme, keybindings));
     } catch (error) {
       reportError(ctx, "Killeros UI failed to initialize", error);
     }
   });
 
+  pi.on("agent_start", (_event, ctx) => {
+    if (ctx.mode !== "tui") return;
+    ctx.ui.setWorkingMessage(`${ACTIVITY_WORDS[activityWordIndex]}…`);
+    activityWordIndex = (activityWordIndex + 1) % ACTIVITY_WORDS.length;
+  });
+
+  pi.on("agent_end", (_event, ctx) => {
+    if (ctx.mode === "tui") ctx.ui.setWorkingMessage();
+  });
+
   pi.on("session_shutdown", () => {
     activeHeader?.dispose();
     activeHeader = undefined;
+    activityWordIndex = 0;
   });
 }
 
