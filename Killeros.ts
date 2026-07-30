@@ -847,9 +847,8 @@ function registerAliases(pi: ExtensionAPI): void {
     if (!await confirmNewSession(ctx)) return;
     await ctx.newSession();
   };
-  pi.registerCommand("cls", { description: "Start a new session after confirmation", handler: startNewSession });
-  pi.registerCommand("clean", { description: "Start a new session after confirmation", handler: startNewSession });
-  pi.registerCommand("q", {
+  pi.registerCommand("clear", { description: "Start a new session after confirmation", handler: startNewSession });
+  pi.registerCommand("quit", {
     description: "Quit Pi gracefully",
     handler: async (_args, ctx) => ctx.shutdown(),
   });
@@ -1136,26 +1135,9 @@ function registerVariants(pi: ExtensionAPI): void {
   });
 }
 
-export interface CurrencyConfig {
-  symbol: string;
-  rate: number;
-  code: string;
-}
-
-export const DEFAULT_CURRENCY: Readonly<CurrencyConfig> = { symbol: "$", rate: 1, code: "USD" };
-
-export function resolveCurrencyConfig(): CurrencyConfig {
-  const symbol = process.env.PI_CURRENCY_SYMBOL?.trim() || DEFAULT_CURRENCY.symbol;
-  const code = process.env.PI_CURRENCY?.trim().toUpperCase() || DEFAULT_CURRENCY.code;
-  const rawRate = process.env.PI_CURRENCY_RATE ?? process.env.PI_EXCHANGE_RATE;
-  const parsedRate = rawRate ? Number.parseFloat(rawRate) : DEFAULT_CURRENCY.rate;
-  const rate = Number.isFinite(parsedRate) && parsedRate > 0 ? parsedRate : DEFAULT_CURRENCY.rate;
-  return { symbol, code, rate };
-}
-
-export function formatCost(usd: number, config: CurrencyConfig = resolveCurrencyConfig()): string {
-  if (!Number.isFinite(usd)) return `${config.symbol}—`;
-  return `${config.symbol}${(usd * config.rate).toFixed(2)}`;
+export function formatCost(usd: number): string {
+  if (!Number.isFinite(usd)) return "$—";
+  return `$${usd.toFixed(2)}`;
 }
 
 export function resolveShortcutHint(): string {

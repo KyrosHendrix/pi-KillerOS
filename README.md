@@ -44,7 +44,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - `/variants` selector and direct reasoning-level arguments
 - `question` tool with filtering, keyboard selection, custom answers, history, cancellation, and resize-safe rendering
 - Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills
-- `/cls` and `/clean` for a confirmed new session, plus `/q` for graceful shutdown
+- `/clear` for a confirmed new session, plus `/quit` for graceful shutdown
 - Concise system-prompt guidance without modifying completed assistant messages
 
 ## Commands
@@ -52,24 +52,15 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 ```text
 /variants                 Open the reasoning-level selector
 /variants high            Set a reasoning level directly
-/cls                      Start a new session after confirmation
-/clean                    Start a new session after confirmation
-/q                        Quit Pi gracefully
+/clear                    Start a new session after confirmation
+/quit                     Quit Pi gracefully
 ```
 
 Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. KillerOS limits choices to levels supported by the current model.
 
 ## Configuration
 
-KillerOS displays provider costs in USD by default. Set these environment variables before launching Pi to show a converted currency:
-
-```text
-PI_CURRENCY=PHP
-PI_CURRENCY_SYMBOL=₱
-PI_CURRENCY_RATE=56
-```
-
-`PI_CURRENCY_RATE` is the number of display-currency units per USD. KillerOS does not fetch exchange rates.
+KillerOS displays provider costs in USD.
 
 Set a custom footer shortcut hint with:
 
