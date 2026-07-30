@@ -1,6 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import os from "node:os";
-import { dirname, join } from "node:path";
 import {
   CustomEditor,
   DynamicBorder,
@@ -29,25 +29,53 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-const BRAND_RGB = "215;119;87";
+const COMMAND_BLUE_RGB = "120;169;255";
 const FOOTER_REFRESH_INTERVAL_MS = 1_000;
-const COMPACT_HEADER_MAX_WIDTH = 76;
+const COMPACT_HEADER_MAX_WIDTH = 52;
 
-const brand = (text: string): string => `\x1B[38;2;${BRAND_RGB}m${text}\x1B[39m`;
+const commandBlue = (text: string): string => `\x1B[38;2;${COMMAND_BLUE_RGB}m${text}\x1B[39m`;
 
-function readPackageMetadata(path: string | URL): { name?: string; version?: string } {
+function readPackageVersion(path: string | URL): string | undefined {
   try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as { name?: unknown; version?: unknown };
-    return {
-      name: typeof value.name === "string" ? value.name : undefined,
-      version: typeof value.version === "string" ? value.version : undefined,
-    };
+    const value = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown };
+    return typeof value.version === "string" ? value.version : undefined;
   } catch {
-    return {};
+    return undefined;
   }
 }
 
-const KILLEROS_VERSION = readPackageMetadata(new URL("./package.json", import.meta.url)).version;
+const KILLEROS_VERSION = readPackageVersion(new URL("./package.json", import.meta.url));
+
+const STARTUP_TIPS = [
+  "Press Shift+Enter to insert a line break without sending.",
+  "Run /variants to tune the model's reasoning depth.",
+  "Type / to browse every command available in this session.",
+] as const;
+
+function resolveGitBranch(cwd: string): string | undefined {
+  try {
+    const branch = execFileSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 500,
+      windowsHide: true,
+    }).trim();
+    if (!branch) return undefined;
+    return branch === "HEAD" ? "detached" : branch;
+  } catch {
+    return undefined;
+  }
+}
+
+function shuffledTips(): string[] {
+  const tips = [...STARTUP_TIPS];
+  for (let index = tips.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [tips[index], tips[swapIndex]] = [tips[swapIndex]!, tips[index]!];
+  }
+  return tips;
+}
 
 function formatCwd(cwd: string): string {
   const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
@@ -67,62 +95,6 @@ function padRight(text: string, width: number): string {
   return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
-interface CapabilitySourceInfo {
-  path?: string;
-  source?: string;
-  baseDir?: string;
-}
-
-interface CompactCapability {
-  label: string;
-  version?: string;
-}
-
-function capabilityLabel(packageName: string): string {
-  const name = packageName.replace(/^npm:/, "").split("/").at(-1) ?? packageName;
-  if (name === "pi-mcp-adapter") return "MCP adapter";
-  if (name === "pi-web-access") return "Web access";
-  return name.replace(/^pi-/, "").replace(/[-_]+/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
-}
-
-function collectCompactCapabilities(pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">): CompactCapability[] {
-  const sources: CapabilitySourceInfo[] = [];
-  try {
-    for (const command of pi.getCommands()) {
-      if (command.source === "extension" && command.sourceInfo.source !== "inline") sources.push(command.sourceInfo);
-    }
-  } catch {}
-  try {
-    for (const tool of pi.getAllTools()) {
-      if (tool.sourceInfo.source !== "builtin" && tool.sourceInfo.source !== "sdk") sources.push(tool.sourceInfo);
-    }
-  } catch {}
-
-  const capabilities = new Map<string, CompactCapability>();
-  for (const source of sources) {
-    const directories = [source.baseDir, source.path ? dirname(source.path) : undefined]
-      .filter((directory): directory is string => Boolean(directory));
-    let metadata: { name?: string; version?: string } = {};
-    for (const directory of new Set(directories)) {
-      metadata = readPackageMetadata(join(directory, "package.json"));
-      if (metadata.name) break;
-    }
-    const packageName = metadata.name ?? (source.source?.startsWith("npm:") ? source.source.slice(4) : undefined);
-    if (!packageName || packageName === "killeros") continue;
-    capabilities.set(packageName, { label: capabilityLabel(packageName), version: metadata.version });
-  }
-  return [...capabilities.values()].sort((left, right) => left.label.localeCompare(right.label));
-}
-
-function alignEdges(left: string, right: string, width: number): string {
-  if (width <= 0) return "";
-  const clippedRight = truncateToWidth(right, width, "");
-  const leftWidth = Math.max(0, width - visibleWidth(clippedRight) - 1);
-  const clippedLeft = truncateToWidth(left, leftWidth, "…");
-  const gap = " ".repeat(Math.max(1, width - visibleWidth(clippedLeft) - visibleWidth(clippedRight)));
-  return truncateToWidth(`${clippedLeft}${gap}${clippedRight}`, width, "");
-}
-
 function compactBoxLine(content: string, width: number, theme: Theme): string {
   if (width < 4) return truncateToWidth(content, width, "");
   return `${theme.fg("dim", "│")} ${padRight(content, width - 4)} ${theme.fg("dim", "│")}`;
@@ -131,50 +103,55 @@ function compactBoxLine(content: string, width: number, theme: Theme): string {
 class PiStartupHeader {
   private readonly pi: ExtensionAPI;
   private readonly ctx: ExtensionContext;
-  private readonly capabilities: CompactCapability[];
+  private readonly branch: string | undefined;
+  private readonly tip: string;
 
-  constructor(pi: ExtensionAPI, ctx: ExtensionContext) {
+  constructor(pi: ExtensionAPI, ctx: ExtensionContext, tip: string) {
     this.pi = pi;
     this.ctx = ctx;
-    this.capabilities = collectCompactCapabilities(pi);
+    this.branch = resolveGitBranch(ctx.cwd);
+    this.tip = tip;
   }
 
-  private contextText(theme: Theme): string {
-    const usage = this.ctx.getContextUsage();
-    if (!usage || usage.tokens === null) return theme.fg("dim", "context —");
-    const windowSize = usage.contextWindow > 0 ? usage.contextWindow : 128_000;
-    const percent = Math.max(0, Math.min(100, Math.round((1 - usage.tokens / windowSize) * 100)));
-    return theme.fg(percent < 20 ? "error" : percent <= 50 ? "warning" : "success", `${percent}% context`);
+  private tipLines(width: number, theme: Theme): string[] {
+    const indent = "  ";
+    const text = `${theme.fg("text", theme.bold("Tip:"))}${theme.fg("dim", ` ${this.tip}`)}`;
+    return wrapTextWithAnsi(text, width - indent.length)
+      .map((line) => padRight(`${indent}${line}`, width));
   }
 
   render(width: number): string[] {
     if (width <= 0) return [];
     const theme = this.ctx.ui.theme;
-    if (width < 28) return [truncateToWidth(brand(theme.bold("KillerOS")), width, "")];
+    if (width < 28) return [truncateToWidth(theme.fg("text", theme.bold("KillerOS")), width, "")];
 
     const panelWidth = Math.min(width, COMPACT_HEADER_MAX_WIDTH);
     const innerWidth = panelWidth - 4;
-    const version = KILLEROS_VERSION ? theme.fg("dim", ` ${KILLEROS_VERSION}`) : "";
-    const identity = `${brand(theme.bold("› KillerOS"))}${version}`;
-    const model = this.ctx.model?.id ?? "default model";
-    const agent = `${model} · ${this.pi.getThinkingLevel()}`;
+    const version = KILLEROS_VERSION ? theme.fg("dim", ` (v${KILLEROS_VERSION})`) : "";
+    const identity = `${theme.fg("dim", "›")} ${theme.fg("text", theme.bold("KillerOS"))}${version}`;
+    const thinkingLevel = this.pi.getThinkingLevel() as ThinkingLevel;
+    const reasoning = this.ctx.model?.reasoning === false
+      ? theme.fg("thinkingOff", "no reasoning")
+      : theme.fg(LEVEL_COLORS[thinkingLevel], thinkingLevel);
+    const agent = `${formatModel(this.ctx.model, theme)}${theme.fg("dim", " · ")}${reasoning}`;
     const directory = formatCwd(this.ctx.cwd);
+    const repository = this.branch
+      ? `${directory} ${theme.fg("dim", `· ${this.branch}`)}`
+      : directory;
+    const modelCommand = commandBlue("/model");
+    const agentWidth = Math.max(0, innerWidth - visibleWidth(modelCommand) - 1);
+    const agentCommand = `${truncateToWidth(agent, agentWidth, "…")} ${modelCommand}`;
     const border = (left: string, right: string): string => theme.fg("dim", `${left}${"─".repeat(panelWidth - 2)}${right}`);
     const lines = [
       border("╭", "╮"),
-      compactBoxLine(alignEdges(identity, theme.fg("success", "READY"), innerWidth), panelWidth, theme),
+      compactBoxLine(identity, panelWidth, theme),
       compactBoxLine("", panelWidth, theme),
-      compactBoxLine(alignEdges(agent, theme.fg("dim", "/model"), innerWidth), panelWidth, theme),
-      compactBoxLine(alignEdges(directory, this.contextText(theme), innerWidth), panelWidth, theme),
+      compactBoxLine(agentCommand, panelWidth, theme),
+      compactBoxLine(repository, panelWidth, theme),
+      border("╰", "╯"),
+      " ".repeat(panelWidth),
+      ...this.tipLines(panelWidth, theme),
     ];
-    if (this.capabilities.length > 0) {
-      lines.push(compactBoxLine(theme.fg("dim", "─".repeat(innerWidth)), panelWidth, theme));
-      const capabilityText = this.capabilities
-        .map((capability) => `${capability.label}${capability.version ? ` ${capability.version}` : ""}`)
-        .join(" · ");
-      lines.push(compactBoxLine(theme.fg("dim", capabilityText), panelWidth, theme));
-    }
-    lines.push(border("╰", "╯"));
     return lines;
   }
 
@@ -273,14 +250,20 @@ const ACTIVITY_WORDS = ["Brewing", "Pondering", "Tinkering", "Wrangling", "Noodl
 function registerShellUi(pi: ExtensionAPI): void {
   let activeHeader: PiStartupHeader | undefined;
   let activityWordIndex = 0;
+  let tipDeck: string[] = [];
+  const nextStartupTip = (): string => {
+    if (tipDeck.length === 0) tipDeck = shuffledTips();
+    return tipDeck.pop() ?? STARTUP_TIPS[0];
+  };
 
   pi.on("session_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
     try {
       ctx.ui.setTheme("killeros");
+      const startupTip = nextStartupTip();
       ctx.ui.setHeader(() => {
         activeHeader?.dispose();
-        activeHeader = new PiStartupHeader(pi, ctx);
+        activeHeader = new PiStartupHeader(pi, ctx, startupTip);
         return activeHeader;
       });
       ctx.ui.setWorkingIndicator({
@@ -1006,10 +989,6 @@ export function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
-export function resolveShortcutHint(): string {
-  return process.env.PI_SHORTCUT_HINT?.trim() || "/variants";
-}
-
 function formatTime(milliseconds: number): string {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -1021,20 +1000,22 @@ function formatTime(milliseconds: number): string {
 function formatTokens(value: number): string {
   const amount = Math.max(0, value);
   if (amount < 1_000) return `${Math.round(amount)}`;
-  if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(amount >= 10_000_000 ? 0 : 1)}M`;
-  return `${(amount / 1_000).toFixed(amount >= 100_000 ? 0 : 1)}k`;
+  if (amount >= 1_000_000) {
+    const precision = amount >= 10_000_000 ? 0 : 1;
+    return `${Number((amount / 1_000_000).toFixed(precision))}M`;
+  }
+  const precision = amount >= 100_000 ? 0 : 1;
+  return `${Number((amount / 1_000).toFixed(precision))}k`;
 }
 
 export function formatContextProgress(tokensUsed: number | null, contextWindow: number, theme: Theme): string {
-  if (tokensUsed === null) return theme.fg("dim", "[░░░░░░░░░░] —");
+  if (tokensUsed === null) return theme.fg("dim", "—% left (—)");
   const windowSize = contextWindow > 0 ? contextWindow : 128_000;
   const remaining = Math.max(0, Math.min(windowSize, windowSize - Math.max(0, tokensUsed)));
   const percentLeft = Math.max(0, Math.min(100, Math.round((remaining / windowSize) * 100)));
-  const filled = Math.round((percentLeft / 100) * 10);
-  const bar = "█".repeat(filled) + "░".repeat(10 - filled);
   const color: ThemeColor = percentLeft < 20 ? "error" : percentLeft <= 50 ? "warning" : "success";
-  const warning = percentLeft < 15 ? " ⚠ /compact" : "";
-  return theme.fg(color, `[${bar}] ${percentLeft}% left (${formatTokens(remaining)})${warning}`);
+  const action = percentLeft < 15 ? " · /compact" : "";
+  return theme.fg(color, `${percentLeft}% left (${formatTokens(remaining)})${action}`);
 }
 
 function sumSessionCost(ctx: ExtensionContext): number {
@@ -1050,9 +1031,80 @@ function sumSessionCost(ctx: ExtensionContext): number {
   return total;
 }
 
-function formatModel(model: ExtensionContext["model"], theme: Theme): string {
-  if (!model) return theme.fg("dim", "no model");
-  return `${theme.fg("dim", `${model.provider}/`)}${theme.fg("accent", model.id)}`;
+const PROVIDER_LABELS: Readonly<Record<string, string>> = {
+  "amazon-bedrock": "Amazon Bedrock",
+  "azure-openai-responses": "Azure OpenAI",
+  "github-copilot": "GitHub Copilot",
+  "google-vertex": "Google Vertex",
+  "openai-codex": "OpenAI",
+  anthropic: "Anthropic",
+  deepseek: "DeepSeek",
+  google: "Google",
+  ollama: "Ollama",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+};
+
+const PROVIDER_WORDS: Readonly<Record<string, string>> = {
+  ai: "AI",
+  api: "API",
+  deepseek: "DeepSeek",
+  github: "GitHub",
+  llm: "LLM",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+};
+
+function formatProviderName(provider: string): string {
+  const normalized = provider.trim();
+  const known = PROVIDER_LABELS[normalized.toLocaleLowerCase()];
+  if (known) return known;
+  return normalized
+    .split(/[-_]+/u)
+    .filter(Boolean)
+    .map((word) => PROVIDER_WORDS[word.toLocaleLowerCase()] ?? `${word.charAt(0).toLocaleUpperCase()}${word.slice(1)}`)
+    .join(" ") || "Unknown provider";
+}
+
+function modelDisplayName(model: NonNullable<ExtensionContext["model"]>): string {
+  return model.name?.trim() || model.id;
+}
+
+function formatModel(model: ExtensionContext["model"], theme: Theme, includeProvider = true): string {
+  if (!model) return theme.fg("dim", "No model");
+  const name = theme.fg("text", theme.bold(modelDisplayName(model)));
+  return includeProvider ? `${name} ${theme.fg("dim", formatProviderName(model.provider))}` : name;
+}
+
+function compactDirectory(cwd: string): string {
+  if (cwd === "~" || cwd === "/" || /^[A-Za-z]:[\\/]?$/u.test(cwd)) return cwd;
+  const normalized = cwd.replace(/\\/gu, "/").replace(/\/$/u, "");
+  const finalSegment = normalized.split("/").at(-1);
+  return finalSegment ? `…/${finalSegment}` : cwd;
+}
+
+function joinFooterParts(parts: string[], theme: Theme): string {
+  return parts.filter(Boolean).join(theme.fg("dim", " · "));
+}
+
+function footerRowFits(left: string, right: string, width: number): boolean {
+  const contentWidth = visibleWidth(left) + (right ? visibleWidth(right) + 1 : 0);
+  return contentWidth + 2 <= width;
+}
+
+function renderFooterRow(left: string, right: string, width: number): string {
+  if (width <= 0) return "";
+  if (width < 3) return " ".repeat(width);
+
+  const innerWidth = width - 2;
+  if (!right) return ` ${padRight(left, innerWidth)} `;
+
+  const clippedRight = truncateToWidth(right, innerWidth, "");
+  const rightWidth = visibleWidth(clippedRight);
+  const leftBudget = Math.max(0, innerWidth - rightWidth - 1);
+  const clippedLeft = truncateToWidth(left, leftBudget, "…");
+  const gap = " ".repeat(Math.max(0, innerWidth - visibleWidth(clippedLeft) - rightWidth));
+  return ` ${clippedLeft}${gap}${clippedRight} `;
 }
 
 function registerFooter(pi: ExtensionAPI): void {
@@ -1084,27 +1136,39 @@ function registerFooter(pi: ExtensionAPI): void {
           const model = currentModel ?? ctx.model;
           const level = model?.reasoning === false
             ? theme.fg("thinkingOff", "no reasoning")
-            : theme.fg(LEVEL_COLORS[thinkingLevel], LEVEL_LABELS[thinkingLevel]);
+            : theme.fg(LEVEL_COLORS[thinkingLevel], thinkingLevel);
           const usage = ctx.getContextUsage();
-          const context = formatContextProgress(usage?.tokens ?? null, usage?.contextWindow ?? 128_000, theme);
+          const contextWindow = usage?.contextWindow ?? model?.contextWindow ?? 128_000;
+          const context = formatContextProgress(usage?.tokens ?? null, contextWindow, theme);
           const branch = footerData.getGitBranch();
-          const parts = [
-            formatModel(model, theme),
+          const signature = formatModel(model, theme);
+          const fullDirectory = theme.fg("dim", cwd);
+          const focusedDirectory = theme.fg("dim", compactDirectory(cwd));
+          const rich = joinFooterParts([
+            signature,
             level,
             context,
             branch ? theme.fg("dim", branch) : "",
             theme.fg("dim", formatTime(Date.now() - sessionStart)),
-          ];
-          const cost = sumSessionCost(ctx);
-          if (cost > 0) parts.push(theme.fg("dim", formatCost(cost)));
-          const hint = resolveShortcutHint();
-          if (hint) parts.push(theme.fg("dim", hint));
-          const separator = theme.fg("dim", "·");
-          const left = ` ${parts.filter(Boolean).join(`  ${separator}  `)} `;
-          const rightBudget = Math.max(0, width - visibleWidth(left) - 1);
-          const right = theme.fg("dim", truncateToWidth(cwd, rightBudget, "…"));
-          const gap = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
-          return [truncateToWidth(left + gap + right, width, "")];
+            theme.fg("dim", formatCost(sumSessionCost(ctx))),
+          ], theme);
+          const focused = joinFooterParts([signature, context], theme);
+
+          if (footerRowFits(rich, fullDirectory, width)) {
+            return [renderFooterRow(rich, fullDirectory, width)];
+          }
+          if (footerRowFits(rich, focusedDirectory, width)) {
+            return [renderFooterRow(rich, focusedDirectory, width)];
+          }
+          if (footerRowFits(focused, focusedDirectory, width)) {
+            return [renderFooterRow(focused, focusedDirectory, width)];
+          }
+          if (footerRowFits(focused, "", width)) {
+            return [renderFooterRow(focused, "", width)];
+          }
+
+          const essentialModel = formatModel(model, theme, false);
+          return [renderFooterRow(essentialModel, context, width)];
         },
       };
     });

@@ -4,14 +4,14 @@
   "vars": {
     "coral": "#d77757",
     "coralBright": "#e58b6d",
-    "canvas": "#090b0e",
-    "surface": "#101419",
-    "surfaceRaised": "#151a20",
-    "line": "#39424b",
-    "lineMuted": "#2b333b",
-    "text": "#dce1e5",
-    "muted": "#8f99a3",
-    "dim": "#606b75",
+    "canvas": "#0a0a0a",
+    "surface": "#121212",
+    "surfaceRaised": "#1a1a1a",
+    "line": "#404040",
+    "lineMuted": "#2e2e2e",
+    "text": "#f2f2f2",
+    "muted": "#adadad",
+    "dim": "#808080",
     "success": "#8fa88b",
     "error": "#c8786c",
     "warning": "#bda36c",
@@ -78,8 +78,8 @@
     "bashMode": "warning"
   },
   "export": {
-    "pageBg": "#090b0e",
-    "cardBg": "#101419",
-    "infoBg": "#151a20"
+    "pageBg": "#0a0a0a",
+    "cardBg": "#121212",
+    "infoBg": "#1a1a1a"
   }
 }

@@ -29,18 +29,18 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.1.0
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.2.0
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
 
 ## Features
 
-- Compact KillerOS startup card with model, directory, context, and loaded capability state
+- 52-column Compact startup card with inline version, polished model/provider identity, adjacent `/model`, directory, conditional Git branch, and a shuffled session-stable tip
 - Cohesive dark theme with coral accents and neutral tool-call containers across pending, success, and error states
 - Coral Spark activity indicator with Claude-adjacent verbs that advance between agent runs and a quiet hidden-thinking label
 - Framed multiline editor with Shift+Enter support
-- Footer with model, reasoning, context remaining, Git branch, elapsed time, and cost
+- Responsive footer with polished model/provider identity and plain-language context remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - `/variants` selector and direct reasoning-level arguments
 - `question` tool with filtering, keyboard selection, custom answers, history, cancellation, and resize-safe rendering
 - Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills
@@ -62,13 +62,7 @@ Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh
 
 KillerOS activates its packaged `killeros` theme when a TUI session starts. Tool-call backgrounds stay neutral across pending, successful, and failed states; restrained text and icons preserve status visibility.
 
-KillerOS displays provider costs in USD.
-
-Set a custom footer shortcut hint with:
-
-```text
-PI_SHORTCUT_HINT=/variants
-```
+KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar.
 
 ## Behavior by mode
 

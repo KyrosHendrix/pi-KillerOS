@@ -3,15 +3,16 @@ name: KillerOS
 description: A direct, terminal-native workflow layer for the Pi coding agent.
 colors:
   signal-coral: "#d77757"
-  console-black: "#090b0e"
-  console-panel: "#101419"
-  console-raised: "#151a20"
-  console-line: "#303841"
-  console-ink: "#f1f4f6"
-  console-muted: "#a3adb8"
-  console-dim: "#697581"
+  console-black: "#0a0a0a"
+  console-panel: "#121212"
+  console-raised: "#1a1a1a"
+  console-line: "#404040"
+  console-ink: "#f2f2f2"
+  console-muted: "#adadad"
+  console-dim: "#808080"
   ready-green: "#72d79b"
   reasoning-pink: "#ec91c2"
+  command-blue: "#78a9ff"
 typography:
   display:
     fontFamily: "Arial Narrow, Aptos Narrow, Roboto Condensed, Arial, sans-serif"
@@ -52,14 +53,14 @@ components:
 KillerOS should feel like a serious terminal instrument: immediate, compact, and explicit about state. Identity comes from disciplined coral signals and terse operational language rather than decorative effects. Startup uses one bounded operational card inspired by familiar coding-agent launch screens.
 
 **Key Characteristics:**
-- Near-black working surfaces with pale text and one coral signal color.
+- Neutral black working surfaces with white and gray text plus one coral signal color.
 - Monospaced telemetry for real terminal state.
 - Compressed, heavy display type only in browser-based design or documentation artifacts.
 - Hard dividers, restrained curves, and no ornamental gradients.
 
 ## Colors
 
-The palette is restrained: cool black neutrals carry the surface, signal coral marks identity and selection, and semantic colors remain rare. Tool containers use the same neutral surface in pending, success, and error states.
+The palette is restrained: achromatic black, white, and gray neutrals carry the surface, signal coral marks identity and selection, and semantic colors remain rare. Tool containers use the same neutral surface in pending, success, and error states.
 
 ### Primary
 - **Signal Coral:** Borders, active markers, branded labels, and the single dominant color field.
@@ -67,6 +68,7 @@ The palette is restrained: cool black neutrals carry the surface, signal coral m
 ### Secondary
 - **Ready Green:** Positive runtime and context state.
 - **Reasoning Pink:** Reasoning-level state where it must remain distinct from brand accents.
+- **Command Blue:** The explicit `/model` affordance in the startup card; do not use it decoratively.
 
 ### Neutral
 - **Console Black / Panel / Raised:** Layered terminal backgrounds.
@@ -132,13 +134,18 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Hover / Focus:** Signal Coral border with Console Ink text and a visible browser focus outline.
 
 ### Compact Startup Card
-- **Style:** A neutral 76-column maximum frame with the coral `› KillerOS` lockup, two session rows, and one quiet capability line.
-- **Content:** Package version, readiness, model, reasoning level, directory, context remaining, and package-backed capabilities.
-- **Adaptation:** The card stops growing at 76 columns, preserves right-edge status while truncating long left values, and falls back to the wordmark below 28 columns.
+- **Style:** A neutral 52-column maximum frame with a dim gray `›`, bold white `KillerOS`, and the package version directly beside the wordmark as `(v1.2.0)`. One unboxed tip follows after a blank line.
+- **Content:** Reuse the footer signature: bold white metadata-first model name, gray provider, and semantic reasoning, followed immediately by a blue `/model` affordance. The second row contains the directory and appends the active Git branch only when the workspace belongs to a repository; context remains in the footer.
+- **Tips:** Shuffle a factual tip bank, choose once per startup, and keep that tip fixed for the session. Exhaust the shuffled bank before repeating.
+- **Adaptation:** The card stops growing at 52 columns, truncates the model signature while preserving `/model`, truncates directory and branch together, wraps the external tip, and falls back to the wordmark below 28 columns.
 
 ### Status Footer
-- **Style:** One compact line of real state, ordered model, reasoning, context, branch, time, and path.
-- **Adaptation:** Lower-priority fields hide or truncate before primary state becomes illegible.
+- **Style:** One compact line of real state. The human-readable model name leads in Console Ink; its provider follows in Dim Slate without a separator.
+- **Context:** Show direct telemetry such as `82% left (1M)`. At critical pressure, append `/compact`; never use a progress bar.
+- **Wide:** Show model, provider, reasoning, context, branch, elapsed time, session cost, and the full path.
+- **Focused:** Preserve model, provider, context, and a shortened path.
+- **Compact:** Preserve model, provider, and context. At emergency widths, preserve context and truncate model identity before overflowing.
+- **Adaptation:** Select the richest tier that fits its actual content rather than relying on fixed terminal breakpoints.
 
 ## Do's and Don'ts
 
