@@ -12,7 +12,7 @@ Developers using the Pi coding agent in an interactive terminal, especially thos
 
 ## Product Purpose
 
-KillerOS is a Pi extension that combines a custom terminal UI, reasoning controls, interactive questions, command aliases, and concise-response guidance. It should help users understand the current session and move into productive work quickly.
+KillerOS is a Pi extension that combines a custom terminal UI, isolated subagents, reasoning controls, interactive questions, command aliases, and concise-response guidance. It should help users understand the current session and move into productive work quickly.
 
 ## Positioning
 
@@ -26,7 +26,9 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 
 - Requires Node.js 22.19.0 or later and Pi 0.82.1 or later.
 - Full custom header, editor, footer, and interactive question behavior requires TUI mode.
-- RPC supports commands and concise prompt guidance but disables TUI components.
+- Subagents use isolated ephemeral Pi children, explicit role tool lists, bounded execution, and no child extension, skill, or prompt-template discovery.
+- Bundled and personal roles are available by default; project roles require Pi project trust, explicit scope, and confirmation.
+- RPC supports commands, subagents, and concise prompt guidance but disables TUI components.
 - Print and JSON modes support concise prompt guidance but not interactive questions.
 - UI components must remain legible across narrow and wide terminal widths and use the packaged KillerOS theme in TUI mode.
 - Pending, successful, and failed tool calls share one neutral container surface; status remains distinguishable through restrained text and icons.

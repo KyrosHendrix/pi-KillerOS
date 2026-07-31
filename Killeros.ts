@@ -31,6 +31,7 @@ import {
   type TUI,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { registerSubagentTool } from "./subagents.ts";
 
 const COMMAND_BLUE_RGB = "120;169;255";
 const FOOTER_REFRESH_INTERVAL_MS = 1_000;
@@ -2541,6 +2542,7 @@ export default function Killeros(pi: ExtensionAPI): void {
   registerGoal(pi, goalRuntime, initState);
   registerPersonalInstructions(pi, initState);
   registerQuestionTool(pi);
+  registerSubagentTool(pi);
   registerAliases(pi);
   registerSlashAutocomplete(pi);
   registerFooter(pi, goalRuntime);

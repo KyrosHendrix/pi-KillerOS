@@ -3,8 +3,7 @@ node_modules/
 *.tgz
 *.log
 
-# Local design studies and generated previews
-/design/
+# Local generated previews
 /welcome-redesigns.html
 .env
 .env.*

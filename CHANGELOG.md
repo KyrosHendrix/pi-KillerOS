@@ -2,6 +2,14 @@
 
 All notable changes to KillerOS are documented here.
 
+## [1.4.0] - 2026-08-01
+
+### Added
+
+- Pi-native `subagent` tool with isolated JSONL child processes, single/parallel/chain modes, streamed TUI status, aggregate usage, and abort propagation.
+- Bundled Markdown roles for read-only scouting, planning, and review plus one serialized write-capable worker.
+- Strict role, tool, model, trust, precedence, concurrency, turn, timeout, trace, stderr, and output enforcement.
+
 ## [1.3.0] - 2026-07-31
 
 ### Added

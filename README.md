@@ -1,6 +1,6 @@
 # KillerOS
 
-A production-hardened Pi extension that combines a custom TUI, repository initialization, long-running goals, reasoning controls, interactive questions, command aliases, and concise-response guidance.
+A production-hardened Pi extension that combines a custom TUI, isolated subagents, repository initialization, long-running goals, reasoning controls, interactive questions, command aliases, and concise-response guidance.
 
 ## Requirements
 
@@ -29,7 +29,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.3.0
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.0
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -43,6 +43,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` for durable long-running objectives with pause, resume, edit, clear, automatic continuation, and explicit completion
+- Pi-native `subagent` tool with isolated child processes, Markdown roles, explicit read/write boundaries, parallel readers, one serialized writer, bounded output, and cancellation propagation
 - Claude Code-style `/init` that scans the repository and generates a concise root `AGENTS.md` without setup questions
 - `question` tool with filtering, proposal previews, keyboard selection, custom answers, history, cancellation, and resize-safe rendering
 - Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills
@@ -71,6 +72,18 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 
 Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. KillerOS limits choices to levels supported by the current model.
 
+## Subagents
+
+KillerOS ships `scout`, `planner`, and `reviewer` as read-only roles and `worker` as the only write-capable default. Each invocation rediscovers Markdown roles with this precedence:
+
+1. Bundled: `<killeros>/agents/*.md`
+2. Personal: `~/.pi/agent/agents/*.md`
+3. Trusted project: `<repo>/.pi/agents/*.md`
+
+The default `agentScope: "user"` uses bundled and personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project override requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. Optional fields are `model`, `maxTurns`, and `timeoutMs`.
+
+The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Children run as ephemeral `pi --mode json -p --no-session` processes with extension, skill, and prompt-template discovery disabled. KillerOS allows at most eight tasks, four parallel readers, one serialized writer, 12 turns, ten minutes, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task. Esc cancellation terminates active children and escalates after five seconds.
+
 ## Configuration
 
 KillerOS activates its packaged `killeros` theme when a TUI session starts. Tool-call backgrounds stay neutral across pending, successful, and failed states; restrained text and icons preserve status visibility.
@@ -85,9 +98,9 @@ Lifecycle hooks are loaded from `.pi/killeros-hooks.json` at session start. Supp
 
 | Mode | Behavior |
 |---|---|
-| TUI | All features are available |
-| RPC | Goal set/view/pause/resume/clear and concise prompt guidance work; TUI components, `/goal edit`, and `/init` are disabled |
-| Print/JSON | Concise prompt guidance works; interactive questions, `/goal`, and `/init` fail explicitly |
+| TUI | All features are available, including confirmation for trusted project subagents |
+| RPC | Goal set/view/pause/resume/clear, subagents, and concise prompt guidance work; TUI components, `/goal edit`, and `/init` are disabled |
+| Print/JSON | Concise prompt guidance works; interactive questions, `/goal`, `/init`, and project-role confirmation fail explicitly |
 
 ## Validation
 
@@ -118,7 +131,7 @@ git push origin main --follow-tags
 
 ## Security
 
-Pi extensions run with your user permissions. Review the source before installing it globally. KillerOS executes lifecycle hook commands only for projects Pi marks as trusted; review `.pi/killeros-hooks.json` before enabling project trust.
+Pi extensions and write-capable subagents run with your user permissions. Review the source before installing it globally. KillerOS executes lifecycle hook commands and reads project agent roles only for projects Pi marks as trusted; review `.pi/killeros-hooks.json` and `.pi/agents/*.md` before enabling project trust.
 
 ## License
 
