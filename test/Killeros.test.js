@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
-import Killeros, { formatContextProgress } from "../Killeros.ts";
+import Killeros, { formatContextProgress, INIT_WORKFLOW_PROMPT } from "../Killeros.ts";
 
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 const theme = {
   bold: (text) => text,
   fg: (_color, text) => text,
+  italic: (text) => text,
+  strikethrough: (text) => text,
+  underline: (text) => text,
 };
 
 function usage(cost) {
@@ -25,6 +30,8 @@ function createHarness() {
   const commands = new Map();
   const handlers = new Map();
   const tools = new Map();
+  const sentMessages = [];
+  const sentUserMessages = [];
   const api = {
     getAllTools: () => [...tools.values()].map((tool) => ({
       ...tool,
@@ -52,10 +59,59 @@ function createHarness() {
     },
     registerCommand: (name, command) => commands.set(name, command),
     registerTool: (tool) => tools.set(tool.name, tool),
+    sendMessage: (message, options) => sentMessages.push({ message, options }),
+    sendUserMessage: (message, options) => sentUserMessages.push({ message, options }),
     setThinkingLevel: () => {},
   };
   Killeros(api);
-  return { api, commands, handlers, tools };
+  return { api, commands, handlers, sentMessages, sentUserMessages, tools };
+}
+
+async function emitSequentially(handlers, event, ctx) {
+  const results = [];
+  for (const handler of handlers ?? []) {
+    const result = await handler(event, ctx);
+    results.push(result);
+    if (result?.block) break;
+  }
+  return results;
+}
+
+async function emitSuccessfulInitWrite(handlers, ctx, toolCallId = "init-write") {
+  const callResults = await emitSequentially(handlers.get("tool_call"), {
+    toolCallId,
+    toolName: "write",
+    input: { path: "AGENTS.md", content: "# AGENTS.md\n" },
+  }, ctx);
+  assert.equal(callResults.some((result) => result?.block), false);
+  await emitSequentially(handlers.get("tool_result"), {
+    toolCallId,
+    toolName: "write",
+    input: { path: "AGENTS.md" },
+    content: [{ type: "text", text: "written" }],
+    isError: false,
+  }, ctx);
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("timed out waiting for asynchronous test state");
+}
+
+function createFileSymlinkOrSkip(t, target, linkPath) {
+  try {
+    symlinkSync(target, linkPath, "file");
+    return true;
+  } catch (error) {
+    if (["EACCES", "EPERM"].includes(error.code)) {
+      t.skip("file symlinks are unavailable in this environment");
+      return false;
+    }
+    throw error;
+  }
 }
 
 function createTuiContext(entries = []) {
@@ -64,6 +120,7 @@ function createTuiContext(entries = []) {
   const ctx = {
     cwd: process.cwd(),
     getContextUsage: () => ({ tokens: 1_000, contextWindow: 128_000 }),
+    isProjectTrusted: () => true,
     mode: "tui",
     model: {
       id: "test-model",
@@ -94,10 +151,10 @@ function createTuiContext(entries = []) {
   return { captured, ctx, tui };
 }
 
-async function startQuestion(tool, options = [{ label: "Alpha" }]) {
+async function startQuestion(tool, options = [{ label: "Alpha" }], questionText = "Choose", terminalRows = 40) {
   let component;
   let finish;
-  const tui = { requestRender() {}, terminal: { rows: 40 } };
+  const tui = { requestRender() {}, terminal: { rows: terminalRows } };
   const ctx = {
     mode: "tui",
     ui: {
@@ -109,7 +166,7 @@ async function startQuestion(tool, options = [{ label: "Alpha" }]) {
   };
   const result = tool.execute(
     "question-test",
-    { question: "Choose", options },
+    { question: questionText, options },
     new AbortController().signal,
     () => {},
     ctx,
@@ -146,6 +203,509 @@ test("registers /exit without conflicting with Pi's /quit", async () => {
   let shutdownCalled = false;
   await commands.get("exit").handler("", { shutdown: async () => { shutdownCalled = true; } });
   assert.equal(shutdownCalled, true);
+});
+
+test("registers /init as a native command and runs the hidden generation workflow", async () => {
+  const { commands, handlers, sentMessages, sentUserMessages, tools } = createHarness();
+  assert.equal(commands.has("init"), true);
+  assert.equal(tools.has("init"), false);
+  assert.equal(tools.has("init_survey"), false);
+
+  const notifications = [];
+  let reloadCalls = 0;
+  const ctx = {
+    cwd: process.cwd(),
+    isProjectTrusted: () => true,
+    mode: "tui",
+    reload: async () => { reloadCalls += 1; },
+    ui: { notify: (message, level) => notifications.push({ message, level }) },
+    waitForIdle: async () => {},
+  };
+  const initRun = commands.get("init").handler("", ctx);
+  await waitFor(() => sentMessages.length === 1);
+
+  assert.equal(sentMessages.length, 1);
+  assert.deepEqual(sentMessages[0].options, { triggerTurn: true });
+  assert.equal(sentMessages[0].message.customType, "killeros-init");
+  assert.equal(sentMessages[0].message.display, false);
+  assert.ok(sentMessages[0].message.content.startsWith(INIT_WORKFLOW_PROMPT));
+  assert.match(sentMessages[0].message.content, /Initial repository snapshot/u);
+  assert.match(INIT_WORKFLOW_PROMPT, /## Analyze[\s\S]*## Synthesize[\s\S]*## Generate/u);
+  assert.match(INIT_WORKFLOW_PROMPT, /ask no questions/u);
+  assert.match(INIT_WORKFLOW_PROMPT, /write tool exactly once/u);
+  assert.doesNotMatch(INIT_WORKFLOW_PROMPT, /preserve|targeted edit|init_survey|\.agents\/skills|killeros-hooks\.json/iu);
+
+  await commands.get("init").handler("", ctx);
+  assert.equal(sentMessages.length, 1);
+  assert.deepEqual(notifications.at(-1), { message: "/init is already running", level: "warning" });
+
+  await emitSuccessfulInitWrite(handlers, ctx);
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await initRun;
+  assert.equal(reloadCalls, 1);
+  assert.deepEqual(sentUserMessages, []);
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  assert.equal(reloadCalls, 1);
+});
+
+test("/init reports failure instead of reloading when the model does not write", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-no-write-"));
+  try {
+    const { commands, handlers, sentMessages } = createHarness();
+    const notifications = [];
+    let reloadCalls = 0;
+    const ctx = {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => { reloadCalls += 1; },
+      ui: { notify: (message, level) => notifications.push({ message, level }) },
+      waitForIdle: async () => {},
+    };
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+
+    assert.equal(reloadCalls, 0);
+    assert.deepEqual(notifications.at(-1), {
+      message: "/init did not generate AGENTS.md: the model completed without a successful write",
+      level: "error",
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init replaces an existing AGENTS.md once and blocks every other mutation", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-existing-"));
+  try {
+    writeFileSync(path.join(directory, "AGENTS.md"), "# AGENTS.md\n\nPreserve this workflow.\n");
+    const { commands, handlers, sentMessages } = createHarness();
+    const ctx = {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => {},
+      ui: { notify() {} },
+      waitForIdle: async () => {},
+    };
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+
+    const readOnly = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "inspect-source",
+      toolName: "read",
+      input: { path: "src/index.ts" },
+    }, ctx);
+    assert.equal(readOnly.some((result) => result?.block), false);
+
+    const replacement = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "replace-existing",
+      toolName: "write",
+      input: { path: "AGENTS.md", content: "# AGENTS.md\n\nGenerated.\n" },
+    }, ctx);
+    assert.equal(replacement.some((result) => result?.block), false);
+    await emitSequentially(handlers.get("tool_result"), {
+      toolCallId: "replace-existing",
+      toolName: "write",
+      input: { path: "AGENTS.md" },
+      content: [{ type: "text", text: "written" }],
+      isError: false,
+    }, ctx);
+
+    const secondWrite = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "replace-again",
+      toolName: "write",
+      input: { path: "AGENTS.md", content: "replacement" },
+    }, ctx);
+    assert.match(secondWrite.find((result) => result?.block)?.reason, /exactly once/u);
+
+    const editTarget = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "edit-existing",
+      toolName: "edit",
+      input: { path: "AGENTS.md", edits: [{ oldText: "Generated", newText: "Changed" }] },
+    }, ctx);
+    assert.match(editTarget.find((result) => result?.block)?.reason, /exactly once/u);
+
+    const otherFile = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "write-other",
+      toolName: "write",
+      input: { path: "README.md", content: "replacement" },
+    }, ctx);
+    assert.match(otherFile.find((result) => result?.block)?.reason, /may not modify any other file/u);
+
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init blocks a linked AGENTS.md target", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-linked-target-"));
+  try {
+    writeFileSync(path.join(directory, "shared.md"), "shared instructions\n");
+    if (!createFileSymlinkOrSkip(t, "shared.md", path.join(directory, "AGENTS.md"))) return;
+
+    const { commands, handlers, sentMessages } = createHarness();
+    const ctx = {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => {},
+      ui: { notify() {} },
+      waitForIdle: async () => {},
+    };
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+
+    const writeAttempt = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "linked-agents",
+      toolName: "write",
+      input: { path: "AGENTS.md", content: "replacement" },
+    }, ctx);
+    assert.match(writeAttempt.find((result) => result?.block)?.reason, /regular, non-linked file/u);
+    assert.equal(readFileSync(path.join(directory, "shared.md"), "utf8"), "shared instructions\n");
+
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init retries its single AGENTS.md write only after a failed write", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-new-"));
+  try {
+    const { commands, handlers, sentMessages } = createHarness();
+    const ctx = {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => {},
+      ui: { notify() {} },
+      waitForIdle: async () => {},
+    };
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+
+    const firstWrite = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "create-agents",
+      toolName: "write",
+      input: { path: "AGENTS.md", content: "# AGENTS.md" },
+    }, ctx);
+    assert.equal(firstWrite.some((result) => result?.block), false);
+    await emitSequentially(handlers.get("tool_result"), {
+      toolCallId: "create-agents",
+      toolName: "write",
+      input: { path: "AGENTS.md" },
+      content: [{ type: "text", text: "disk error" }],
+      isError: true,
+    }, ctx);
+
+    const retryWrite = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "retry-agents",
+      toolName: "write",
+      input: { path: "AGENTS.md", content: "# AGENTS.md" },
+    }, ctx);
+    assert.equal(retryWrite.some((result) => result?.block), false);
+    await emitSequentially(handlers.get("tool_result"), {
+      toolCallId: "retry-agents",
+      toolName: "write",
+      input: { path: "AGENTS.md" },
+      content: [{ type: "text", text: "created" }],
+      isError: false,
+    }, ctx);
+
+    const thirdWrite = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "third-agents",
+      toolName: "write",
+      input: { path: "AGENTS.md", content: "replacement" },
+    }, ctx);
+    assert.equal(thirdWrite.find((result) => result?.block)?.block, true);
+
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init recovers when its agent workflow cannot start", async () => {
+  const { api, commands, handlers, sentMessages } = createHarness();
+  const notifications = [];
+  const ctx = {
+    cwd: process.cwd(),
+    isProjectTrusted: () => true,
+    mode: "tui",
+    reload: async () => {},
+    ui: { notify: (message, level) => notifications.push({ message, level }) },
+    waitForIdle: async () => {},
+  };
+  api.sendMessage = () => { throw new Error("no active model"); };
+  await commands.get("init").handler("", ctx);
+  assert.deepEqual(notifications.at(-1), { message: "/init failed to start: no active model", level: "error" });
+
+  api.sendMessage = (message, options) => sentMessages.push({ message, options });
+  const retry = commands.get("init").handler("", ctx);
+  await waitFor(() => sentMessages.length === 1);
+  assert.equal(sentMessages.length, 1);
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await retry;
+});
+
+test("/init refuses untrusted projects before scanning or starting the model", async () => {
+  const { commands, sentMessages } = createHarness();
+  const notifications = [];
+  await commands.get("init").handler("", {
+    cwd: process.cwd(),
+    isProjectTrusted: () => false,
+    mode: "tui",
+    ui: { notify: (message, level) => notifications.push({ message, level }) },
+    waitForIdle: async () => {},
+  });
+  assert.deepEqual(notifications.at(-1), { message: "Trust this project before running /init", level: "error" });
+  assert.equal(sentMessages.length, 0);
+});
+
+test("/init attaches a bounded project snapshot without reading existing guidance", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-survey-"));
+  try {
+    mkdirSync(path.join(directory, "node_modules"));
+    mkdirSync(path.join(directory, ".agents", "skills", "private"), { recursive: true });
+    mkdirSync(path.join(directory, ".pi"));
+    mkdirSync(path.join(directory, "src", "core"), { recursive: true });
+    writeFileSync(path.join(directory, "AGENTS.md"), "# AGENTS.md\n\nPreserve releases.\n");
+    writeFileSync(path.join(directory, "AGENTS.local.md"), "PRIVATE-CONTEXT\n");
+    writeFileSync(path.join(directory, "MEMORY.md"), "PRIVATE-MEMORY\n");
+    writeFileSync(path.join(directory, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+    writeFileSync(path.join(directory, "src", "core", "index.ts"), "export const value = 1;\n");
+    writeFileSync(path.join(directory, "node_modules", "ignored.txt"), "DEPENDENCY-CONTENT\n");
+    writeFileSync(path.join(directory, ".agents", "skills", "private", "SKILL.md"), "PRIVATE-SKILL\n");
+    writeFileSync(path.join(directory, ".pi", "killeros-hooks.json"), "PRIVATE-HOOK\n");
+
+    const { commands, handlers, sentMessages } = createHarness();
+    const startedAt = Date.now();
+    const initRun = commands.get("init").handler("", {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => {},
+      ui: { notify() {} },
+      waitForIdle: async () => {},
+    });
+    await waitFor(() => sentMessages.length === 1);
+    const marker = "## Initial repository snapshot (untrusted data)\n";
+    const snapshot = JSON.parse(sentMessages[0].message.content.split(marker)[1]);
+    assert.match(snapshot, /src\/core\/index\.ts/u);
+    assert.match(snapshot, /node --test/u);
+    assert.doesNotMatch(snapshot, /Preserve releases|PRIVATE-CONTEXT|PRIVATE-MEMORY|DEPENDENCY-CONTENT|PRIVATE-SKILL|PRIVATE-HOOK|MEMORY\.md|killeros-hooks/u);
+    assert.ok(snapshot.length <= 40 * 1024);
+    assert.ok(Date.now() - startedAt < 6_000);
+
+    await emitSequentially(handlers.get("agent_settled"), {}, {});
+    await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init snapshot does not follow linked manifest files", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-linked-manifest-"));
+  try {
+    writeFileSync(path.join(directory, "private-manifest.txt"), "PRIVATE-LINKED-CONTENT\n");
+    if (!createFileSymlinkOrSkip(t, "private-manifest.txt", path.join(directory, "package.json"))) return;
+
+    const { commands, handlers, sentMessages } = createHarness();
+    const initRun = commands.get("init").handler("", {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => {},
+      ui: { notify() {} },
+      waitForIdle: async () => {},
+    });
+    await waitFor(() => sentMessages.length === 1);
+    assert.doesNotMatch(sentMessages[0].message.content, /PRIVATE-LINKED-CONTENT/u);
+
+    await emitSequentially(handlers.get("agent_settled"), {}, {});
+    await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("question options render bounded markdown proposal previews before selection", async () => {
+  const { tools } = createHarness();
+  const preview = Array.from(
+    { length: 20 },
+    (_, index) => `- **AGENTS.md** — run \`check-${index + 1}\``,
+  ).join("\n");
+  const question = await startQuestion(tools.get("question"), [{
+    label: "Looks good",
+    description: "Apply the proposal",
+    preview,
+  }], "Choose", 14);
+  const renderedLines = question.component.render(80);
+  const rendered = renderedLines.join("\n");
+  assert.match(rendered, /Proposal preview/u);
+  assert.match(rendered, /AGENTS\.md/u);
+  assert.match(rendered, /more lines/u);
+  assert.doesNotMatch(rendered, /\*\*|`/u);
+  assert.ok(renderedLines.length <= 14);
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
+test("does not inject AGENTS.local.md into the /init generation turn", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-personal-"));
+  try {
+    writeFileSync(path.join(directory, "AGENTS.local.md"), "PRIVATE-INIT-GUIDANCE\n");
+    const { commands, handlers, sentMessages } = createHarness();
+    const ctx = {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => {},
+      ui: { notify() {} },
+      waitForIdle: async () => {},
+    };
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+
+    let event = { systemPrompt: "shared AGENTS context" };
+    for (const handler of handlers.get("before_agent_start")) {
+      const update = await handler(event, ctx);
+      if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
+    }
+    assert.doesNotMatch(event.systemPrompt, /PRIVATE-INIT-GUIDANCE|personal_instructions/u);
+
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("injects trusted AGENTS.local.md imports after shared context", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-personal-"));
+  try {
+    writeFileSync(path.join(directory, "personal.md"), "Prefer concise tradeoff explanations.\n");
+    writeFileSync(path.join(directory, "AGENTS.local.md"), "@personal.md\n");
+    const { handlers } = createHarness();
+    let event = { systemPrompt: "shared AGENTS context" };
+    const ctx = { cwd: directory, isProjectTrusted: () => true };
+    for (const handler of handlers.get("before_agent_start")) {
+      const update = await handler(event, ctx);
+      if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
+    }
+    assert.match(event.systemPrompt, /shared AGENTS context/u);
+    assert.match(event.systemPrompt, /<personal_instructions/u);
+    assert.match(event.systemPrompt, /Prefer concise tradeoff explanations\./u);
+    assert.ok(event.systemPrompt.indexOf("shared AGENTS context") < event.systemPrompt.indexOf("<personal_instructions"));
+
+    event = { systemPrompt: "shared" };
+    for (const handler of handlers.get("before_agent_start")) {
+      const update = await handler(event, { cwd: directory, isProjectTrusted: () => false });
+      if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
+    }
+    assert.doesNotMatch(event.systemPrompt, /personal_instructions/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("does not load lifecycle hooks for untrusted projects", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-untrusted-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { tool_call: [{ command: `"${process.execPath}" -e "process.exit(7)"` }] },
+    }));
+
+    const { handlers } = createHarness();
+    const notifications = [];
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.isProjectTrusted = () => false;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+
+    const results = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "untrusted-hook",
+      toolName: "write",
+      input: { path: "example.txt", content: "test" },
+    }, ctx);
+    assert.equal(results.some((result) => result?.block), false);
+    assert.match(notifications.at(-1)?.message, /Ignored untrusted project hooks/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("project tool_call hooks can deterministically block a tool", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const command = `"${process.execPath}" -e "process.stderr.write('blocked');process.exit(7)"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { tool_call: [{ matcher: "^write$", command, timeoutMs: 5_000 }] },
+    }));
+
+    const { handlers } = createHarness();
+    const notifications = [];
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+
+    const results = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "hook-test",
+      toolName: "write",
+      input: { path: "example.txt", content: "test" },
+    }, ctx);
+    const blocked = results.find((result) => result?.block);
+    assert.equal(blocked?.block, true);
+    assert.match(blocked?.reason, /blocked/u);
+    assert.equal(notifications.at(-1).level, "error");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init reloads only after existing agent-settled hooks complete", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-settled-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('hook.done','done')"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { agent_settled: [{ command, timeoutMs: 5_000 }] },
+    }));
+
+    const { commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.waitForIdle = async () => {};
+    let reloadCalls = 0;
+    ctx.reload = async () => {
+      assert.equal(readFileSync(path.join(directory, "hook.done"), "utf8"), "done");
+      reloadCalls += 1;
+    };
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+    await emitSuccessfulInitWrite(handlers, ctx);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+    assert.equal(reloadCalls, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("question filtering decodes Kitty input, paste, and grapheme backspace", async () => {

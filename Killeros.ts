@@ -1,7 +1,9 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { promises as fs, closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import {
+  CONFIG_DIR_NAME,
   CustomEditor,
   DynamicBorder,
   VERSION,
@@ -17,6 +19,7 @@ import {
   decodeKittyPrintable,
   Editor,
   Key,
+  Markdown,
   matchesKey,
   SelectList,
   Text,
@@ -321,9 +324,29 @@ function registerConcisePrompt(pi: ExtensionAPI): void {
   }));
 }
 
+const INIT_READ_ONLY_TOOLS = new Set(["read", "ls", "find", "grep"]);
+
+interface InitWorkflowState {
+  active: boolean;
+  targetPath?: string;
+  writeAttempted: boolean;
+  writeSucceeded: boolean;
+  writeToolCallId?: string;
+  settle?: (writeSucceeded: boolean) => void;
+}
+
+function resetInitState(state: InitWorkflowState): void {
+  state.active = false;
+  state.targetPath = undefined;
+  state.writeAttempted = false;
+  state.writeSucceeded = false;
+  state.writeToolCallId = undefined;
+}
+
 const OptionSchema = Type.Object({
   label: Type.String({ minLength: 1, maxLength: 200, description: "Display label for the option" }),
   description: Type.Optional(Type.String({ maxLength: 500, description: "Optional detail shown for the selected option" })),
+  preview: Type.Optional(Type.String({ maxLength: 8_000, description: "Optional markdown proposal preview shown for the selected option" })),
 });
 
 const QuestionParams = Type.Object({
@@ -338,6 +361,7 @@ const QuestionParams = Type.Object({
 interface DisplayOption {
   label: string;
   description?: string;
+  preview?: string;
   originalIndex: number;
   isOther: boolean;
 }
@@ -417,6 +441,7 @@ function registerQuestionTool(pi: ExtensionAPI): void {
         ...params.options.map((option, index) => ({
           label: option.label,
           description: option.description,
+          preview: option.preview,
           originalIndex: index + 1,
           isOther: false,
         })),
@@ -596,6 +621,48 @@ function registerQuestionTool(pi: ExtensionAPI): void {
             }
           });
 
+          const selectedPreview = visibleOptions[optionIndex]?.preview;
+          if (!editMode && selectedPreview) {
+            const footerRows = 3;
+            const previewChromeRows = 2;
+            const availableRows = tui.terminal.rows - lines.length - footerRows;
+            if (availableRows > previewChromeRows) {
+              lines.push("");
+              addWrappedWithPrefix(" ", theme.fg("accent", theme.bold("Proposal preview")));
+              const markdownLines = new Markdown(
+                selectedPreview,
+                1,
+                0,
+                {
+                  heading: (text) => theme.fg("accent", theme.bold(text)),
+                  link: (text) => theme.fg("accent", text),
+                  linkUrl: (text) => theme.fg("dim", text),
+                  code: (text) => theme.fg("mdCode", text),
+                  codeBlock: (text) => theme.fg("mdCodeBlock", text),
+                  codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
+                  quote: (text) => theme.fg("mdQuote", text),
+                  quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
+                  hr: (text) => theme.fg("mdHr", text),
+                  listBullet: (text) => theme.fg("mdListBullet", text),
+                  bold: (text) => theme.bold(text),
+                  italic: (text) => theme.italic(text),
+                  strikethrough: (text) => theme.strikethrough(text),
+                  underline: (text) => theme.underline(text),
+                },
+                { color: (text) => theme.fg("muted", text) },
+              ).render(renderWidth);
+              const maxPreviewRows = Math.min(12, availableRows - previewChromeRows);
+              if (markdownLines.length <= maxPreviewRows) {
+                lines.push(...markdownLines);
+              } else {
+                const visiblePreviewRows = Math.max(0, maxPreviewRows - 1);
+                lines.push(...markdownLines.slice(0, visiblePreviewRows));
+                const hiddenRows = markdownLines.length - visiblePreviewRows;
+                lines.push(theme.fg("dim", ` … ${hiddenRows} more line${hiddenRows === 1 ? "" : "s"}`));
+              }
+            }
+          }
+
           if (editMode) {
             lines.push("");
             addWrappedWithPrefix(" ", theme.fg("muted", "Your answer:"));
@@ -686,6 +753,511 @@ function registerQuestionTool(pi: ExtensionAPI): void {
       }
       return new Text(`${theme.fg("success", "✓ ")}${theme.fg("accent", details.answer)}`, 0, 0);
     },
+  });
+}
+
+const PERSONAL_INSTRUCTIONS_FILE = "AGENTS.local.md";
+const PERSONAL_INSTRUCTIONS_LIMIT = 32 * 1024;
+
+function readBoundedText(filePath: string, limit = PERSONAL_INSTRUCTIONS_LIMIT): string | undefined {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(filePath, "r");
+    const buffer = Buffer.alloc(limit + 1);
+    const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
+    const content = buffer.toString("utf8", 0, Math.min(bytesRead, limit));
+    if (!content.trim()) return undefined;
+    return bytesRead > limit
+      ? `${content}\n\n[Personal instructions truncated by KillerOS]`
+      : content;
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // Ignore cleanup failures after a bounded best-effort read.
+      }
+    }
+  }
+}
+
+function resolvePersonalInstructions(cwd: string): { content: string; source: string } | undefined {
+  const localPath = path.join(cwd, PERSONAL_INSTRUCTIONS_FILE);
+  const local = readBoundedText(localPath);
+  if (!local) return undefined;
+
+  const importMatch = local.trim().match(/^@(.+)$/u);
+  if (!importMatch) return { content: local, source: localPath };
+
+  const requestedPath = importMatch[1]!.trim();
+  const importedPath = requestedPath.startsWith("~/") || requestedPath.startsWith("~\\")
+    ? path.join(os.homedir(), requestedPath.slice(2))
+    : path.resolve(cwd, requestedPath);
+  const imported = readBoundedText(importedPath);
+  return imported ? { content: imported, source: importedPath } : { content: local, source: localPath };
+}
+
+function registerPersonalInstructions(pi: ExtensionAPI, initState: InitWorkflowState): void {
+  pi.on("before_agent_start", (event, ctx) => {
+    if (initState.active || !ctx.isProjectTrusted()) return;
+    const personal = resolvePersonalInstructions(ctx.cwd);
+    if (!personal) return;
+    return {
+      systemPrompt: [
+        event.systemPrompt,
+        "",
+        `<personal_instructions source="${personal.source}">`,
+        personal.content,
+        "</personal_instructions>",
+      ].join("\n"),
+    };
+  });
+}
+
+type KillerosHookEvent = "tool_call" | "tool_result" | "agent_settled";
+
+interface KillerosHook {
+  matcher?: string;
+  command: string;
+  timeoutMs?: number;
+}
+
+interface KillerosHookConfig {
+  hooks?: Partial<Record<KillerosHookEvent, KillerosHook[]>>;
+}
+
+interface HookExecutionResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}
+
+const HOOK_EVENTS: readonly KillerosHookEvent[] = ["tool_call", "tool_result", "agent_settled"];
+const HOOK_OUTPUT_LIMIT = 16 * 1024;
+
+function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
+  const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "killeros-hooks.json");
+  if (!existsSync(configPath)) return {};
+  if (!ctx.isProjectTrusted()) {
+    ctx.ui.notify(`Ignored untrusted project hooks in ${configPath}`, "warning");
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8")) as KillerosHookConfig;
+    const hooks: KillerosHookConfig["hooks"] = {};
+    for (const event of HOOK_EVENTS) {
+      const candidates = parsed.hooks?.[event];
+      if (!Array.isArray(candidates)) continue;
+      hooks[event] = candidates.filter((hook, index) => {
+        const valid = hook
+          && typeof hook.command === "string"
+          && hook.command.trim().length > 0
+          && (hook.matcher === undefined || typeof hook.matcher === "string")
+          && (hook.timeoutMs === undefined || Number.isFinite(hook.timeoutMs));
+        if (!valid) {
+          ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${configPath}`, "warning");
+          return false;
+        }
+        if (hook.matcher && hook.matcher !== "*") {
+          try {
+            new RegExp(hook.matcher, "u");
+          } catch {
+            ctx.ui.notify(`Ignored ${event} hook ${index + 1}: invalid matcher ${JSON.stringify(hook.matcher)}`, "warning");
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+    return { hooks };
+  } catch (error) {
+    reportError(ctx, `Invalid ${CONFIG_DIR_NAME}/killeros-hooks.json`, error);
+    return {};
+  }
+}
+
+function matchesHook(hook: KillerosHook, value: string): boolean {
+  if (!hook.matcher || hook.matcher === "*") return true;
+  try {
+    return new RegExp(hook.matcher, "u").test(value);
+  } catch {
+    return false;
+  }
+}
+
+function appendBounded(current: string, chunk: Buffer | string): string {
+  if (current.length >= HOOK_OUTPUT_LIMIT) return current;
+  return (current + chunk.toString()).slice(0, HOOK_OUTPUT_LIMIT);
+}
+
+function executeHook(command: string, cwd: string, environment: Record<string, string>, timeoutMs = 30_000): Promise<HookExecutionResult> {
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      cwd,
+      env: { ...process.env, ...environment },
+      shell: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let completed = false;
+    let timedOut = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (code: number): void => {
+      if (completed) return;
+      completed = true;
+      if (timer) clearTimeout(timer);
+      resolve({ code, stdout, stderr, timedOut });
+    };
+    child.stdout.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
+    child.on("error", (error) => {
+      stderr = appendBounded(stderr, error.message);
+      finish(1);
+    });
+    child.on("close", (code) => finish(code ?? 1));
+    timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 1_000).unref?.();
+      finish(124);
+    }, Math.max(1_000, Math.min(timeoutMs, 300_000)));
+    timer.unref?.();
+  });
+}
+
+function hookEnvironment(event: KillerosHookEvent, toolName = "", payload: unknown = {}): Record<string, string> {
+  return {
+    KILLEROS_EVENT: event,
+    KILLEROS_TOOL: toolName,
+    KILLEROS_PAYLOAD: JSON.stringify(payload).slice(0, 8_000),
+  };
+}
+
+function hookFailureMessage(hook: KillerosHook, result: HookExecutionResult): string {
+  const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
+  return `Hook failed${result.timedOut ? " (timed out)" : ""}: ${hook.command}\n${detail}`;
+}
+
+function registerLifecycleHooks(pi: ExtensionAPI): void {
+  let config: KillerosHookConfig = {};
+  pi.on("session_start", (_event, ctx) => { config = loadKillerosHooks(ctx); });
+
+  pi.on("tool_call", async (event, ctx) => {
+    for (const hook of config.hooks?.tool_call ?? []) {
+      if (!matchesHook(hook, event.toolName)) continue;
+      const result = await executeHook(
+        hook.command,
+        ctx.cwd,
+        hookEnvironment("tool_call", event.toolName, event.input),
+        hook.timeoutMs,
+      );
+      if (result.code !== 0) {
+        const reason = hookFailureMessage(hook, result);
+        ctx.ui.notify(reason, "error");
+        return { block: true, reason };
+      }
+    }
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    for (const hook of config.hooks?.tool_result ?? []) {
+      if (!matchesHook(hook, event.toolName)) continue;
+      const result = await executeHook(
+        hook.command,
+        ctx.cwd,
+        hookEnvironment("tool_result", event.toolName, {
+          input: event.input,
+          isError: event.isError,
+        }),
+        hook.timeoutMs,
+      );
+      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(hook, result), "error");
+    }
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    for (const hook of config.hooks?.agent_settled ?? []) {
+      const result = await executeHook(
+        hook.command,
+        ctx.cwd,
+        hookEnvironment("agent_settled"),
+        hook.timeoutMs,
+      );
+      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(hook, result), "error");
+    }
+  });
+}
+
+const INIT_SURVEY_OUTPUT_LIMIT = 40 * 1024;
+const INIT_SURVEY_FILE_LIMIT = 8 * 1024;
+const INIT_SURVEY_PATH_LIMIT = 400;
+const INIT_SURVEY_DIRECTORY_LIMIT = 120;
+const INIT_SURVEY_DEPTH_LIMIT = 4;
+const INIT_SURVEY_EXCLUDED_DIRS = new Set([
+  ".agents", ".claude", ".git", ".next", ".pi", ".pytest_cache", ".turbo", ".venv", "__pycache__", "archive", "build", "coverage", "data", "dist", "logs", "node_modules", "target", "test-results", "vendor",
+]);
+const INIT_SURVEY_EXCLUDED_FILES = new Set([
+  ".cursorrules", "AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md", "MEMORY.md", "SKILL.md", "copilot-instructions.md",
+]);
+const INIT_SURVEY_ROOT_FILES = [
+  "README.md",
+  "README.rst",
+  "README.txt",
+  "package.json",
+  "pyproject.toml",
+  "requirements.txt",
+  "Cargo.toml",
+  "go.mod",
+  "Makefile",
+  "Dockerfile",
+  "compose.yaml",
+  "compose.yml",
+  "config.yaml",
+  "config.yml",
+  "tsconfig.json",
+  "vite.config.ts",
+  "vite.config.js",
+  "eslint.config.js",
+  "eslint.config.mjs",
+] as const;
+const INIT_SURVEY_NESTED_FILES = new Set([
+  "package.json", "pyproject.toml", "requirements.txt", "Cargo.toml", "go.mod",
+]);
+
+async function collectInitProjectFiles(cwd: string): Promise<string[]> {
+  const files: string[] = [];
+  const queue: Array<{ relativePath: string; depth: number }> = [{ relativePath: "", depth: 0 }];
+  let directoriesRead = 0;
+  while (queue.length && files.length < INIT_SURVEY_PATH_LIMIT && directoriesRead < INIT_SURVEY_DIRECTORY_LIMIT) {
+    const current = queue.shift()!;
+    directoriesRead += 1;
+    let entries;
+    try {
+      entries = await fs.readdir(path.join(cwd, current.relativePath), { withFileTypes: true });
+    } catch (error) {
+      if (!current.relativePath) throw error;
+      continue;
+    }
+    entries.sort((left, right) => left.name === right.name ? 0 : left.name < right.name ? -1 : 1);
+    for (const entry of entries) {
+      if (files.length >= INIT_SURVEY_PATH_LIMIT) break;
+      const relativePath = path.join(current.relativePath, entry.name);
+      if (entry.isDirectory()) {
+        if (current.depth < INIT_SURVEY_DEPTH_LIMIT && !INIT_SURVEY_EXCLUDED_DIRS.has(entry.name)) {
+          queue.push({ relativePath, depth: current.depth + 1 });
+        }
+      } else if (entry.isFile() && !INIT_SURVEY_EXCLUDED_FILES.has(entry.name)) {
+        files.push(relativePath.replaceAll("\\", "/"));
+      }
+    }
+  }
+  return files;
+}
+
+async function readFilePrefix(filePath: string, limit: number): Promise<string> {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(limit);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function runInitSurvey(
+  cwd: string,
+): Promise<{ output: string; error?: string }> {
+  let projectFiles: string[];
+  try {
+    projectFiles = await collectInitProjectFiles(cwd);
+  } catch (error) {
+    return { output: "", error: error instanceof Error ? error.message : String(error) };
+  }
+
+  const candidates = new Set<string>(INIT_SURVEY_ROOT_FILES);
+  for (const relativePath of projectFiles) {
+    const fileName = path.posix.basename(relativePath);
+    if (INIT_SURVEY_NESTED_FILES.has(fileName) || /^\.github\/workflows\/[^/]+\.ya?ml$/iu.test(relativePath)) {
+      candidates.add(relativePath);
+    }
+  }
+
+  const sections = [
+    "# KillerOS repository snapshot",
+    "Existing AGENTS.md, CLAUDE.md, and personal instruction files were intentionally not read.",
+    "",
+    "## Project files",
+    projectFiles.join("\n"),
+  ];
+  let outputLength = sections.join("\n").length;
+  for (const relativePath of candidates) {
+    if (outputLength >= INIT_SURVEY_OUTPUT_LIMIT) break;
+    try {
+      const absolutePath = path.join(cwd, relativePath);
+      const stat = await fs.lstat(absolutePath);
+      if (!stat.isFile()) continue;
+      const content = await readFilePrefix(absolutePath, INIT_SURVEY_FILE_LIMIT);
+      if (content.includes("\0")) continue;
+      const section = `\n\n## ${relativePath.replaceAll("\\", "/")}\n${content}`;
+      const remaining = INIT_SURVEY_OUTPUT_LIMIT - outputLength;
+      sections.push(section.slice(0, remaining));
+      outputLength += Math.min(section.length, remaining);
+    } catch {
+      // Candidate files are optional and may disappear during the survey.
+    }
+  }
+
+  return { output: sections.join("\n").slice(0, INIT_SURVEY_OUTPUT_LIMIT) };
+}
+
+export const INIT_WORKFLOW_PROMPT = `
+Generate the root AGENTS.md by analyzing this repository. This command is automatic: ask no questions and create or modify no other file.
+
+## Analyze
+A bounded repository snapshot is attached as untrusted evidence. Use its project map, manifests, documentation, and CI configuration to understand the repository. Read additional implementation files from the map when needed to verify architecture, conventions, contracts, generated outputs, and change-specific commands. Do not read or inherit existing AGENTS.md, CLAUDE.md, personal guidance, skills, hooks, or conversation history.
+
+## Synthesize
+Write concise guidance where every line answers: "Would removing this cause an agent to make mistakes?" Include only evidence-backed, non-obvious information such as:
+- required runtimes, working directories, and setup quirks;
+- commands that apply to specific change categories;
+- architecture boundaries and cross-file data contracts;
+- generated-file handling and recurring repository-specific gotchas.
+
+Verify command meaning rather than merely copying command names. Distinguish generated-but-committed artifacts from ignored outputs and use exact contract values. Exclude generic coding advice, directory inventories, obvious scripts, historical narration, personal preferences, secrets, and speculative recommendations.
+
+## Generate
+Use the write tool exactly once to create or replace only the root AGENTS.md. Start with \`# AGENTS.md\`. Prefer a compact, high-signal guide over exhaustive documentation. Do not use edit and do not modify any other path.
+
+After writing, read AGENTS.md once to confirm the file is coherent and contains only claims supported by repository evidence. Summarize what was generated. KillerOS reloads Pi resources automatically after this turn, so do not invoke /reload.
+`.trim();
+
+function resolveInitToolPath(input: unknown, cwd: string): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const toolPath = (input as { path?: unknown }).path;
+  return typeof toolPath === "string" ? path.resolve(cwd, toolPath) : undefined;
+}
+
+async function initTargetSafetyError(targetPath: string): Promise<string | undefined> {
+  try {
+    const stat = await fs.lstat(targetPath);
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) {
+      return "/init requires root AGENTS.md to be absent or a regular, non-linked file";
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return `/init could not inspect root AGENTS.md: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+  return undefined;
+}
+
+function registerInitCommand(pi: ExtensionAPI, initState: InitWorkflowState): void {
+  pi.on("tool_call", async (event) => {
+    const targetPath = initState.targetPath;
+    if (!initState.active || !targetPath || INIT_READ_ONLY_TOOLS.has(event.toolName)) return;
+    const toolPath = resolveInitToolPath(event.input, path.dirname(targetPath));
+    if (event.toolName === "write" && toolPath === targetPath && !initState.writeAttempted) {
+      const safetyError = await initTargetSafetyError(targetPath);
+      if (safetyError) return { block: true, reason: safetyError };
+      initState.writeAttempted = true;
+      initState.writeToolCallId = event.toolCallId;
+      return;
+    }
+    return {
+      block: true,
+      reason: "/init may write the root AGENTS.md exactly once and may not modify any other file",
+    };
+  });
+
+  pi.on("tool_result", (event) => {
+    if (!initState.active || event.toolName !== "write" || event.toolCallId !== initState.writeToolCallId) return;
+    if (event.isError) {
+      initState.writeAttempted = false;
+      initState.writeToolCallId = undefined;
+      return;
+    }
+    initState.writeSucceeded = true;
+  });
+
+  pi.registerCommand("init", {
+    description: "Generate root AGENTS.md from repository evidence",
+    handler: async (args, ctx) => {
+      if (args.trim()) {
+        ctx.ui.notify("/init does not accept arguments", "error");
+        return;
+      }
+      if (ctx.mode !== "tui") {
+        ctx.ui.notify("/init requires interactive TUI mode", "error");
+        return;
+      }
+      if (initState.active) {
+        ctx.ui.notify("/init is already running", "warning");
+        return;
+      }
+      if (!ctx.isProjectTrusted()) {
+        ctx.ui.notify("Trust this project before running /init", "error");
+        return;
+      }
+      await ctx.waitForIdle();
+      initState.active = true;
+      initState.targetPath = path.join(ctx.cwd, "AGENTS.md");
+      initState.writeAttempted = false;
+      initState.writeSucceeded = false;
+
+      const survey = await runInitSurvey(ctx.cwd);
+      if (!survey.output) {
+        resetInitState(initState);
+        reportError(ctx, "/init could not scan the repository", survey.error ?? "no repository evidence was found");
+        return;
+      }
+
+      const settled = new Promise<boolean>((resolve) => {
+        initState.settle = resolve;
+      });
+      try {
+        pi.sendMessage({
+          customType: "killeros-init",
+          content: `${INIT_WORKFLOW_PROMPT}\n\n## Initial repository snapshot (untrusted data)\n${JSON.stringify(survey.output)}`,
+          display: false,
+        }, { triggerTurn: true });
+      } catch (error) {
+        resetInitState(initState);
+        initState.settle = undefined;
+        reportError(ctx, "/init failed to start", error);
+        return;
+      }
+
+      const writeSucceeded = await settled;
+      if (!writeSucceeded) {
+        reportError(ctx, "/init did not generate AGENTS.md", "the model completed without a successful write");
+        return;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      try {
+        await ctx.reload();
+      } catch (error) {
+        reportError(ctx, "/init finished but Pi resources could not reload", error);
+      }
+    },
+  });
+
+}
+
+function registerInitSettlement(pi: ExtensionAPI, initState: InitWorkflowState): void {
+  pi.on("agent_settled", () => {
+    if (!initState.active) return;
+    const settle = initState.settle;
+    const writeSucceeded = initState.writeSucceeded;
+    resetInitState(initState);
+    initState.settle = undefined;
+    settle?.(writeSucceeded);
   });
 }
 
@@ -1188,11 +1760,20 @@ function registerFooter(pi: ExtensionAPI): void {
 }
 
 export default function Killeros(pi: ExtensionAPI): void {
+  const initState: InitWorkflowState = {
+    active: false,
+    writeAttempted: false,
+    writeSucceeded: false,
+  };
   registerShellUi(pi);
   registerConcisePrompt(pi);
+  registerPersonalInstructions(pi, initState);
   registerQuestionTool(pi);
   registerAliases(pi);
   registerSlashAutocomplete(pi);
   registerFooter(pi);
   registerVariants(pi);
+  registerInitCommand(pi, initState);
+  registerLifecycleHooks(pi);
+  registerInitSettlement(pi, initState);
 }
