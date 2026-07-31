@@ -2,6 +2,20 @@
 
 All notable changes to KillerOS are documented here.
 
+## [1.3.0] - 2026-07-31
+
+### Added
+
+- Claude Code-style `/init` that builds a bounded repository snapshot and generates a concise root `AGENTS.md` with one controlled write.
+- Codex-style `/goal` with durable branch-scoped state, automatic one-turn continuation, pause/resume/edit/clear controls, and explicit model-reported completion or blocking.
+- Trusted `AGENTS.local.md` personal guidance and project lifecycle hooks for tool-call, tool-result, and settled-agent events.
+- Focused coverage for goal transitions, recovery paths, branch restoration, mode gating, footer cutdowns, and repository initialization safeguards.
+
+### Changed
+
+- Extended the responsive footer with goal activity and terminal states while preserving context pressure at narrow widths.
+- Hardened `/init` and `/goal` failure handling so interrupted work, provider errors, failed writes, and failed continuation starts stop safely.
+
 ## [1.2.0] - 2026-07-30
 
 ### Added

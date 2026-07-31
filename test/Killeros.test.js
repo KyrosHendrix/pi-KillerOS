@@ -30,9 +30,12 @@ function createHarness() {
   const commands = new Map();
   const handlers = new Map();
   const tools = new Map();
+  const entryRenderers = new Map();
+  const appendedEntries = [];
   const sentMessages = [];
   const sentUserMessages = [];
   const api = {
+    appendEntry: (customType, data) => appendedEntries.push({ type: "custom", customType, data }),
     getAllTools: () => [...tools.values()].map((tool) => ({
       ...tool,
       sourceInfo: tool.sourceInfo ?? {
@@ -58,13 +61,14 @@ function createHarness() {
       handlers.set(event, eventHandlers);
     },
     registerCommand: (name, command) => commands.set(name, command),
+    registerEntryRenderer: (customType, renderer) => entryRenderers.set(customType, renderer),
     registerTool: (tool) => tools.set(tool.name, tool),
     sendMessage: (message, options) => sentMessages.push({ message, options }),
     sendUserMessage: (message, options) => sentUserMessages.push({ message, options }),
     setThinkingLevel: () => {},
   };
   Killeros(api);
-  return { api, commands, handlers, sentMessages, sentUserMessages, tools };
+  return { api, appendedEntries, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
 }
 
 async function emitSequentially(handlers, event, ctx) {
@@ -120,6 +124,9 @@ function createTuiContext(entries = []) {
   const ctx = {
     cwd: process.cwd(),
     getContextUsage: () => ({ tokens: 1_000, contextWindow: 128_000 }),
+    hasPendingMessages: () => false,
+    hasUI: true,
+    isIdle: () => true,
     isProjectTrusted: () => true,
     mode: "tui",
     model: {
@@ -128,9 +135,15 @@ function createTuiContext(entries = []) {
       provider: "test",
       reasoning: true,
     },
-    sessionManager: { getEntries: () => entries },
+    sessionManager: {
+      getBranch: () => entries,
+      getEntries: () => entries,
+      getSessionFile: () => path.join(process.cwd(), "session.jsonl"),
+    },
     ui: {
       addAutocompleteProvider: (factory) => { captured.autocompleteFactory = factory; },
+      confirm: async () => true,
+      editor: async (_title, prefill) => prefill,
       notify() {},
       setEditorComponent: (factory) => { captured.editorFactory = factory; },
       setFooter: (factory) => { captured.footerFactory = factory; },
@@ -147,6 +160,7 @@ function createTuiContext(entries = []) {
       },
       theme,
     },
+    waitForIdle: async () => {},
   };
   return { captured, ctx, tui };
 }
@@ -203,6 +217,401 @@ test("registers /exit without conflicting with Pi's /quit", async () => {
   let shutdownCalled = false;
   await commands.get("exit").handler("", { shutdown: async () => { shutdownCalled = true; } });
   assert.equal(shutdownCalled, true);
+});
+
+test("registers /goal and completes only through the model goal tool", async () => {
+  const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness();
+  const { ctx } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+
+  assert.equal(commands.has("goal"), true);
+  assert.equal(tools.has("killeros_goal_update"), true);
+
+  await commands.get("goal").handler("Ship only after every release check passes", ctx);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].message.customType, "killeros-goal-continuation");
+  assert.match(sentMessages[0].message.content, /Ship only after every release check passes/u);
+  assert.match(sentMessages[0].message.content, /killeros_goal_update/u);
+  assert.match(sentMessages[0].message.content, /Concise output rules/u);
+  assert.deepEqual(sentMessages[0].options, { triggerTurn: true, deliverAs: "followUp" });
+  assert.equal(appendedEntries.at(-1).customType, "killeros-goal");
+  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+
+  let systemPrompt = "base";
+  for (const handler of handlers.get("before_agent_start")) {
+    const result = await handler({ prompt: "", systemPrompt, systemPromptOptions: {} }, ctx);
+    if (result?.systemPrompt) systemPrompt = result.systemPrompt;
+  }
+  assert.match(systemPrompt, /Active KillerOS goal/u);
+  assert.match(systemPrompt, /Ship only after every release check passes/u);
+  assert.match(systemPrompt, /killeros_goal_update/u);
+
+  const update = await tools.get("killeros_goal_update").execute(
+    "goal-complete",
+    { status: "complete", evidence: "npm test and npm run check passed" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  assert.match(update.content[0].text, /marked complete/u);
+  assert.equal(appendedEntries.at(-1).data.state.status, "complete");
+
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  assert.equal(sentMessages.length, 1, "completed goals must not continue");
+
+  await commands.get("goal").handler("", ctx);
+  assert.match(notifications.at(-1).message, /Goal complete/u);
+  assert.match(notifications.at(-1).message, /npm test and npm run check passed/u);
+});
+
+test("/goal continues one turn at a time and pause stops future turns", async () => {
+  const { commands, handlers, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  await commands.get("goal").handler("Finish the migration", ctx);
+  assert.equal(sentMessages.length, 1);
+
+  await emitSequentially(handlers.get("agent_end"), {
+    messages: [{ role: "assistant", stopReason: "stop" }],
+  }, ctx);
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  assert.equal(sentMessages.length, 2);
+  assert.match(sentMessages[1].message.content, /Finish the migration/u);
+
+  await commands.get("goal").handler("pause", ctx);
+  await emitSequentially(handlers.get("agent_end"), {
+    messages: [{ role: "assistant", stopReason: "stop" }],
+  }, ctx);
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  assert.equal(sentMessages.length, 2, "a paused goal must not enqueue another continuation");
+});
+
+test("/goal pauses when a scheduled continuation fails before the agent starts", async () => {
+  const { appendedEntries, commands, handlers } = createHarness();
+  const { ctx } = createTuiContext();
+  await commands.get("goal").handler("Start reliably", ctx);
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
+  assert.equal(lastGoalEntry.data.state.status, "paused");
+  assert.match(lastGoalEntry.data.state.result, /without an agent result/u);
+});
+
+test("/goal pauses after an aborted or failed goal turn", async () => {
+  const { appendedEntries, commands, handlers } = createHarness();
+  const { ctx } = createTuiContext();
+  await commands.get("goal").handler("Recover the deployment", ctx);
+  for (const handler of handlers.get("before_agent_start")) {
+    await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
+  }
+  await emitSequentially(handlers.get("agent_end"), {
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "provider unavailable" }],
+  }, ctx);
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
+  assert.equal(lastGoalEntry.data.state.status, "paused");
+  assert.match(lastGoalEntry.data.state.result, /provider unavailable/u);
+});
+
+test("/goal edit, pause, resume, and clear persist explicit transitions", async () => {
+  const { appendedEntries, commands, handlers, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  await commands.get("goal").handler("Original objective", ctx);
+  for (const handler of handlers.get("before_agent_start")) {
+    await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
+  }
+
+  await commands.get("goal").handler("pause", ctx);
+  assert.equal(appendedEntries.at(-1).data.state.status, "paused");
+
+  await commands.get("goal").handler("resume", ctx);
+  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+  assert.equal(sentMessages.length, 2);
+
+  for (const handler of handlers.get("before_agent_start")) {
+    await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
+  }
+  ctx.ui.editor = async () => "Edited objective";
+  await commands.get("goal").handler("edit", ctx);
+  const editEntry = appendedEntries.filter((entry) => entry.data.event === "edit").at(-1);
+  assert.equal(editEntry.data.state.objective, "Edited objective");
+  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+
+  await commands.get("goal").handler("clear", ctx);
+  assert.equal(appendedEntries.at(-1).data.event, "clear");
+  assert.equal(appendedEntries.at(-1).data.state, null);
+});
+
+test("/goal pause and clear stop continuation when their first session write fails", async () => {
+  for (const control of ["pause", "clear"]) {
+    const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext();
+    const notifications = [];
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    await commands.get("goal").handler(`Safely ${control} this goal`, ctx);
+    assert.equal(sentMessages.length, 1);
+
+    const appendEntry = api.appendEntry;
+    let failed = false;
+    api.appendEntry = (...args) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("transient session write failure");
+      }
+      return appendEntry(...args);
+    };
+
+    await commands.get("goal").handler(control, ctx);
+    const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
+    assert.equal(lastGoalEntry.data.state.status, "paused");
+    assert.match(lastGoalEntry.data.state.result, new RegExp(`requested ${control} could not be saved`, "u"));
+    assert.match(notifications.at(-1).message, /Automatic continuation is stopped/u);
+
+    await emitSequentially(handlers.get("agent_end"), {
+      messages: [{ role: "assistant", stopReason: "stop" }],
+    }, ctx);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    assert.equal(sentMessages.length, 1, `${control} failure must not schedule another continuation`);
+  }
+});
+
+test("/goal pause can save an in-memory fallback after persistence recovers", async () => {
+  const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await commands.get("goal").handler("Pause even if storage fails", ctx);
+
+  const appendEntry = api.appendEntry;
+  api.appendEntry = () => { throw new Error("persistent session write failure"); };
+  await commands.get("goal").handler("pause", ctx);
+  assert.match(notifications.at(-1).message, /Automatic continuation is stopped/u);
+
+  api.appendEntry = appendEntry;
+  await commands.get("goal").handler("pause", ctx);
+  const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
+  assert.equal(lastGoalEntry.data.event, "pause");
+  assert.equal(lastGoalEntry.data.state.status, "paused");
+  assert.match(notifications.at(-1).message, /Goal pause saved/u);
+
+  await emitSequentially(handlers.get("agent_end"), {
+    messages: [{ role: "assistant", stopReason: "stop" }],
+  }, ctx);
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  assert.equal(sentMessages.length, 1);
+});
+
+test("an active goal blocks /init before repository work starts", async () => {
+  const { commands, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await commands.get("goal").handler("Finish this first", ctx);
+  await commands.get("init").handler("", ctx);
+  assert.equal(sentMessages.length, 1);
+  assert.match(notifications.at(-1).message, /Pause or clear the active goal/u);
+});
+
+test("/goal restores only the current branch and resumes active saved work", async () => {
+  const now = Date.now();
+  const activeState = {
+    version: 1,
+    revision: 3,
+    objective: "Finish the saved task",
+    status: "active",
+    createdAt: now - 60_000,
+    updatedAt: now - 10_000,
+    activeMilliseconds: 20_000,
+    activeStartedAt: now - 10_000,
+    turns: 2,
+    baselineTokens: 0,
+  };
+  const branchEntries = [{
+    type: "custom",
+    customType: "killeros-goal",
+    data: { version: 1, event: "turn", state: activeState },
+  }];
+  const { commands, handlers, sentMessages } = createHarness();
+  const { ctx } = createTuiContext(branchEntries);
+  for (const handler of handlers.get("session_start")) await handler({ reason: "resume" }, ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sentMessages.length, 1);
+
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await commands.get("goal").handler("", ctx);
+  assert.match(notifications.at(-1).message, /Goal active/u);
+  assert.match(notifications.at(-1).message, /Finish the saved task/u);
+});
+
+test("/goal validates objectives, reserves control words, and gates blocked status", async () => {
+  const { appendedEntries, commands, handlers, tools } = createHarness();
+  const { ctx } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+
+  await commands.get("goal").handler("x".repeat(4_001), ctx);
+  assert.match(notifications.at(-1).message, /4,000 characters/u);
+  await commands.get("goal").handler("CLEAR", ctx);
+  assert.match(notifications.at(-1).message, /No goal is set/u);
+
+  await commands.get("goal").handler("Resolve the blocker", ctx);
+  await assert.rejects(
+    tools.get("killeros_goal_update").execute(
+      "goal-blocked",
+      { status: "blocked", evidence: "Credentials are unavailable" },
+      new AbortController().signal,
+      () => {},
+      ctx,
+    ),
+    /three goal turns/u,
+  );
+
+  for (let turn = 0; turn < 2; turn += 1) {
+    await emitSequentially(handlers.get("agent_end"), {
+      messages: [{ role: "assistant", stopReason: "stop" }],
+    }, ctx);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  }
+  assert.equal(appendedEntries.at(-1).data.state.turns, 3);
+  await tools.get("killeros_goal_update").execute(
+    "goal-blocked-after-audit",
+    { status: "blocked", evidence: "The same missing credential blocked three consecutive attempts" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  assert.equal(appendedEntries.at(-1).data.state.status, "blocked");
+
+  await commands.get("goal").handler("resume", ctx);
+  await assert.rejects(
+    tools.get("killeros_goal_update").execute(
+      "goal-blocked-too-soon-after-resume",
+      { status: "blocked", evidence: "The blocker appeared again" },
+      new AbortController().signal,
+      () => {},
+      ctx,
+    ),
+    /current audit/u,
+  );
+});
+
+test("/goal fails closed when the current branch cannot be read", async () => {
+  const now = Date.now();
+  const staleEntries = [{
+    type: "custom",
+    customType: "killeros-goal",
+    data: {
+      version: 1,
+      event: "turn",
+      state: {
+        version: 1,
+        revision: 1,
+        objective: "Goal from another branch",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+        activeMilliseconds: 0,
+        activeStartedAt: now,
+        turns: 1,
+        baselineTokens: 0,
+      },
+    },
+  }];
+  const { handlers, sentMessages } = createHarness();
+  const { ctx } = createTuiContext(staleEntries);
+  ctx.sessionManager.getBranch = () => { throw new Error("branch unavailable"); };
+  for (const handler of handlers.get("session_start")) await handler({ reason: "resume" }, ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sentMessages.length, 0);
+});
+
+test("saved goals stay inactive in print and JSON modes", async () => {
+  const now = Date.now();
+  const entries = [{
+    type: "custom",
+    customType: "killeros-goal",
+    data: {
+      version: 1,
+      event: "turn",
+      state: {
+        version: 1,
+        revision: 1,
+        objective: "Do not auto-run here",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+        activeMilliseconds: 0,
+        activeStartedAt: now,
+        turns: 1,
+        baselineTokens: 0,
+      },
+    },
+  }];
+  for (const mode of ["print", "json"]) {
+    const { commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext(entries);
+    ctx.mode = mode;
+    const notifications = [];
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({ reason: "resume" }, ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(sentMessages.length, 0);
+
+    let systemPrompt = "base";
+    for (const handler of handlers.get("before_agent_start")) {
+      const result = await handler({ prompt: "", systemPrompt, systemPromptOptions: {} }, ctx);
+      if (result?.systemPrompt) systemPrompt = result.systemPrompt;
+    }
+    assert.doesNotMatch(systemPrompt, /Active KillerOS goal/u);
+    await commands.get("goal").handler("", ctx);
+    assert.match(notifications.at(-1).message, /requires TUI or RPC mode/u);
+  }
+});
+
+test("/goal edit resumes after invalid input and pauses after persistence failure", async () => {
+  const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await commands.get("goal").handler("Keep the original objective", ctx);
+  for (const handler of handlers.get("before_agent_start")) {
+    await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
+  }
+
+  ctx.ui.editor = async () => "";
+  await commands.get("goal").handler("edit", ctx);
+  assert.equal(sentMessages.length, 2, "invalid edits must not strand an active goal");
+
+  for (const handler of handlers.get("before_agent_start")) {
+    await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
+  }
+  ctx.ui.editor = async () => "Changed objective";
+  api.appendEntry = () => { throw new Error("session write failed"); };
+  await commands.get("goal").handler("edit", ctx);
+  assert.equal(sentMessages.length, 2, "an unsaved continuation must not start");
+  await commands.get("goal").handler("", ctx);
+  assert.match(notifications.at(-1).message, /Goal paused/u);
+  assert.match(notifications.at(-1).message, /session write failed/u);
+  assert.equal(appendedEntries.at(-1).data.state.objective, "Keep the original objective");
+});
+
+test("goal state appears in wide and compact footer cutdowns", async () => {
+  const { commands, handlers } = createHarness();
+  const { captured, ctx, tui } = createTuiContext();
+  for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
+  await commands.get("goal").handler("Keep working", ctx);
+
+  const footer = captured.footerFactory(tui, theme, {
+    getGitBranch: () => "main",
+    onBranchChange: () => () => {},
+  });
+  assert.match(footer.render(160)[0], /✻ goal · \d+s/u);
+  assert.match(footer.render(40)[0], /goal/u);
+  for (let width = 1; width <= 180; width += 1) {
+    const line = footer.render(width)[0].replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
+    assert.equal([...line].length, width, `goal footer width mismatch at ${width}`);
+  }
+  footer.dispose();
 });
 
 test("registers /init as a native command and runs the hidden generation workflow", async () => {

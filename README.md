@@ -1,6 +1,6 @@
 # KillerOS
 
-A production-hardened Pi extension that combines a custom TUI, repository initialization, reasoning controls, interactive questions, command aliases, and concise-response guidance.
+A production-hardened Pi extension that combines a custom TUI, repository initialization, long-running goals, reasoning controls, interactive questions, command aliases, and concise-response guidance.
 
 ## Requirements
 
@@ -29,7 +29,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.2.0
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.3.0
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -40,8 +40,9 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Cohesive dark theme with coral accents and neutral tool-call containers across pending, success, and error states
 - Coral Spark activity indicator with Claude-adjacent verbs that advance between agent runs and a quiet hidden-thinking label
 - Framed multiline editor with Shift+Enter support
-- Responsive footer with polished model/provider identity and plain-language context remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
+- Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - `/variants` selector and direct reasoning-level arguments
+- Codex-style `/goal` for durable long-running objectives with pause, resume, edit, clear, automatic continuation, and explicit completion
 - Claude Code-style `/init` that scans the repository and generates a concise root `AGENTS.md` without setup questions
 - `question` tool with filtering, proposal previews, keyboard selection, custom answers, history, cancellation, and resize-safe rendering
 - Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills
@@ -52,11 +53,19 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 
 ```text
 /init                     Generate root AGENTS.md from repository evidence
+/goal                     View the current long-running goal
+/goal <objective>         Set an objective and start working
+/goal edit                Edit and reactivate the current goal
+/goal pause               Stop automatic continuation
+/goal resume              Resume automatic continuation
+/goal clear               Remove the current goal
 /variants                 Open the reasoning-level selector
 /variants high            Set a reasoning level directly
 /clear                    Start a new session after confirmation
 /exit                     Quit Pi gracefully
 ```
+
+`/goal` requires a saved session in TUI or RPC mode. Goal state is stored in versioned session entries on the active branch and restored after reload, resume, fork, or tree navigation. Active goals inject their unchanged objective every turn and continue one settled turn at a time. The model must use KillerOS’s private goal tool to mark verified completion or a blocker repeated across at least three goal turns; final prose alone does not end the loop. Aborted turns, provider failures, and continuation failures pause safely. Replacing unfinished work requires confirmation, and `/goal edit` requires TUI mode.
 
 `/init` builds a bounded project map, reads high-value manifests, documentation, and CI configuration, and lets the active model inspect additional implementation files before generating root `AGENTS.md`. Existing `AGENTS.md` and `CLAUDE.md` content is intentionally excluded so stale guidance is not inherited. The command asks no setup questions, starts no second model process, writes only `AGENTS.md`, and reloads Pi resources when finished.
 
@@ -66,7 +75,7 @@ Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh
 
 KillerOS activates its packaged `killeros` theme when a TUI session starts. Tool-call backgrounds stay neutral across pending, successful, and failed states; restrained text and icons preserve status visibility.
 
-KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar.
+KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar. When a goal exists, the footer adds its active time or terminal state; at narrow widths, context pressure and goal state take priority.
 
 For trusted projects, KillerOS loads `AGENTS.local.md` after Pi's shared repository context. A one-line `@path` or `@~/path` file imports personal guidance from another location.
 
@@ -77,8 +86,8 @@ Lifecycle hooks are loaded from `.pi/killeros-hooks.json` at session start. Supp
 | Mode | Behavior |
 |---|---|
 | TUI | All features are available |
-| RPC | Non-interactive commands and concise prompt guidance work; TUI components and `/init` are disabled |
-| Print/JSON | Concise prompt guidance works; interactive questions and `/init` fail explicitly |
+| RPC | Goal set/view/pause/resume/clear and concise prompt guidance work; TUI components, `/goal edit`, and `/init` are disabled |
+| Print/JSON | Concise prompt guidance works; interactive questions, `/goal`, and `/init` fail explicitly |
 
 ## Validation
 
