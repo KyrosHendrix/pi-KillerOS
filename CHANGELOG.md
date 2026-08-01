@@ -4,6 +4,11 @@ All notable changes to KillerOS are documented here.
 
 ## [1.4.1] - 2026-08-01
 
+### Added
+
+- Added focused `debugger`, `documenter`, `security`, and `tester` roles with explicit access boundaries, skill discovery, and web research guidance.
+- Added child web research through the separately installed `pi-web-access` package and exposed search, source-check, fetch, and stored-content tools to every bundled role.
+
 ### Fixed
 
 - Kept streamed child thinking within the retained trace budget without terminating successful invocations.
@@ -12,7 +17,8 @@ All notable changes to KillerOS are documented here.
 
 ### Changed
 
-- Gave the bundled roles distinct Pathfinder, Architect, Sentinel, and Builder identities.
+- Expanded the bundled role roster while keeping read-only auditors separate from write-capable implementation roles.
+- Hardened CI with Node floor/LTS checks, locked-dependency auditing, dependency review, package-content validation, and CodeQL analysis.
 
 ## [1.4.0] - 2026-08-01
 

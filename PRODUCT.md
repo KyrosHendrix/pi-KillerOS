@@ -26,7 +26,8 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 
 - Requires Node.js 22.19.0 or later and Pi 0.82.1 or later.
 - Full custom header, editor, footer, and interactive question behavior requires TUI mode.
-- Subagents use isolated ephemeral Pi children, explicit role tool lists, bounded execution, and no child extension, skill, or prompt-template discovery.
+- Subagents use isolated ephemeral Pi children, explicit role tool lists, bounded execution, no arbitrary child extension or prompt-template discovery, and skill discovery that loads project-local skills only when the parent project is trusted.
+- Child web research uses the explicitly loaded `pi-web-access` package, which users install alongside KillerOS.
 - Bundled and personal roles are available by default; project roles require Pi project trust, explicit scope, and confirmation.
 - RPC supports commands, subagents, and concise prompt guidance but disables TUI components.
 - Print and JSON modes support concise prompt guidance but not interactive questions.

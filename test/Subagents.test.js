@@ -17,7 +17,7 @@ function roleFile({
   name,
   description = `${name} role`,
   access = "read",
-  tools = "read, grep, find, ls",
+  tools = "read, grep, find, ls, web_search, source_check, fetch_content, get_search_content",
   model,
   maxTurns = 8,
   timeoutMs = 300000,
@@ -339,10 +339,12 @@ test("isolated child invocation uses explicit tools and reports bounded output, 
     assert.match(first.content[0].text, /Mapped auth flow/u);
 
     const args = calls[0].args;
-    for (const flag of ["--mode", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--model", "--thinking", "--tools"]) {
+    for (const flag of ["--mode", "--no-session", "--no-extensions", "--extension", "--no-prompt-templates", "--approve", "--model", "--thinking", "--tools"]) {
       assert.ok(args.includes(flag), `missing child flag ${flag}`);
     }
-    assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls");
+    assert.equal(args[args.indexOf("--extension") + 1], "npm:pi-web-access");
+    assert.equal(args.includes("--no-skills"), false);
+    assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls,web_search,source_check,fetch_content,get_search_content");
     assert.equal(args[args.indexOf("--model") + 1], "test/parent-model");
     assert.equal(args[args.indexOf("--thinking") + 1], "high");
     assert.ok(promptPaths.every((promptPath) => !existsSync(promptPath)), "temporary prompts must be removed");
@@ -728,20 +730,30 @@ test("abort cancels active and queued tasks and force-kill escalation settles a 
   }
 });
 
-test("bundled roster declares three read-only specialists and one explicit writer", () => {
+test("bundled roster declares read-only auditors and focused writers", () => {
   const agents = discoverAgentRoles(process.cwd(), "user", true, {
     bundledAgentsDir: path.join(process.cwd(), "agents"),
     userAgentsDir: path.join(process.cwd(), "test", "missing-agents"),
   }).agents;
-  assert.deepEqual(agents.map((agent) => agent.name), ["planner", "reviewer", "scout", "worker"]);
-  for (const name of ["planner", "reviewer", "scout"]) {
+  assert.deepEqual(agents.map((agent) => agent.name), ["debugger", "documenter", "planner", "reviewer", "scout", "security", "tester", "worker"]);
+  for (const name of ["planner", "reviewer", "scout", "security"]) {
     const agent = agents.find((candidate) => candidate.name === name);
     assert.equal(agent.access, "read");
     assert.equal(agent.tools.some((tool) => ["bash", "edit", "write"].includes(tool)), false);
   }
+  for (const name of ["debugger", "documenter", "tester", "worker"]) {
+    const agent = agents.find((candidate) => candidate.name === name);
+    assert.equal(agent.access, "write");
+  }
   const worker = agents.find((agent) => agent.name === "worker");
-  assert.equal(worker.access, "write");
-  assert.deepEqual(worker.tools, ["read", "grep", "find", "ls", "edit", "write", "bash"]);
+  for (const agent of agents) {
+    for (const tool of ["web_search", "source_check", "fetch_content", "get_search_content"]) {
+      assert.equal(agent.tools.includes(tool), true, `${agent.name} must expose ${tool}`);
+    }
+    assert.match(agent.prompt, /## Skills and web research/u);
+    assert.match(agent.prompt, /load the most relevant skill/u);
+  }
+  assert.deepEqual(worker.tools, ["read", "grep", "find", "ls", "edit", "write", "bash", "web_search", "source_check", "fetch_content", "get_search_content"]);
   assert.equal(SUBAGENT_LIMITS.maxTasks, 8);
   assert.equal(SUBAGENT_LIMITS.maxReadConcurrency, 4);
   assert.equal(SUBAGENT_LIMITS.maxTurns, 12);

@@ -6,16 +6,20 @@ A production-hardened Pi extension that combines a custom TUI, isolated subagent
 
 - Node.js `22.19.0` or later
 - Pi `0.82.1` or later
+- `pi-web-access` for child-agent web search and URL fetching (`pi install npm:pi-web-access`)
 - Interactive TUI mode for the custom header, editor, footer, `question` tool, and `/init`
 
-The extension is strict TypeScript and uses only packages provided by Pi.
+The extension is strict TypeScript. Pi provides the runtime modules; `pi-web-access` provides the child web tools.
 
 ## Install
 
 ### npm
 
+Install KillerOS and its separate child-web-tools peer:
+
 ```bash
 pi install npm:killeros
+pi install npm:pi-web-access
 ```
 
 ### Git
@@ -74,7 +78,18 @@ Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh
 
 ## Subagents
 
-KillerOS ships `scout`, `planner`, and `reviewer` as read-only roles and `worker` as the only write-capable default. Each invocation rediscovers Markdown roles with this precedence:
+KillerOS ships `planner`, `reviewer`, `scout`, and `security` as read-only roles plus focused write-capable `debugger`, `documenter`, and `tester` roles; `worker` remains the general-purpose implementation role. Each invocation rediscovers Markdown roles with this precedence:
+
+| Role | Access | Focus |
+|---|---|---|
+| `debugger` | write | Reproduce failures, fix root causes, and verify regressions |
+| `documenter` | write | Keep repository documentation accurate and audience-focused |
+| `planner` | read | Turn repository constraints into an executable implementation route |
+| `reviewer` | read | Report proven correctness, security, and regression risks |
+| `scout` | read | Map unfamiliar code and return an evidence trail |
+| `security` | read | Audit trust boundaries and report concrete security findings |
+| `tester` | write | Add focused coverage and run deterministic verification |
+| `worker` | write | Execute a bounded repository change |
 
 1. Bundled: `<killeros>/agents/*.md`
 2. Personal: `~/.pi/agent/agents/*.md`
@@ -82,7 +97,7 @@ KillerOS ships `scout`, `planner`, and `reviewer` as read-only roles and `worker
 
 The default `agentScope: "user"` uses bundled and personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project override requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. Optional fields are `model`, `maxTurns`, and `timeoutMs`.
 
-The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Children run as ephemeral `pi --mode json -p --no-session` processes with extension, skill, and prompt-template discovery disabled. KillerOS allows at most eight tasks, four parallel readers, one serialized writer, 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task. Esc cancellation terminates active children and escalates after five seconds.
+The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Children run as ephemeral `pi --mode json -p --no-session` processes with explicit local tools plus `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` before work and to use web research when external evidence is needed. KillerOS allows at most eight tasks, four parallel readers, one serialized writer, 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task. Esc cancellation terminates active children and escalates after five seconds.
 
 ## Configuration
 
@@ -120,14 +135,14 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog.
 
-Choose `patch`, `minor`, or `major` for the release, then publish and push the version commit and tag:
+For the current unreleased `1.4.1`, keep the version unchanged and publish after the validation checks pass:
 
 ```bash
 npm login
-npm version patch
 npm publish
-git push origin main --follow-tags
 ```
+
+For later releases, choose `patch`, `minor`, or `major` with `npm version`, then publish and push the version commit and tag.
 
 ## Security
 

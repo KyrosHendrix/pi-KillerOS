@@ -34,9 +34,11 @@ export const SUBAGENT_LIMITS = {
   killGraceMs: 5_000,
 } as const;
 
-const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+const WEB_TOOLS = new Set(["web_search", "source_check", "fetch_content", "get_search_content"]);
+const READ_TOOLS = new Set(["read", "grep", "find", "ls", ...WEB_TOOLS]);
 const WRITE_TOOLS = new Set(["bash", "edit", "write"]);
 const KNOWN_TOOLS = new Set([...READ_TOOLS, ...WRITE_TOOLS]);
+const SUBAGENT_WEB_EXTENSION = "npm:pi-web-access";
 const ROLE_FIELDS = new Set(["name", "description", "access", "tools", "model", "maxTurns", "timeoutMs"]);
 
 type ThinkingLevel = ModelThinkingLevel;
@@ -141,6 +143,7 @@ type SubagentLimits = { [Key in keyof typeof SUBAGENT_LIMITS]: number };
 export interface SubagentRuntimeOptions {
   bundledAgentsDir?: string;
   userAgentsDir?: string;
+  webExtension?: string;
   spawnProcess?: (args: string[], cwd: string) => SpawnedProcess;
   createTaskId?: (index: number) => string;
   limits?: Partial<SubagentLimits>;
@@ -541,6 +544,8 @@ interface RunTaskOptions {
   model: ResolvedModel;
   signal?: AbortSignal;
   spawnProcess: (args: string[], cwd: string) => SpawnedProcess;
+  webExtension?: string;
+  projectTrusted: boolean;
   limits: SubagentLimits;
   onChange: (result: SubagentTaskResult) => void;
 }
@@ -583,8 +588,9 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
       "-p",
       "--no-session",
       "--no-extensions",
-      "--no-skills",
+      "--extension", options.webExtension ?? SUBAGENT_WEB_EXTENSION,
       "--no-prompt-templates",
+      options.projectTrusted ? "--approve" : "--no-approve",
       "--model", options.model.model,
       "--thinking", options.model.thinking,
       "--tools", agent.tools.join(","),
@@ -873,11 +879,12 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   pi.registerTool({
     name: "subagent",
     label: "Subagents",
-    description: "Delegate one task, up to eight parallel tasks, or a sequential chain to isolated Pi child roles. Bundled and personal roles are available by default; trusted project roles require project/both scope and confirmation. Children have explicit tools, no extension/skill/template discovery, at most 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task.",
+    description: "Delegate one task, up to eight parallel tasks, or a sequential chain to isolated Pi child roles. Bundled and personal roles are available by default; trusted project roles require project/both scope and confirmation. Children have explicit local and web tools, load pi-web-access explicitly, discover skills, keep arbitrary extensions and prompt templates disabled, and enforce at most 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task.",
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
-      "Use subagent for clearly separable specialist work; prefer read-only scout, planner, or reviewer roles before the sequential writer.",
+      "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
       "Do not request multiple write-capable subagents in one parallel batch.",
+      "Every child can load relevant skills with read and can use web_search, source_check, fetch_content, and get_search_content for external research.",
     ],
     parameters: SubagentParams,
     executionMode: "sequential",
@@ -962,6 +969,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           step: results[index]!.step,
           model: resolvedModels.get(input.agent)!,
           signal,
+          webExtension: options.webExtension,
+          projectTrusted: ctx.isProjectTrusted(),
           spawnProcess,
           limits,
           onChange: (next) => {
