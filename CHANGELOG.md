@@ -2,6 +2,15 @@
 
 All notable changes to KillerOS are documented here.
 
+## [1.4.6] - 2026-08-01
+
+### Fixed
+
+- Made the registered task schema use the same ten-task limit as runtime validation.
+- Kept one isolated Pi session ID and session directory across steering restarts so a child retains its conversation.
+- Bound retained trace, stderr, and returned text, and spooled large JSONL lines to temporary storage without stopping the child or reporting a retention cutoff as `limited`.
+- Kept explicit embedding resource guards and user stops visible as terminal states.
+
 ## [1.4.5] - 2026-08-01
 
 ### Fixed

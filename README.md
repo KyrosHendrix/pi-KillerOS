@@ -33,7 +33,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-  pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.5
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.6
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -103,7 +103,7 @@ The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `
 {"agent":"reviewer","task":"Review the change","model":"provider/model","thinking":"high"}
 ```
 
-Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as ephemeral `pi --mode json -p --no-session` processes with explicit local tools plus `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` and report useful evidence. Children have no default token, dollar, turn, tool-call, research, wall-time, JSONL-line, trace, stderr, or returned-output quota. The parent still limits each request to eight tasks and four parallel readers and bounds role files, task input, and combined parent output. An embedding caller may opt into named child resource guards. Esc cancellation terminates active children and escalates after five seconds.
+Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as isolated `pi --mode json -p` processes with a private `--session-dir` and `--session-id`, plus explicit local tools and `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Steering restarts the same child session, so the child keeps its prior conversation. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` and report useful evidence. Children have no default token, dollar, turn, tool-call, research, wall-time, JSONL-line, trace, stderr, or returned-output execution quota. KillerOS bounds retained trace, stderr, and returned text and spills a large JSONL line to temporary storage; retention never stops a child or marks it `limited`. The parent limits each request to ten tasks and four parallel readers and bounds role files, task input, and combined parent output. An embedding caller may opt into named child resource guards. Esc cancellation terminates active children and escalates after five seconds.
 
 ### Thread lifecycle
 
@@ -163,7 +163,7 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog.
 
-For release `1.4.5`, publish after the validation checks pass:
+For release `1.4.6`, publish after the validation checks pass:
 
 ```bash
 npm login

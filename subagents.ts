@@ -20,9 +20,12 @@ import { runSubagentProcess, type SubagentProcessHandle, type SubagentProcessRes
 import { formatThreadBoard, formatThreadInspection, type ThreadRecord as ThreadBoardRecord } from "./subagent-ui.ts";
 
 export const SUBAGENT_LIMITS = {
-  maxTasks: 8,
+  maxTasks: 10,
   maxReadConcurrency: 4,
   toolOutputBytes: 50 * 1024,
+  traceRetentionBytes: 8 * 1024 * 1024,
+  stderrRetentionBytes: 1 * 1024 * 1024,
+  taskOutputRetentionBytes: 1 * 1024 * 1024,
   roleFileBytes: 64 * 1024,
   taskCharacters: 20_000,
   killGraceMs: 5_000,
@@ -511,7 +514,12 @@ function cloneResult(result: SubagentTaskResult): SubagentTaskResult {
   };
 }
 
-function mergeTaskResults(previous: SubagentTaskResult | undefined, next: SubagentTaskResult, maxTraceBytes?: number): SubagentTaskResult {
+function mergeTaskResults(
+  previous: SubagentTaskResult | undefined,
+  next: SubagentTaskResult,
+  maxTraceBytes?: number,
+  maxStderrBytes?: number,
+): SubagentTaskResult {
   if (!previous) return cloneResult(next);
   const merged = cloneResult(next);
   const trace: string[] = [];
@@ -527,9 +535,11 @@ function mergeTaskResults(previous: SubagentTaskResult | undefined, next: Subage
   merged.trace = trace;
   merged.traceBytes = traceBytes;
   merged.traceTruncatedBytes = traceTruncatedBytes;
-  merged.stderr = [previous.stderr, next.stderr].filter(Boolean).join("\n");
+  const stderr = [previous.stderr, next.stderr].filter(Boolean).join("\n");
+  const retainedStderr = truncateUtf8(stderr, maxStderrBytes === undefined ? Buffer.byteLength(stderr, "utf8") : maxStderrBytes);
+  merged.stderr = retainedStderr.text;
   merged.stderrBytes = previous.stderrBytes + next.stderrBytes;
-  merged.stderrTruncatedBytes = previous.stderrTruncatedBytes + next.stderrTruncatedBytes;
+  merged.stderrTruncatedBytes = previous.stderrTruncatedBytes + next.stderrTruncatedBytes + retainedStderr.omittedBytes;
   merged.output = next.output || previous.output;
   merged.outputBytes = previous.outputBytes + next.outputBytes;
   merged.outputTruncatedBytes = previous.outputTruncatedBytes + next.outputTruncatedBytes;
@@ -565,6 +575,8 @@ interface RunTaskOptions {
   webExtension?: string;
   projectTrusted: boolean;
   limits: SubagentLimits;
+  sessionDirectory: string;
+  sessionId: string;
   timeoutMs?: number;
   onChange: (result: SubagentTaskResult) => void;
   onHandle?: (handle: SubagentProcessHandle) => void;
@@ -631,7 +643,8 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
     const args = [
       "--mode", "json",
       "-p",
-      "--no-session",
+      "--session-dir", options.sessionDirectory,
+      "--session-id", options.sessionId,
       "--no-extensions",
       "--extension", options.webExtension ?? SUBAGENT_WEB_EXTENSION,
       "--no-prompt-templates",
@@ -656,6 +669,11 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
         ...(limits.quotaTokens === undefined ? {} : { quotaTokens: limits.quotaTokens }),
         ...(limits.quotaUsd === undefined ? {} : { quotaUsd: limits.quotaUsd }),
         killGraceMs: limits.killGraceMs,
+      },
+      retention: {
+        traceBytes: limits.traceRetentionBytes,
+        stderrBytes: limits.stderrRetentionBytes,
+        outputBytes: limits.taskOutputRetentionBytes,
       },
       onUpdate: (next) => applyProcessResult(result, next, startedAt, options.onChange),
     });
@@ -694,35 +712,35 @@ async function mapReadTasks<T>(items: T[], concurrency: number, run: (item: T, i
   await Promise.all(workers);
 }
 
-const TaskSchema = Type.Object({
-  agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
-  task: Type.String({ minLength: 1, maxLength: SUBAGENT_LIMITS.taskCharacters, description: "Bounded task for the role" }),
-});
-
-const ChainTaskSchema = Type.Object({
-  agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
-  task: Type.String({ minLength: 1, maxLength: SUBAGENT_LIMITS.taskCharacters, description: "Task with optional {previous} handoff placeholder" }),
-});
-
-const SubagentParams = Type.Object({
-  action: Type.Optional(StringEnum(["spawn", "list", "inspect", "steer", "interrupt", "collect", "close"] as const, {
-    default: "spawn",
-    description: "Thread lifecycle action",
-  })),
-  threadId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Stable child thread ID" })),
-  message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Bounded steering message" })),
-  all: Type.Optional(Type.Boolean({ description: "Interrupt every active child thread" })),
-  agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
-  task: Type.Optional(Type.String({ minLength: 1, maxLength: SUBAGENT_LIMITS.taskCharacters, description: "Task for single mode" })),
-  tasks: Type.Optional(Type.Array(TaskSchema, { minItems: 1, maxItems: SUBAGENT_LIMITS.maxTasks, description: "Parallel role tasks" })),
-  chain: Type.Optional(Type.Array(ChainTaskSchema, { minItems: 1, maxItems: SUBAGENT_LIMITS.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
-  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
-  thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
-  agentScope: Type.Optional(StringEnum(["user", "project", "both"] as const, {
-    default: "user",
-    description: "Role sources: user includes bundled and personal; project includes bundled and trusted project; both includes all",
-  })),
-});
+function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "taskCharacters">) {
+  const taskSchema = Type.Object({
+    agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
+    task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Bounded task for the role" }),
+  });
+  const chainTaskSchema = Type.Object({
+    agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
+    task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task with optional {previous} handoff placeholder" }),
+  });
+  return Type.Object({
+    action: Type.Optional(StringEnum(["spawn", "list", "inspect", "steer", "interrupt", "collect", "close"] as const, {
+      default: "spawn",
+      description: "Thread lifecycle action",
+    })),
+    threadId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Stable child thread ID" })),
+    message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Bounded steering message" })),
+    all: Type.Optional(Type.Boolean({ description: "Interrupt every active child thread" })),
+    agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
+    task: Type.Optional(Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" })),
+    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Parallel role tasks" })),
+    chain: Type.Optional(Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
+    model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
+    thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
+    agentScope: Type.Optional(StringEnum(["user", "project", "both"] as const, {
+      default: "user",
+      description: "Role sources: user includes bundled and personal; project includes bundled and trusted project; both includes all",
+    })),
+  });
+}
 
 type TaskInput = { agent: string; task: string };
 
@@ -739,16 +757,12 @@ function clipCharacters(text: string, maxCharacters: number, fromEnd = false): s
   return (fromEnd ? characters.slice(-maxCharacters) : characters.slice(0, maxCharacters)).join("");
 }
 
-function buildSteeredTask(task: string, steering: readonly string[], previousOutput: string | undefined, maxCharacters: number): string {
+function buildSteeredTask(task: string, steering: readonly string[], maxCharacters: number): string {
   const steeringLabel = "\n\nParent steering:\n";
   const steeringText = clipCharacters(steering.join("\n"), Math.max(0, maxCharacters - [...steeringLabel].length), true);
-  const previousLabel = previousOutput ? "\n\nPrevious child handoff:\n" : "";
-  const required = [...steeringLabel, ...steeringText, ...previousLabel].length;
+  const required = [...steeringLabel, ...steeringText].length;
   const taskText = clipCharacters(task, Math.max(0, maxCharacters - required));
-  const previousText = previousOutput
-    ? clipCharacters(previousOutput, Math.max(0, maxCharacters - [...taskText, ...steeringLabel, ...steeringText, ...previousLabel].length))
-    : "";
-  return `${taskText}${previousText ? `${previousLabel}${previousText}` : ""}${steeringLabel}${steeringText}`;
+  return `${taskText}${steeringLabel}${steeringText}`;
 }
 
 function formatUsage(usage: SubagentUsage): string {
@@ -953,7 +967,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   };
 
   const syncThread = (threadId: SubagentThreadId, next: SubagentTaskResult, runtime?: ActiveThreadRuntime): SubagentTaskResult => {
-    const effective = mergeTaskResults(runtime?.aggregate, next, limits.traceBytes);
+    const effective = mergeTaskResults(runtime?.aggregate, next, limits.traceRetentionBytes, limits.stderrRetentionBytes);
     if (runtime?.requestedReason && next.status === "cancelled") effective.terminationReason = runtime.requestedReason;
     savedResults.set(threadId, cloneResult(effective));
     let thread = threads.inspect(threadId);
@@ -966,9 +980,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     const from = runtime?.traceCount ?? 0;
     let retainedTraceBytes = thread.trace.reduce((total, entry) => total + Buffer.byteLength(entry.message ?? "", "utf8"), 0);
     for (const entry of next.trace.slice(from)) {
-      const retained = truncateUtf8(entry, limits.traceBytes === undefined
+      const retained = truncateUtf8(entry, limits.traceRetentionBytes === undefined
         ? Buffer.byteLength(entry, "utf8")
-        : Math.max(0, limits.traceBytes - retainedTraceBytes));
+        : Math.max(0, limits.traceRetentionBytes - retainedTraceBytes));
       if (retained.text) {
         threads.trace(threadId, { kind: "child", message: retained.text });
         retainedTraceBytes += Buffer.byteLength(retained.text, "utf8");
@@ -1015,7 +1029,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   pi.registerTool({
     name: "subagent",
     label: "Subagents",
-    description: "Spawn and manage named child threads. Children finish naturally; time, output, trace, stderr, quota, task count, and concurrency are the hard edges. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.",
+    description: "Spawn and manage named child threads. Children finish naturally; explicit execution guards, task count, and concurrency are the hard edges. Retention only bounds stored detail. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.",
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
       "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
@@ -1024,7 +1038,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       "When the user names a model or thinking effort, pass model and thinking separately; use inherit when the active parent or role setting should decide.",
       "Keep completed and stopped threads inspectable until the parent explicitly closes them.",
     ],
-    parameters: SubagentParams,
+    parameters: createSubagentParams(limits),
     executionMode: "parallel",
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -1214,6 +1228,23 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           emit();
           return;
         }
+        let sessionDirectory: string;
+        try {
+          sessionDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-subagent-session-"));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          results[index] = {
+            ...results[index]!,
+            status: "failed",
+            terminationReason: "session_error",
+            errorMessage: message,
+          };
+          threads.fail(threadId, { message, code: "session_error" });
+          savedResults.set(threadId, cloneResult(results[index]!));
+          emit();
+          return;
+        }
+        const sessionId = `killeros-${threadId.replace(/[^A-Za-z0-9_.-]/gu, "_")}`;
         const controller = new AbortController();
         const abortParent = (): void => controller.abort();
         if (signal) {
@@ -1224,7 +1255,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         activeRuntimes.set(threadId, runtime);
         const agent = roles.get(input.agent)!;
         const queuedSteering = initialThread.steering.map((entry) => entry.message);
-        let currentTask = queuedSteering.length ? buildSteeredTask(task, queuedSteering, undefined, limits.taskCharacters) : task;
+        let currentTask = queuedSteering.length ? buildSteeredTask(task, queuedSteering, limits.taskCharacters) : task;
         const stopForBudget = (reason: string, message: string): void => {
           const limited = cloneResult(runtime.aggregate ?? results[index]!);
           limited.status = "limited";
@@ -1248,7 +1279,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             const aggregate = runtime.aggregate;
             const wallTimeMs = agent.timeoutMs ?? limits.wallTimeMs;
             const remainingWallTimeMs = wallTimeMs === undefined ? undefined : wallTimeMs - (Date.now() - runtime.startedAt);
-            const usedTraceBytes = aggregate?.traceBytes ?? 0;
+            const usedTraceBytes = (aggregate?.traceBytes ?? 0) + (aggregate?.traceTruncatedBytes ?? 0);
             const usedStderrBytes = aggregate?.stderrBytes ?? 0;
             const usedOutputBytes = aggregate?.outputBytes ?? 0;
             const usedTokens = aggregate?.usage.totalTokens ?? 0;
@@ -1257,15 +1288,15 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               stopForBudget("wall_time_limit", `Child thread exceeds ${wallTimeMs} ms`);
               break;
             }
-            if (limits.traceBytes !== undefined && (usedTraceBytes >= limits.traceBytes || aggregate?.traceTruncatedBytes)) {
+            if (limits.traceBytes !== undefined && usedTraceBytes >= limits.traceBytes) {
               stopForBudget("trace_limit", `Child thread retains more than ${limits.traceBytes} trace bytes`);
               break;
             }
-            if (limits.stderrBytes !== undefined && (usedStderrBytes >= limits.stderrBytes || aggregate?.stderrTruncatedBytes)) {
+            if (limits.stderrBytes !== undefined && usedStderrBytes >= limits.stderrBytes) {
               stopForBudget("stderr_limit", `Child thread emits more than ${limits.stderrBytes} stderr bytes`);
               break;
             }
-            if (limits.taskOutputBytes !== undefined && (usedOutputBytes >= limits.taskOutputBytes || aggregate?.outputTruncatedBytes)) {
+            if (limits.taskOutputBytes !== undefined && usedOutputBytes >= limits.taskOutputBytes) {
               stopForBudget("output_limit", `Child thread emits more than ${limits.taskOutputBytes} output bytes`);
               break;
             }
@@ -1289,6 +1320,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               webExtension: options.webExtension,
               projectTrusted: ctx.isProjectTrusted(),
               spawnProcess,
+              sessionDirectory,
+              sessionId,
               limits: {
                 ...limits,
                 ...(limits.traceBytes === undefined ? {} : { traceBytes: limits.traceBytes - usedTraceBytes }),
@@ -1305,7 +1338,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               },
             });
             next.task = task;
-            runtime.aggregate = mergeTaskResults(runtime.aggregate, next, limits.traceBytes);
+            runtime.aggregate = mergeTaskResults(runtime.aggregate, next, limits.traceRetentionBytes, limits.stderrRetentionBytes);
             runtime.aggregate.task = task;
             results[index] = cloneResult(runtime.aggregate);
             savedResults.set(threadId, cloneResult(runtime.aggregate));
@@ -1321,11 +1354,16 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
                 handoff: runtime.aggregate.output ? { summary: runtime.aggregate.output } : undefined,
               });
             }
-            currentTask = buildSteeredTask(task, steering, runtime.aggregate.output, limits.taskCharacters);
+            currentTask = buildSteeredTask(task, steering, limits.taskCharacters);
           }
         } finally {
           activeRuntimes.delete(threadId);
           signal?.removeEventListener("abort", abortParent);
+          try {
+            await rm(sessionDirectory, { recursive: true, force: true });
+          } catch {
+            // Temporary child session cleanup is best effort after process termination.
+          }
         }
         emit();
       };

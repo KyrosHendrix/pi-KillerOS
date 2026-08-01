@@ -349,9 +349,10 @@ test("isolated child invocation uses explicit tools and reports bounded output, 
     assert.match(first.content[0].text, /Mapped auth flow/u);
 
     const args = calls[0].args;
-    for (const flag of ["--mode", "--no-session", "--no-extensions", "--extension", "--no-prompt-templates", "--approve", "--model", "--thinking", "--tools"]) {
+    for (const flag of ["--mode", "--session-dir", "--session-id", "--no-extensions", "--extension", "--no-prompt-templates", "--approve", "--model", "--thinking", "--tools"]) {
       assert.ok(args.includes(flag), `missing child flag ${flag}`);
     }
+    assert.equal(args.includes("--no-session"), false);
     assert.equal(args[args.indexOf("--extension") + 1], "npm:pi-web-access");
     assert.equal(args.includes("--no-skills"), false);
     assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls,web_search,source_check,fetch_content,get_search_content");
@@ -845,7 +846,7 @@ test("bundled roster declares read-only auditors and focused writers", () => {
     assert.match(agent.prompt, /load the most relevant skill/u);
   }
   assert.deepEqual(worker.tools, ["read", "grep", "find", "ls", "edit", "write", "bash", "web_search", "source_check", "fetch_content", "get_search_content"]);
-  assert.equal(SUBAGENT_LIMITS.maxTasks, 8);
+  assert.equal(SUBAGENT_LIMITS.maxTasks, 10);
   assert.equal(SUBAGENT_LIMITS.maxReadConcurrency, 4);
   assert.equal("maxTimeoutMs" in SUBAGENT_LIMITS, false);
   for (const agent of agents) assert.equal(agent.timeoutMs, undefined);
@@ -978,12 +979,14 @@ test("steering restarts the same child thread and retains prior usage and trace"
     const updates = [];
     const children = [];
     const childTasks = [];
+    const childArgs = [];
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
       spawnProcess(args) {
         const child = new FakeProcess();
         children.push(child);
+        childArgs.push(args);
         childTasks.push(args.at(-1));
         processCount += 1;
         if (processCount === 1) {
@@ -1022,7 +1025,10 @@ test("steering restarts the same child thread and retains prior usage and trace"
     const task = result.details.results[0];
     const thread = result.details.threads.find((candidate) => candidate.id === active.id);
     assert.equal(processCount, 2);
-    assert.match(childTasks[1], /Previous child handoff:[\s\S]*first handoff/u);
+    assert.equal(childArgs[0][childArgs[0].indexOf("--session-id") + 1], childArgs[1][childArgs[1].indexOf("--session-id") + 1]);
+    assert.equal(childArgs[0][childArgs[0].indexOf("--session-dir") + 1], childArgs[1][childArgs[1].indexOf("--session-dir") + 1]);
+    assert.equal(childArgs[0].includes("--no-session"), false);
+    assert.match(childTasks[1], /Parent steering:[\s\S]*Finish the second file/u);
     assert.equal(task.status, "complete");
     assert.equal(task.output, "second handoff");
     assert.equal(task.usage.turns, 2);
@@ -1031,6 +1037,7 @@ test("steering restarts the same child thread and retains prior usage and trace"
     assert.match(task.trace.join("\n"), /second\.ts/u);
     assert.equal(thread.steering.length, 1);
     assert.equal(thread.trace.length, 2);
+    assert.equal(existsSync(childArgs[0][childArgs[0].indexOf("--session-dir") + 1]), false);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }

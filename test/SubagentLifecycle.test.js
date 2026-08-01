@@ -215,7 +215,7 @@ test("process completes naturally after multiple Pi assistant messages without a
   assert.equal(updates.at(-1).status, "complete");
 });
 
-test("default child process lets long work complete without resource limits", async () => {
+test("default child process lets long work complete without execution limits and bounds retained telemetry", async () => {
   const child = new FakeProcess();
   const handle = runWith(child);
 
@@ -225,7 +225,7 @@ test("default child process lets long work complete without resource limits", as
       content: [{ type: "toolCall", name: "read", arguments: { path: "auth.ts", detail: "x".repeat(2_000) } }],
     }));
   }
-  child.json(assistantEvent("x".repeat(50 * 1024 + 1), {
+  child.json(assistantEvent("x".repeat(1024 * 1024 + 1), {
     stopReason: "length",
     usage: {
       input: 200_000,
@@ -245,12 +245,27 @@ test("default child process lets long work complete without resource limits", as
   assert.equal(result.toolCallCount, 1_050);
   assert.ok(result.usage.totalTokens > 300_000);
   assert.ok(result.usage.cost.total > 6);
-  assert.ok(result.traceBytes > 2 * 1024 * 1024);
-  assert.equal(result.traceTruncatedBytes, 0);
-  assert.ok(result.outputBytes > 50 * 1024);
-  assert.equal(result.outputTruncatedBytes, 0);
+  assert.ok(result.traceBytes <= 2 * 1024 * 1024);
+  assert.ok(result.traceTruncatedBytes > 0);
+  assert.ok(result.outputBytes > 1024 * 1024);
+  assert.ok(result.outputTruncatedBytes > 0);
   assert.ok(result.stderrBytes > 64 * 1024);
-  assert.equal(result.stderrTruncatedBytes, 0);
+  assert.ok(result.stderrTruncatedBytes > 0);
+  assert.deepEqual(child.killSignals, []);
+});
+
+test("default child process parses a large JSONL line without a process limit", async () => {
+  const child = new FakeProcess();
+  const handle = runWith(child);
+
+  child.json(assistantEvent("x".repeat(2 * 1024 * 1024 + 1)));
+  child.close();
+  const result = await handle.result;
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.terminationReason, "completed");
+  assert.ok(result.outputBytes > 2 * 1024 * 1024);
+  assert.ok(result.outputTruncatedBytes > 0);
   assert.deepEqual(child.killSignals, []);
 });
 
@@ -268,6 +283,25 @@ test("process applies output limit across assistant messages", async () => {
   assert.equal(result.output, "456");
   assert.equal(result.outputBytes, 6);
   assert.equal(result.outputTruncatedBytes, 1);
+});
+
+test("retention does not trigger a larger explicit stderr limit", async () => {
+  const child = new FakeProcess();
+  const handle = runWith(child, {
+    limits: { stderrBytes: 100 },
+    retention: { stderrBytes: 5 },
+  });
+
+  child.stderr.write("1234567890");
+  child.json(assistantEvent("done"));
+  child.close();
+  const result = await handle.result;
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.terminationReason, "completed");
+  assert.equal(result.stderrBytes, 10);
+  assert.equal(result.stderrTruncatedBytes, 5);
+  assert.deepEqual(child.killSignals, []);
 });
 
 test("process reports malformed Pi JSONL as a named failure", async () => {

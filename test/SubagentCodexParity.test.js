@@ -93,6 +93,7 @@ test("ten parallel read-only reviewers complete past 250,000 tokens without a tu
         return child;
       },
     });
+    assert.equal(tool.parameters.properties.tasks.maxItems, 10);
 
     const result = await tool.execute("subagent-codex-parity", {
       tasks: Array.from({ length: 10 }, (_, index) => ({ agent: "reviewer", task: `Review scope ${index + 1}` })),

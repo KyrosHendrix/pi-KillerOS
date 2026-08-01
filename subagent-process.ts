@@ -1,9 +1,17 @@
 import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export const SUBAGENT_PROCESS_LIMITS = {
   killGraceMs: 5_000,
+} as const;
+
+export const SUBAGENT_PROCESS_RETENTION = {
+  jsonlMemoryBytes: 1 * 1024 * 1024,
+  traceBytes: 2 * 1024 * 1024,
+  stderrBytes: 64 * 1024,
+  outputBytes: 1 * 1024 * 1024,
 } as const;
 
 export type SubagentProcessStatus = "running" | "complete" | "failed" | "cancelled" | "limited";
@@ -56,11 +64,12 @@ export interface SubagentProcessChild {
 }
 
 export interface SubagentProcessOptions {
-  /** Exact Pi arguments. Include `--mode json` and `--no-session`. */
+  /** Exact Pi arguments. Include `--mode json` and either `--no-session` or an isolated session id and directory. */
   args: readonly string[];
   cwd: string;
   signal?: AbortSignal;
   limits?: Partial<SubagentProcessLimits>;
+  retention?: Partial<SubagentProcessRetention>;
   environment?: NodeJS.ProcessEnv;
   onUpdate?: (result: Readonly<SubagentProcessResult>) => void;
   /** Test or embed hook. It receives the exact Pi arguments supplied above. */
@@ -76,6 +85,13 @@ export interface SubagentProcessLimits {
   quotaTokens?: number;
   quotaUsd?: number;
   killGraceMs: number;
+}
+
+export interface SubagentProcessRetention {
+  jsonlMemoryBytes: number;
+  traceBytes: number;
+  stderrBytes: number;
+  outputBytes: number;
 }
 
 export interface SubagentProcessHandle {
@@ -188,6 +204,13 @@ function hasJsonMode(args: readonly string[]): boolean {
   return args.some((arg, index) => arg === "--mode=json" || arg === "--mode" && args[index + 1] === "json");
 }
 
+function hasIsolatedSession(args: readonly string[]): boolean {
+  const sessionId = args.indexOf("--session-id");
+  const sessionDir = args.indexOf("--session-dir");
+  return sessionId >= 0 && typeof args[sessionId + 1] === "string"
+    && sessionDir >= 0 && typeof args[sessionDir + 1] === "string";
+}
+
 function normalizeLimits(overrides: Partial<SubagentProcessLimits> | undefined): SubagentProcessLimits {
   const limits = { ...SUBAGENT_PROCESS_LIMITS, ...overrides };
   for (const name of ["wallTimeMs", "jsonlLineBytes", "traceBytes", "stderrBytes", "outputBytes", "killGraceMs"] as const) {
@@ -199,6 +222,15 @@ function normalizeLimits(overrides: Partial<SubagentProcessLimits> | undefined):
     if (value !== undefined && (!Number.isFinite(value) || value <= 0)) throw new RangeError(`${name} must be a positive finite number`);
   }
   return limits;
+}
+
+function normalizeRetention(overrides: Partial<SubagentProcessRetention> | undefined): SubagentProcessRetention {
+  const retention = { ...SUBAGENT_PROCESS_RETENTION, ...overrides };
+  for (const name of ["jsonlMemoryBytes", "traceBytes", "stderrBytes", "outputBytes"] as const) {
+    const value = retention[name];
+    if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive safe integer`);
+  }
+  return retention;
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -268,8 +300,11 @@ function terminateProcess(child: SubagentProcessChild, force: boolean): void {
 export function runSubagentProcess(options: SubagentProcessOptions): SubagentProcessHandle {
   const args = [...options.args];
   if (!hasJsonMode(args)) throw new Error("Subagent Pi arguments must include --mode json");
-  if (!args.includes("--no-session")) throw new Error("Subagent Pi arguments must include --no-session");
+  if (!args.includes("--no-session") && !hasIsolatedSession(args)) {
+    throw new Error("Subagent Pi arguments must include --no-session or an isolated --session-id and --session-dir");
+  }
   const limits = normalizeLimits(options.limits);
+  const retention = normalizeRetention(options.retention);
   const startedAt = Date.now();
   const state: SubagentProcessResult = {
     status: "running",
@@ -295,6 +330,8 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
   let requestedReason: string | undefined;
   let stdoutLine = Buffer.alloc(0);
   let stdoutLineBytes = 0;
+  let stdoutLineSpoolDirectory: string | undefined;
+  let stdoutLineSpoolDescriptor: number | undefined;
   let stderr = Buffer.alloc(0);
   let outputBytesSeen = 0;
   let forceTimer: NodeJS.Timeout | undefined;
@@ -303,16 +340,53 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
   let resolveResult!: (result: SubagentProcessResult) => void;
   const result = new Promise<SubagentProcessResult>((resolve) => { resolveResult = resolve; });
 
+  const clearStdoutLine = (): void => {
+    if (stdoutLineSpoolDescriptor !== undefined) {
+      try {
+        closeSync(stdoutLineSpoolDescriptor);
+      } catch (error) {
+        state.errorMessage ??= `Could not close child JSONL spool: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      stdoutLineSpoolDescriptor = undefined;
+    }
+    if (stdoutLineSpoolDirectory) {
+      try {
+        rmSync(stdoutLineSpoolDirectory, { recursive: true, force: true });
+      } catch (error) {
+        state.errorMessage ??= `Could not remove child JSONL spool: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      stdoutLineSpoolDirectory = undefined;
+    }
+    stdoutLine = Buffer.alloc(0);
+    stdoutLineBytes = 0;
+  };
+  const readStdoutLine = (): string => {
+    if (stdoutLineSpoolDirectory) {
+      const filePath = path.join(stdoutLineSpoolDirectory, "line.jsonl");
+      try {
+        if (stdoutLineSpoolDescriptor !== undefined) {
+          closeSync(stdoutLineSpoolDescriptor);
+          stdoutLineSpoolDescriptor = undefined;
+        }
+        return readFileSync(filePath, "utf8");
+      } catch (error) {
+        state.errorMessage ??= `Could not read child JSONL spool: ${error instanceof Error ? error.message : String(error)}`;
+        return "";
+      } finally {
+        clearStdoutLine();
+      }
+    }
+    const line = stdoutLine.toString("utf8", 0, stdoutLineBytes);
+    clearStdoutLine();
+    return line;
+  };
+
   const publish = (): void => options.onUpdate?.(cloneResult(state));
   const finish = (code: number | null): void => {
     if (closed || finishing) return;
     finishing = true;
-    if (stdoutLineBytes && !requestedStatus) {
-      const finalLine = stdoutLine.toString("utf8", 0, stdoutLineBytes);
-      stdoutLine = Buffer.alloc(0);
-      stdoutLineBytes = 0;
-      processLine(finalLine);
-    }
+    if (stdoutLineBytes && !requestedStatus) processLine(readStdoutLine());
+    else clearStdoutLine();
     closed = true;
     if (forceTimer) clearTimeout(forceTimer);
     if (settleTimer) clearTimeout(settleTimer);
@@ -383,17 +457,20 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
       } else if (limits.quotaUsd !== undefined && state.usage.cost.total > limits.quotaUsd) {
         requestTermination("limited", "quota_cost", `Child cost exceeds $${limits.quotaUsd}`);
       }
-      if (appendTrace(state, traceMessage(message), limits.traceBytes)) {
+      const traceTruncatedBefore = state.traceTruncatedBytes;
+      appendTrace(state, traceMessage(message), Math.min(retention.traceBytes, limits.traceBytes ?? retention.traceBytes));
+      if (limits.traceBytes !== undefined && state.traceTruncatedBytes > traceTruncatedBefore && state.traceBytes >= limits.traceBytes) {
         requestTermination("limited", "trace_limit", `Retained child trace exceeds ${limits.traceBytes} bytes`);
       }
       const output = textContent(message);
       if (output) {
-        const capped = truncateUtf8(output, limits.outputBytes ?? Buffer.byteLength(output, "utf8"));
+        const outputLimit = Math.min(retention.outputBytes, limits.outputBytes ?? retention.outputBytes);
+        const capped = truncateUtf8(output, outputLimit);
         state.output = capped.text;
         state.outputTruncatedBytes = capped.omittedBytes;
         outputBytesSeen += Buffer.byteLength(output, "utf8");
         state.outputBytes = outputBytesSeen;
-        state.outputTruncatedBytes = Math.max(state.outputTruncatedBytes, limits.outputBytes === undefined ? 0 : outputBytesSeen - limits.outputBytes);
+        state.outputTruncatedBytes = Math.max(state.outputTruncatedBytes, outputBytesSeen - (limits.outputBytes ?? retention.outputBytes));
         if (limits.outputBytes !== undefined && outputBytesSeen > limits.outputBytes) requestTermination("limited", "output_limit", `Child output exceeds ${limits.outputBytes} bytes`);
       }
       if (typeof message.model === "string") state.model = message.provider ? `${message.provider}/${message.model}` : message.model;
@@ -406,7 +483,9 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
       publish();
     } else if (event?.type === "tool_result_end" && event.message) {
       const name = typeof event.message.toolName === "string" ? event.message.toolName : "tool";
-      if (appendTrace(state, [`${name} result${event.message.isError ? " (error)" : ""}`], limits.traceBytes)) {
+      const traceTruncatedBefore = state.traceTruncatedBytes;
+      appendTrace(state, [`${name} result${event.message.isError ? " (error)" : ""}`], Math.min(retention.traceBytes, limits.traceBytes ?? retention.traceBytes));
+      if (limits.traceBytes !== undefined && state.traceTruncatedBytes > traceTruncatedBefore && state.traceBytes >= limits.traceBytes) {
         requestTermination("limited", "trace_limit", `Retained child trace exceeds ${limits.traceBytes} bytes`);
       }
       publish();
@@ -417,6 +496,22 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     if (limits.jsonlLineBytes !== undefined && nextBytes > limits.jsonlLineBytes) {
       requestTermination("limited", "jsonl_line_limit", `Child JSONL line exceeds ${limits.jsonlLineBytes} bytes`);
       return false;
+    }
+    if (nextBytes > retention.jsonlMemoryBytes) {
+      try {
+        if (stdoutLineSpoolDescriptor === undefined) {
+          stdoutLineSpoolDirectory = mkdtempSync(path.join(os.tmpdir(), "killeros-jsonl-"));
+          stdoutLineSpoolDescriptor = openSync(path.join(stdoutLineSpoolDirectory, "line.jsonl"), "w");
+          if (stdoutLineBytes) writeSync(stdoutLineSpoolDescriptor, stdoutLine);
+          stdoutLine = Buffer.alloc(0);
+        }
+        if (fragment.length) writeSync(stdoutLineSpoolDescriptor, fragment);
+      } catch (error) {
+        requestTermination("failed", "jsonl_spool_error", `Could not spool child JSONL: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }
+      stdoutLineBytes = nextBytes;
+      return true;
     }
     if (nextBytes > stdoutLine.length) {
       const nextCapacity = limits.jsonlLineBytes === undefined
@@ -449,21 +544,19 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
           const end = newline < 0 ? buffer.length : newline;
           if (!appendStdout(buffer.subarray(offset, end))) return;
           if (newline < 0) return;
-          const line = stdoutLine.toString("utf8", 0, stdoutLineBytes);
-          stdoutLine = Buffer.alloc(0);
-          stdoutLineBytes = 0;
-          processLine(line);
+          processLine(readStdoutLine());
           offset = newline + 1;
         }
       });
       child.stderr.on("data", (chunk: Buffer | string) => {
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        const retained = limits.stderrBytes === undefined
-          ? buffer
-          : buffer.subarray(0, Math.max(0, limits.stderrBytes - stderr.length));
+        const stderrLimit = Math.min(retention.stderrBytes, limits.stderrBytes ?? retention.stderrBytes);
+        const retained = buffer.subarray(0, Math.max(0, stderrLimit - stderr.length));
         if (retained.length) stderr = Buffer.concat([stderr, retained]);
         state.stderrTruncatedBytes += buffer.length - retained.length;
-        if (buffer.length > retained.length) requestTermination("limited", "stderr_limit", `Child stderr exceeds ${limits.stderrBytes} bytes`);
+        if (limits.stderrBytes !== undefined && stderr.length + state.stderrTruncatedBytes > limits.stderrBytes) {
+          requestTermination("limited", "stderr_limit", `Child stderr exceeds ${limits.stderrBytes} bytes`);
+        }
       });
       child.on("error", (error) => requestTermination("failed", "spawn_error", error.message));
       child.once("close", finish);
