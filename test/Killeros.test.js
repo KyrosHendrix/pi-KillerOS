@@ -1215,7 +1215,15 @@ test("footer cuts down by priority while preserving model and context", () => {
 
   const wide = footer.render(160)[0];
   assert.match(wide, /GPT-5\.6 Sol OpenAI · high · 95% left \(1M\) · main · \d+s · \$10\.00/u);
-  assert.ok(wide.includes(process.cwd()));
+  const normalizedHome = (process.env.HOME || process.env.USERPROFILE || os.homedir()).replace(/[\\/]+$/u, "");
+  const normalizedCwd = process.cwd().replace(/[\\/]+$/u, "");
+  const separator = normalizedCwd.slice(normalizedHome.length, normalizedHome.length + 1);
+  const displayedCwd = normalizedCwd === normalizedHome
+    ? "~"
+    : normalizedCwd.startsWith(normalizedHome) && /^[\\/]/u.test(separator)
+      ? `~${normalizedCwd.slice(normalizedHome.length)}`
+      : process.cwd();
+  assert.ok(wide.includes(displayedCwd));
 
   const focused = footer.render(72)[0];
   assert.match(focused, /GPT-5\.6 Sol OpenAI · 95% left \(1M\)/u);
