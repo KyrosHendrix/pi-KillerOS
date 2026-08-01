@@ -621,9 +621,7 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
         settleTimer = setTimeout(() => {
           if (!closed) finish(null);
         }, 1_000);
-        settleTimer.unref?.();
       }, limits.killGraceMs);
-      forceTimer.unref?.();
     };
 
     const processLine = (line: string): void => {
@@ -755,7 +753,6 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
     child.once("close", finish);
 
     const timeoutTimer = setTimeout(() => requestTermination("limited", "timeout"), agent.timeoutMs);
-    timeoutTimer.unref?.();
     const abortHandler = (): void => requestTermination("cancelled", "abort");
     if (options.signal?.aborted) abortHandler();
     else options.signal?.addEventListener("abort", abortHandler, { once: true });

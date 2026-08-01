@@ -11,6 +11,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Made child timeout and forced-termination fallbacks settle even when no other event-loop handles remain.
 - Kept streamed child thinking within the retained trace budget without terminating successful invocations.
 - Preserved model IDs containing colons and validated thinking levels through Pi's model capabilities, including models that do not support `off`.
 - Bounded unterminated JSONL lines while preserving fragmented UTF-8 handling.
