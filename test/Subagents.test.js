@@ -19,6 +19,7 @@ function roleFile({
   access = "read",
   tools = "read, grep, find, ls, web_search, source_check, fetch_content, get_search_content",
   model,
+  thinking,
   maxTurns = 8,
   timeoutMs = 300000,
   extra = "",
@@ -31,6 +32,7 @@ function roleFile({
     `access: ${access}`,
     `tools: ${tools}`,
     ...(model ? [`model: ${model}`] : []),
+    ...(thinking ? [`thinking: ${thinking}`] : []),
     `maxTurns: ${maxTurns}`,
     `timeoutMs: ${timeoutMs}`,
     ...(extra ? [extra] : []),
@@ -257,6 +259,11 @@ test("model resolution supports exact colon IDs and enforces Pi thinking capabil
     thinking: "high",
     definition: parentModel,
   });
+  assert.deepEqual(resolveAgentModel({ ...base, model: "inherit", thinking: "low" }, modelContext()), {
+    model: "test/parent-model",
+    thinking: "low",
+    definition: parentModel,
+  });
 
   const duplicate = { ...parentModel, provider: "other" };
   assert.throws(() => resolveAgentModel({ ...base, model: "parent-model" }, modelContext([parentModel, duplicate])), /ambiguous model/u);
@@ -270,6 +277,10 @@ test("model resolution supports exact colon IDs and enforces Pi thinking capabil
   );
   assert.throws(
     () => resolveAgentModel({ ...base, model: "test/parent-model:turbo" }, modelContext()),
+    /does not support thinking level turbo/u,
+  );
+  assert.throws(
+    () => resolveAgentModel({ ...base, thinking: "turbo" }, modelContext()),
     /does not support thinking level turbo/u,
   );
 
@@ -348,6 +359,46 @@ test("isolated child invocation uses explicit tools and reports bounded output, 
     assert.equal(args[args.indexOf("--model") + 1], "test/parent-model");
     assert.equal(args[args.indexOf("--thinking") + 1], "high");
     assert.ok(promptPaths.every((promptPath) => !existsSync(promptPath)), "temporary prompts must be removed");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("model and thinking overrides select the requested child configuration independently", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout", model: "inherit", thinking: "inherit" });
+    const selectedModel = {
+      provider: "test",
+      id: "selected-model",
+      name: "Selected model",
+      reasoning: true,
+    };
+    let capturedArgs;
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess(args) {
+        capturedArgs = args;
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("selected", { provider: selectedModel.provider, model: selectedModel.id }));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+    const result = await execute(tool, {
+      agent: "scout",
+      task: "Use the selected configuration",
+      model: "test/selected-model",
+      thinking: "low",
+    }, toolContext(roster.root, { models: [parentModel, selectedModel] }));
+    assert.equal(result.details.results[0].status, "complete");
+    assert.equal(result.details.results[0].model, "test/selected-model");
+    assert.equal(result.details.results[0].thinking, "low");
+    assert.equal(capturedArgs[capturedArgs.indexOf("--model") + 1], "test/selected-model");
+    assert.equal(capturedArgs[capturedArgs.indexOf("--thinking") + 1], "low");
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
@@ -750,6 +801,8 @@ test("bundled roster declares read-only auditors and focused writers", () => {
     for (const tool of ["web_search", "source_check", "fetch_content", "get_search_content"]) {
       assert.equal(agent.tools.includes(tool), true, `${agent.name} must expose ${tool}`);
     }
+    assert.equal(agent.model, "inherit", `${agent.name} must expose a model placeholder`);
+    assert.equal(agent.thinking, "inherit", `${agent.name} must expose a thinking placeholder`);
     assert.match(agent.prompt, /## Skills and web research/u);
     assert.match(agent.prompt, /load the most relevant skill/u);
   }

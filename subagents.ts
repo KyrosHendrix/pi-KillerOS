@@ -39,7 +39,8 @@ const READ_TOOLS = new Set(["read", "grep", "find", "ls", ...WEB_TOOLS]);
 const WRITE_TOOLS = new Set(["bash", "edit", "write"]);
 const KNOWN_TOOLS = new Set([...READ_TOOLS, ...WRITE_TOOLS]);
 const SUBAGENT_WEB_EXTENSION = "npm:pi-web-access";
-const ROLE_FIELDS = new Set(["name", "description", "access", "tools", "model", "maxTurns", "timeoutMs"]);
+const INHERIT_SETTING = "inherit";
+const ROLE_FIELDS = new Set(["name", "description", "access", "tools", "model", "thinking", "maxTurns", "timeoutMs"]);
 
 type ThinkingLevel = ModelThinkingLevel;
 export type AgentAccess = "read" | "write";
@@ -53,6 +54,7 @@ export interface AgentRole {
   access: AgentAccess;
   tools: string[];
   model?: string;
+  thinking?: string;
   maxTurns: number;
   timeoutMs: number;
   prompt: string;
@@ -266,6 +268,10 @@ function parseAgentFile(filePath: string, source: AgentSource, limits: SubagentL
   if (modelValue !== undefined && (typeof modelValue !== "string" || !modelValue.trim())) {
     throw new AgentConfigurationError(filePath, "model", "must be a non-empty string when provided");
   }
+  const thinkingValue = frontmatter.thinking;
+  if (thinkingValue !== undefined && (typeof thinkingValue !== "string" || !thinkingValue.trim())) {
+    throw new AgentConfigurationError(filePath, "thinking", "must be a non-empty string when provided");
+  }
 
   return {
     name,
@@ -273,6 +279,7 @@ function parseAgentFile(filePath: string, source: AgentSource, limits: SubagentL
     access: accessValue,
     tools,
     model: typeof modelValue === "string" ? modelValue.trim() : undefined,
+    thinking: typeof thinkingValue === "string" ? thinkingValue.trim() : undefined,
     maxTurns: optionalPositiveInteger(frontmatter, filePath, "maxTurns", limits.defaultTurns, limits.maxTurns),
     timeoutMs: optionalPositiveInteger(frontmatter, filePath, "timeoutMs", limits.defaultTimeoutMs, limits.maxTimeoutMs),
     prompt,
@@ -374,15 +381,29 @@ function resolveAvailableModel(value: string, filePath: string, available: Model
   return matches[0]!;
 }
 
-export function resolveAgentModel(agent: AgentRole, ctx: ModelContext): ResolvedModel {
-  const inheritedThinking = ctx.thinkingLevel ?? "off";
-  let definition: Model<any> | undefined;
-  let thinking: string = inheritedThinking;
+function configuredSetting(override: string | undefined, roleSetting: string | undefined): string | undefined {
+  const overrideValue = override?.trim();
+  const roleValue = roleSetting?.trim();
+  const selected = overrideValue && overrideValue !== INHERIT_SETTING ? overrideValue : roleValue;
+  return selected && selected !== INHERIT_SETTING ? selected : undefined;
+}
 
-  if (agent.model) {
+export function resolveAgentModel(
+  agent: AgentRole,
+  ctx: ModelContext,
+  modelOverride?: string,
+  thinkingOverride?: string,
+): ResolvedModel {
+  const inheritedThinking = ctx.thinkingLevel ?? "off";
+  const configuredModel = configuredSetting(modelOverride, agent.model);
+  const configuredThinking = configuredSetting(thinkingOverride, agent.thinking);
+  let definition: Model<any> | undefined;
+  let thinking: string = configuredThinking ?? inheritedThinking;
+
+  if (configuredModel) {
     const available = ctx.modelRegistry.getAvailable();
-    const requested = splitModelAndThinking(agent.model, agent.filePath, available);
-    thinking = requested.thinking ?? inheritedThinking;
+    const requested = splitModelAndThinking(configuredModel, agent.filePath, available);
+    thinking = configuredThinking ?? requested.thinking ?? inheritedThinking;
     definition = resolveAvailableModel(requested.model, agent.filePath, available);
   } else {
     definition = ctx.model;
@@ -391,7 +412,7 @@ export function resolveAgentModel(agent: AgentRole, ctx: ModelContext): Resolved
 
   const supportedThinking = getSupportedThinkingLevels(definition) as readonly string[];
   if (!supportedThinking.includes(thinking)) {
-    throw new AgentConfigurationError(agent.filePath, "model", `${definition.provider}/${definition.id} does not support thinking level ${thinking}`);
+    throw new AgentConfigurationError(agent.filePath, "thinking", `${definition.provider}/${definition.id} does not support thinking level ${thinking}`);
   }
   return { model: `${definition.provider}/${definition.id}`, thinking: thinking as ThinkingLevel, definition };
 }
@@ -813,6 +834,8 @@ const SubagentParams = Type.Object({
   task: Type.Optional(Type.String({ minLength: 1, maxLength: SUBAGENT_LIMITS.taskCharacters, description: "Task for single mode" })),
   tasks: Type.Optional(Type.Array(TaskSchema, { minItems: 1, maxItems: SUBAGENT_LIMITS.maxTasks, description: "Parallel role tasks" })),
   chain: Type.Optional(Type.Array(ChainTaskSchema, { minItems: 1, maxItems: SUBAGENT_LIMITS.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
+  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
+  thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
   agentScope: Type.Optional(StringEnum(["user", "project", "both"] as const, {
     default: "user",
     description: "Role sources: user includes bundled and personal; project includes bundled and trusted project; both includes all",
@@ -876,12 +899,13 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   pi.registerTool({
     name: "subagent",
     label: "Subagents",
-    description: "Delegate one task, up to eight parallel tasks, or a sequential chain to isolated Pi child roles. Bundled and personal roles are available by default; trusted project roles require project/both scope and confirmation. Children have explicit local and web tools, load pi-web-access explicitly, discover skills, keep arbitrary extensions and prompt templates disabled, and enforce at most 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task.",
+    description: "Delegate one task, up to eight parallel tasks, or a sequential chain to isolated Pi child roles. Set model as provider/model and thinking as a separate supported effort level; both apply to every task in the call. Bundled and personal roles are available by default; trusted project roles require project/both scope and confirmation. Children have explicit local and web tools, load pi-web-access explicitly, discover skills, keep arbitrary extensions and prompt templates disabled, and enforce at most 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task.",
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
       "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
       "Do not request multiple write-capable subagents in one parallel batch.",
       "Every child can load relevant skills with read and can use web_search, source_check, fetch_content, and get_search_content for external research.",
+      "When the user names a model or thinking effort, pass model and thinking separately; use inherit when the active parent or role setting should decide.",
     ],
     parameters: SubagentParams,
     executionMode: "sequential",
@@ -920,7 +944,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       }
 
       const resolvedModels = new Map<string, ResolvedModel>();
-      for (const name of new Set(requested)) resolvedModels.set(name, resolveAgentModel(roles.get(name)!, ctx));
+      for (const name of new Set(requested)) {
+        resolvedModels.set(name, resolveAgentModel(roles.get(name)!, ctx, params.model, params.thinking));
+      }
 
       const mode: SubagentDetails["mode"] = hasParallel ? "parallel" : hasChain ? "chain" : "single";
       const inputs: TaskInput[] = hasSingle

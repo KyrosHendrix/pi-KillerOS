@@ -3,6 +3,9 @@ name: debugger
 description: debugger — reproduce failures, eliminate competing root-cause hypotheses, fix the shared cause, and prove the regression is gone
 access: write
 tools: read, grep, find, ls, edit, write, bash, web_search, source_check, fetch_content, get_search_content
+# Replace inherit with provider/model to pin this role; set thinking separately when needed.
+model: inherit
+thinking: inherit
 maxTurns: 8
 timeoutMs: 300000
 ---

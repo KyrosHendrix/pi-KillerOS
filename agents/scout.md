@@ -3,6 +3,9 @@ name: scout
 description: scout — find the shortest trustworthy evidence trail through an unfamiliar repository and trace real flow without wandering or inventing fixes
 access: read
 tools: read, grep, find, ls, web_search, source_check, fetch_content, get_search_content
+# Replace inherit with provider/model to pin this role; set thinking separately when needed.
+model: inherit
+thinking: inherit
 maxTurns: 8
 timeoutMs: 300000
 ---

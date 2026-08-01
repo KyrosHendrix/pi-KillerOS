@@ -95,9 +95,15 @@ KillerOS ships `planner`, `reviewer`, `scout`, and `security` as read-only roles
 2. Personal: `~/.pi/agent/agents/*.md`
 3. Trusted project: `<repo>/.pi/agents/*.md`
 
-The default `agentScope: "user"` uses bundled and personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project override requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. Optional fields are `model`, `maxTurns`, and `timeoutMs`.
+The default `agentScope: "user"` uses bundled and personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project override requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. Optional fields are `model`, `thinking`, `maxTurns`, and `timeoutMs`. Every bundled role shows `model: inherit` and `thinking: inherit` as editable placeholders. Replace them with an available `provider/model` and a separate thinking level when you want to pin a role; `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` are checked against that model’s supported capabilities.
 
-The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Children run as ephemeral `pi --mode json -p --no-session` processes with explicit local tools plus `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` before work and to use web research when external evidence is needed. KillerOS allows at most eight tasks, four parallel readers, one serialized writer, 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task. Esc cancellation terminates active children and escalates after five seconds.
+The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. A call can also set `model` and `thinking` for every task, overriding role settings; use `inherit` to fall back to each role and then the active parent model. For example:
+
+```json
+{"agent":"reviewer","task":"Review the change","model":"provider/model","thinking":"high"}
+```
+
+Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as ephemeral `pi --mode json -p --no-session` processes with explicit local tools plus `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` before work and to use web research when external evidence is needed. KillerOS allows at most eight tasks, four parallel readers, one serialized writer, 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task. Esc cancellation terminates active children and escalates after five seconds.
 
 ## Configuration
 

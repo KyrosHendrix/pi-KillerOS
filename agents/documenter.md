@@ -3,6 +3,9 @@ name: documenter
 description: documenter — make source-backed docs answer the reader’s next question while preserving exact code, command, and behavior parity
 access: write
 tools: read, grep, find, ls, edit, write, bash, web_search, source_check, fetch_content, get_search_content
+# Replace inherit with provider/model to pin this role; set thinking separately when needed.
+model: inherit
+thinking: inherit
 maxTurns: 8
 timeoutMs: 300000
 ---

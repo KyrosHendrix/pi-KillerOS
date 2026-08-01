@@ -28,6 +28,7 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 - Full custom header, editor, footer, and interactive question behavior requires TUI mode.
 - Subagents use isolated ephemeral Pi children, explicit role tool lists, bounded execution, no arbitrary child extension or prompt-template discovery, and skill discovery that loads project-local skills only when the parent project is trusted.
 - Child web research uses the explicitly loaded `pi-web-access` package, which users install alongside KillerOS.
+- Users can choose a child `provider/model` and separate thinking effort per invocation; each bundled role exposes `inherit` placeholders, and KillerOS checks the requested effort against the selected model.
 - Bundled and personal roles are available by default; project roles require Pi project trust, explicit scope, and confirmation.
 - RPC supports commands, subagents, and concise prompt guidance but disables TUI components.
 - Print and JSON modes support concise prompt guidance but not interactive questions.

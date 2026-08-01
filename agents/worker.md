@@ -3,6 +3,9 @@ name: worker
 description: worker — apply a lazy-senior ladder to ship the shortest correct diff, fix root causes, and leave runnable proof
 access: write
 tools: read, grep, find, ls, edit, write, bash, web_search, source_check, fetch_content, get_search_content
+# Replace inherit with provider/model to pin this role; set thinking separately when needed.
+model: inherit
+thinking: inherit
 maxTurns: 8
 timeoutMs: 300000
 ---

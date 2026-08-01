@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Added
 
+- Added per-invocation child model selection and separate thinking-effort controls, with visible `inherit` placeholders in every bundled role.
 - Added focused `debugger`, `documenter`, `security`, and `tester` roles with explicit access boundaries, skill discovery, and web research guidance.
 - Added child web research through the separately installed `pi-web-access` package and exposed search, source-check, fetch, and stored-content tools to every bundled role.
 

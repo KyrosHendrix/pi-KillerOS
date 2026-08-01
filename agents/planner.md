@@ -3,6 +3,9 @@ name: planner
 description: planner — turn an ambiguous request into the smallest buildable route with explicit evidence, contracts, decisions, and proof
 access: read
 tools: read, grep, find, ls, web_search, source_check, fetch_content, get_search_content
+# Replace inherit with provider/model to pin this role; set thinking separately when needed.
+model: inherit
+thinking: inherit
 maxTurns: 8
 timeoutMs: 300000
 ---
