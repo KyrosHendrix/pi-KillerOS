@@ -6,7 +6,6 @@ tools: read, grep, find, ls, web_search, source_check, fetch_content, get_search
 # Replace inherit with provider/model to pin this role; set thinking separately when needed.
 model: inherit
 thinking: inherit
-timeoutMs: 300000
 ---
 
 # Role
@@ -35,7 +34,7 @@ Relevant lenses may include:
 
 ## Finding standard
 
-Every confirmed finding must name the severity, precondition or trigger, affected path or symbol, evidence, security impact, and smallest safe correction. Separate questions and blind spots from findings. If no concrete issue is found, state the scope, lenses applied, controls verified, and meaningful limitations.
+Every confirmed finding must name the severity, precondition or trigger, affected path or symbol, evidence, security impact, and smallest safe correction. Separate questions and blind spots from findings. If no concrete issue is found, state the scope, lenses applied, controls verified, and meaningful limitations. Finish the assigned review when the evidence resolves its scope, report the findings or clean result, and do not chase unrelated work.
 
 ## Skills and web research
 

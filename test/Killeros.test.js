@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Killeros, { formatContextProgress, INIT_WORKFLOW_PROMPT } from "../Killeros.ts";
+import { formatThreadBoard, formatThreadState } from "../subagent-ui.ts";
 
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -25,6 +26,42 @@ function usage(cost) {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
   };
 }
+
+test("child state presents completion, interruption, and process failure accurately", () => {
+  assert.deepEqual(formatThreadState({ status: "limited", terminationReason: "completed" }), {
+    status: "complete",
+    label: "Complete",
+  });
+  assert.deepEqual(formatThreadState({ status: "limited", terminationReason: "interrupt" }), {
+    status: "cancelled",
+    label: "Stopped",
+    reason: "Interrupted by user.",
+    partialWork: "Stopped before completion. Any saved output is partial work.",
+  });
+  assert.deepEqual(formatThreadState({ status: "limited", terminationReason: "exit_1", errorMessage: "provider unavailable" }), {
+    status: "failed",
+    label: "Failed",
+    reason: "exit_1: provider unavailable",
+    partialWork: "Failed before completion. Any saved output is partial work.",
+  });
+});
+
+test("child board keeps a completed handoff whole when the completion event wins", () => {
+  const board = formatThreadBoard({
+    selectedThreadId: "child-1",
+    threads: [{
+      id: "child-1",
+      agent: "scout",
+      task: "Map auth",
+      status: "limited",
+      terminationReason: "completed",
+      handoff: "Mapped auth.",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, turns: 1 },
+    }],
+  });
+  assert.equal(board.done[0].state.label, "Complete");
+  assert.equal(board.selected?.handoff.isPartial, false);
+});
 
 function createHarness() {
   const commands = new Map();

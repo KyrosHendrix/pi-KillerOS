@@ -6,7 +6,6 @@ tools: read, grep, find, ls, edit, write, bash, web_search, source_check, fetch_
 # Replace inherit with provider/model to pin this role; set thinking separately when needed.
 model: inherit
 thinking: inherit
-timeoutMs: 300000
 ---
 
 # Role

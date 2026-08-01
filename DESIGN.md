@@ -155,7 +155,7 @@ Threads use `queued`, `active`, `done`, `failed`, `stopped`, and `closed` states
 
 The controls are explicit: **inspect** opens the prompt, role, model, tools, trace, usage, and handoff; **steer** sends one bounded follow-up to an active thread; **interrupt** stops one or all active children; **collect** distills the handoff into parent context; and **close** removes a finished or stopped thread from the workspace without deleting its result record. Interruption preserves the trace, names the reason, and labels the handoff as partial, never successful.
 
-A child becomes done when it returns a final answer. Do not use a routine turn cap to stop useful work. Apply named resource guards for wall time, output bytes, retained trace, stderr, quota, read-tool calls, task count, and concurrency. Read-only children receive a child-runtime tool budget with a soft finalization nudge and a hard block on read and web tools; final assistant text remains available. Steering keeps the cumulative read-tool budget for the thread. Each guard must name its cause and return partial work clearly. Markdown roles continue to define access and tools; lifecycle controls do not expand those permissions.
+A child becomes done when it returns a final answer. The default path has no per-child execution quota. Embedding callers may apply explicit wall-time, output, trace, stderr, JSONL, token, or cost guards; each guard must name its cause and return partial work clearly. The parent still bounds task count, reader concurrency, role files, task input, and combined parent output. Explicit user interruptions and real child-process failures remain visible. Markdown roles continue to define access and tools; lifecycle controls do not expand those permissions.
 
 Implementation proceeds in nine phases:
 
@@ -165,7 +165,7 @@ Implementation proceeds in nine phases:
 4. **Steer:** Add a bounded parent follow-up to an active thread history.
 5. **Interrupt:** Stop one or all active children and preserve partial work.
 6. **Collect:** Return a concise handoff while keeping the expanded trace available.
-7. **Bound:** Enforce named resource guards instead of a routine turn stop.
+7. **Guard:** Honor only explicit child resource guards instead of imposing a routine turn stop.
 8. **Close:** Remove a finished or stopped thread from the workspace while retaining its result record.
 9. **Prove:** Test identity, visibility, controls, natural completion, guards, partial handoffs, and closure.
 

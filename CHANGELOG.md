@@ -2,6 +2,16 @@
 
 All notable changes to KillerOS are documented here.
 
+## [1.4.5] - 2026-08-01
+
+### Fixed
+
+- Removed the child-budget extension, its read-tool budget, and the default 250,000-token/$5 quota.
+- Removed default child wall-time, JSONL-line, trace, stderr, returned-output, and model-output-length stops; role `timeoutMs` and other child guards are now opt-in.
+- Removed forced early-report prompt text so roles can finish their assigned work naturally.
+- Treat model stop reason `length` as a completed child process instead of inventing a KillerOS `limited` result.
+- Documented the child lifecycle contract: children complete naturally; explicit user interruptions, configured guards, and real child-process failures remain visible.
+
 ## [1.4.3] - 2026-08-01
 
 ### Fixed

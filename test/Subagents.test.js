@@ -20,7 +20,7 @@ function roleFile({
   tools = "read, grep, find, ls, web_search, source_check, fetch_content, get_search_content",
   model,
   thinking,
-  timeoutMs = 300000,
+  timeoutMs,
   extra = "",
   prompt = `Act as ${name}.`,
 }) {
@@ -32,7 +32,7 @@ function roleFile({
     `tools: ${tools}`,
     ...(model ? [`model: ${model}`] : []),
     ...(thinking ? [`thinking: ${thinking}`] : []),
-    `timeoutMs: ${timeoutMs}`,
+    ...(timeoutMs === undefined ? [] : [`timeoutMs: ${timeoutMs}`]),
     ...(extra ? [extra] : []),
     "---",
     "",
@@ -357,13 +357,8 @@ test("isolated child invocation uses explicit tools and reports bounded output, 
     assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls,web_search,source_check,fetch_content,get_search_content");
     assert.equal(args[args.indexOf("--model") + 1], "test/parent-model");
     assert.equal(args[args.indexOf("--thinking") + 1], "high");
-    const childBudget = JSON.parse(calls[0].environment.PI_KILLEROS_TOOL_BUDGET);
-    assert.deepEqual(childBudget, {
-      soft: SUBAGENT_LIMITS.readToolBudgetSoft,
-      hard: SUBAGENT_LIMITS.readToolBudgetHard,
-      block: ["read", "grep", "find", "ls", "web_search", "source_check", "fetch_content", "get_search_content"],
-    });
-    assert.ok(promptContents.every((prompt) => /Child report protocol/u.test(prompt)));
+    assert.equal(calls[0].environment, undefined);
+    assert.deepEqual(promptContents, ["Act as scout.", "Act as scout."]);
     assert.ok(promptPaths.every((promptPath) => !existsSync(promptPath)), "temporary prompts must be removed");
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
@@ -514,6 +509,46 @@ test("parallel execution caps readers, waits before the writer, and rejects mult
   }
 });
 
+test("parallel reviewers complete after more than 250,000 tokens", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "reviewer.md", { name: "reviewer" });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("Reviewed", {
+            usage: {
+              input: 250_001,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 250_001,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          }));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+
+    const result = await execute(tool, {
+      tasks: [
+        { agent: "reviewer", task: "Review first change" },
+        { agent: "reviewer", task: "Review second change" },
+      ],
+    }, toolContext(roster.root));
+
+    assert.deepEqual(result.details.results.map((entry) => entry.status), ["complete", "complete"]);
+    assert.equal(result.details.aggregateUsage.totalTokens, 500_002);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
 test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits fail or truncate visibly", async () => {
   const scenarios = [
     {
@@ -591,8 +626,8 @@ test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits 
       name: "length",
       role: { name: "agent" },
       emit(child) { child.json(assistantEvent("partial", { stopReason: "length" })); child.close(0); },
-      expectedStatus: "limited",
-      expectedReason: "model_output_limit",
+      expectedStatus: "complete",
+      expectedReason: "completed",
     },
     {
       name: "output",
@@ -812,7 +847,8 @@ test("bundled roster declares read-only auditors and focused writers", () => {
   assert.deepEqual(worker.tools, ["read", "grep", "find", "ls", "edit", "write", "bash", "web_search", "source_check", "fetch_content", "get_search_content"]);
   assert.equal(SUBAGENT_LIMITS.maxTasks, 8);
   assert.equal(SUBAGENT_LIMITS.maxReadConcurrency, 4);
-  assert.equal(SUBAGENT_LIMITS.maxTimeoutMs, 600000);
+  assert.equal("maxTimeoutMs" in SUBAGENT_LIMITS, false);
+  for (const agent of agents) assert.equal(agent.timeoutMs, undefined);
 });
 
 test("Codex-style thread actions keep a completed handoff visible until close", async () => {
@@ -942,16 +978,13 @@ test("steering restarts the same child thread and retains prior usage and trace"
     const updates = [];
     const children = [];
     const childTasks = [];
-    const childBudgets = [];
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
-      limits: { readToolBudgetSoft: 1, readToolBudgetHard: 2 },
-      spawnProcess(args, _cwd, environment) {
+      spawnProcess(args) {
         const child = new FakeProcess();
         children.push(child);
         childTasks.push(args.at(-1));
-        childBudgets.push(JSON.parse(environment.PI_KILLEROS_TOOL_BUDGET));
         processCount += 1;
         if (processCount === 1) {
           setImmediate(() => {
@@ -989,10 +1022,6 @@ test("steering restarts the same child thread and retains prior usage and trace"
     const task = result.details.results[0];
     const thread = result.details.threads.find((candidate) => candidate.id === active.id);
     assert.equal(processCount, 2);
-    assert.deepEqual(childBudgets.map(({ soft, hard }) => ({ soft, hard })), [
-      { soft: 1, hard: 2 },
-      { soft: 1, hard: 1 },
-    ]);
     assert.match(childTasks[1], /Previous child handoff:[\s\S]*first handoff/u);
     assert.equal(task.status, "complete");
     assert.equal(task.output, "second handoff");

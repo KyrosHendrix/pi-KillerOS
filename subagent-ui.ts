@@ -120,14 +120,31 @@ function toRecord(item: ThreadListItem): ThreadRecord {
   };
 }
 
-export function formatThreadState(thread: Pick<ThreadRecord, "status" | "terminationReason">): ThreadStateView {
+function threadStatus(thread: Pick<ThreadRecord, "status" | "terminationReason">): ThreadStatus {
   const reason = thread.terminationReason;
-  if (thread.status === "complete") return { status: thread.status, label: "Complete" };
-  if (thread.status === "failed") return { status: thread.status, label: "Failed", reason, partialWork: "Failed before completion. Any saved output is partial work." };
-  if (thread.status === "cancelled") return { status: thread.status, label: "Stopped", reason, partialWork: "Stopped before completion. Any saved output is partial work." };
-  if (thread.status === "limited") return { status: thread.status, label: "Limited", reason, partialWork: "Stopped at a limit before completion. Any saved output is partial work." };
-  if (thread.status === "running") return { status: thread.status, label: "Running", reason };
-  return { status: thread.status, label: "Queued", reason };
+  if (thread.status === "failed" || reason === "error" || reason === "spawn_error" || reason === "process_closed" || reason === "missing_assistant_message" || reason === "malformed_jsonl" || reason === "invalid_usage" || reason?.startsWith("exit_")) return "failed";
+  if (thread.status === "cancelled" || reason === "abort" || reason === "interrupt") return "cancelled";
+  if (thread.status === "complete" || reason === "completed") return "complete";
+  return thread.status;
+}
+
+function threadReason(thread: Pick<ThreadRecord, "terminationReason" | "errorMessage">, status: ThreadStatus): string | undefined {
+  if (status === "cancelled" && thread.terminationReason === "interrupt") return "Interrupted by user.";
+  if (status === "cancelled" && thread.terminationReason === "abort") return "Cancelled by parent.";
+  if (status === "failed" && thread.errorMessage && thread.terminationReason) return `${thread.terminationReason}: ${thread.errorMessage}`;
+  if (status === "failed") return thread.errorMessage ?? thread.terminationReason ?? "Child process failed.";
+  return thread.terminationReason;
+}
+
+export function formatThreadState(thread: Pick<ThreadRecord, "status" | "terminationReason" | "errorMessage">): ThreadStateView {
+  const status = threadStatus(thread);
+  const reason = threadReason(thread, status);
+  if (status === "complete") return { status, label: "Complete" };
+  if (status === "failed") return { status, label: "Failed", reason, partialWork: "Failed before completion. Any saved output is partial work." };
+  if (status === "cancelled") return { status, label: "Stopped", reason, partialWork: "Stopped before completion. Any saved output is partial work." };
+  if (status === "limited") return { status, label: "Limited", reason, partialWork: "Stopped at a limit before completion. Any saved output is partial work." };
+  if (status === "running") return { status, label: "Running", reason };
+  return { status, label: "Queued", reason };
 }
 
 export function formatThreadUsage(usage: ThreadUsage): ThreadUsageView {
@@ -148,9 +165,9 @@ export function formatThreadTrace(thread: Pick<ThreadRecord, "trace" | "traceTru
   };
 }
 
-export function formatThreadHandoff(thread: Pick<ThreadRecord, "status" | "handoff" | "output">): ThreadHandoffView {
+export function formatThreadHandoff(thread: Pick<ThreadRecord, "status" | "terminationReason" | "handoff" | "output">): ThreadHandoffView {
   const text = thread.handoff ?? thread.output ?? "No handoff yet.";
-  return { label: "Handoff", text, isPartial: thread.status !== "complete" };
+  return { label: "Handoff", text, isPartial: threadStatus(thread) !== "complete" };
 }
 
 export function formatThreadControls(status: ThreadStatus): readonly ThreadBoardControl[] {

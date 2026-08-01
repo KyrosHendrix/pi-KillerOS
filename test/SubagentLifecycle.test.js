@@ -215,6 +215,45 @@ test("process completes naturally after multiple Pi assistant messages without a
   assert.equal(updates.at(-1).status, "complete");
 });
 
+test("default child process lets long work complete without resource limits", async () => {
+  const child = new FakeProcess();
+  const handle = runWith(child);
+
+  child.stderr.write("x".repeat(64 * 1024 + 1));
+  for (let index = 0; index < 1_050; index += 1) {
+    child.json(assistantEvent("", {
+      content: [{ type: "toolCall", name: "read", arguments: { path: "auth.ts", detail: "x".repeat(2_000) } }],
+    }));
+  }
+  child.json(assistantEvent("x".repeat(50 * 1024 + 1), {
+    stopReason: "length",
+    usage: {
+      input: 200_000,
+      output: 100_000,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 300_000,
+      cost: { input: 4, output: 2, cacheRead: 0, cacheWrite: 0, total: 6 },
+    },
+  }));
+  child.close();
+  const result = await handle.result;
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.terminationReason, "completed");
+  assert.equal(result.usage.turns, 1_051);
+  assert.equal(result.toolCallCount, 1_050);
+  assert.ok(result.usage.totalTokens > 300_000);
+  assert.ok(result.usage.cost.total > 6);
+  assert.ok(result.traceBytes > 2 * 1024 * 1024);
+  assert.equal(result.traceTruncatedBytes, 0);
+  assert.ok(result.outputBytes > 50 * 1024);
+  assert.equal(result.outputTruncatedBytes, 0);
+  assert.ok(result.stderrBytes > 64 * 1024);
+  assert.equal(result.stderrTruncatedBytes, 0);
+  assert.deepEqual(child.killSignals, []);
+});
+
 test("process applies output limit across assistant messages", async () => {
   const child = new FakeProcess();
   const handle = runWith(child, { limits: { outputBytes: 5 } });
@@ -242,6 +281,37 @@ test("process reports malformed Pi JSONL as a named failure", async () => {
   assert.equal(result.terminationReason, "malformed_jsonl");
   assert.match(result.errorMessage, /Malformed child JSONL/u);
   assert.deepEqual(child.killSignals, ["SIGTERM"]);
+});
+
+test("process keeps child errors terminal", async () => {
+  const child = new FakeProcess();
+  const handle = runWith(child);
+
+  child.emit("error", new Error("child process failed"));
+  const result = await handle.result;
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.terminationReason, "spawn_error");
+  assert.match(result.errorMessage, /child process failed/u);
+  assert.deepEqual(child.killSignals, ["SIGTERM"]);
+});
+
+test("process keeps provider errors and aborts out of natural completion", async () => {
+  const errorChild = new FakeProcess();
+  const errorHandle = runWith(errorChild);
+  errorChild.json(assistantEvent("provider error", { stopReason: "error", errorMessage: undefined }));
+  errorChild.close();
+  const error = await errorHandle.result;
+  assert.equal(error.status, "failed");
+  assert.equal(error.terminationReason, "error");
+
+  const abortedChild = new FakeProcess();
+  const abortedHandle = runWith(abortedChild);
+  abortedChild.json(assistantEvent("provider abort", { stopReason: "aborted", errorMessage: undefined }));
+  abortedChild.close();
+  const aborted = await abortedHandle.result;
+  assert.equal(aborted.status, "cancelled");
+  assert.equal(aborted.terminationReason, "aborted");
 });
 
 test("process reports malformed final JSONL without a newline", async () => {
@@ -341,4 +411,19 @@ test("process retains partial output and escalates from SIGTERM to SIGKILL", asy
   assert.equal(result.terminationReason, "user_stop");
   assert.equal(result.output, "partial result");
   assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("process keeps an explicit parent abort terminal", async () => {
+  const child = new FakeProcess();
+  const controller = new AbortController();
+  const handle = runWith(child, { signal: controller.signal });
+
+  child.json(assistantEvent("partial result"));
+  controller.abort();
+  const result = await handle.result;
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.terminationReason, "abort");
+  assert.equal(result.output, "partial result");
+  assert.deepEqual(child.killSignals, ["SIGTERM"]);
 });

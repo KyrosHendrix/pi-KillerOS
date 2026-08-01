@@ -3,13 +3,6 @@ import { statSync } from "node:fs";
 import path from "node:path";
 
 export const SUBAGENT_PROCESS_LIMITS = {
-  wallTimeMs: 600_000,
-  jsonlLineBytes: 32 * 1024 * 1024,
-  traceBytes: 2 * 1024 * 1024,
-  stderrBytes: 64 * 1024,
-  outputBytes: 50 * 1024,
-  quotaTokens: 250_000,
-  quotaUsd: 5,
   killGraceMs: 5_000,
 } as const;
 
@@ -75,13 +68,13 @@ export interface SubagentProcessOptions {
 }
 
 export interface SubagentProcessLimits {
-  wallTimeMs: number;
-  jsonlLineBytes: number;
-  traceBytes: number;
-  stderrBytes: number;
-  outputBytes: number;
-  quotaTokens: number;
-  quotaUsd: number;
+  wallTimeMs?: number;
+  jsonlLineBytes?: number;
+  traceBytes?: number;
+  stderrBytes?: number;
+  outputBytes?: number;
+  quotaTokens?: number;
+  quotaUsd?: number;
   killGraceMs: number;
 }
 
@@ -178,11 +171,11 @@ function traceMessage(message: any): string[] {
   return entries;
 }
 
-function appendTrace(result: SubagentProcessResult, entries: string[], maxBytes: number): boolean {
+function appendTrace(result: SubagentProcessResult, entries: string[], maxBytes: number | undefined): boolean {
   let truncated = false;
   for (const entry of entries) {
     const entryBytes = Buffer.byteLength(entry, "utf8");
-    const retained = truncateUtf8(entry, Math.max(0, maxBytes - result.traceBytes));
+    const retained = truncateUtf8(entry, maxBytes === undefined ? entryBytes : Math.max(0, maxBytes - result.traceBytes));
     if (retained.text) result.trace.push(retained.text);
     result.traceBytes += Buffer.byteLength(retained.text, "utf8");
     result.traceTruncatedBytes += entryBytes - Buffer.byteLength(retained.text, "utf8");
@@ -199,11 +192,11 @@ function normalizeLimits(overrides: Partial<SubagentProcessLimits> | undefined):
   const limits = { ...SUBAGENT_PROCESS_LIMITS, ...overrides };
   for (const name of ["wallTimeMs", "jsonlLineBytes", "traceBytes", "stderrBytes", "outputBytes", "killGraceMs"] as const) {
     const value = limits[name];
-    if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive safe integer`);
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) throw new RangeError(`${name} must be a positive safe integer`);
   }
   for (const name of ["quotaTokens", "quotaUsd"] as const) {
     const value = limits[name];
-    if (!Number.isFinite(value) || value <= 0) throw new RangeError(`${name} must be a positive finite number`);
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0)) throw new RangeError(`${name} must be a positive finite number`);
   }
   return limits;
 }
@@ -270,7 +263,7 @@ function terminateProcess(child: SubagentProcessChild, force: boolean): void {
 
 /**
  * Run one isolated Pi JSON process. The caller owns all Pi arguments, including
- * model, tools, prompt, and extension flags. This runner never applies a turn cap.
+ * model, tools, prompt, and extension flags. Resource limits are opt-in.
  */
 export function runSubagentProcess(options: SubagentProcessOptions): SubagentProcessHandle {
   const args = [...options.args];
@@ -331,9 +324,12 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     if (requestedStatus) {
       state.status = requestedStatus;
       state.terminationReason = requestedReason;
-    } else if (code !== 0 || state.errorMessage || state.stopReason && state.stopReason !== "stop" && state.stopReason !== "toolUse") {
-      state.status = "failed";
+    } else if (code !== 0 || state.errorMessage || state.stopReason === "error" || state.stopReason === "aborted") {
+      state.status = state.stopReason === "aborted" ? "cancelled" : "failed";
       state.terminationReason ??= code === null ? "process_closed" : `exit_${code}`;
+    } else if (state.stopReason !== undefined && !["stop", "toolUse", "length"].includes(state.stopReason)) {
+      state.status = "failed";
+      state.terminationReason = state.stopReason;
     } else if (state.usage.turns === 0) {
       state.status = "failed";
       state.terminationReason = "missing_assistant_message";
@@ -382,9 +378,9 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
       state.usage.turns += 1;
       addUsage(state.usage, { ...message.usage, turns: 0 });
       state.toolCallCount += toolCallCount(message);
-      if (state.usage.totalTokens > limits.quotaTokens) {
+      if (limits.quotaTokens !== undefined && state.usage.totalTokens > limits.quotaTokens) {
         requestTermination("limited", "quota_tokens", `Child token usage exceeds ${limits.quotaTokens}`);
-      } else if (state.usage.cost.total > limits.quotaUsd) {
+      } else if (limits.quotaUsd !== undefined && state.usage.cost.total > limits.quotaUsd) {
         requestTermination("limited", "quota_cost", `Child cost exceeds $${limits.quotaUsd}`);
       }
       if (appendTrace(state, traceMessage(message), limits.traceBytes)) {
@@ -392,13 +388,13 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
       }
       const output = textContent(message);
       if (output) {
-        const capped = truncateUtf8(output, limits.outputBytes);
+        const capped = truncateUtf8(output, limits.outputBytes ?? Buffer.byteLength(output, "utf8"));
         state.output = capped.text;
         state.outputTruncatedBytes = capped.omittedBytes;
         outputBytesSeen += Buffer.byteLength(output, "utf8");
         state.outputBytes = outputBytesSeen;
-        state.outputTruncatedBytes = Math.max(state.outputTruncatedBytes, outputBytesSeen - limits.outputBytes);
-        if (outputBytesSeen > limits.outputBytes) requestTermination("limited", "output_limit", `Child output exceeds ${limits.outputBytes} bytes`);
+        state.outputTruncatedBytes = Math.max(state.outputTruncatedBytes, limits.outputBytes === undefined ? 0 : outputBytesSeen - limits.outputBytes);
+        if (limits.outputBytes !== undefined && outputBytesSeen > limits.outputBytes) requestTermination("limited", "output_limit", `Child output exceeds ${limits.outputBytes} bytes`);
       }
       if (typeof message.model === "string") state.model = message.provider ? `${message.provider}/${message.model}` : message.model;
       if (typeof message.stopReason === "string") {
@@ -407,7 +403,6 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
         else state.terminationReason = message.stopReason;
       }
       if (typeof message.errorMessage === "string") state.errorMessage = message.errorMessage;
-      if (message.stopReason === "length") requestTermination("limited", "model_output_limit");
       publish();
     } else if (event?.type === "tool_result_end" && event.message) {
       const name = typeof event.message.toolName === "string" ? event.message.toolName : "tool";
@@ -419,12 +414,14 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
   };
   const appendStdout = (fragment: Buffer): boolean => {
     const nextBytes = stdoutLineBytes + fragment.length;
-    if (nextBytes > limits.jsonlLineBytes) {
+    if (limits.jsonlLineBytes !== undefined && nextBytes > limits.jsonlLineBytes) {
       requestTermination("limited", "jsonl_line_limit", `Child JSONL line exceeds ${limits.jsonlLineBytes} bytes`);
       return false;
     }
     if (nextBytes > stdoutLine.length) {
-      const nextCapacity = Math.min(limits.jsonlLineBytes, Math.max(nextBytes, stdoutLine.length * 2, 4_096));
+      const nextCapacity = limits.jsonlLineBytes === undefined
+        ? Math.max(nextBytes, stdoutLine.length * 2, 4_096)
+        : Math.min(limits.jsonlLineBytes, Math.max(nextBytes, stdoutLine.length * 2, 4_096));
       const expanded = Buffer.allocUnsafe(nextCapacity);
       stdoutLine.copy(expanded, 0, 0, stdoutLineBytes);
       stdoutLine = expanded;
@@ -461,14 +458,16 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
       });
       child.stderr.on("data", (chunk: Buffer | string) => {
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        const retained = buffer.subarray(0, Math.max(0, limits.stderrBytes - stderr.length));
+        const retained = limits.stderrBytes === undefined
+          ? buffer
+          : buffer.subarray(0, Math.max(0, limits.stderrBytes - stderr.length));
         if (retained.length) stderr = Buffer.concat([stderr, retained]);
         state.stderrTruncatedBytes += buffer.length - retained.length;
         if (buffer.length > retained.length) requestTermination("limited", "stderr_limit", `Child stderr exceeds ${limits.stderrBytes} bytes`);
       });
       child.on("error", (error) => requestTermination("failed", "spawn_error", error.message));
       child.once("close", finish);
-      timeoutTimer = setTimeout(() => requestTermination("limited", "wall_time_limit"), limits.wallTimeMs);
+      if (limits.wallTimeMs !== undefined) timeoutTimer = setTimeout(() => requestTermination("limited", "wall_time_limit"), limits.wallTimeMs);
       options.signal?.addEventListener("abort", abortHandler, { once: true });
       if (options.signal?.aborted) abortHandler();
     } catch (error) {

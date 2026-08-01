@@ -33,7 +33,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-  pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.3
+  pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.5
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -47,7 +47,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` for durable long-running objectives with pause, resume, edit, clear, automatic continuation, and explicit completion
-- Pi-native `subagent` tool with named, inspectable child threads, Markdown roles, explicit read/write boundaries, parent controls, bounded resources, and cancellation propagation
+- Pi-native `subagent` tool with named, inspectable child threads, Markdown roles, explicit read/write boundaries, parent controls, natural completion, and cancellation propagation
 - Claude Code-style `/init` that scans the repository and generates a concise root `AGENTS.md` without setup questions
 - `question` tool with filtering, proposal previews, keyboard selection, custom answers, history, cancellation, and resize-safe rendering
 - Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills
@@ -89,7 +89,7 @@ KillerOS ships `planner`, `reviewer`, `scout`, and `security` as read-only roles
 | `scout` | read | Map unfamiliar code and return an evidence trail |
 | `security` | read | Audit trust boundaries and report concrete security findings |
 | `tester` | write | Add focused coverage and run deterministic verification |
-| `worker` | write | Execute a bounded repository change |
+| `worker` | write | Execute the assigned repository change |
 
 1. Bundled: `<killeros>/agents/*.md`
 2. Personal: `~/.pi/agent/agents/*.md`
@@ -103,7 +103,7 @@ The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `
 {"agent":"reviewer","task":"Review the change","model":"provider/model","thinking":"high"}
 ```
 
-Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as ephemeral `pi --mode json -p --no-session` processes with explicit local tools plus `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Each child explicitly loads `npm:pi-web-access` and the KillerOS child-budget hook, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md`, work in bounded passes, and report after its first useful evidence. KillerOS allows at most eight tasks, four parallel readers, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, 50 KiB returned output, 250,000 tokens, and $5 per child. Read-only children receive a 24-call soft and 32-call hard tool budget that blocks read and web tools after the hard limit; final reports remain allowed. Esc cancellation terminates active children and escalates after five seconds.
+Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as ephemeral `pi --mode json -p --no-session` processes with explicit local tools plus `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` and report useful evidence. Children have no default token, dollar, turn, tool-call, research, wall-time, JSONL-line, trace, stderr, or returned-output quota. The parent still limits each request to eight tasks and four parallel readers and bounds role files, task input, and combined parent output. An embedding caller may opt into named child resource guards. Esc cancellation terminates active children and escalates after five seconds.
 
 ### Thread lifecycle
 
@@ -113,7 +113,7 @@ Threads move through `queued`, `active`, `done`, `failed`, `stopped`, and `close
 
 The parent can inspect a thread’s prompt, role, model, tools, trace, usage, and handoff; steer an active thread with one bounded follow-up; interrupt one child or all active children; collect a concise handoff into parent context; and close a finished or stopped thread. An interrupt preserves the partial trace, states the reason, and reports the handoff as partial rather than successful.
 
-A child completes naturally when it returns a final answer. Routine turn caps do not end useful work. Named resource guards still stop unsafe growth: wall time, output bytes, retained trace, stderr, quota, read-tool calls, task count, and concurrency. Read-tool budgets are enforced inside the child process, so the model receives a finalization nudge and a blocked-tool result instead of being killed while it is still researching. A guard reports its cause and returns any partial work clearly. Esc cancellation terminates active children and escalates after five seconds.
+A child completes naturally when it returns a final answer. The default path has no per-child execution quota. Explicit embedding options can add wall-time, output, trace, stderr, JSONL, token, or cost guards; those guards report their cause and return partial work clearly. The parent still bounds task count, reader concurrency, role files, task input, and combined parent output. Explicit user interruptions and real child-process failures remain visible. Esc cancellation terminates active children and escalates after five seconds.
 
 The replacement lifecycle has nine phases:
 
@@ -123,7 +123,7 @@ The replacement lifecycle has nine phases:
 4. **Steer:** append a bounded parent follow-up to an active thread.
 5. **Interrupt:** stop one or all active children while preserving partial work.
 6. **Collect:** return a concise handoff while retaining the expanded trace.
-7. **Bound:** apply named resource guards instead of a routine turn stop.
+7. **Guard:** honor only explicitly configured child resource guards; do not impose a routine turn stop.
 8. **Close:** remove a finished or stopped thread from the workspace without deleting its result record.
 9. **Prove:** test identity, visibility, controls, natural completion, guards, partial handoffs, and closure.
 
@@ -163,7 +163,7 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog.
 
-For the current unreleased `1.4.3`, publish after the validation checks pass:
+For release `1.4.5`, publish after the validation checks pass:
 
 ```bash
 npm login
