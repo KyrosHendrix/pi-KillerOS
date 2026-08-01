@@ -4,6 +4,7 @@ node_modules/
 *.log
 
 # Local generated previews
+/design/
 /welcome-redesigns.html
 .env
 .env.*
