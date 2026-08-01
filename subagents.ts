@@ -113,6 +113,7 @@ export interface SubagentDetails {
   mode: "single" | "parallel" | "chain";
   agentScope: AgentScope;
   projectAgentsDir: string | null;
+  executionNote?: string;
   results: SubagentTaskResult[];
   aggregateUsage: SubagentUsage;
   parentId?: string;
@@ -712,7 +713,7 @@ async function mapReadTasks<T>(items: T[], concurrency: number, run: (item: T, i
   await Promise.all(workers);
 }
 
-function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "taskCharacters">) {
+function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxReadConcurrency" | "taskCharacters">) {
   const taskSchema = Type.Object({
     agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
     task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Bounded task for the role" }),
@@ -727,11 +728,11 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "taskCha
       description: "Thread lifecycle action",
     })),
     threadId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Stable child thread ID" })),
-    message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Bounded steering message" })),
+    message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Bounded steering message; only valid with action steer" })),
     all: Type.Optional(Type.Boolean({ description: "Interrupt every active child thread" })),
     agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
     task: Type.Optional(Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" })),
-    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Parallel role tasks" })),
+    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only roles run concurrently up to ${limits.maxReadConcurrency}; write-capable roles run serially in input order because all children share the parent worktree` })),
     chain: Type.Optional(Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
     model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
     thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
@@ -1029,11 +1030,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   pi.registerTool({
     name: "subagent",
     label: "Subagents",
-    description: "Spawn and manage named child threads. Children finish naturally; explicit execution guards, task count, and concurrency are the hard edges. Retention only bounds stored detail. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.",
+    description: `Spawn and manage named child threads. Children finish naturally. Parallel tasks run read-only roles concurrently up to ${limits.maxReadConcurrency}, then run write-capable roles serially in input order because all children share the parent worktree. The message parameter is only valid with action steer. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.`,
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
       "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
-      "Do not request multiple write-capable subagents in one parallel batch.",
+      `Parallel tasks run read-only roles concurrently up to ${limits.maxReadConcurrency}, then queue write-capable roles in input order because all children share the parent worktree.`,
       "Every child can load relevant skills with read and can use web_search, source_check, fetch_content, and get_search_content for external research.",
       "When the user names a model or thinking effort, pass model and thinking separately; use inherit when the active parent or role setting should decide.",
       "Keep completed and stopped threads inspectable until the parent explicitly closes them.",
@@ -1043,6 +1044,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const action = params.action ?? "spawn";
+      if (params.message !== undefined && action !== "steer") {
+        throw new Error("message is only valid with action steer");
+      }
       const parentId = parentThreadId(ctx);
       const actionDetails = (selectedThreadId?: string): SubagentDetails => detailsFor(parentId, "single", params.agentScope ?? "user", null, selectedThreadId);
       const actionResult = (text: string, selectedThreadId?: string) => {
@@ -1161,10 +1165,17 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         ? [{ agent: params.agent!, task: params.task! }]
         : hasParallel ? params.tasks! : params.chain!;
       if (inputs.length > limits.maxTasks) throw new Error(`At most ${limits.maxTasks} subagent tasks are allowed`);
-      if (hasParallel) {
-        const writers = inputs.filter((input) => roles.get(input.agent)!.access === "write");
-        if (writers.length > 1) throw new Error("Parallel batches may contain at most one write-capable subagent; writers are serialized");
-      }
+      const readIndexes = hasParallel
+        ? inputs.map((input, index) => ({ input, index })).filter(({ input }) => roles.get(input.agent)!.access === "read")
+        : [];
+      const writerIndexes = hasParallel
+        ? inputs.map((input, index) => ({ input, index })).filter(({ input }) => roles.get(input.agent)!.access === "write").map(({ index }) => index)
+        : [];
+      const executionNote = hasParallel
+        ? writerIndexes.length
+          ? `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}; write-capable tasks are queued (serialized) in input order because all children share the parent worktree.`
+          : `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}.`
+        : undefined;
 
       const inFlight = threads.listAll().filter((thread) => ["queued", "active"].includes(thread.state)).length;
       if (inFlight + inputs.length > limits.maxTasks) {
@@ -1187,7 +1198,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         const currentResults = results.map(cloneResult);
         (onUpdate as ToolUpdate | undefined)?.({
           content: [{ type: "text", text: message }],
-          details: { ...board, results: currentResults, aggregateUsage: aggregateUsage(currentResults) },
+          details: { ...board, executionNote, results: currentResults, aggregateUsage: aggregateUsage(currentResults) },
         });
       };
       const runAt = async (index: number, task: string): Promise<void> => {
@@ -1368,6 +1379,23 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         emit();
       };
 
+      const settleQueued = (reason: string): void => {
+        for (let index = 0; index < results.length; index += 1) {
+          const result = results[index]!;
+          if (result.status !== "queued") continue;
+          const thread = threads.inspect(threadRecords[index]!.id);
+          const alreadyStopped = thread?.state === "stopped";
+          result.status = signal?.aborted || alreadyStopped ? "cancelled" : "failed";
+          result.terminationReason = alreadyStopped
+            ? thread.stopReason ?? "interrupted"
+            : signal?.aborted ? "abort" : reason;
+          if (thread?.state === "queued" || thread?.state === "active") {
+            threads.stop(threadRecords[index]!.id, { reason: result.terminationReason });
+          }
+          savedResults.set(threadRecords[index]!.id, cloneResult(result));
+        }
+      };
+
       emit(`${mode}: ${results.length} queued`);
       if (hasChain) {
         let previous = "";
@@ -1377,33 +1405,21 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           if (results[index]!.status !== "complete") break;
           previous = results[index]!.output;
         }
-        for (let index = 0; index < results.length; index += 1) {
-          const result = results[index]!;
-          if (result.status === "queued") {
-            const thread = threads.inspect(threadRecords[index]!.id);
-            const alreadyStopped = thread?.state === "stopped";
-            result.status = signal?.aborted || alreadyStopped ? "cancelled" : "failed";
-            result.terminationReason = alreadyStopped
-              ? thread.stopReason ?? "interrupted"
-              : signal?.aborted ? "abort" : "chain_stopped";
-            if (thread?.state === "queued" || thread?.state === "active") {
-              threads.stop(threadRecords[index]!.id, { reason: result.terminationReason });
-            }
-            savedResults.set(threadRecords[index]!.id, cloneResult(result));
-          }
-        }
+        settleQueued("chain_stopped");
       } else if (hasParallel) {
-        const readIndexes = inputs.map((input, index) => ({ input, index })).filter(({ input }) => roles.get(input.agent)!.access === "read");
-        const writerIndex = inputs.findIndex((input) => roles.get(input.agent)!.access === "write");
-        await mapReadTasks(readIndexes, limits.maxReadConcurrency, async ({ index }) => runAt(index, inputs[index]!.task));
-        if (writerIndex >= 0) await runAt(writerIndex, inputs[writerIndex]!.task);
+        try {
+          await mapReadTasks(readIndexes, limits.maxReadConcurrency, async ({ index }) => runAt(index, inputs[index]!.task));
+          for (const index of writerIndexes) await runAt(index, inputs[index]!.task);
+        } finally {
+          settleQueued("parallel_stopped");
+        }
       } else {
         await runAt(0, inputs[0]!.task);
       }
 
       const board = detailsFor(parentId, mode, scope, discovery.projectAgentsDir);
       const currentResults = results.map(cloneResult);
-      const details: SubagentDetails = { ...board, results: currentResults, aggregateUsage: aggregateUsage(currentResults) };
+      const details: SubagentDetails = { ...board, executionNote, results: currentResults, aggregateUsage: aggregateUsage(currentResults) };
       return {
         content: [{ type: "text", text: buildToolContent(mode, details.results, limits.toolOutputBytes) }],
         details,
@@ -1414,7 +1430,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     renderCall(args, theme) {
       const scope = args.agentScope ?? "user";
       if (args.action && args.action !== "spawn") return new Text(`${theme.fg("toolTitle", theme.bold("threads "))}${theme.fg("accent", args.action)}${theme.fg("dim", args.threadId ? ` · ${args.threadId}` : "")}`, 0, 0);
-      if (args.tasks?.length) return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${args.tasks.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
+      if (args.tasks?.length) return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${args.tasks.length} · readers first; writers serial`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
       if (args.chain?.length) return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `chain ${args.chain.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
       return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent ?? "…")}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
     },
@@ -1437,6 +1453,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           theme.fg("toolTitle", theme.bold(`Done (${board.done.length})`)),
           ...board.done.map((task) => `${theme.fg(task.state.status === "complete" ? "success" : "warning", `${task.state.label}`)} ${theme.fg("toolTitle", theme.bold(task.agent))}${theme.fg("dim", ` · ${task.id} · ${task.usage.text}`)}`),
         ];
+        if (details.executionNote) lines.push(theme.fg("dim", details.executionNote));
         lines.push(theme.fg("dim", `Total · ${formatUsage(details.aggregateUsage)} · Ctrl+O to expand`));
         return new Text(lines.join("\n"), 0, 0);
       }
@@ -1444,6 +1461,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       const container = new Container();
       container.addChild(new Text(theme.fg("toolTitle", theme.bold(`Subagents · ${details.mode}`)), 0, 0));
       container.addChild(new Text(theme.fg("dim", `Active ${board.active.length} · Done ${board.done.length} · Controls: Inspect · Steer · Interrupt · Collect · Close`), 0, 0));
+      if (details.executionNote) container.addChild(new Text(theme.fg("dim", details.executionNote), 0, 0));
       if (board.selected) {
         const inspection = formatThreadInspection(threadBoardRecord(details.results.find((task) => task.id === board.selected!.id)!));
         container.addChild(new Spacer(1));

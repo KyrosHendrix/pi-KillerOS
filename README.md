@@ -33,7 +33,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.6
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.7
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -97,7 +97,7 @@ KillerOS ships `planner`, `reviewer`, `scout`, and `security` as read-only roles
 
 The default `agentScope: "user"` uses bundled and personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project override requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. Optional fields are `model`, `thinking`, and `timeoutMs`. Every bundled role shows `model: inherit` and `thinking: inherit` as editable placeholders. Replace them with an available `provider/model` and a separate thinking level when you want to pin a role; `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` are checked against that model’s supported capabilities.
 
-The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. A call can also set `model` and `thinking` for every task, overriding role settings; use `inherit` to fall back to each role and then the active parent model. For example:
+The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Parallel batches run read-only roles concurrently, up to four at a time, then run every write-capable role serially in input order because all children share the parent worktree. A call can also set `model` and `thinking` for every task, overriding role settings; use `inherit` to fall back to each role and then the active parent model. The `message` field is only valid with `action: "steer"`. For example:
 
 ```json
 {"agent":"reviewer","task":"Review the change","model":"provider/model","thinking":"high"}
@@ -163,7 +163,7 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog.
 
-For release `1.4.6`, publish after the validation checks pass:
+For release `1.4.7`, publish after the validation checks pass:
 
 ```bash
 npm login

@@ -2,6 +2,14 @@
 
 All notable changes to KillerOS are documented here.
 
+## [1.4.7] - 2026-08-01
+
+### Fixed
+
+- Serialized every write-capable task in a parallel batch in input order instead of rejecting batches with multiple writers.
+- Settled queued tasks on interrupted parallel batches and documented the shared-worktree execution model.
+- Restricted the `message` parameter to `action: "steer"` and added focused regression coverage.
+
 ## [1.4.6] - 2026-08-01
 
 ### Fixed

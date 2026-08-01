@@ -453,7 +453,7 @@ test("mixed partial single fields cannot be combined with parallel or chain mode
   }
 });
 
-test("parallel execution caps readers, waits before the writer, and rejects multiple writers", async () => {
+test("parallel execution caps readers, waits before writers, and serializes every writer", async () => {
   const roster = tempRoster();
   try {
     writeRole(roster.bundled, "scout.md", { name: "scout" });
@@ -462,6 +462,10 @@ test("parallel execution caps readers, waits before the writer, and rejects mult
     let activeReaders = 0;
     let peakReaders = 0;
     let writerStartedWithReaders = false;
+    let activeWriters = 0;
+    let peakWriters = 0;
+    let writerStartedWithWriter = false;
+    const writerTasks = [];
     let spawned = 0;
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
@@ -472,14 +476,21 @@ test("parallel execution caps readers, waits before the writer, and rejects mult
         const child = new FakeProcess();
         const tools = args[args.indexOf("--tools") + 1];
         const writer = tools.includes("edit");
-        if (writer) writerStartedWithReaders = activeReaders > 0;
+        if (writer) {
+          writerTasks.push(args.at(-1));
+          writerStartedWithReaders = activeReaders > 0;
+          writerStartedWithWriter = writerStartedWithWriter || activeWriters > 0;
+          activeWriters += 1;
+          peakWriters = Math.max(peakWriters, activeWriters);
+        }
         else {
           activeReaders += 1;
           peakReaders = Math.max(peakReaders, activeReaders);
         }
         setTimeout(() => {
           child.json(assistantEvent(writer ? "written" : "read"));
-          if (!writer) activeReaders -= 1;
+          if (writer) activeWriters -= 1;
+          else activeReaders -= 1;
           child.close(0);
         }, 20);
         return child;
@@ -497,14 +508,76 @@ test("parallel execution caps readers, waits before the writer, and rejects mult
     assert.equal(result.details.results.every((entry) => entry.status === "complete"), true);
     assert.equal(peakReaders, 2);
     assert.equal(writerStartedWithReaders, false);
+    assert.match(result.details.executionNote, /queued \(serialized\)/u);
 
-    await assert.rejects(execute(tool, {
+    const writers = await execute(tool, {
       tasks: [
         { agent: "worker", task: "one" },
         { agent: "worker", task: "two" },
       ],
-    }, ctx), /at most one write-capable/u);
-    assert.equal(spawned, 4);
+    }, ctx);
+    assert.deepEqual(writers.details.results.map((entry) => entry.status), ["complete", "complete"]);
+    assert.deepEqual(writerTasks.slice(-2), ["Task: one", "Task: two"]);
+    assert.equal(peakWriters, 1);
+    assert.equal(writerStartedWithWriter, false);
+    assert.equal(spawned, 6);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("aborting a serialized writer batch cancels writers that never start", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
+    let spawned = 0;
+    let resolveFirstWriter;
+    const firstWriterStarted = new Promise((resolve) => { resolveFirstWriter = resolve; });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        spawned += 1;
+        const child = new FakeProcess();
+        resolveFirstWriter();
+        return child;
+      },
+    });
+    const controller = new AbortController();
+    const run = execute(tool, {
+      tasks: [
+        { agent: "worker", task: "first" },
+        { agent: "worker", task: "never starts" },
+      ],
+    }, toolContext(roster.root), controller.signal);
+    await firstWriterStarted;
+    controller.abort();
+    const result = await run;
+
+    assert.deepEqual(result.details.results.map((entry) => entry.status), ["cancelled", "cancelled"]);
+    assert.deepEqual(result.details.results.map((entry) => entry.terminationReason), ["abort", "abort"]);
+    assert.deepEqual(result.details.threads.map((thread) => thread.state), ["stopped", "stopped"]);
+    assert.equal(spawned, 1);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("message is scoped to steer and the parallel schedule is described", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() { return new FakeProcess(); },
+    });
+    const ctx = toolContext(roster.root);
+    await assert.rejects(execute(tool, { agent: "scout", task: "map", message: "extra" }, ctx), /message is only valid with action steer/u);
+    await assert.rejects(execute(tool, { action: "list", message: "extra" }, ctx), /message is only valid with action steer/u);
+    assert.match(tool.description, /read-only roles concurrently[\s\S]*write-capable roles serially[\s\S]*parent worktree/u);
+    assert.match(tool.parameters.properties.message.description, /only valid with action steer/u);
+    assert.match(tool.parameters.properties.tasks.description, /serially in input order[\s\S]*parent worktree/u);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
