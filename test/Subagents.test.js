@@ -20,7 +20,6 @@ function roleFile({
   tools = "read, grep, find, ls, web_search, source_check, fetch_content, get_search_content",
   model,
   thinking,
-  maxTurns = 8,
   timeoutMs = 300000,
   extra = "",
   prompt = `Act as ${name}.`,
@@ -33,7 +32,6 @@ function roleFile({
     `tools: ${tools}`,
     ...(model ? [`model: ${model}`] : []),
     ...(thinking ? [`thinking: ${thinking}`] : []),
-    `maxTurns: ${maxTurns}`,
     `timeoutMs: ${timeoutMs}`,
     ...(extra ? [extra] : []),
     "---",
@@ -248,7 +246,6 @@ test("model resolution supports exact colon IDs and enforces Pi thinking capabil
     description: "review",
     access: "read",
     tools: ["read"],
-    maxTurns: 8,
     timeoutMs: 300000,
     prompt: "review",
     source: "bundled",
@@ -512,7 +509,7 @@ test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits 
   const scenarios = [
     {
       name: "turn",
-      role: { name: "agent", maxTurns: 1 },
+      role: { name: "agent" },
       emit(child) {
         child.json(assistantEvent("tool requested at the cap", {
           stopReason: "toolUse",
@@ -520,8 +517,8 @@ test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits 
         }));
         child.close(0);
       },
-      expectedStatus: "limited",
-      expectedReason: "turn_limit",
+      expectedStatus: "complete",
+      expectedReason: "completed",
     },
     {
       name: "trace",
@@ -537,8 +534,8 @@ test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits 
         }));
         child.close(0);
       },
-      expectedStatus: "complete",
-      expectedReason: "completed",
+      expectedStatus: "limited",
+      expectedReason: "trace_limit",
       expectedOutput: "done",
     },
     {
@@ -593,8 +590,8 @@ test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits 
       role: { name: "agent" },
       limits: { taskOutputBytes: 10 },
       emit(child) { child.json(assistantEvent("0123456789EXTRA")); child.close(0); },
-      expectedStatus: "complete",
-      expectedReason: "completed",
+      expectedStatus: "limited",
+      expectedReason: "output_limit",
       outputTruncated: true,
     },
   ];
@@ -616,7 +613,7 @@ test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits 
       const result = await execute(tool, { agent: "agent", task: scenario.name }, toolContext(roster.root));
       const task = result.details.results[0];
       assert.equal(task.status, scenario.expectedStatus, scenario.name);
-      assert.equal(task.terminationReason, scenario.expectedReason, scenario.name);
+    assert.equal(task.terminationReason, scenario.expectedReason, scenario.name);
       if (scenario.expectedOutput) assert.equal(task.output, scenario.expectedOutput);
       if (scenario.outputTruncated) assert.ok(task.outputTruncatedBytes > 0);
       if (scenario.name === "trace") {
@@ -642,17 +639,16 @@ test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits 
     });
     const result = await execute(tool, { agent: "slow", task: "wait" }, toolContext(timeoutRoster.root));
     assert.equal(result.details.results[0].status, "limited");
-    assert.equal(result.details.results[0].terminationReason, "timeout");
+    assert.equal(result.details.results[0].terminationReason, "wall_time_limit");
   } finally {
     rmSync(timeoutRoster.root, { recursive: true, force: true });
   }
 });
 
-test("child lifecycle rejects empty success, recovers transient retries, and caps retry errors", async () => {
+test("child lifecycle rejects empty success and recovers transient retries without a turn cap", async () => {
   const scenarios = [
     {
       name: "empty",
-      maxTurns: 8,
       emit(child) { child.close(0); },
       status: "failed",
       reason: "missing_assistant_message",
@@ -660,7 +656,6 @@ test("child lifecycle rejects empty success, recovers transient retries, and cap
     },
     {
       name: "recovered",
-      maxTurns: 8,
       emit(child) {
         child.json(assistantEvent("", { stopReason: "error", errorMessage: "transient provider failure", content: [] }));
         child.json(assistantEvent("RECOVERED"));
@@ -673,7 +668,6 @@ test("child lifecycle rejects empty success, recovers transient retries, and cap
     },
     {
       name: "terminal-error-at-cap",
-      maxTurns: 1,
       emit(child) {
         child.json(assistantEvent("", { stopReason: "error", errorMessage: "terminal provider failure", content: [] }));
         child.json({ type: "agent_end", willRetry: false });
@@ -685,7 +679,6 @@ test("child lifecycle rejects empty success, recovers transient retries, and cap
     },
     {
       name: "retry-cap",
-      maxTurns: 1,
       emit(child) {
         child.json(assistantEvent("", { stopReason: "error", errorMessage: "retryable provider failure", content: [] }));
         child.json({ type: "agent_end", willRetry: true });
@@ -695,16 +688,17 @@ test("child lifecycle rejects empty success, recovers transient retries, and cap
           child.close(0);
         });
       },
-      status: "limited",
-      reason: "turn_limit",
-      turns: 1,
+      status: "complete",
+      reason: "completed",
+      output: "EXTRA_REQUEST",
+      turns: 2,
     },
   ];
 
   for (const scenario of scenarios) {
     const roster = tempRoster();
     try {
-      writeRole(roster.bundled, "agent.md", { name: "agent", maxTurns: scenario.maxTurns });
+      writeRole(roster.bundled, "agent.md", { name: "agent" });
       const tool = createToolHarness({
         bundledAgentsDir: roster.bundled,
         userAgentsDir: roster.personal,
@@ -809,6 +803,240 @@ test("bundled roster declares read-only auditors and focused writers", () => {
   assert.deepEqual(worker.tools, ["read", "grep", "find", "ls", "edit", "write", "bash", "web_search", "source_check", "fetch_content", "get_search_content"]);
   assert.equal(SUBAGENT_LIMITS.maxTasks, 8);
   assert.equal(SUBAGENT_LIMITS.maxReadConcurrency, 4);
-  assert.equal(SUBAGENT_LIMITS.maxTurns, 12);
   assert.equal(SUBAGENT_LIMITS.maxTimeoutMs, 600000);
+});
+
+test("Codex-style thread actions keep a completed handoff visible until close", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("Mapped auth"));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    const spawned = await execute(tool, { action: "spawn", agent: "scout", task: "Map auth" }, ctx);
+    const thread = spawned.details.threads.find((candidate) => candidate.state === "done");
+    assert.ok(thread);
+    assert.equal(thread.parentId, "main");
+    assert.equal(thread.handoff.summary, "Mapped auth");
+    assert.equal(spawned.details.activeThreads.length, 0);
+    assert.equal(spawned.details.doneThreads.length, 1);
+
+    const listed = await execute(tool, { action: "list" }, ctx);
+    assert.equal(listed.details.doneThreads[0].id, thread.id);
+    assert.match(listed.content[0].text, /Done \(1\)/u);
+
+    const inspected = await execute(tool, { action: "inspect", threadId: thread.id }, ctx);
+    assert.equal(inspected.details.selectedThreadId, thread.id);
+    assert.match(inspected.content[0].text, new RegExp(`Inspect ${thread.id}`));
+
+    await assert.rejects(execute(tool, { action: "interrupt", threadId: thread.id }, ctx), /Cannot interrupt thread/u);
+    await assert.rejects(execute(tool, { action: "interrupt", threadId: "missing-thread" }, ctx), /Unknown child thread/u);
+
+    const collected = await execute(tool, { action: "collect", threadId: thread.id }, ctx);
+    assert.match(collected.content[0].text, /Mapped auth/u);
+
+    const closed = await execute(tool, { action: "close", threadId: thread.id }, ctx);
+    assert.equal(closed.details.threads.find((candidate) => candidate.id === thread.id).state, "closed");
+    assert.equal(closed.details.doneThreads.length, 0);
+    assert.equal((await execute(tool, { action: "list" }, ctx)).details.doneThreads.length, 0);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent child spawns share the global task guard", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let child;
+    let resolveStarted;
+    const started = new Promise((resolve) => { resolveStarted = resolve; });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      limits: { maxTasks: 1 },
+      spawnProcess() {
+        child = new FakeProcess();
+        resolveStarted();
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    const first = execute(tool, { agent: "scout", task: "long task" }, ctx);
+    await started;
+    await assert.rejects(execute(tool, { agent: "scout", task: "second task" }, ctx), /active at once/u);
+    child.json(assistantEvent("first task"));
+    child.close(0);
+    assert.equal((await first).details.results[0].status, "complete");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("queued interrupt marks the child stopped before its scheduler can start it", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let firstChild;
+    let resolveStarted;
+    const started = new Promise((resolve) => { resolveStarted = resolve; });
+    const updates = [];
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      limits: { maxReadConcurrency: 1 },
+      spawnProcess() {
+        firstChild = new FakeProcess();
+        resolveStarted();
+        return firstChild;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    const run = execute(tool, {
+      tasks: [
+        { agent: "scout", task: "active task" },
+        { agent: "scout", task: "queued task" },
+      ],
+    }, ctx, new AbortController().signal, updates);
+    await started;
+    const queued = updates.at(-1).details.threads.find((thread) => thread.state === "queued");
+    assert.ok(queued);
+    const interrupted = await execute(tool, { action: "interrupt", threadId: queued.id }, ctx);
+    assert.match(interrupted.content[0].text, new RegExp(`Interrupt requested for ${queued.id}`));
+    firstChild.json(assistantEvent("active task"));
+    firstChild.close(0);
+    const result = await run;
+    assert.deepEqual(result.details.results.map((entry) => entry.status), ["complete", "cancelled"]);
+    assert.equal(result.details.results[1].terminationReason, "interrupt");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("steering restarts the same child thread and retains prior usage and trace", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let processCount = 0;
+    let resolveFirstMessage;
+    const firstMessage = new Promise((resolve) => { resolveFirstMessage = resolve; });
+    const updates = [];
+    const children = [];
+    const childTasks = [];
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess(args) {
+        const child = new FakeProcess();
+        children.push(child);
+        childTasks.push(args.at(-1));
+        processCount += 1;
+        if (processCount === 1) {
+          setImmediate(() => {
+            child.json(assistantEvent("first handoff", {
+              stopReason: "toolUse",
+              content: [
+                { type: "toolCall", name: "read", arguments: { path: "first.ts" } },
+                { type: "text", text: "first handoff" },
+              ],
+            }));
+            resolveFirstMessage();
+          });
+        } else {
+          setImmediate(() => {
+            child.json(assistantEvent("second handoff", {
+              content: [
+                { type: "toolCall", name: "read", arguments: { path: "second.ts" } },
+                { type: "text", text: "second handoff" },
+              ],
+            }));
+            child.close(0);
+          });
+        }
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    const run = execute(tool, { agent: "scout", task: "map both files" }, ctx, new AbortController().signal, updates);
+    await firstMessage;
+    const active = updates.at(-1).details.activeThreads[0];
+    assert.ok(active);
+    const steered = await execute(tool, { action: "steer", threadId: active.id, message: "Finish the second file" }, ctx);
+    assert.equal(steered.details.results[0].status, "running");
+    const result = await run;
+    const task = result.details.results[0];
+    const thread = result.details.threads.find((candidate) => candidate.id === active.id);
+    assert.equal(processCount, 2);
+    assert.match(childTasks[1], /Previous child handoff:[\s\S]*first handoff/u);
+    assert.equal(task.status, "complete");
+    assert.equal(task.output, "second handoff");
+    assert.equal(task.usage.turns, 2);
+    assert.equal(task.usage.totalTokens, 36);
+    assert.match(task.trace.join("\n"), /first\.ts/u);
+    assert.match(task.trace.join("\n"), /second\.ts/u);
+    assert.equal(thread.steering.length, 1);
+    assert.equal(thread.trace.length, 2);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("steering keeps the same child quota across process restarts", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let processCount = 0;
+    let resolveFirstMessage;
+    const firstMessage = new Promise((resolve) => { resolveFirstMessage = resolve; });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      limits: { quotaTokens: 10 },
+      spawnProcess() {
+        const child = new FakeProcess();
+        processCount += 1;
+        if (processCount === 1) {
+          setImmediate(() => {
+            child.json(assistantEvent("first", {
+              stopReason: "toolUse",
+              usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 6, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+            }));
+            resolveFirstMessage();
+          });
+        } else {
+          setImmediate(() => {
+            child.json(assistantEvent("second", {
+              usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 6, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+            }));
+          });
+        }
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    const updates = [];
+    const run = execute(tool, { agent: "scout", task: "use one child budget" }, ctx, new AbortController().signal, updates);
+    await firstMessage;
+    const active = updates.at(-1).details.activeThreads[0];
+    await execute(tool, { action: "steer", threadId: active.id, message: "Continue" }, ctx);
+    const result = await run;
+
+    assert.equal(processCount, 2);
+    assert.equal(result.details.results[0].status, "limited");
+    assert.equal(result.details.results[0].terminationReason, "quota_tokens");
+    assert.equal(result.details.results[0].usage.totalTokens, 12);
+    assert.equal(result.details.threads.find((thread) => thread.id === active.id).state, "stopped");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
 });

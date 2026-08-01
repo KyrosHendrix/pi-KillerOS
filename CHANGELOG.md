@@ -2,6 +2,18 @@
 
 All notable changes to KillerOS are documented here.
 
+## [1.4.2] - 2026-08-01
+
+### Added
+
+- Added named child threads with inspectable lifecycle state, Active/Done views, steering, interruption, collection, and closure controls.
+- Added isolated child-process resource guards for wall time, JSONL lines, retained trace, stderr, output, token quota, cost quota, task count, and concurrency.
+
+### Changed
+
+- Replaced routine child turn limits with natural completion plus named resource guards.
+- Preserved partial traces and handoffs when a child fails, stops, or reaches a limit.
+
 ## [1.4.1] - 2026-08-01
 
 ### Added

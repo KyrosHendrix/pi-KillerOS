@@ -147,6 +147,28 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Compact:** Preserve model, provider, and context. At emergency widths, preserve context and truncate model identity before overflowing.
 - **Adaptation:** Select the richest tier that fits its actual content rather than relying on fixed terminal breakpoints.
 
+## Subagent Thread Lifecycle
+
+KillerOS presents each delegated task as a named child thread, not as an invisible turn-limited run. The thread contract records its parent ID, child ID, role, prompt, model, requested capability boundary, trace, usage, and result state. The parent owns scope, waiting, inspection, steering, collection, and closure.
+
+Threads use `queued`, `active`, `done`, `failed`, `stopped`, and `closed` states. The parent surface keeps separate **Active** and **Done** lists. Active rows show the thread name, task, model, usage, and controls. Done rows retain the handoff and trace for inspection until the parent closes the thread.
+
+The controls are explicit: **inspect** opens the prompt, role, model, tools, trace, usage, and handoff; **steer** sends one bounded follow-up to an active thread; **interrupt** stops one or all active children; **collect** distills the handoff into parent context; and **close** removes a finished or stopped thread from the workspace without deleting its result record. Interruption preserves the trace, names the reason, and labels the handoff as partial, never successful.
+
+A child becomes done when it returns a final answer. Do not use a routine turn cap to stop useful work. Apply named resource guards for wall time, output bytes, retained trace, stderr, quota, task count, and concurrency. Each guard must name its cause and return partial work clearly. Markdown roles continue to define access and tools; lifecycle controls do not expand those permissions.
+
+Implementation proceeds in nine phases:
+
+1. **Dispatch:** Create a named thread and save its contract before launch.
+2. **Track:** Maintain lifecycle states and render Active and Done lists.
+3. **Inspect:** Keep the working trace in the child thread while the parent receives a summary.
+4. **Steer:** Add a bounded parent follow-up to an active thread history.
+5. **Interrupt:** Stop one or all active children and preserve partial work.
+6. **Collect:** Return a concise handoff while keeping the expanded trace available.
+7. **Bound:** Enforce named resource guards instead of a routine turn stop.
+8. **Close:** Remove a finished or stopped thread from the workspace while retaining its result record.
+9. **Prove:** Test identity, visibility, controls, natural completion, guards, partial handoffs, and closure.
+
 ## Do's and Don'ts
 
 ### Do:

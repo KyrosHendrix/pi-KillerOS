@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -16,12 +15,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { SubagentThreadRegistry, type SubagentThread, type SubagentThreadId, type SubagentThreadState } from "./subagent-lifecycle.ts";
+import { runSubagentProcess, type SubagentProcessHandle, type SubagentProcessResult } from "./subagent-process.ts";
+import { formatThreadBoard, formatThreadInspection, type ThreadRecord as ThreadBoardRecord } from "./subagent-ui.ts";
 
 export const SUBAGENT_LIMITS = {
   maxTasks: 8,
   maxReadConcurrency: 4,
-  defaultTurns: 8,
-  maxTurns: 12,
   defaultTimeoutMs: 300_000,
   maxTimeoutMs: 600_000,
   jsonlLineBytes: 32 * 1024 * 1024,
@@ -29,6 +29,8 @@ export const SUBAGENT_LIMITS = {
   stderrBytes: 64 * 1024,
   taskOutputBytes: 50 * 1024,
   toolOutputBytes: 50 * 1024,
+  quotaTokens: 1_000_000,
+  quotaUsd: 10,
   roleFileBytes: 64 * 1024,
   taskCharacters: 20_000,
   killGraceMs: 5_000,
@@ -40,7 +42,8 @@ const WRITE_TOOLS = new Set(["bash", "edit", "write"]);
 const KNOWN_TOOLS = new Set([...READ_TOOLS, ...WRITE_TOOLS]);
 const SUBAGENT_WEB_EXTENSION = "npm:pi-web-access";
 const INHERIT_SETTING = "inherit";
-const ROLE_FIELDS = new Set(["name", "description", "access", "tools", "model", "thinking", "maxTurns", "timeoutMs"]);
+const MAX_RUNTIME_STEERING_MESSAGES = 20;
+const ROLE_FIELDS = new Set(["name", "description", "access", "tools", "model", "thinking", "timeoutMs"]);
 
 type ThinkingLevel = ModelThinkingLevel;
 export type AgentAccess = "read" | "write";
@@ -55,7 +58,6 @@ export interface AgentRole {
   tools: string[];
   model?: string;
   thinking?: string;
-  maxTurns: number;
   timeoutMs: number;
   prompt: string;
   source: AgentSource;
@@ -98,8 +100,10 @@ export interface SubagentTaskResult {
   traceBytes: number;
   traceTruncatedBytes: number;
   stderr: string;
+  stderrBytes: number;
   stderrTruncatedBytes: number;
   output: string;
+  outputBytes: number;
   outputTruncatedBytes: number;
   usage: SubagentUsage;
   durationMs: number;
@@ -115,6 +119,11 @@ export interface SubagentDetails {
   projectAgentsDir: string | null;
   results: SubagentTaskResult[];
   aggregateUsage: SubagentUsage;
+  parentId?: string;
+  threads?: SubagentThread[];
+  activeThreads?: SubagentThread[];
+  doneThreads?: SubagentThread[];
+  selectedThreadId?: string;
 }
 
 interface ModelContext {
@@ -147,7 +156,6 @@ export interface SubagentRuntimeOptions {
   userAgentsDir?: string;
   webExtension?: string;
   spawnProcess?: (args: string[], cwd: string) => SpawnedProcess;
-  createTaskId?: (index: number) => string;
   limits?: Partial<SubagentLimits>;
 }
 
@@ -189,6 +197,14 @@ function aggregateUsage(results: SubagentTaskResult[]): SubagentUsage {
   const total = emptyUsage();
   for (const result of results) addUsage(total, result.usage);
   return total;
+}
+
+function boundedText(text: string, maxBytes: number, marker: string): string {
+  const capped = truncateUtf8(text, maxBytes);
+  if (!capped.omittedBytes) return text;
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  if (markerBytes >= maxBytes) return truncateUtf8(text, maxBytes).text;
+  return `${truncateUtf8(text, maxBytes - markerBytes).text}${marker}`;
 }
 
 function readBoundedFile(filePath: string, maxBytes: number): string {
@@ -280,7 +296,6 @@ function parseAgentFile(filePath: string, source: AgentSource, limits: SubagentL
     tools,
     model: typeof modelValue === "string" ? modelValue.trim() : undefined,
     thinking: typeof thinkingValue === "string" ? thinkingValue.trim() : undefined,
-    maxTurns: optionalPositiveInteger(frontmatter, filePath, "maxTurns", limits.defaultTurns, limits.maxTurns),
     timeoutMs: optionalPositiveInteger(frontmatter, filePath, "timeoutMs", limits.defaultTimeoutMs, limits.maxTimeoutMs),
     prompt,
     source,
@@ -452,65 +467,12 @@ function defaultSpawnProcess(args: string[], cwd: string): SpawnedProcess {
   }) as unknown as SpawnedProcess;
 }
 
-function terminateProcess(child: SpawnedProcess, force: boolean): void {
-  if (process.platform === "win32" && force && child.pid) {
-    const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-      shell: false,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    killer.unref();
-    return;
-  }
-  if (process.platform !== "win32" && child.pid) {
-    try {
-      process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
-      return;
-    } catch {
-      // Fall back to the direct child when process-group signaling is unavailable.
-    }
-  }
-  try {
-    child.kill(force ? "SIGKILL" : "SIGTERM");
-  } catch {
-    // The process may already have exited.
-  }
-}
-
 function truncateUtf8(text: string, maxBytes: number): { text: string; omittedBytes: number } {
   const bytes = Buffer.from(text, "utf8");
   if (bytes.length <= maxBytes) return { text, omittedBytes: 0 };
   let truncated = bytes.subarray(0, maxBytes).toString("utf8");
   if (truncated.endsWith("�")) truncated = truncated.slice(0, -1);
   return { text: truncated, omittedBytes: bytes.length - Buffer.byteLength(truncated, "utf8") };
-}
-
-function textContent(message: any): string {
-  if (!Array.isArray(message?.content)) return "";
-  return message.content.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
-}
-
-function traceMessage(message: any): string[] {
-  if (!Array.isArray(message?.content)) return [];
-  const entries: string[] = [];
-  for (const part of message.content) {
-    if (part?.type !== "toolCall" || typeof part.name !== "string") continue;
-    const args = truncateUtf8(JSON.stringify(part.arguments ?? {}), 2_000).text;
-    entries.push(`${part.name} ${args}`);
-  }
-  return entries;
-}
-
-function appendTrace(result: SubagentTaskResult, entries: string[], maxBytes: number): void {
-  for (const entry of entries) {
-    const entryBytes = Buffer.byteLength(entry, "utf8");
-    const remaining = Math.max(0, maxBytes - result.traceBytes);
-    const retained = truncateUtf8(entry, remaining).text;
-    const retainedBytes = Buffer.byteLength(retained, "utf8");
-    if (retained) result.trace.push(retained);
-    result.traceBytes += retainedBytes;
-    result.traceTruncatedBytes += entryBytes - retainedBytes;
-  }
 }
 
 function makeQueuedResult(id: string, agent: string, task: string, step?: number): SubagentTaskResult {
@@ -525,8 +487,10 @@ function makeQueuedResult(id: string, agent: string, task: string, step?: number
     traceBytes: 0,
     traceTruncatedBytes: 0,
     stderr: "",
+    stderrBytes: 0,
     stderrTruncatedBytes: 0,
     output: "",
+    outputBytes: 0,
     outputTruncatedBytes: 0,
     usage: emptyUsage(),
     durationMs: 0,
@@ -542,6 +506,35 @@ function cloneResult(result: SubagentTaskResult): SubagentTaskResult {
     trace: [...result.trace],
     usage: { ...result.usage, cost: { ...result.usage.cost } },
   };
+}
+
+function mergeTaskResults(previous: SubagentTaskResult | undefined, next: SubagentTaskResult, maxTraceBytes: number): SubagentTaskResult {
+  if (!previous) return cloneResult(next);
+  const merged = cloneResult(next);
+  const trace: string[] = [];
+  let traceBytes = 0;
+  let traceTruncatedBytes = previous.traceTruncatedBytes + next.traceTruncatedBytes;
+  for (const entry of [...previous.trace, ...next.trace]) {
+    const retained = truncateUtf8(entry, Math.max(0, maxTraceBytes - traceBytes));
+    if (retained.text) trace.push(retained.text);
+    const retainedBytes = Buffer.byteLength(retained.text, "utf8");
+    traceBytes += retainedBytes;
+    traceTruncatedBytes += retained.omittedBytes;
+  }
+  merged.trace = trace;
+  merged.traceBytes = traceBytes;
+  merged.traceTruncatedBytes = traceTruncatedBytes;
+  merged.stderr = [previous.stderr, next.stderr].filter(Boolean).join("\n");
+  merged.stderrBytes = previous.stderrBytes + next.stderrBytes;
+  merged.stderrTruncatedBytes = previous.stderrTruncatedBytes + next.stderrTruncatedBytes;
+  merged.output = next.output || previous.output;
+  merged.outputBytes = previous.outputBytes + next.outputBytes;
+  merged.outputTruncatedBytes = previous.outputTruncatedBytes + next.outputTruncatedBytes;
+  merged.usage = emptyUsage();
+  addUsage(merged.usage, previous.usage);
+  addUsage(merged.usage, next.usage);
+  merged.durationMs = previous.durationMs + next.durationMs;
+  return merged;
 }
 
 function cloneDetails(mode: SubagentDetails["mode"], scope: AgentScope, projectAgentsDir: string | null, results: SubagentTaskResult[]): SubagentDetails {
@@ -568,7 +561,34 @@ interface RunTaskOptions {
   webExtension?: string;
   projectTrusted: boolean;
   limits: SubagentLimits;
+  timeoutMs?: number;
   onChange: (result: SubagentTaskResult) => void;
+  onHandle?: (handle: SubagentProcessHandle) => void;
+}
+
+function applyProcessResult(
+  target: SubagentTaskResult,
+  source: Readonly<SubagentProcessResult>,
+  startedAt: number,
+  onChange: (result: SubagentTaskResult) => void,
+): void {
+  target.status = source.status;
+  target.trace = [...source.trace];
+  target.traceBytes = source.traceBytes;
+  target.traceTruncatedBytes = source.traceTruncatedBytes;
+  target.stderr = source.stderr;
+  target.stderrBytes = source.stderrBytes;
+  target.stderrTruncatedBytes = source.stderrTruncatedBytes;
+  target.output = source.output;
+  target.outputBytes = source.outputBytes;
+  target.outputTruncatedBytes = source.outputTruncatedBytes;
+  target.usage = { ...source.usage, cost: { ...source.usage.cost } };
+  target.model = source.model ?? target.model;
+  target.terminationReason = source.terminationReason;
+  target.errorMessage = source.errorMessage;
+  target.exitCode = source.exitCode;
+  target.durationMs = source.durationMs || Date.now() - startedAt;
+  onChange(target);
 }
 
 async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
@@ -593,7 +613,6 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
   }
 
   let promptDirectory: string | undefined;
-  let child: SpawnedProcess | undefined;
   try {
     const prompt = await writeRolePrompt(agent);
     promptDirectory = prompt.directory;
@@ -618,175 +637,26 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
       "--append-system-prompt", prompt.filePath,
       `Task: ${options.task}`,
     ];
-    child = options.spawnProcess(args, options.cwd);
-
-    let stdoutLineBuffer = Buffer.alloc(0);
-    let stdoutLineBytes = 0;
-    let rawStderrBytes = 0;
-    let requestedStatus: SubagentStatus | undefined;
-    let requestedReason: string | undefined;
-    let closed = false;
-    let malformedError: string | undefined;
-    let forceTimer: NodeJS.Timeout | undefined;
-    let settleTimer: NodeJS.Timeout | undefined;
-
-    const requestTermination = (status: "failed" | "cancelled" | "limited", reason: string, errorMessage?: string): void => {
-      if (requestedStatus) return;
-      requestedStatus = status;
-      requestedReason = reason;
-      if (errorMessage) result.errorMessage = errorMessage;
-      terminateProcess(child!, false);
-      forceTimer = setTimeout(() => {
-        if (closed) return;
-        terminateProcess(child!, true);
-        settleTimer = setTimeout(() => {
-          if (!closed) finish(null);
-        }, 1_000);
-      }, limits.killGraceMs);
-    };
-
-    const processLine = (line: string): void => {
-      if (!line.trim() || requestedStatus) return;
-      let event: any;
-      try {
-        event = JSON.parse(line);
-      } catch (error) {
-        malformedError = error instanceof Error ? error.message : String(error);
-        requestTermination("failed", "malformed_jsonl", `Malformed child JSONL: ${malformedError}`);
-        return;
-      }
-      if (event?.type === "message_end" && event.message?.role === "assistant") {
-        const message = event.message;
-        result.usage.turns += 1;
-        addUsage(result.usage, { ...message.usage, turns: 0 });
-        appendTrace(result, traceMessage(message), limits.traceBytes);
-        const output = textContent(message);
-        if (output) {
-          const capped = truncateUtf8(output, limits.taskOutputBytes);
-          result.output = capped.text;
-          result.outputTruncatedBytes = capped.omittedBytes;
-        }
-        if (typeof message.model === "string") result.model = message.provider ? `${message.provider}/${message.model}` : message.model;
-        const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
-        if (stopReason === "stop" || stopReason === "toolUse") {
-          result.terminationReason = undefined;
-          result.errorMessage = undefined;
-        } else if (stopReason) {
-          result.terminationReason = stopReason;
-        }
-        if (typeof message.errorMessage === "string") result.errorMessage = message.errorMessage;
-        if (stopReason === "length") requestTermination("limited", "model_output_limit");
-        if (result.usage.turns > agent.maxTurns || result.usage.turns >= agent.maxTurns && stopReason === "toolUse") {
-          requestTermination("limited", "turn_limit");
-        }
-        options.onChange(result);
-      } else if (event?.type === "agent_end" && event.willRetry === true) {
-        if (result.usage.turns >= agent.maxTurns) {
-          requestTermination("limited", "turn_limit");
-          options.onChange(result);
-        }
-      } else if (event?.type === "tool_result_end" && event.message) {
-        const toolName = typeof event.message.toolName === "string" ? event.message.toolName : "tool";
-        appendTrace(result, [`${toolName} result${event.message.isError ? " (error)" : ""}`], limits.traceBytes);
-        options.onChange(result);
-      }
-    };
-
-    const appendStdoutLine = (fragment: Buffer): boolean => {
-      const nextBytes = stdoutLineBytes + fragment.length;
-      if (nextBytes > limits.jsonlLineBytes) {
-        requestTermination("limited", "jsonl_line_limit", `Child JSONL line exceeds ${limits.jsonlLineBytes} bytes`);
-        return false;
-      }
-      if (nextBytes > stdoutLineBuffer.length) {
-        const nextCapacity = Math.min(limits.jsonlLineBytes, Math.max(nextBytes, stdoutLineBuffer.length * 2, 4_096));
-        const expanded = Buffer.allocUnsafe(nextCapacity);
-        stdoutLineBuffer.copy(expanded, 0, 0, stdoutLineBytes);
-        stdoutLineBuffer = expanded;
-      }
-      fragment.copy(stdoutLineBuffer, stdoutLineBytes);
-      stdoutLineBytes = nextBytes;
-      return true;
-    };
-
-    const processStdoutLine = (): void => {
-      const line = stdoutLineBuffer.toString("utf8", 0, stdoutLineBytes);
-      stdoutLineBuffer = Buffer.alloc(0);
-      stdoutLineBytes = 0;
-      processLine(line);
-    };
-
-    let finish!: (code: number | null) => void;
-    const closedPromise = new Promise<void>((resolve) => {
-      finish = (code: number | null): void => {
-        if (closed) return;
-        closed = true;
-        if (forceTimer) clearTimeout(forceTimer);
-        if (settleTimer) clearTimeout(settleTimer);
-        if (stdoutLineBytes > 0 && !requestedStatus) processStdoutLine();
-        result.exitCode = code;
-        if (requestedStatus) {
-          result.status = requestedStatus;
-          result.terminationReason = requestedReason;
-        } else if (result.terminationReason === "length") {
-          result.status = "limited";
-          result.terminationReason = "model_output_limit";
-        } else if (code !== 0 || result.errorMessage || result.terminationReason) {
-          result.status = "failed";
-          result.terminationReason ??= code === null ? "process_closed" : `exit_${code}`;
-        } else if (result.usage.turns === 0) {
-          result.status = "failed";
-          result.terminationReason = "missing_assistant_message";
-          result.errorMessage = "Child exited without an assistant response";
-        } else {
-          result.status = "complete";
-          result.terminationReason = "completed";
-        }
-        result.durationMs = Date.now() - startedAt;
-        options.onChange(result);
-        resolve();
-      };
+    const handle = runSubagentProcess({
+      args,
+      cwd: options.cwd,
+      signal: options.signal,
+      spawnProcess: options.spawnProcess,
+      limits: {
+        wallTimeMs: options.timeoutMs ?? agent.timeoutMs,
+        jsonlLineBytes: limits.jsonlLineBytes,
+        traceBytes: limits.traceBytes,
+        stderrBytes: limits.stderrBytes,
+        outputBytes: limits.taskOutputBytes,
+        quotaTokens: limits.quotaTokens,
+        quotaUsd: limits.quotaUsd,
+        killGraceMs: limits.killGraceMs,
+      },
+      onUpdate: (next) => applyProcessResult(result, next, startedAt, options.onChange),
     });
-
-    child.stdout.on("data", (chunk: Buffer | string) => {
-      if (requestedStatus) return;
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      let offset = 0;
-      while (offset < buffer.length && !requestedStatus) {
-        const newline = buffer.indexOf(0x0a, offset);
-        const end = newline < 0 ? buffer.length : newline;
-        if (!appendStdoutLine(buffer.subarray(offset, end))) return;
-        if (newline < 0) return;
-        processStdoutLine();
-        offset = newline + 1;
-      }
-    });
-    child.stderr.on("data", (chunk: Buffer | string) => {
-      if (requestedStatus) return;
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const remaining = Math.max(0, limits.stderrBytes - rawStderrBytes);
-      rawStderrBytes += buffer.length;
-      if (remaining > 0) result.stderr += buffer.subarray(0, remaining).toString("utf8");
-      result.stderrTruncatedBytes = Math.max(0, rawStderrBytes - limits.stderrBytes);
-      if (rawStderrBytes > limits.stderrBytes) requestTermination("limited", "stderr_limit");
-    });
-    child.on("error", (error) => requestTermination("failed", "spawn_error", error.message));
-    child.once("close", finish);
-
-    const timeoutTimer = setTimeout(() => requestTermination("limited", "timeout"), agent.timeoutMs);
-    const abortHandler = (): void => requestTermination("cancelled", "abort");
-    if (options.signal?.aborted) abortHandler();
-    else options.signal?.addEventListener("abort", abortHandler, { once: true });
-
-    try {
-      await closedPromise;
-    } finally {
-      clearTimeout(timeoutTimer);
-      options.signal?.removeEventListener("abort", abortHandler);
-    }
-    if (!result.output && result.stderr && (result.status as SubagentStatus) !== "complete") {
-      result.errorMessage ??= result.stderr.trim();
-    }
+    options.onHandle?.(handle);
+    const final = await handle.result;
+    applyProcessResult(result, final, startedAt, options.onChange);
     return result;
   } catch (error) {
     result.status = options.signal?.aborted ? "cancelled" : "failed";
@@ -830,6 +700,13 @@ const ChainTaskSchema = Type.Object({
 });
 
 const SubagentParams = Type.Object({
+  action: Type.Optional(StringEnum(["spawn", "list", "inspect", "steer", "interrupt", "collect", "close"] as const, {
+    default: "spawn",
+    description: "Thread lifecycle action",
+  })),
+  threadId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Stable child thread ID" })),
+  message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Bounded steering message" })),
+  all: Type.Optional(Type.Boolean({ description: "Interrupt every active child thread" })),
   agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
   task: Type.Optional(Type.String({ minLength: 1, maxLength: SUBAGENT_LIMITS.taskCharacters, description: "Task for single mode" })),
   tasks: Type.Optional(Type.Array(TaskSchema, { minItems: 1, maxItems: SUBAGENT_LIMITS.maxTasks, description: "Parallel role tasks" })),
@@ -851,14 +728,28 @@ function requestedAgents(params: { agent?: string; tasks?: TaskInput[]; chain?: 
   return (params.tasks ?? params.chain ?? []).map((task) => task.agent);
 }
 
+function clipCharacters(text: string, maxCharacters: number, fromEnd = false): string {
+  const characters = [...text];
+  if (characters.length <= maxCharacters) return text;
+  return (fromEnd ? characters.slice(-maxCharacters) : characters.slice(0, maxCharacters)).join("");
+}
+
+function buildSteeredTask(task: string, steering: readonly string[], previousOutput: string | undefined, maxCharacters: number): string {
+  const steeringLabel = "\n\nParent steering:\n";
+  const steeringText = clipCharacters(steering.join("\n"), Math.max(0, maxCharacters - [...steeringLabel].length), true);
+  const previousLabel = previousOutput ? "\n\nPrevious child handoff:\n" : "";
+  const required = [...steeringLabel, ...steeringText, ...previousLabel].length;
+  const taskText = clipCharacters(task, Math.max(0, maxCharacters - required));
+  const previousText = previousOutput
+    ? clipCharacters(previousOutput, Math.max(0, maxCharacters - [...taskText, ...steeringLabel, ...steeringText, ...previousLabel].length))
+    : "";
+  return `${taskText}${previousText ? `${previousLabel}${previousText}` : ""}${steeringLabel}${steeringText}`;
+}
+
 function formatUsage(usage: SubagentUsage): string {
   const parts = [`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`, `${usage.totalTokens} tokens`];
   if (usage.cost.total) parts.push(`$${usage.cost.total.toFixed(4)}`);
   return parts.join(" · ");
-}
-
-function taskSummary(result: SubagentTaskResult): string {
-  return `${result.id} · ${result.agent} · ${result.status} · ${formatUsage(result.usage)}`;
 }
 
 function buildToolContent(mode: SubagentDetails["mode"], results: SubagentTaskResult[], maxBytes: number): string {
@@ -872,8 +763,7 @@ function buildToolContent(mode: SubagentDetails["mode"], results: SubagentTaskRe
   const complete = results.filter((result) => result.status === "complete").length;
   const text = `${mode}: ${complete}/${results.length} complete · ${formatUsage(aggregateUsage(results))}\n\n${sections.join("\n\n---\n\n")}`;
   const marker = "\n\n[Combined subagent output truncated to 50 KiB; inspect the expanded tool result for bounded per-task details.]";
-  const capped = truncateUtf8(text, Math.max(0, maxBytes - Buffer.byteLength(marker)));
-  return capped.omittedBytes ? `${capped.text}${marker}` : text;
+  return boundedText(text, maxBytes, marker);
 }
 
 function statusColor(status: SubagentStatus): "accent" | "success" | "error" | "warning" | "muted" {
@@ -892,25 +782,321 @@ function statusIcon(status: SubagentStatus): string {
   return "!";
 }
 
+interface ActiveThreadRuntime {
+  controller: AbortController;
+  handle?: SubagentProcessHandle;
+  steering: string[];
+  restarting: boolean;
+  traceCount: number;
+  startedAt: number;
+  aggregate?: SubagentTaskResult;
+  requestedReason?: string;
+}
+
+function parentThreadId(ctx: ExtensionContext): string {
+  try {
+    const id = ctx.sessionManager?.getSessionId?.();
+    if (id) return `main:${id}`;
+  } catch {
+    // Test and RPC contexts may not expose a session manager.
+  }
+  return "main";
+}
+
+function threadCapabilityBoundary(agent: AgentRole): {
+  filesystem: "read" | "write";
+  network: "none" | "read";
+  process: "none" | "limited";
+  childThreads: false;
+} {
+  return {
+    filesystem: agent.access,
+    network: agent.tools.some((tool) => WEB_TOOLS.has(tool)) ? "read" : "none",
+    process: agent.tools.includes("bash") ? "limited" : "none",
+    childThreads: false,
+  };
+}
+
+function threadUsage(usage: SubagentUsage): SubagentThread["usage"] {
+  return {
+    inputTokens: usage.input,
+    outputTokens: usage.output,
+    cacheReadTokens: usage.cacheRead,
+    cacheWriteTokens: usage.cacheWrite,
+    totalTokens: usage.totalTokens,
+    costUsd: usage.cost.total,
+    turns: usage.turns,
+  };
+}
+
+function legacyStatus(state: SubagentThreadState): SubagentStatus {
+  if (state === "active") return "running";
+  if (state === "done" || state === "closed") return "complete";
+  if (state === "failed") return "failed";
+  if (state === "stopped") return "cancelled";
+  return "queued";
+}
+
+function threadResult(thread: SubagentThread, source?: SubagentTaskResult): SubagentTaskResult {
+  if (source) {
+    const result = cloneResult(source);
+    if (thread.state === "queued") result.status = "queued";
+    else if (thread.state === "active") result.status = "running";
+    return result;
+  }
+  return {
+    ...makeQueuedResult(thread.id, thread.role, thread.prompt),
+    status: legacyStatus(thread.state),
+    agentSource: "unknown",
+    model: thread.model,
+    tools: [...thread.tools],
+    trace: thread.trace.map((event) => event.message ?? event.kind),
+    usage: {
+      input: thread.usage.inputTokens,
+      output: thread.usage.outputTokens,
+      cacheRead: thread.usage.cacheReadTokens,
+      cacheWrite: thread.usage.cacheWriteTokens,
+      totalTokens: thread.usage.totalTokens,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: thread.usage.costUsd },
+      turns: thread.usage.turns,
+    },
+    output: thread.result ?? "",
+    terminationReason: thread.stopReason,
+  };
+}
+
+function threadBoardRecord(result: SubagentTaskResult): ThreadBoardRecord {
+  return {
+    id: result.id,
+    agent: result.agent,
+    task: result.task,
+    status: result.status,
+    usage: {
+      input: result.usage.input,
+      output: result.usage.output,
+      cacheRead: result.usage.cacheRead,
+      cacheWrite: result.usage.cacheWrite,
+      totalTokens: result.usage.totalTokens,
+      turns: result.usage.turns,
+      cost: result.usage.cost.total,
+    },
+    trace: result.trace,
+    traceTruncatedBytes: result.traceTruncatedBytes,
+    handoff: result.output,
+    output: result.output,
+    terminationReason: result.terminationReason,
+    errorMessage: result.errorMessage,
+    durationMs: result.durationMs,
+    step: result.step,
+  };
+}
+
 export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeOptions = {}): void {
   const limits = { ...SUBAGENT_LIMITS, ...options.limits };
   const spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
+  const threads = new SubagentThreadRegistry();
+  const activeRuntimes = new Map<string, ActiveThreadRuntime>();
+  const savedResults = new Map<string, SubagentTaskResult>();
+
+  const detailsFor = (
+    parentId: string,
+    mode: SubagentDetails["mode"] = "single",
+    scope: AgentScope = "user",
+    projectAgentsDir: string | null = null,
+    selectedThreadId?: string,
+  ): SubagentDetails => {
+    const all = threads.listAll().filter((thread) => thread.parentId === parentId);
+    const visible = all.filter((thread) => thread.state !== "closed");
+    const results = visible.map((thread) => threadResult(thread, savedResults.get(thread.id)));
+    return {
+      ...cloneDetails(mode, scope, projectAgentsDir, results),
+      parentId,
+      threads: all,
+      activeThreads: all.filter((thread) => thread.state === "active"),
+      doneThreads: all.filter((thread) => ["done", "failed", "stopped"].includes(thread.state)),
+      selectedThreadId,
+    };
+  };
+
+  const threadBoardText = (parentId: string, selectedThreadId?: string): string => {
+    const details = detailsFor(parentId, "single", "user", null, selectedThreadId);
+    const active = details.activeThreads ?? [];
+    const done = details.doneThreads ?? [];
+    const row = (thread: SubagentThread): string => `- ${thread.id} · ${thread.role} · ${thread.state} · ${thread.prompt}`;
+    const lines = [
+      `parent ${parentId}`,
+      `Active (${active.length})`,
+      ...(active.length ? active.map(row) : ["- none"]),
+      `Done (${done.length})`,
+      ...(done.length ? done.map(row) : ["- none"]),
+      "Controls: inspect · steer · interrupt · collect · close",
+    ];
+    if (selectedThreadId) {
+      const selected = details.threads?.find((thread) => thread.id === selectedThreadId);
+      if (selected) {
+        lines.push(`Inspect ${selected.id}: ${selected.state}`);
+        lines.push(`Role: ${selected.role}`);
+        lines.push(`Model: ${selected.model}`);
+        lines.push(`Tools: ${selected.tools.join(", ")}`);
+        lines.push(`Trace: ${selected.trace.length} entries`);
+        if (selected.result) lines.push(`Handoff: ${selected.result}`);
+        if (selected.stopReason) lines.push(`Reason: ${selected.stopReason}`);
+      }
+    }
+    return boundedText(lines.join("\n"), limits.toolOutputBytes, "\n\n[Thread board truncated; inspect a child thread for its bounded detail.]");
+  };
+
+  const syncThread = (threadId: SubagentThreadId, next: SubagentTaskResult, runtime?: ActiveThreadRuntime): SubagentTaskResult => {
+    const effective = mergeTaskResults(runtime?.aggregate, next, limits.traceBytes);
+    if (runtime?.requestedReason && next.status === "cancelled") effective.terminationReason = runtime.requestedReason;
+    savedResults.set(threadId, cloneResult(effective));
+    let thread = threads.inspect(threadId);
+    if (!thread || threads.isDisposed) return effective;
+    if (thread.state === "queued" && next.status === "running") {
+      thread = threads.begin(threadId);
+    }
+    if (thread.state !== "active") return effective;
+    if (runtime && next.trace.length < runtime.traceCount) runtime.traceCount = 0;
+    const from = runtime?.traceCount ?? 0;
+    let retainedTraceBytes = thread.trace.reduce((total, entry) => total + Buffer.byteLength(entry.message ?? "", "utf8"), 0);
+    for (const entry of next.trace.slice(from)) {
+      const retained = truncateUtf8(entry, Math.max(0, limits.traceBytes - retainedTraceBytes));
+      if (retained.text) {
+        threads.trace(threadId, { kind: "child", message: retained.text });
+        retainedTraceBytes += Buffer.byteLength(retained.text, "utf8");
+      }
+    }
+    if (runtime) runtime.traceCount = next.trace.length;
+    const handoff = effective.output ? { summary: effective.output } : undefined;
+    thread = threads.patch(threadId, { usage: threadUsage(effective.usage), result: effective.output || undefined, handoff });
+    const restartPending = runtime?.restarting === true && ["cancelled", "complete"].includes(next.status);
+    if (restartPending) return effective;
+    if (effective.status === "complete") {
+      threads.complete(threadId, { usage: threadUsage(effective.usage), result: effective.output || undefined, handoff });
+    } else if (effective.status === "failed") {
+      threads.fail(threadId, {
+        usage: threadUsage(effective.usage),
+        result: effective.output || undefined,
+        handoff,
+        message: effective.errorMessage ?? effective.terminationReason ?? "child failed",
+        code: effective.terminationReason,
+      });
+    } else if (effective.status === "cancelled" || effective.status === "limited") {
+      threads.stop(threadId, {
+        usage: threadUsage(effective.usage),
+        result: effective.output || undefined,
+        handoff,
+        reason: effective.terminationReason ?? (effective.status === "limited" ? "resource_limit" : "interrupted"),
+      });
+    }
+    return effective;
+  };
+
+  if (typeof pi.on === "function") {
+    pi.on("session_shutdown", () => {
+      for (const runtime of activeRuntimes.values()) {
+        runtime.restarting = false;
+        runtime.requestedReason = "session_shutdown";
+        runtime.handle?.stop("session_shutdown");
+        runtime.controller.abort();
+      }
+      threads.dispose();
+    });
+  }
 
   pi.registerTool({
     name: "subagent",
     label: "Subagents",
-    description: "Delegate one task, up to eight parallel tasks, or a sequential chain to isolated Pi child roles. Set model as provider/model and thinking as a separate supported effort level; both apply to every task in the call. Bundled and personal roles are available by default; trusted project roles require project/both scope and confirmation. Children have explicit local and web tools, load pi-web-access explicitly, discover skills, keep arbitrary extensions and prompt templates disabled, and enforce at most 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task.",
+    description: "Spawn and manage named child threads. Children finish naturally; time, output, trace, stderr, quota, task count, and concurrency are the hard edges. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.",
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
       "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
       "Do not request multiple write-capable subagents in one parallel batch.",
       "Every child can load relevant skills with read and can use web_search, source_check, fetch_content, and get_search_content for external research.",
       "When the user names a model or thinking effort, pass model and thinking separately; use inherit when the active parent or role setting should decide.",
+      "Keep completed and stopped threads inspectable until the parent explicitly closes them.",
     ],
     parameters: SubagentParams,
-    executionMode: "sequential",
+    executionMode: "parallel",
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const action = params.action ?? "spawn";
+      const parentId = parentThreadId(ctx);
+      const actionDetails = (selectedThreadId?: string): SubagentDetails => detailsFor(parentId, "single", params.agentScope ?? "user", null, selectedThreadId);
+      const actionResult = (text: string, selectedThreadId?: string) => {
+        const details = actionDetails(selectedThreadId);
+        return {
+          content: [{ type: "text" as const, text: boundedText(text, limits.toolOutputBytes, "\n\n[Thread action output truncated.]") }],
+          details,
+          usage: details.aggregateUsage,
+        };
+      };
+
+      if (action === "list") return actionResult(threadBoardText(parentId));
+      if (action === "inspect") {
+        if (!params.threadId) throw new Error("inspect requires threadId");
+        const thread = threads.inspect(params.threadId as SubagentThreadId);
+        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
+        return actionResult(threadBoardText(parentId, params.threadId), params.threadId);
+      }
+      if (action === "steer") {
+        if (!params.threadId || !params.message) throw new Error("steer requires threadId and message");
+        const threadId = params.threadId as SubagentThreadId;
+        const thread = threads.inspect(threadId);
+        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
+        threads.steer(threadId, params.message);
+        const runtime = activeRuntimes.get(params.threadId);
+        if (runtime) {
+          runtime.steering.push(params.message);
+          if (runtime.steering.length > MAX_RUNTIME_STEERING_MESSAGES) runtime.steering.splice(0, runtime.steering.length - MAX_RUNTIME_STEERING_MESSAGES);
+          runtime.restarting = true;
+          runtime.requestedReason = "steer";
+          runtime.handle?.stop("steer");
+        }
+        return actionResult(`Steering queued for ${params.threadId}. The child keeps the same thread and handoff record.`, params.threadId);
+      }
+      if (action === "interrupt") {
+        if (!params.all && !params.threadId) throw new Error("interrupt requires threadId or all=true");
+        let targets: SubagentThread[];
+        if (params.all) {
+          targets = threads.listActive().filter((thread) => thread.parentId === parentId);
+        } else {
+          const target = threads.inspect(params.threadId as SubagentThreadId);
+          if (!target || target.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
+          if (target.state !== "active" && target.state !== "queued") {
+            throw new Error(`Cannot interrupt thread ${params.threadId} from ${target.state}`);
+          }
+          targets = [target];
+        }
+        for (const thread of targets) {
+          if (thread.parentId !== parentId) continue;
+          const runtime = activeRuntimes.get(thread.id);
+          if (runtime) {
+            runtime.restarting = false;
+            runtime.requestedReason = "interrupt";
+            runtime.handle?.stop("interrupt");
+            runtime.controller.abort();
+          } else if (thread.state === "active" || thread.state === "queued") {
+            threads.stop(thread.id, { reason: "interrupt" });
+          }
+        }
+        return actionResult(params.all ? "Interrupt requested for all active child threads." : `Interrupt requested for ${params.threadId}.`);
+      }
+      if (action === "collect") {
+        if (!params.threadId) throw new Error("collect requires threadId");
+        const thread = threads.inspect(params.threadId as SubagentThreadId);
+        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
+        const collected = threads.collect(params.threadId as SubagentThreadId);
+        return actionResult(`Collected ${params.threadId}: ${collected.result ?? collected.failure?.message ?? collected.stopReason ?? "no handoff"}`, params.threadId);
+      }
+      if (action === "close") {
+        if (!params.threadId) throw new Error("close requires threadId");
+        const thread = threads.inspect(params.threadId as SubagentThreadId);
+        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
+        threads.close(params.threadId as SubagentThreadId);
+        return actionResult(`Closed ${params.threadId}. Its result record remains inspectable.`, params.threadId);
+      }
+
       const scope: AgentScope = params.agentScope ?? "user";
       const hasSingleFields = params.agent !== undefined || params.task !== undefined;
       const hasParallel = params.tasks !== undefined;
@@ -958,22 +1144,56 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         if (writers.length > 1) throw new Error("Parallel batches may contain at most one write-capable subagent; writers are serialized");
       }
 
-      const invocationPrefix = randomUUID().slice(0, 8);
-      const createTaskId = options.createTaskId ?? ((index: number) => `${invocationPrefix}-${index + 1}`);
-      const results = inputs.map((input, index) => makeQueuedResult(createTaskId(index), input.agent, input.task, hasChain ? index + 1 : undefined));
+      const inFlight = threads.listAll().filter((thread) => ["queued", "active"].includes(thread.state)).length;
+      if (inFlight + inputs.length > limits.maxTasks) {
+        throw new Error(`At most ${limits.maxTasks} child threads may be active at once`);
+      }
+
+      const threadRecords = inputs.map((input, index) => threads.spawn({
+        parentId: parentId as SubagentThreadId,
+        role: input.agent,
+        prompt: input.task,
+        model: resolvedModels.get(input.agent)!.model,
+        tools: roles.get(input.agent)!.tools,
+        capabilityBoundary: threadCapabilityBoundary(roles.get(input.agent)!),
+      }));
+      const results = threadRecords.map((thread, index) => {
+        return makeQueuedResult(thread.id, inputs[index]!.agent, inputs[index]!.task, hasChain ? index + 1 : undefined);
+      });
       const emit = (message = `${mode}: ${results.filter((result) => !["queued", "running"].includes(result.status)).length}/${results.length} settled`): void => {
+        const board = detailsFor(parentId, mode, scope, discovery.projectAgentsDir);
+        const currentResults = results.map(cloneResult);
         (onUpdate as ToolUpdate | undefined)?.({
           content: [{ type: "text", text: message }],
-          details: cloneDetails(mode, scope, discovery.projectAgentsDir, results),
+          details: { ...board, results: currentResults, aggregateUsage: aggregateUsage(currentResults) },
         });
       };
       const runAt = async (index: number, task: string): Promise<void> => {
+        const threadId = threadRecords[index]!.id;
+        const initialThread = threads.inspect(threadId);
         if (signal?.aborted) {
           results[index] = { ...results[index]!, status: "cancelled", terminationReason: "abort" };
+          if (initialThread?.state === "queued" || initialThread?.state === "active") threads.stop(threadId, { reason: "abort" });
+          savedResults.set(threadId, cloneResult(results[index]!));
           emit();
           return;
         }
+        if (!initialThread) return;
+        if (initialThread.state === "closed") {
+          results[index] = { ...results[index]!, status: "cancelled", terminationReason: initialThread.stopReason ?? "disposed" };
+          savedResults.set(threadId, cloneResult(results[index]!));
+          emit();
+          return;
+        }
+        if (initialThread.state === "stopped") {
+          results[index] = { ...results[index]!, status: "cancelled", terminationReason: initialThread.stopReason ?? "interrupted" };
+          savedResults.set(threadId, cloneResult(results[index]!));
+          emit();
+          return;
+        }
+        if (initialThread.state !== "queued") return;
         const input = inputs[index]!;
+        threads.begin(threadId);
         if ([...task].length > limits.taskCharacters) {
           results[index] = {
             ...results[index]!,
@@ -981,26 +1201,124 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             terminationReason: "task_limit",
             errorMessage: `Expanded task exceeds ${limits.taskCharacters} characters`,
           };
+          threads.fail(threadId, { message: results[index]!.errorMessage ?? "Expanded task exceeds the task limit", code: "task_limit" });
+          savedResults.set(threadId, cloneResult(results[index]!));
           emit();
           return;
         }
-        results[index] = await runTask({
-          cwd: ctx.cwd,
-          agent: roles.get(input.agent)!,
-          task,
-          id: results[index]!.id,
-          step: results[index]!.step,
-          model: resolvedModels.get(input.agent)!,
-          signal,
-          webExtension: options.webExtension,
-          projectTrusted: ctx.isProjectTrusted(),
-          spawnProcess,
-          limits,
-          onChange: (next) => {
-            results[index] = cloneResult(next);
-            emit();
-          },
-        });
+        const controller = new AbortController();
+        const abortParent = (): void => controller.abort();
+        if (signal) {
+          if (signal.aborted) controller.abort();
+          else signal.addEventListener("abort", abortParent, { once: true });
+        }
+        const runtime: ActiveThreadRuntime = { controller, steering: [], restarting: false, traceCount: 0, startedAt: Date.now() };
+        activeRuntimes.set(threadId, runtime);
+        const agent = roles.get(input.agent)!;
+        const queuedSteering = initialThread.steering.map((entry) => entry.message);
+        let currentTask = queuedSteering.length ? buildSteeredTask(task, queuedSteering, undefined, limits.taskCharacters) : task;
+        const stopForBudget = (reason: string, message: string): void => {
+          const limited = cloneResult(runtime.aggregate ?? results[index]!);
+          limited.status = "limited";
+          limited.terminationReason = reason;
+          limited.errorMessage = message;
+          runtime.aggregate = limited;
+          results[index] = cloneResult(limited);
+          savedResults.set(threadId, cloneResult(limited));
+          if (!threads.isDisposed && threads.inspect(threadId)?.state === "active") {
+            threads.stop(threadId, {
+              usage: threadUsage(limited.usage),
+              result: limited.output || undefined,
+              handoff: limited.output ? { summary: limited.output } : undefined,
+              reason,
+            });
+          }
+          emit();
+        };
+        try {
+          while (true) {
+            const aggregate = runtime.aggregate;
+            const remainingWallTimeMs = agent.timeoutMs - (Date.now() - runtime.startedAt);
+            const usedTraceBytes = aggregate?.traceBytes ?? 0;
+            const usedStderrBytes = aggregate?.stderrBytes ?? 0;
+            const usedOutputBytes = aggregate?.outputBytes ?? 0;
+            const usedTokens = aggregate?.usage.totalTokens ?? 0;
+            const usedCost = aggregate?.usage.cost.total ?? 0;
+            if (remainingWallTimeMs <= 0) {
+              stopForBudget("wall_time_limit", `Child thread exceeds ${agent.timeoutMs} ms`);
+              break;
+            }
+            if (usedTraceBytes >= limits.traceBytes || aggregate?.traceTruncatedBytes) {
+              stopForBudget("trace_limit", `Child thread retains more than ${limits.traceBytes} trace bytes`);
+              break;
+            }
+            if (usedStderrBytes >= limits.stderrBytes || aggregate?.stderrTruncatedBytes) {
+              stopForBudget("stderr_limit", `Child thread emits more than ${limits.stderrBytes} stderr bytes`);
+              break;
+            }
+            if (usedOutputBytes >= limits.taskOutputBytes || aggregate?.outputTruncatedBytes) {
+              stopForBudget("output_limit", `Child thread emits more than ${limits.taskOutputBytes} output bytes`);
+              break;
+            }
+            if (usedTokens >= limits.quotaTokens) {
+              stopForBudget("quota_tokens", `Child thread exceeds ${limits.quotaTokens} tokens`);
+              break;
+            }
+            if (usedCost >= limits.quotaUsd) {
+              stopForBudget("quota_cost", `Child thread exceeds $${limits.quotaUsd}`);
+              break;
+            }
+            runtime.traceCount = 0;
+            const next = await runTask({
+              cwd: ctx.cwd,
+              agent: roles.get(input.agent)!,
+              task: currentTask,
+              id: results[index]!.id,
+              step: results[index]!.step,
+              model: resolvedModels.get(input.agent)!,
+              signal: controller.signal,
+              webExtension: options.webExtension,
+              projectTrusted: ctx.isProjectTrusted(),
+              spawnProcess,
+              limits: {
+                ...limits,
+                traceBytes: limits.traceBytes - usedTraceBytes,
+                stderrBytes: limits.stderrBytes - usedStderrBytes,
+                taskOutputBytes: limits.taskOutputBytes - usedOutputBytes,
+                quotaTokens: limits.quotaTokens - usedTokens,
+                quotaUsd: limits.quotaUsd - usedCost,
+              },
+              timeoutMs: remainingWallTimeMs,
+              onHandle: (handle) => { runtime.handle = handle; },
+              onChange: (changed) => {
+                results[index] = syncThread(threadId, changed, runtime);
+                emit();
+              },
+            });
+            next.task = task;
+            runtime.aggregate = mergeTaskResults(runtime.aggregate, next, limits.traceBytes);
+            runtime.aggregate.task = task;
+            results[index] = cloneResult(runtime.aggregate);
+            savedResults.set(threadId, cloneResult(runtime.aggregate));
+            const shouldRestart = runtime.steering.length > 0 && !controller.signal.aborted && (runtime.restarting || next.status === "complete" || next.status === "cancelled");
+            if (!shouldRestart) break;
+            const steering = runtime.steering.splice(0);
+            runtime.restarting = false;
+            runtime.requestedReason = undefined;
+            if (!threads.isDisposed && threads.inspect(threadId)?.state === "active") {
+              threads.patch(threadId, {
+                usage: threadUsage(runtime.aggregate.usage),
+                result: runtime.aggregate.output || undefined,
+                handoff: runtime.aggregate.output ? { summary: runtime.aggregate.output } : undefined,
+              });
+            }
+            currentTask = buildSteeredTask(task, steering, runtime.aggregate.output, limits.taskCharacters);
+          }
+        } finally {
+          activeRuntimes.delete(threadId);
+          signal?.removeEventListener("abort", abortParent);
+        }
+        emit();
       };
 
       emit(`${mode}: ${results.length} queued`);
@@ -1012,10 +1330,19 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           if (results[index]!.status !== "complete") break;
           previous = results[index]!.output;
         }
-        for (const result of results) {
+        for (let index = 0; index < results.length; index += 1) {
+          const result = results[index]!;
           if (result.status === "queued") {
-            result.status = signal?.aborted ? "cancelled" : "failed";
-            result.terminationReason = signal?.aborted ? "abort" : "chain_stopped";
+            const thread = threads.inspect(threadRecords[index]!.id);
+            const alreadyStopped = thread?.state === "stopped";
+            result.status = signal?.aborted || alreadyStopped ? "cancelled" : "failed";
+            result.terminationReason = alreadyStopped
+              ? thread.stopReason ?? "interrupted"
+              : signal?.aborted ? "abort" : "chain_stopped";
+            if (thread?.state === "queued" || thread?.state === "active") {
+              threads.stop(threadRecords[index]!.id, { reason: result.terminationReason });
+            }
+            savedResults.set(threadRecords[index]!.id, cloneResult(result));
           }
         }
       } else if (hasParallel) {
@@ -1027,7 +1354,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         await runAt(0, inputs[0]!.task);
       }
 
-      const details = cloneDetails(mode, scope, discovery.projectAgentsDir, results);
+      const board = detailsFor(parentId, mode, scope, discovery.projectAgentsDir);
+      const currentResults = results.map(cloneResult);
+      const details: SubagentDetails = { ...board, results: currentResults, aggregateUsage: aggregateUsage(currentResults) };
       return {
         content: [{ type: "text", text: buildToolContent(mode, details.results, limits.toolOutputBytes) }],
         details,
@@ -1037,6 +1366,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
 
     renderCall(args, theme) {
       const scope = args.agentScope ?? "user";
+      if (args.action && args.action !== "spawn") return new Text(`${theme.fg("toolTitle", theme.bold("threads "))}${theme.fg("accent", args.action)}${theme.fg("dim", args.threadId ? ` · ${args.threadId}` : "")}`, 0, 0);
       if (args.tasks?.length) return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${args.tasks.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
       if (args.chain?.length) return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `chain ${args.chain.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
       return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent ?? "…")}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
@@ -1048,17 +1378,31 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         const first = result.content[0];
         return new Text(first?.type === "text" ? first.text : "(no output)", 0, 0);
       }
+      const board = formatThreadBoard({
+        title: `Subagents · ${details.mode}`,
+        threads: details.results.map(threadBoardRecord),
+        selectedThreadId: details.selectedThreadId,
+      });
       if (!expanded) {
-        const lines = details.results.map((task) => {
-          const status = theme.fg(statusColor(task.status), `${statusIcon(task.status)} ${task.status}`);
-          return `${status} ${theme.fg("toolTitle", theme.bold(task.agent))}${theme.fg("dim", ` · ${task.id} · ${formatUsage(task.usage)}`)}`;
-        });
+        const lines = [
+          theme.fg("toolTitle", theme.bold(`Active (${board.active.length})`)),
+          ...board.active.map((task) => `${theme.fg("accent", "✻")} ${theme.fg("toolTitle", theme.bold(task.agent))}${theme.fg("dim", ` · ${task.id} · ${task.state.label} · ${task.usage.text}`)}`),
+          theme.fg("toolTitle", theme.bold(`Done (${board.done.length})`)),
+          ...board.done.map((task) => `${theme.fg(task.state.status === "complete" ? "success" : "warning", `${task.state.label}`)} ${theme.fg("toolTitle", theme.bold(task.agent))}${theme.fg("dim", ` · ${task.id} · ${task.usage.text}`)}`),
+        ];
         lines.push(theme.fg("dim", `Total · ${formatUsage(details.aggregateUsage)} · Ctrl+O to expand`));
         return new Text(lines.join("\n"), 0, 0);
       }
 
       const container = new Container();
       container.addChild(new Text(theme.fg("toolTitle", theme.bold(`Subagents · ${details.mode}`)), 0, 0));
+      container.addChild(new Text(theme.fg("dim", `Active ${board.active.length} · Done ${board.done.length} · Controls: Inspect · Steer · Interrupt · Collect · Close`), 0, 0));
+      if (board.selected) {
+        const inspection = formatThreadInspection(threadBoardRecord(details.results.find((task) => task.id === board.selected!.id)!));
+        container.addChild(new Spacer(1));
+        container.addChild(new Text(theme.fg("accent", `Inspect ${inspection.id} · ${inspection.state.label} · ${inspection.usage.text}`), 0, 0));
+        for (const entry of inspection.trace.entries) container.addChild(new Text(`${theme.fg("muted", "→ ")}${theme.fg("toolOutput", entry)}`, 0, 0));
+      }
       for (const task of details.results) {
         container.addChild(new Spacer(1));
         const status = theme.fg(statusColor(task.status), `${statusIcon(task.status)} ${task.status}`);
