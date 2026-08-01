@@ -29,7 +29,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.0
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.1
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -82,7 +82,7 @@ KillerOS ships `scout`, `planner`, and `reviewer` as read-only roles and `worker
 
 The default `agentScope: "user"` uses bundled and personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project override requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. Optional fields are `model`, `maxTurns`, and `timeoutMs`.
 
-The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Children run as ephemeral `pi --mode json -p --no-session` processes with extension, skill, and prompt-template discovery disabled. KillerOS allows at most eight tasks, four parallel readers, one serialized writer, 12 turns, ten minutes, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task. Esc cancellation terminates active children and escalates after five seconds.
+The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Children run as ephemeral `pi --mode json -p --no-session` processes with extension, skill, and prompt-template discovery disabled. KillerOS allows at most eight tasks, four parallel readers, one serialized writer, 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task. Esc cancellation terminates active children and escalates after five seconds.
 
 ## Configuration
 

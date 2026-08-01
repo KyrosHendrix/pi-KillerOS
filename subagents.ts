@@ -5,8 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { StringDecoder } from "node:string_decoder";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, StringEnum, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   CONFIG_DIR_NAME,
   getAgentDir,
@@ -25,6 +24,7 @@ export const SUBAGENT_LIMITS = {
   maxTurns: 12,
   defaultTimeoutMs: 300_000,
   maxTimeoutMs: 600_000,
+  jsonlLineBytes: 32 * 1024 * 1024,
   traceBytes: 2 * 1024 * 1024,
   stderrBytes: 64 * 1024,
   taskOutputBytes: 50 * 1024,
@@ -37,10 +37,9 @@ export const SUBAGENT_LIMITS = {
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const WRITE_TOOLS = new Set(["bash", "edit", "write"]);
 const KNOWN_TOOLS = new Set([...READ_TOOLS, ...WRITE_TOOLS]);
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const ROLE_FIELDS = new Set(["name", "description", "access", "tools", "model", "maxTurns", "timeoutMs"]);
 
-type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+type ThinkingLevel = ModelThinkingLevel;
 export type AgentAccess = "read" | "write";
 export type AgentSource = "bundled" | "personal" | "project";
 export type AgentScope = "user" | "project" | "both";
@@ -114,25 +113,18 @@ export interface SubagentDetails {
   aggregateUsage: SubagentUsage;
 }
 
-interface ModelLike {
-  provider: string;
-  id: string;
-  reasoning?: boolean;
-  thinkingLevelMap?: Partial<Record<ThinkingLevel, unknown>>;
-}
-
 interface ModelContext {
-  model?: ModelLike;
+  model?: Model<any>;
   thinkingLevel?: ThinkingLevel;
   modelRegistry: {
-    getAvailable(): ModelLike[];
+    getAvailable(): Model<any>[];
   };
 }
 
 interface ResolvedModel {
   model: string;
   thinking: ThinkingLevel;
-  definition: ModelLike;
+  definition: Model<any>;
 }
 
 interface SpawnedProcess {
@@ -352,54 +344,53 @@ export function discoverAgentRoles(
   };
 }
 
-function splitModelAndThinking(value: string, filePath: string): { model: string; thinking?: ThinkingLevel } {
-  const colon = value.lastIndexOf(":");
-  if (colon < 0) return { model: value };
-  const suffix = value.slice(colon + 1);
-  if (!(THINKING_LEVELS as readonly string[]).includes(suffix)) {
-    throw new AgentConfigurationError(filePath, "model", `unknown thinking level ${JSON.stringify(suffix)}`);
+function matchingModels(value: string, available: Model<any>[]): Model<any>[] {
+  const slash = value.indexOf("/");
+  if (slash >= 1 && slash < value.length - 1) {
+    const provider = value.slice(0, slash);
+    const id = value.slice(slash + 1);
+    return available.filter((model) => model.provider === provider && model.id === id);
   }
-  const model = value.slice(0, colon);
-  if (!model) throw new AgentConfigurationError(filePath, "model", "model identifier is missing");
-  return { model, thinking: suffix as ThinkingLevel };
+  return available.filter((model) => model.id === value);
 }
 
-function modelSupportsThinking(model: ModelLike, thinking: ThinkingLevel): boolean {
-  if (thinking === "off") return true;
-  if (model.reasoning === false) return false;
-  if (model.thinkingLevelMap?.[thinking] === null) return false;
-  if ((thinking === "xhigh" || thinking === "max") && model.thinkingLevelMap?.[thinking] === undefined) return false;
-  return true;
+function splitModelAndThinking(value: string, filePath: string, available: Model<any>[]): { model: string; thinking?: string } {
+  if (matchingModels(value, available).length > 0) return { model: value };
+  const colon = value.lastIndexOf(":");
+  if (colon < 0) return { model: value };
+  const model = value.slice(0, colon);
+  if (!model) throw new AgentConfigurationError(filePath, "model", "model identifier is missing");
+  if (matchingModels(model, available).length > 0) return { model, thinking: value.slice(colon + 1) };
+  return { model: value };
+}
+
+function resolveAvailableModel(value: string, filePath: string, available: Model<any>[]): Model<any> {
+  const matches = matchingModels(value, available);
+  if (matches.length === 0) throw new AgentConfigurationError(filePath, "model", `unavailable model ${JSON.stringify(value)}`);
+  if (matches.length > 1) throw new AgentConfigurationError(filePath, "model", `ambiguous model ${JSON.stringify(value)}; use provider/model`);
+  return matches[0]!;
 }
 
 export function resolveAgentModel(agent: AgentRole, ctx: ModelContext): ResolvedModel {
   const inheritedThinking = ctx.thinkingLevel ?? "off";
-  let definition: ModelLike | undefined;
-  let thinking = inheritedThinking;
+  let definition: Model<any> | undefined;
+  let thinking: string = inheritedThinking;
 
   if (agent.model) {
-    const requested = splitModelAndThinking(agent.model, agent.filePath);
-    thinking = requested.thinking ?? inheritedThinking;
     const available = ctx.modelRegistry.getAvailable();
-    const slash = requested.model.indexOf("/");
-    if (slash >= 1 && slash < requested.model.length - 1) {
-      definition = available.find((model) => model.provider === requested.model.slice(0, slash) && model.id === requested.model.slice(slash + 1));
-      if (!definition) throw new AgentConfigurationError(agent.filePath, "model", `unavailable model ${JSON.stringify(requested.model)}`);
-    } else {
-      const matches = available.filter((model) => model.id === requested.model);
-      if (matches.length === 0) throw new AgentConfigurationError(agent.filePath, "model", `unavailable model ${JSON.stringify(requested.model)}`);
-      if (matches.length > 1) throw new AgentConfigurationError(agent.filePath, "model", `ambiguous model ${JSON.stringify(requested.model)}; use provider/model`);
-      definition = matches[0];
-    }
+    const requested = splitModelAndThinking(agent.model, agent.filePath, available);
+    thinking = requested.thinking ?? inheritedThinking;
+    definition = resolveAvailableModel(requested.model, agent.filePath, available);
   } else {
     definition = ctx.model;
     if (!definition) throw new AgentConfigurationError(agent.filePath, "model", "no active parent model is available to inherit");
   }
 
-  if (!modelSupportsThinking(definition, thinking)) {
+  const supportedThinking = getSupportedThinkingLevels(definition) as readonly string[];
+  if (!supportedThinking.includes(thinking)) {
     throw new AgentConfigurationError(agent.filePath, "model", `${definition.provider}/${definition.id} does not support thinking level ${thinking}`);
   }
-  return { model: `${definition.provider}/${definition.id}`, thinking, definition };
+  return { model: `${definition.provider}/${definition.id}`, thinking: thinking as ThinkingLevel, definition };
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -484,6 +475,18 @@ function traceMessage(message: any): string[] {
     entries.push(`${part.name} ${args}`);
   }
   return entries;
+}
+
+function appendTrace(result: SubagentTaskResult, entries: string[], maxBytes: number): void {
+  for (const entry of entries) {
+    const entryBytes = Buffer.byteLength(entry, "utf8");
+    const remaining = Math.max(0, maxBytes - result.traceBytes);
+    const retained = truncateUtf8(entry, remaining).text;
+    const retainedBytes = Buffer.byteLength(retained, "utf8");
+    if (retained) result.trace.push(retained);
+    result.traceBytes += retainedBytes;
+    result.traceTruncatedBytes += entryBytes - retainedBytes;
+  }
 }
 
 function makeQueuedResult(id: string, agent: string, task: string, step?: number): SubagentTaskResult {
@@ -590,9 +593,8 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
     ];
     child = options.spawnProcess(args, options.cwd);
 
-    const decoder = new StringDecoder("utf8");
-    let lineBuffer = "";
-    let rawTraceBytes = 0;
+    let stdoutLineBuffer = Buffer.alloc(0);
+    let stdoutLineBytes = 0;
     let rawStderrBytes = 0;
     let requestedStatus: SubagentStatus | undefined;
     let requestedReason: string | undefined;
@@ -632,7 +634,7 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
         const message = event.message;
         result.usage.turns += 1;
         addUsage(result.usage, { ...message.usage, turns: 0 });
-        result.trace.push(...traceMessage(message));
+        appendTrace(result, traceMessage(message), limits.traceBytes);
         const output = textContent(message);
         if (output) {
           const capped = truncateUtf8(output, limits.taskOutputBytes);
@@ -660,9 +662,33 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
         }
       } else if (event?.type === "tool_result_end" && event.message) {
         const toolName = typeof event.message.toolName === "string" ? event.message.toolName : "tool";
-        result.trace.push(`${toolName} result${event.message.isError ? " (error)" : ""}`);
+        appendTrace(result, [`${toolName} result${event.message.isError ? " (error)" : ""}`], limits.traceBytes);
         options.onChange(result);
       }
+    };
+
+    const appendStdoutLine = (fragment: Buffer): boolean => {
+      const nextBytes = stdoutLineBytes + fragment.length;
+      if (nextBytes > limits.jsonlLineBytes) {
+        requestTermination("limited", "jsonl_line_limit", `Child JSONL line exceeds ${limits.jsonlLineBytes} bytes`);
+        return false;
+      }
+      if (nextBytes > stdoutLineBuffer.length) {
+        const nextCapacity = Math.min(limits.jsonlLineBytes, Math.max(nextBytes, stdoutLineBuffer.length * 2, 4_096));
+        const expanded = Buffer.allocUnsafe(nextCapacity);
+        stdoutLineBuffer.copy(expanded, 0, 0, stdoutLineBytes);
+        stdoutLineBuffer = expanded;
+      }
+      fragment.copy(stdoutLineBuffer, stdoutLineBytes);
+      stdoutLineBytes = nextBytes;
+      return true;
+    };
+
+    const processStdoutLine = (): void => {
+      const line = stdoutLineBuffer.toString("utf8", 0, stdoutLineBytes);
+      stdoutLineBuffer = Buffer.alloc(0);
+      stdoutLineBytes = 0;
+      processLine(line);
     };
 
     let finish!: (code: number | null) => void;
@@ -672,9 +698,7 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
         closed = true;
         if (forceTimer) clearTimeout(forceTimer);
         if (settleTimer) clearTimeout(settleTimer);
-        const tail = decoder.end();
-        if (tail) lineBuffer += tail;
-        if (lineBuffer.trim() && !requestedStatus) processLine(lineBuffer);
+        if (stdoutLineBytes > 0 && !requestedStatus) processStdoutLine();
         result.exitCode = code;
         if (requestedStatus) {
           result.status = requestedStatus;
@@ -702,18 +726,15 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
     child.stdout.on("data", (chunk: Buffer | string) => {
       if (requestedStatus) return;
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const remaining = Math.max(0, limits.traceBytes - rawTraceBytes);
-      rawTraceBytes += buffer.length;
-      const accepted = buffer.subarray(0, remaining);
-      if (accepted.length) {
-        lineBuffer += decoder.write(accepted);
-        const lines = lineBuffer.split(/\r?\n/u);
-        lineBuffer = lines.pop() ?? "";
-        for (const line of lines) processLine(line);
+      let offset = 0;
+      while (offset < buffer.length && !requestedStatus) {
+        const newline = buffer.indexOf(0x0a, offset);
+        const end = newline < 0 ? buffer.length : newline;
+        if (!appendStdoutLine(buffer.subarray(offset, end))) return;
+        if (newline < 0) return;
+        processStdoutLine();
+        offset = newline + 1;
       }
-      result.traceBytes = Math.min(rawTraceBytes, limits.traceBytes);
-      result.traceTruncatedBytes = Math.max(0, rawTraceBytes - limits.traceBytes);
-      if (rawTraceBytes > limits.traceBytes) requestTermination("limited", "trace_limit");
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
       if (requestedStatus) return;
@@ -852,7 +873,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   pi.registerTool({
     name: "subagent",
     label: "Subagents",
-    description: "Delegate one task, up to eight parallel tasks, or a sequential chain to isolated Pi child roles. Bundled and personal roles are available by default; trusted project roles require project/both scope and confirmation. Children have explicit tools, no extension/skill/template discovery, at most 12 turns, ten minutes, 2 MiB trace, 64 KiB stderr, and 50 KiB returned output per task.",
+    description: "Delegate one task, up to eight parallel tasks, or a sequential chain to isolated Pi child roles. Bundled and personal roles are available by default; trusted project roles require project/both scope and confirmation. Children have explicit tools, no extension/skill/template discovery, at most 12 turns, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, and 50 KiB returned output per task.",
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
       "Use subagent for clearly separable specialist work; prefer read-only scout, planner, or reviewer roles before the sequential writer.",

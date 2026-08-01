@@ -2,6 +2,18 @@
 
 All notable changes to KillerOS are documented here.
 
+## [1.4.1] - 2026-08-01
+
+### Fixed
+
+- Kept streamed child thinking within the retained trace budget without terminating successful invocations.
+- Preserved model IDs containing colons and validated thinking levels through Pi's model capabilities, including models that do not support `off`.
+- Bounded unterminated JSONL lines while preserving fragmented UTF-8 handling.
+
+### Changed
+
+- Gave the bundled roles distinct Pathfinder, Architect, Sentinel, and Builder identities.
+
 ## [1.4.0] - 2026-08-01
 
 ### Added

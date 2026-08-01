@@ -240,7 +240,7 @@ test("role validation fails closed for mutation tools, unknown fields, duplicate
   }
 });
 
-test("model resolution inherits parent settings and rejects ambiguous, unavailable, or unsupported overrides", () => {
+test("model resolution supports exact colon IDs and enforces Pi thinking capabilities", () => {
   const base = {
     name: "reviewer",
     description: "review",
@@ -268,7 +268,26 @@ test("model resolution inherits parent settings and rejects ambiguous, unavailab
     ])),
     /does not support thinking level high/u,
   );
-  assert.throws(() => resolveAgentModel({ ...base, model: "test/parent-model:turbo" }, modelContext()), /unknown thinking level/u);
+  assert.throws(
+    () => resolveAgentModel({ ...base, model: "test/parent-model:turbo" }, modelContext()),
+    /does not support thinking level turbo/u,
+  );
+
+  const colonModel = { provider: "ollama", id: "qwen2.5-coder:7b", reasoning: false };
+  assert.deepEqual(resolveAgentModel({ ...base, model: "ollama/qwen2.5-coder:7b" }, {
+    ...modelContext([colonModel]),
+    thinkingLevel: "off",
+  }), {
+    model: "ollama/qwen2.5-coder:7b",
+    thinking: "off",
+    definition: colonModel,
+  });
+
+  const alwaysThinking = { provider: "custom", id: "always-thinking", reasoning: true, thinkingLevelMap: { off: null } };
+  assert.throws(
+    () => resolveAgentModel({ ...base, model: "custom/always-thinking:off" }, modelContext([alwaysThinking])),
+    /does not support thinking level off/u,
+  );
 
   const unavailable = { provider: "locked", id: "configured-model", reasoning: true };
   assert.throws(() => resolveAgentModel({ ...base, model: "locked/configured-model" }, {
@@ -436,7 +455,7 @@ test("parallel execution caps readers, waits before the writer, and rejects mult
   }
 });
 
-test("turn, trace, stderr, malformed JSONL, timeout, and output limits fail or truncate visibly", async () => {
+test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits fail or truncate visibly", async () => {
   const scenarios = [
     {
       name: "turn",
@@ -455,9 +474,33 @@ test("turn, trace, stderr, malformed JSONL, timeout, and output limits fail or t
       name: "trace",
       role: { name: "agent" },
       limits: { traceBytes: 80 },
-      emit(child) { child.stdout.write(`${"x".repeat(100)}\n`); },
-      expectedStatus: "limited",
-      expectedReason: "trace_limit",
+      emit(child) {
+        child.json({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "x".repeat(200) } });
+        child.json(assistantEvent("done", {
+          content: [
+            { type: "text", text: "done" },
+            { type: "toolCall", name: "read", arguments: { path: `src/${"nested/".repeat(20)}file.ts` } },
+          ],
+        }));
+        child.close(0);
+      },
+      expectedStatus: "complete",
+      expectedReason: "completed",
+      expectedOutput: "done",
+    },
+    {
+      name: "chunked-utf8",
+      role: { name: "agent" },
+      emit(child) {
+        const payload = Buffer.from(`${JSON.stringify(assistantEvent("before 😀 after"))}\n`, "utf8");
+        const split = payload.indexOf(Buffer.from("😀", "utf8")) + 1;
+        child.stdout.write(payload.subarray(0, split));
+        child.stdout.write(payload.subarray(split));
+        child.close(0);
+      },
+      expectedStatus: "complete",
+      expectedReason: "completed",
+      expectedOutput: "before 😀 after",
     },
     {
       name: "stderr",
@@ -473,6 +516,17 @@ test("turn, trace, stderr, malformed JSONL, timeout, and output limits fail or t
       emit(child) { child.stdout.write("not-json\n"); },
       expectedStatus: "failed",
       expectedReason: "malformed_jsonl",
+    },
+    {
+      name: "jsonl-line",
+      role: { name: "agent", timeoutMs: 20 },
+      limits: { jsonlLineBytes: 64 },
+      emit(child) {
+        child.stdout.write("x".repeat(40));
+        child.stdout.write("x".repeat(40));
+      },
+      expectedStatus: "limited",
+      expectedReason: "jsonl_line_limit",
     },
     {
       name: "length",
@@ -510,10 +564,16 @@ test("turn, trace, stderr, malformed JSONL, timeout, and output limits fail or t
       const task = result.details.results[0];
       assert.equal(task.status, scenario.expectedStatus, scenario.name);
       assert.equal(task.terminationReason, scenario.expectedReason, scenario.name);
+      if (scenario.expectedOutput) assert.equal(task.output, scenario.expectedOutput);
       if (scenario.outputTruncated) assert.ok(task.outputTruncatedBytes > 0);
-      if (scenario.name === "trace") assert.ok(task.traceTruncatedBytes > 0);
+      if (scenario.name === "trace") {
+        assert.equal(task.traceBytes, Buffer.byteLength(task.trace.join(""), "utf8"));
+        assert.ok(task.traceBytes <= scenario.limits.traceBytes);
+        assert.ok(task.traceTruncatedBytes > 0);
+      }
       if (scenario.name === "stderr") assert.ok(task.stderrTruncatedBytes > 0);
       if (scenario.name === "json") assert.match(task.errorMessage, /Malformed child JSONL/u);
+      if (scenario.name === "jsonl-line") assert.match(task.errorMessage, /JSONL line exceeds 64 bytes/u);
     } finally {
       rmSync(roster.root, { recursive: true, force: true });
     }
