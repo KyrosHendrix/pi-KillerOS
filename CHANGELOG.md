@@ -2,6 +2,14 @@
 
 All notable changes to KillerOS are documented here.
 
+## [1.4.3] - 2026-08-01
+
+### Fixed
+
+- Added child-runtime tool budgets for read-only roles, with a soft finalization nudge and hard blocking for read and web tools after 32 calls.
+- Added bounded child report instructions and kept read-tool budgets cumulative across steering restarts.
+- Lowered the default child quota to 250,000 tokens and $5, and exposed child tool-call counts in results.
+
 ## [1.4.2] - 2026-08-01
 
 ### Added

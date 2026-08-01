@@ -155,7 +155,7 @@ Threads use `queued`, `active`, `done`, `failed`, `stopped`, and `closed` states
 
 The controls are explicit: **inspect** opens the prompt, role, model, tools, trace, usage, and handoff; **steer** sends one bounded follow-up to an active thread; **interrupt** stops one or all active children; **collect** distills the handoff into parent context; and **close** removes a finished or stopped thread from the workspace without deleting its result record. Interruption preserves the trace, names the reason, and labels the handoff as partial, never successful.
 
-A child becomes done when it returns a final answer. Do not use a routine turn cap to stop useful work. Apply named resource guards for wall time, output bytes, retained trace, stderr, quota, task count, and concurrency. Each guard must name its cause and return partial work clearly. Markdown roles continue to define access and tools; lifecycle controls do not expand those permissions.
+A child becomes done when it returns a final answer. Do not use a routine turn cap to stop useful work. Apply named resource guards for wall time, output bytes, retained trace, stderr, quota, read-tool calls, task count, and concurrency. Read-only children receive a child-runtime tool budget with a soft finalization nudge and a hard block on read and web tools; final assistant text remains available. Steering keeps the cumulative read-tool budget for the thread. Each guard must name its cause and return partial work clearly. Markdown roles continue to define access and tools; lifecycle controls do not expand those permissions.
 
 Implementation proceeds in nine phases:
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -313,14 +313,16 @@ test("isolated child invocation uses explicit tools and reports bounded output, 
     writeRole(roster.bundled, "scout.md", { name: "scout" });
     const calls = [];
     const promptPaths = [];
+    const promptContents = [];
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
-      spawnProcess(args, cwd) {
-        calls.push({ args, cwd });
+      spawnProcess(args, cwd, environment) {
+        calls.push({ args, cwd, environment });
         const promptPath = args[args.indexOf("--append-system-prompt") + 1];
         promptPaths.push(promptPath);
         assert.equal(existsSync(promptPath), true);
+        promptContents.push(readFileSync(promptPath, "utf8"));
         const child = new FakeProcess();
         setImmediate(() => {
           child.json(assistantEvent("Mapped auth flow", {
@@ -355,6 +357,13 @@ test("isolated child invocation uses explicit tools and reports bounded output, 
     assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls,web_search,source_check,fetch_content,get_search_content");
     assert.equal(args[args.indexOf("--model") + 1], "test/parent-model");
     assert.equal(args[args.indexOf("--thinking") + 1], "high");
+    const childBudget = JSON.parse(calls[0].environment.PI_KILLEROS_TOOL_BUDGET);
+    assert.deepEqual(childBudget, {
+      soft: SUBAGENT_LIMITS.readToolBudgetSoft,
+      hard: SUBAGENT_LIMITS.readToolBudgetHard,
+      block: ["read", "grep", "find", "ls", "web_search", "source_check", "fetch_content", "get_search_content"],
+    });
+    assert.ok(promptContents.every((prompt) => /Child report protocol/u.test(prompt)));
     assert.ok(promptPaths.every((promptPath) => !existsSync(promptPath)), "temporary prompts must be removed");
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
@@ -933,13 +942,16 @@ test("steering restarts the same child thread and retains prior usage and trace"
     const updates = [];
     const children = [];
     const childTasks = [];
+    const childBudgets = [];
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
-      spawnProcess(args) {
+      limits: { readToolBudgetSoft: 1, readToolBudgetHard: 2 },
+      spawnProcess(args, _cwd, environment) {
         const child = new FakeProcess();
         children.push(child);
         childTasks.push(args.at(-1));
+        childBudgets.push(JSON.parse(environment.PI_KILLEROS_TOOL_BUDGET));
         processCount += 1;
         if (processCount === 1) {
           setImmediate(() => {
@@ -977,6 +989,10 @@ test("steering restarts the same child thread and retains prior usage and trace"
     const task = result.details.results[0];
     const thread = result.details.threads.find((candidate) => candidate.id === active.id);
     assert.equal(processCount, 2);
+    assert.deepEqual(childBudgets.map(({ soft, hard }) => ({ soft, hard })), [
+      { soft: 1, hard: 2 },
+      { soft: 1, hard: 1 },
+    ]);
     assert.match(childTasks[1], /Previous child handoff:[\s\S]*first handoff/u);
     assert.equal(task.status, "complete");
     assert.equal(task.output, "second handoff");

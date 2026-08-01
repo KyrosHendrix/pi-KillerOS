@@ -8,8 +8,8 @@ export const SUBAGENT_PROCESS_LIMITS = {
   traceBytes: 2 * 1024 * 1024,
   stderrBytes: 64 * 1024,
   outputBytes: 50 * 1024,
-  quotaTokens: 1_000_000,
-  quotaUsd: 10,
+  quotaTokens: 250_000,
+  quotaUsd: 5,
   killGraceMs: 5_000,
 } as const;
 
@@ -43,6 +43,7 @@ export interface SubagentProcessResult {
   output: string;
   outputBytes: number;
   outputTruncatedBytes: number;
+  toolCallCount: number;
   usage: SubagentProcessUsage;
   model?: string;
   stopReason?: string;
@@ -67,9 +68,10 @@ export interface SubagentProcessOptions {
   cwd: string;
   signal?: AbortSignal;
   limits?: Partial<SubagentProcessLimits>;
+  environment?: NodeJS.ProcessEnv;
   onUpdate?: (result: Readonly<SubagentProcessResult>) => void;
   /** Test or embed hook. It receives the exact Pi arguments supplied above. */
-  spawnProcess?: (args: string[], cwd: string) => SubagentProcessChild;
+  spawnProcess?: (args: string[], cwd: string, environment?: NodeJS.ProcessEnv) => SubagentProcessChild;
 }
 
 export interface SubagentProcessLimits {
@@ -161,6 +163,11 @@ function textContent(message: any): string {
     .join("\n");
 }
 
+function toolCallCount(message: any): number {
+  if (!Array.isArray(message?.content)) return 0;
+  return message.content.filter((part: any) => part?.type === "toolCall").length;
+}
+
 function traceMessage(message: any): string[] {
   if (!Array.isArray(message?.content)) return [];
   const entries: string[] = [];
@@ -224,12 +231,12 @@ export function subagentProcessEnvironment(environment: NodeJS.ProcessEnv = proc
   return childEnvironment;
 }
 
-function defaultSpawnProcess(args: string[], cwd: string): SubagentProcessChild {
+function defaultSpawnProcess(args: string[], cwd: string, environment?: NodeJS.ProcessEnv): SubagentProcessChild {
   const invocation = getPiInvocation(args);
   return spawn(invocation.command, invocation.args, {
     cwd,
     detached: process.platform !== "win32",
-    env: subagentProcessEnvironment(),
+    env: subagentProcessEnvironment({ ...process.env, ...environment }),
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -283,6 +290,7 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     output: "",
     outputBytes: 0,
     outputTruncatedBytes: 0,
+    toolCallCount: 0,
     usage: emptyUsage(),
     exitCode: null,
     durationMs: 0,
@@ -373,6 +381,7 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
       }
       state.usage.turns += 1;
       addUsage(state.usage, { ...message.usage, turns: 0 });
+      state.toolCallCount += toolCallCount(message);
       if (state.usage.totalTokens > limits.quotaTokens) {
         requestTermination("limited", "quota_tokens", `Child token usage exceeds ${limits.quotaTokens}`);
       } else if (state.usage.cost.total > limits.quotaUsd) {
@@ -431,7 +440,9 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     abortHandler();
   } else {
     try {
-      child = (options.spawnProcess ?? defaultSpawnProcess)(args, options.cwd);
+      child = options.spawnProcess
+        ? options.spawnProcess(args, options.cwd, options.environment)
+        : defaultSpawnProcess(args, options.cwd, options.environment);
       child.stdout.on("data", (chunk: Buffer | string) => {
         if (requestedStatus) return;
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);

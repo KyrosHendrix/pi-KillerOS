@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { CHILD_TOOL_BUDGET_ENV, type ChildToolBudget } from "./subagent-budget.ts";
 import { SubagentThreadRegistry, type SubagentThread, type SubagentThreadId, type SubagentThreadState } from "./subagent-lifecycle.ts";
 import { runSubagentProcess, type SubagentProcessHandle, type SubagentProcessResult } from "./subagent-process.ts";
 import { formatThreadBoard, formatThreadInspection, type ThreadRecord as ThreadBoardRecord } from "./subagent-ui.ts";
@@ -29,8 +30,10 @@ export const SUBAGENT_LIMITS = {
   stderrBytes: 64 * 1024,
   taskOutputBytes: 50 * 1024,
   toolOutputBytes: 50 * 1024,
-  quotaTokens: 1_000_000,
-  quotaUsd: 10,
+  quotaTokens: 250_000,
+  quotaUsd: 5,
+  readToolBudgetSoft: 24,
+  readToolBudgetHard: 32,
   roleFileBytes: 64 * 1024,
   taskCharacters: 20_000,
   killGraceMs: 5_000,
@@ -41,9 +44,16 @@ const READ_TOOLS = new Set(["read", "grep", "find", "ls", ...WEB_TOOLS]);
 const WRITE_TOOLS = new Set(["bash", "edit", "write"]);
 const KNOWN_TOOLS = new Set([...READ_TOOLS, ...WRITE_TOOLS]);
 const SUBAGENT_WEB_EXTENSION = "npm:pi-web-access";
+const SUBAGENT_BUDGET_EXTENSION = fileURLToPath(new URL("./subagent-budget.ts", import.meta.url));
 const INHERIT_SETTING = "inherit";
 const MAX_RUNTIME_STEERING_MESSAGES = 20;
 const ROLE_FIELDS = new Set(["name", "description", "access", "tools", "model", "thinking", "timeoutMs"]);
+const CHILD_REPORT_PROTOCOL = [
+  "## Child report protocol",
+  "Work in bounded passes. After the first useful evidence, write a concise report with findings, exact files, checks run, and remaining work.",
+  "Do not keep opening files or searching after you have enough evidence to answer the task.",
+  "If a tool budget notice or blocked-tool message appears, stop research and report from the context you have. A partial report is better than no report.",
+].join("\n");
 
 type ThinkingLevel = ModelThinkingLevel;
 export type AgentAccess = "read" | "write";
@@ -105,6 +115,7 @@ export interface SubagentTaskResult {
   output: string;
   outputBytes: number;
   outputTruncatedBytes: number;
+  toolCallCount: number;
   usage: SubagentUsage;
   durationMs: number;
   exitCode: number | null;
@@ -155,7 +166,7 @@ export interface SubagentRuntimeOptions {
   bundledAgentsDir?: string;
   userAgentsDir?: string;
   webExtension?: string;
-  spawnProcess?: (args: string[], cwd: string) => SpawnedProcess;
+  spawnProcess?: (args: string[], cwd: string, environment?: NodeJS.ProcessEnv) => SpawnedProcess;
   limits?: Partial<SubagentLimits>;
 }
 
@@ -492,6 +503,7 @@ function makeQueuedResult(id: string, agent: string, task: string, step?: number
     output: "",
     outputBytes: 0,
     outputTruncatedBytes: 0,
+    toolCallCount: 0,
     usage: emptyUsage(),
     durationMs: 0,
     exitCode: null,
@@ -530,6 +542,7 @@ function mergeTaskResults(previous: SubagentTaskResult | undefined, next: Subage
   merged.output = next.output || previous.output;
   merged.outputBytes = previous.outputBytes + next.outputBytes;
   merged.outputTruncatedBytes = previous.outputTruncatedBytes + next.outputTruncatedBytes;
+  merged.toolCallCount = previous.toolCallCount + next.toolCallCount;
   merged.usage = emptyUsage();
   addUsage(merged.usage, previous.usage);
   addUsage(merged.usage, next.usage);
@@ -545,7 +558,7 @@ function cloneDetails(mode: SubagentDetails["mode"], scope: AgentScope, projectA
 async function writeRolePrompt(agent: AgentRole): Promise<{ directory: string; filePath: string }> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "killeros-subagent-"));
   const filePath = path.join(directory, `${agent.name.replace(/[^A-Za-z0-9_.-]/gu, "_")}.md`);
-  await writeFile(filePath, agent.prompt, { encoding: "utf8", mode: 0o600 });
+  await writeFile(filePath, `${agent.prompt}\n\n${CHILD_REPORT_PROTOCOL}`, { encoding: "utf8", mode: 0o600 });
   return { directory, filePath };
 }
 
@@ -557,13 +570,14 @@ interface RunTaskOptions {
   step?: number;
   model: ResolvedModel;
   signal?: AbortSignal;
-  spawnProcess: (args: string[], cwd: string) => SpawnedProcess;
+  spawnProcess: (args: string[], cwd: string, environment?: NodeJS.ProcessEnv) => SpawnedProcess;
   webExtension?: string;
   projectTrusted: boolean;
   limits: SubagentLimits;
   timeoutMs?: number;
   onChange: (result: SubagentTaskResult) => void;
   onHandle?: (handle: SubagentProcessHandle) => void;
+  toolBudget?: ChildToolBudget;
 }
 
 function applyProcessResult(
@@ -582,6 +596,7 @@ function applyProcessResult(
   target.output = source.output;
   target.outputBytes = source.outputBytes;
   target.outputTruncatedBytes = source.outputTruncatedBytes;
+  target.toolCallCount = source.toolCallCount;
   target.usage = { ...source.usage, cost: { ...source.usage.cost } };
   target.model = source.model ?? target.model;
   target.terminationReason = source.terminationReason;
@@ -629,6 +644,7 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
       "--no-session",
       "--no-extensions",
       "--extension", options.webExtension ?? SUBAGENT_WEB_EXTENSION,
+      "--extension", SUBAGENT_BUDGET_EXTENSION,
       "--no-prompt-templates",
       options.projectTrusted ? "--approve" : "--no-approve",
       "--model", options.model.model,
@@ -652,6 +668,9 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
         quotaUsd: limits.quotaUsd,
         killGraceMs: limits.killGraceMs,
       },
+      environment: options.toolBudget ? {
+        [CHILD_TOOL_BUDGET_ENV]: JSON.stringify(options.toolBudget),
+      } : undefined,
       onUpdate: (next) => applyProcessResult(result, next, startedAt, options.onChange),
     });
     options.onHandle?.(handle);
@@ -861,6 +880,7 @@ function threadResult(thread: SubagentThread, source?: SubagentTaskResult): Suba
       turns: thread.usage.turns,
     },
     output: thread.result ?? "",
+    toolCallCount: 0,
     terminationReason: thread.stopReason,
   };
 }
@@ -1215,6 +1235,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         const runtime: ActiveThreadRuntime = { controller, steering: [], restarting: false, traceCount: 0, startedAt: Date.now() };
         activeRuntimes.set(threadId, runtime);
         const agent = roles.get(input.agent)!;
+        const baseToolBudget: ChildToolBudget | undefined = agent.access === "read"
+          ? { soft: limits.readToolBudgetSoft, hard: limits.readToolBudgetHard, block: [...READ_TOOLS] }
+          : undefined;
         const queuedSteering = initialThread.steering.map((entry) => entry.message);
         let currentTask = queuedSteering.length ? buildSteeredTask(task, queuedSteering, undefined, limits.taskCharacters) : task;
         const stopForBudget = (reason: string, message: string): void => {
@@ -1242,6 +1265,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             const usedTraceBytes = aggregate?.traceBytes ?? 0;
             const usedStderrBytes = aggregate?.stderrBytes ?? 0;
             const usedOutputBytes = aggregate?.outputBytes ?? 0;
+            const usedToolCalls = aggregate?.toolCallCount ?? 0;
             const usedTokens = aggregate?.usage.totalTokens ?? 0;
             const usedCost = aggregate?.usage.cost.total ?? 0;
             if (remainingWallTimeMs <= 0) {
@@ -1260,6 +1284,10 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               stopForBudget("output_limit", `Child thread emits more than ${limits.taskOutputBytes} output bytes`);
               break;
             }
+            if (baseToolBudget && usedToolCalls >= baseToolBudget.hard) {
+              stopForBudget("tool_call_limit", `Child thread exceeds ${baseToolBudget.hard} tool calls`);
+              break;
+            }
             if (usedTokens >= limits.quotaTokens) {
               stopForBudget("quota_tokens", `Child thread exceeds ${limits.quotaTokens} tokens`);
               break;
@@ -1269,6 +1297,13 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               break;
             }
             runtime.traceCount = 0;
+            const toolBudget = baseToolBudget
+              ? {
+                ...baseToolBudget,
+                soft: Math.max(1, (baseToolBudget.soft ?? baseToolBudget.hard) - usedToolCalls),
+                hard: baseToolBudget.hard - usedToolCalls,
+              }
+              : undefined;
             const next = await runTask({
               cwd: ctx.cwd,
               agent: roles.get(input.agent)!,
@@ -1290,6 +1325,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               },
               timeoutMs: remainingWallTimeMs,
               onHandle: (handle) => { runtime.handle = handle; },
+              toolBudget,
               onChange: (changed) => {
                 results[index] = syncThread(threadId, changed, runtime);
                 emit();

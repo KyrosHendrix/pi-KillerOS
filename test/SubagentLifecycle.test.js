@@ -207,6 +207,7 @@ test("process completes naturally after multiple Pi assistant messages without a
   assert.equal(result.status, "complete");
   assert.equal(result.terminationReason, "completed");
   assert.equal(result.usage.turns, 2);
+  assert.equal(result.toolCallCount, 1);
   assert.equal(result.output, "final result");
   assert.match(result.trace.join("\n"), /read.*auth\.ts/u);
   assert.match(result.trace.join("\n"), /read result/u);

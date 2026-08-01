@@ -33,7 +33,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.1
+  pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.3
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -103,7 +103,7 @@ The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `
 {"agent":"reviewer","task":"Review the change","model":"provider/model","thinking":"high"}
 ```
 
-Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as ephemeral `pi --mode json -p --no-session` processes with explicit local tools plus `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` before work and to use web research when external evidence is needed. KillerOS allows at most eight tasks, four parallel readers, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, 50 KiB returned output, one million tokens, and $10 per child. Esc cancellation terminates active children and escalates after five seconds.
+Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as ephemeral `pi --mode json -p --no-session` processes with explicit local tools plus `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Each child explicitly loads `npm:pi-web-access` and the KillerOS child-budget hook, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md`, work in bounded passes, and report after its first useful evidence. KillerOS allows at most eight tasks, four parallel readers, ten minutes, a 32 MiB JSONL line, 2 MiB retained trace, 64 KiB stderr, 50 KiB returned output, 250,000 tokens, and $5 per child. Read-only children receive a 24-call soft and 32-call hard tool budget that blocks read and web tools after the hard limit; final reports remain allowed. Esc cancellation terminates active children and escalates after five seconds.
 
 ### Thread lifecycle
 
@@ -113,7 +113,7 @@ Threads move through `queued`, `active`, `done`, `failed`, `stopped`, and `close
 
 The parent can inspect a thread’s prompt, role, model, tools, trace, usage, and handoff; steer an active thread with one bounded follow-up; interrupt one child or all active children; collect a concise handoff into parent context; and close a finished or stopped thread. An interrupt preserves the partial trace, states the reason, and reports the handoff as partial rather than successful.
 
-A child completes naturally when it returns a final answer. Routine turn caps do not end useful work. Named resource guards still stop unsafe growth: wall time, output bytes, retained trace, stderr, quota, task count, and concurrency. A guard reports its cause and returns any partial work clearly. Esc cancellation terminates active children and escalates after five seconds.
+A child completes naturally when it returns a final answer. Routine turn caps do not end useful work. Named resource guards still stop unsafe growth: wall time, output bytes, retained trace, stderr, quota, read-tool calls, task count, and concurrency. Read-tool budgets are enforced inside the child process, so the model receives a finalization nudge and a blocked-tool result instead of being killed while it is still researching. A guard reports its cause and returns any partial work clearly. Esc cancellation terminates active children and escalates after five seconds.
 
 The replacement lifecycle has nine phases:
 
@@ -163,7 +163,7 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog.
 
-For the current unreleased `1.4.2`, publish after the validation checks pass:
+For the current unreleased `1.4.3`, publish after the validation checks pass:
 
 ```bash
 npm login
