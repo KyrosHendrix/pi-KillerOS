@@ -134,7 +134,7 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Hover / Focus:** Signal Coral border with Console Ink text and a visible browser focus outline.
 
 ### Compact Startup Card
-- **Style:** A neutral 52-column maximum frame with a dim gray `›`, bold white `KillerOS`, and the package version directly beside the wordmark as `(v1.2.0)`. One unboxed tip follows after a blank line.
+- **Style:** A neutral 52-column maximum frame with a dim gray `›`, bold white `KillerOS`, and the current package version directly beside the wordmark as `(v<package version>)`. One unboxed tip follows after a blank line.
 - **Content:** Reuse the footer signature: bold white metadata-first model name, gray provider, and semantic reasoning, followed immediately by a blue `/model` affordance. The second row contains the directory and appends the active Git branch only when the workspace belongs to a repository; context remains in the footer.
 - **Tips:** Shuffle a factual tip bank, choose once per startup, and keep that tip fixed for the session. Exhaust the shuffled bank before repeating.
 - **Adaptation:** The card stops growing at 52 columns, truncates the model signature while preserving `/model`, truncates directory and branch together, wraps the external tip, and falls back to the wordmark below 28 columns.
@@ -153,9 +153,9 @@ KillerOS presents each delegated task as a named child thread, not as an invisib
 
 Threads use `queued`, `active`, `done`, `failed`, `stopped`, and `closed` states. The parent surface keeps separate **Active** and **Done** lists. Active rows show the thread name, task, model, usage, and controls. Done rows retain the handoff and trace for inspection until the parent closes the thread.
 
-The controls are explicit: **inspect** opens the prompt, role, model, tools, trace, usage, and handoff; **steer** sends one bounded follow-up to an active thread; **interrupt** stops one or all active children; **collect** distills the handoff into parent context; and **close** removes a finished or stopped thread from the workspace without deleting its result record. Interruption preserves the trace, names the reason, and labels the handoff as partial, never successful.
+The controls are explicit: **inspect** opens the prompt, role, model, tools, trace, usage, and handoff; **steer** sends one bounded follow-up to an active thread; **interrupt** stops one or all active children; **collect** distills the handoff into parent context; and **close** removes a finished or stopped thread from the workspace while retaining a small inspectable tombstone and evicting heavy payloads under the retention budget. Interruption preserves the trace, names the reason, and labels the handoff as partial, never successful.
 
-A child becomes done when it returns a final answer. The default path has no per-child execution quota and gives each child a private Pi session directory and session ID. Steering restarts that same session so the child keeps its prior conversation. KillerOS bounds retained trace, stderr, and returned text and spills a large JSONL line to temporary storage; retention does not stop the child or mark it `limited`. Embedding callers may apply explicit wall-time, output, trace, stderr, JSONL, token, or cost guards; each guard must name its cause and return partial work clearly. The parent still bounds task count, reader concurrency, role files, task input, and combined parent output. Explicit user interruptions and real child-process failures remain visible. Markdown roles continue to define access and tools; lifecycle controls do not expand those permissions.
+A child becomes done when it returns a final answer. The default path has no per-child execution quota and gives each child a private Pi session directory and session ID; every JSONL record still has an 8 MiB parser ceiling. Steering restarts that same session so the child keeps its prior conversation. KillerOS bounds retained trace, stderr, and returned text and spills a large JSONL line to temporary storage; retention does not stop the child or mark it `limited`. Embedding callers may apply explicit wall-time, output, trace, stderr, JSONL, token, or cost guards; each guard must name its cause and return partial work clearly. The parent still bounds task count, reader concurrency, role files, task input, and combined parent output. Explicit user interruptions and real child-process failures remain visible. Markdown roles continue to define access and tools; lifecycle controls do not expand those permissions.
 
 Implementation proceeds in nine phases:
 
@@ -166,8 +166,8 @@ Implementation proceeds in nine phases:
 5. **Interrupt:** Stop one or all active children and preserve partial work.
 6. **Collect:** Return a concise handoff while keeping the expanded trace available.
 7. **Guard:** Honor only explicit child resource guards instead of imposing a routine turn stop.
-8. **Close:** Remove a finished or stopped thread from the workspace while retaining its result record.
-9. **Prove:** Test identity, visibility, controls, natural completion, guards, partial handoffs, and closure.
+8. **Close:** Remove a finished or stopped thread from the workspace while retaining a small inspectable tombstone.
+9. **Prove:** Test identity, visibility, controls, natural completion, guards, partial handoffs, bounded retention, and closure.
 
 ## Do's and Don'ts
 

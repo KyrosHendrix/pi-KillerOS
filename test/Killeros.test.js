@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import { PassThrough } from "node:stream";
 import path from "node:path";
 import test from "node:test";
-import Killeros, { formatContextProgress, INIT_WORKFLOW_PROMPT } from "../Killeros.ts";
+import Killeros, { executeHook, formatContextProgress, INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "../Killeros.ts";
 import { formatThreadBoard, formatThreadState } from "../subagent-ui.ts";
 
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -71,6 +73,7 @@ function createHarness() {
   const appendedEntries = [];
   const sentMessages = [];
   const sentUserMessages = [];
+  const activeTools = [];
   const api = {
     appendEntry: (customType, data) => appendedEntries.push({ type: "custom", customType, data }),
     getAllTools: () => [...tools.values()].map((tool) => ({
@@ -103,9 +106,12 @@ function createHarness() {
     sendMessage: (message, options) => sentMessages.push({ message, options }),
     sendUserMessage: (message, options) => sentUserMessages.push({ message, options }),
     setThinkingLevel: () => {},
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (names) => activeTools.splice(0, activeTools.length, ...names),
   };
   Killeros(api);
-  return { api, appendedEntries, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
+  activeTools.push(...tools.keys());
+  return { api, activeTools, appendedEntries, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
 }
 
 async function emitSequentially(handlers, event, ctx) {
@@ -118,20 +124,21 @@ async function emitSequentially(handlers, event, ctx) {
   return results;
 }
 
-async function emitSuccessfulInitWrite(handlers, ctx, toolCallId = "init-write") {
+async function emitSuccessfulInitWrite(handlers, tools, ctx, content = "# AGENTS.md\n", toolCallId = "init-write") {
+  const input = { content };
   const callResults = await emitSequentially(handlers.get("tool_call"), {
     toolCallId,
-    toolName: "write",
-    input: { path: "AGENTS.md", content: "# AGENTS.md\n" },
+    toolName: "killeros_init_write",
+    input,
   }, ctx);
   assert.equal(callResults.some((result) => result?.block), false);
-  await emitSequentially(handlers.get("tool_result"), {
+  await tools.get("killeros_init_write").execute(
     toolCallId,
-    toolName: "write",
-    input: { path: "AGENTS.md" },
-    content: [{ type: "text", text: "written" }],
-    isError: false,
-  }, ctx);
+    input,
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
 }
 
 async function waitFor(predicate) {
@@ -140,6 +147,25 @@ async function waitFor(predicate) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail("timed out waiting for asynchronous test state");
+}
+
+async function removeDirectoryEventually(directory) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!["EPERM", "EBUSY"].includes(error.code)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  rmSync(directory, { recursive: true, force: true });
+}
+
+async function emitGoalStart(handlers, ctx) {
+  for (const handler of handlers.get("before_agent_start")) {
+    await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
+  }
 }
 
 function createFileSymlinkOrSkip(t, target, linkPath) {
@@ -205,6 +231,7 @@ function createTuiContext(entries = []) {
 async function startQuestion(tool, options = [{ label: "Alpha" }], questionText = "Choose", terminalRows = 40) {
   let component;
   let finish;
+  const notifications = [];
   const tui = { requestRender() {}, terminal: { rows: terminalRows } };
   const ctx = {
     mode: "tui",
@@ -213,6 +240,7 @@ async function startQuestion(tool, options = [{ label: "Alpha" }], questionText 
         finish = resolve;
         component = factory(tui, theme, {}, resolve);
       }),
+      notify: (message, level) => notifications.push({ message, level }),
     },
   };
   const result = tool.execute(
@@ -224,7 +252,7 @@ async function startQuestion(tool, options = [{ label: "Alpha" }], questionText 
   );
   assert.ok(component);
   assert.ok(finish);
-  return { component, finish, result };
+  return { component, finish, result, notifications };
 }
 
 test("uses one neutral background for every tool state", () => {
@@ -308,6 +336,7 @@ test("/goal continues one turn at a time and pause stops future turns", async ()
   await commands.get("goal").handler("Finish the migration", ctx);
   assert.equal(sentMessages.length, 1);
 
+  await emitGoalStart(handlers, ctx);
   await emitSequentially(handlers.get("agent_end"), {
     messages: [{ role: "assistant", stopReason: "stop" }],
   }, ctx);
@@ -330,7 +359,8 @@ test("/goal pauses when a scheduled continuation fails before the agent starts",
   await emitSequentially(handlers.get("agent_settled"), {}, ctx);
   const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
   assert.equal(lastGoalEntry.data.state.status, "paused");
-  assert.match(lastGoalEntry.data.state.result, /without an agent result/u);
+  assert.match(lastGoalEntry.data.state.result, /before an agent turn started/u);
+  assert.equal(lastGoalEntry.data.state.turns, 0);
 });
 
 test("/goal pauses after an aborted or failed goal turn", async () => {
@@ -353,9 +383,6 @@ test("/goal edit, pause, resume, and clear persist explicit transitions", async 
   const { appendedEntries, commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
   await commands.get("goal").handler("Original objective", ctx);
-  for (const handler of handlers.get("before_agent_start")) {
-    await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
-  }
 
   await commands.get("goal").handler("pause", ctx);
   assert.equal(appendedEntries.at(-1).data.state.status, "paused");
@@ -503,7 +530,8 @@ test("/goal validates objectives, reserves control words, and gates blocked stat
     /three goal turns/u,
   );
 
-  for (let turn = 0; turn < 2; turn += 1) {
+  for (let turn = 0; turn < 3; turn += 1) {
+    await emitGoalStart(handlers, ctx);
     await emitSequentially(handlers.get("agent_end"), {
       messages: [{ role: "assistant", stopReason: "stop" }],
     }, ctx);
@@ -617,7 +645,7 @@ test("/goal edit resumes after invalid input and pauses after persistence failur
 
   ctx.ui.editor = async () => "";
   await commands.get("goal").handler("edit", ctx);
-  assert.equal(sentMessages.length, 2, "invalid edits must not strand an active goal");
+  assert.equal(sentMessages.length, 1, "invalid edits must not strand an active goal");
 
   for (const handler of handlers.get("before_agent_start")) {
     await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
@@ -625,7 +653,7 @@ test("/goal edit resumes after invalid input and pauses after persistence failur
   ctx.ui.editor = async () => "Changed objective";
   api.appendEntry = () => { throw new Error("session write failed"); };
   await commands.get("goal").handler("edit", ctx);
-  assert.equal(sentMessages.length, 2, "an unsaved continuation must not start");
+  assert.equal(sentMessages.length, 1, "an unsaved continuation must not start");
   await commands.get("goal").handler("", ctx);
   assert.match(notifications.at(-1).message, /Goal paused/u);
   assert.match(notifications.at(-1).message, /session write failed/u);
@@ -652,46 +680,51 @@ test("goal state appears in wide and compact footer cutdowns", async () => {
 });
 
 test("registers /init as a native command and runs the hidden generation workflow", async () => {
-  const { commands, handlers, sentMessages, sentUserMessages, tools } = createHarness();
-  assert.equal(commands.has("init"), true);
-  assert.equal(tools.has("init"), false);
-  assert.equal(tools.has("init_survey"), false);
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-workflow-"));
+  try {
+    const { commands, handlers, sentMessages, sentUserMessages, tools } = createHarness();
+    assert.equal(commands.has("init"), true);
+    assert.equal(tools.has("init"), false);
+    assert.equal(tools.has("init_survey"), false);
 
-  const notifications = [];
-  let reloadCalls = 0;
-  const ctx = {
-    cwd: process.cwd(),
-    isProjectTrusted: () => true,
-    mode: "tui",
-    reload: async () => { reloadCalls += 1; },
-    ui: { notify: (message, level) => notifications.push({ message, level }) },
-    waitForIdle: async () => {},
-  };
-  const initRun = commands.get("init").handler("", ctx);
-  await waitFor(() => sentMessages.length === 1);
+    const notifications = [];
+    let reloadCalls = 0;
+    const ctx = {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => { reloadCalls += 1; },
+      ui: { notify: (message, level) => notifications.push({ message, level }) },
+      waitForIdle: async () => {},
+    };
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
 
-  assert.equal(sentMessages.length, 1);
-  assert.deepEqual(sentMessages[0].options, { triggerTurn: true });
-  assert.equal(sentMessages[0].message.customType, "killeros-init");
-  assert.equal(sentMessages[0].message.display, false);
-  assert.ok(sentMessages[0].message.content.startsWith(INIT_WORKFLOW_PROMPT));
-  assert.match(sentMessages[0].message.content, /Initial repository snapshot/u);
-  assert.match(INIT_WORKFLOW_PROMPT, /## Analyze[\s\S]*## Synthesize[\s\S]*## Generate/u);
-  assert.match(INIT_WORKFLOW_PROMPT, /ask no questions/u);
-  assert.match(INIT_WORKFLOW_PROMPT, /write tool exactly once/u);
-  assert.doesNotMatch(INIT_WORKFLOW_PROMPT, /preserve|targeted edit|init_survey|\.agents\/skills|killeros-hooks\.json/iu);
+    assert.equal(sentMessages.length, 1);
+    assert.deepEqual(sentMessages[0].options, { triggerTurn: true });
+    assert.equal(sentMessages[0].message.customType, "killeros-init");
+    assert.equal(sentMessages[0].message.display, false);
+    assert.ok(sentMessages[0].message.content.startsWith(INIT_WORKFLOW_PROMPT));
+    assert.match(sentMessages[0].message.content, /Initial repository snapshot/u);
+    assert.match(INIT_WORKFLOW_PROMPT, /## Analyze[\s\S]*## Synthesize[\s\S]*## Generate/u);
+    assert.match(INIT_WORKFLOW_PROMPT, /ask no questions/u);
+    assert.match(INIT_WORKFLOW_PROMPT, /killeros_init_write.*exactly once/u);
+    assert.doesNotMatch(INIT_WORKFLOW_PROMPT, /preserve|targeted edit|init_survey|\.agents\/skills|killeros-hooks\.json/iu);
 
-  await commands.get("init").handler("", ctx);
-  assert.equal(sentMessages.length, 1);
-  assert.deepEqual(notifications.at(-1), { message: "/init is already running", level: "warning" });
+    await commands.get("init").handler("", ctx);
+    assert.equal(sentMessages.length, 1);
+    assert.deepEqual(notifications.at(-1), { message: "/init is already running", level: "warning" });
 
-  await emitSuccessfulInitWrite(handlers, ctx);
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
-  await initRun;
-  assert.equal(reloadCalls, 1);
-  assert.deepEqual(sentUserMessages, []);
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
-  assert.equal(reloadCalls, 1);
+    await emitSuccessfulInitWrite(handlers, tools, ctx);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+    assert.equal(reloadCalls, 1);
+    assert.deepEqual(sentUserMessages, []);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    assert.equal(reloadCalls, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("/init reports failure instead of reloading when the model does not write", async () => {
@@ -727,7 +760,8 @@ test("/init replaces an existing AGENTS.md once and blocks every other mutation"
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-existing-"));
   try {
     writeFileSync(path.join(directory, "AGENTS.md"), "# AGENTS.md\n\nPreserve this workflow.\n");
-    const { commands, handlers, sentMessages } = createHarness();
+    writeFileSync(path.join(directory, "src-index.ts"), "export const value = 1;\n");
+    const { commands, handlers, sentMessages, tools } = createHarness();
     const ctx = {
       cwd: directory,
       isProjectTrusted: () => true,
@@ -742,37 +776,32 @@ test("/init replaces an existing AGENTS.md once and blocks every other mutation"
     const readOnly = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "inspect-source",
       toolName: "read",
-      input: { path: "src/index.ts" },
+      input: { path: "src-index.ts" },
     }, ctx);
     assert.equal(readOnly.some((result) => result?.block), false);
 
     const replacement = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "replace-existing",
-      toolName: "write",
-      input: { path: "AGENTS.md", content: "# AGENTS.md\n\nGenerated.\n" },
+      toolName: "killeros_init_write",
+      input: { content: "# AGENTS.md\n\nGenerated.\n" },
     }, ctx);
     assert.equal(replacement.some((result) => result?.block), false);
-    await emitSequentially(handlers.get("tool_result"), {
-      toolCallId: "replace-existing",
-      toolName: "write",
-      input: { path: "AGENTS.md" },
-      content: [{ type: "text", text: "written" }],
-      isError: false,
-    }, ctx);
+    await tools.get("killeros_init_write").execute("replace-existing", { content: "# AGENTS.md\n\nGenerated.\n" }, new AbortController().signal, () => {}, ctx);
+    assert.equal(readFileSync(path.join(directory, "AGENTS.md"), "utf8"), "# AGENTS.md\n\nGenerated.\n");
 
     const secondWrite = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "replace-again",
-      toolName: "write",
-      input: { path: "AGENTS.md", content: "replacement" },
+      toolName: "killeros_init_write",
+      input: { content: "replacement" },
     }, ctx);
-    assert.match(secondWrite.find((result) => result?.block)?.reason, /exactly once/u);
+    assert.match(secondWrite.find((result) => result?.block)?.reason, /scoped read tools|exactly once/u);
 
     const editTarget = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "edit-existing",
       toolName: "edit",
       input: { path: "AGENTS.md", edits: [{ oldText: "Generated", newText: "Changed" }] },
     }, ctx);
-    assert.match(editTarget.find((result) => result?.block)?.reason, /exactly once/u);
+    assert.match(editTarget.find((result) => result?.block)?.reason, /may not modify any other file/u);
 
     const otherFile = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "write-other",
@@ -788,13 +817,31 @@ test("/init replaces an existing AGENTS.md once and blocks every other mutation"
   }
 });
 
+test("/init preserves the existing AGENTS.md when atomic replacement fails", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-rename-failure-"));
+  try {
+    const target = path.join(directory, "AGENTS.md");
+    writeFileSync(target, "original guidance\n");
+    const renameError = Object.assign(new Error("replacement blocked"), { code: "EPERM" });
+
+    await assert.rejects(
+      writeInitAgentsFile(target, "replacement guidance\n", async () => { throw renameError; }),
+      /replacement blocked/u,
+    );
+    assert.equal(readFileSync(target, "utf8"), "original guidance\n");
+    assert.deepEqual(readdirSync(directory), ["AGENTS.md"]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("/init blocks a linked AGENTS.md target", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-linked-target-"));
   try {
     writeFileSync(path.join(directory, "shared.md"), "shared instructions\n");
     if (!createFileSymlinkOrSkip(t, "shared.md", path.join(directory, "AGENTS.md"))) return;
 
-    const { commands, handlers, sentMessages } = createHarness();
+    const { commands, handlers, sentMessages, tools } = createHarness();
     const ctx = {
       cwd: directory,
       isProjectTrusted: () => true,
@@ -808,12 +855,55 @@ test("/init blocks a linked AGENTS.md target", async (t) => {
 
     const writeAttempt = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "linked-agents",
-      toolName: "write",
-      input: { path: "AGENTS.md", content: "replacement" },
+      toolName: "killeros_init_write",
+      input: { content: "replacement" },
     }, ctx);
-    assert.match(writeAttempt.find((result) => result?.block)?.reason, /regular, non-linked file/u);
+    assert.equal(writeAttempt.some((result) => result?.block), false);
+    await assert.rejects(
+      tools.get("killeros_init_write").execute("linked-agents", { content: "replacement" }, new AbortController().signal, () => {}, ctx),
+      /regular, non-linked file/u,
+    );
     assert.equal(readFileSync(path.join(directory, "shared.md"), "utf8"), "shared instructions\n");
 
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init rejects a target swapped after tool-call validation", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-swap-target-"));
+  try {
+    const target = path.join(directory, "AGENTS.md");
+    const shared = path.join(directory, "shared.md");
+    writeFileSync(target, "old guidance\n");
+    writeFileSync(shared, "shared guidance\n");
+    const { commands, handlers, sentMessages, tools } = createHarness();
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+    handlers.get("tool_call").push((event) => {
+      if (event.toolName !== "killeros_init_write") return;
+      rmSync(target);
+      try {
+        linkSync(shared, target);
+      } catch {
+        mkdirSync(target);
+      }
+    });
+    const callResults = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "swap-target",
+      toolName: "killeros_init_write",
+      input: { content: "replacement" },
+    }, ctx);
+    assert.equal(callResults.some((result) => result?.block), false);
+    await assert.rejects(
+      tools.get("killeros_init_write").execute("swap-target", { content: "replacement" }, new AbortController().signal, () => {}, ctx),
+      /regular, non-linked file/u,
+    );
+    assert.equal(readFileSync(shared, "utf8"), "shared guidance\n");
     await emitSequentially(handlers.get("agent_settled"), {}, ctx);
     await initRun;
   } finally {
@@ -824,7 +914,8 @@ test("/init blocks a linked AGENTS.md target", async (t) => {
 test("/init retries its single AGENTS.md write only after a failed write", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-new-"));
   try {
-    const { commands, handlers, sentMessages } = createHarness();
+    mkdirSync(path.join(directory, "AGENTS.md"));
+    const { commands, handlers, sentMessages, tools } = createHarness();
     const ctx = {
       cwd: directory,
       isProjectTrusted: () => true,
@@ -838,36 +929,28 @@ test("/init retries its single AGENTS.md write only after a failed write", async
 
     const firstWrite = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "create-agents",
-      toolName: "write",
-      input: { path: "AGENTS.md", content: "# AGENTS.md" },
+      toolName: "killeros_init_write",
+      input: { content: "# AGENTS.md" },
     }, ctx);
     assert.equal(firstWrite.some((result) => result?.block), false);
-    await emitSequentially(handlers.get("tool_result"), {
-      toolCallId: "create-agents",
-      toolName: "write",
-      input: { path: "AGENTS.md" },
-      content: [{ type: "text", text: "disk error" }],
-      isError: true,
-    }, ctx);
+    await assert.rejects(
+      tools.get("killeros_init_write").execute("create-agents", { content: "# AGENTS.md" }, new AbortController().signal, () => {}, ctx),
+      /regular, non-linked file/u,
+    );
+    rmSync(path.join(directory, "AGENTS.md"), { recursive: true, force: true });
 
     const retryWrite = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "retry-agents",
-      toolName: "write",
-      input: { path: "AGENTS.md", content: "# AGENTS.md" },
+      toolName: "killeros_init_write",
+      input: { content: "# AGENTS.md" },
     }, ctx);
     assert.equal(retryWrite.some((result) => result?.block), false);
-    await emitSequentially(handlers.get("tool_result"), {
-      toolCallId: "retry-agents",
-      toolName: "write",
-      input: { path: "AGENTS.md" },
-      content: [{ type: "text", text: "created" }],
-      isError: false,
-    }, ctx);
+    await tools.get("killeros_init_write").execute("retry-agents", { content: "# AGENTS.md" }, new AbortController().signal, () => {}, ctx);
 
     const thirdWrite = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "third-agents",
-      toolName: "write",
-      input: { path: "AGENTS.md", content: "replacement" },
+      toolName: "killeros_init_write",
+      input: { content: "replacement" },
     }, ctx);
     assert.equal(thirdWrite.find((result) => result?.block)?.block, true);
 
@@ -977,6 +1060,98 @@ test("/init snapshot does not follow linked manifest files", async (t) => {
 
     await emitSequentially(handlers.get("agent_settled"), {}, {});
     await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init scopes reads to safe project files and freezes checked inputs", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-read-scope-"));
+  const outsideSecret = path.join(os.tmpdir(), `killeros-init-outside-${process.pid}-${Date.now()}.txt`);
+  try {
+    mkdirSync(path.join(directory, ".agents", "skills"), { recursive: true });
+    mkdirSync(path.join(directory, "@.."), { recursive: true });
+    writeFileSync(path.join(directory, "allowed.ts"), "export const allowed = true;\n");
+    writeFileSync(path.join(directory, "outside.md"), "outside guidance\n");
+    writeFileSync(path.join(directory, "@..", "nested.md"), "nested in the @.. directory\n");
+    writeFileSync(path.join(directory, "AGENTS.md"), "existing guidance\n");
+    writeFileSync(outsideSecret, "OUTSIDE SECRET\n");
+    let hasSymlink = false;
+    try {
+      symlinkSync(path.join(directory, "outside.md"), path.join(directory, "linked.md"), "file");
+      hasSymlink = true;
+    } catch (error) {
+      if (!["EACCES", "EPERM", "UNKNOWN"].includes(error.code)) throw error;
+    }
+    let hasHardLink = false;
+    try {
+      linkSync(path.join(directory, "outside.md"), path.join(directory, "hard-linked.md"));
+      hasHardLink = true;
+    } catch (error) {
+      if (!["EACCES", "EPERM", "UNKNOWN"].includes(error.code)) throw error;
+    }
+
+    const { commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = () => {};
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+
+    const read = async (toolName, value) => emitSequentially(handlers.get("tool_call"), {
+      toolCallId: `${toolName}-${value}`,
+      toolName,
+      input: { path: value },
+    }, ctx);
+    assert.equal((await read("read", "allowed.ts")).some((result) => result?.block), false);
+    assert.equal((await read("read", "@allowed.ts")).some((result) => result?.block), false);
+    const blockedPaths = ["AGENTS.md", "agents.md", "AGENTS.local.md", "CLAUDE.md", ".agents/skills/secret.md", "../outside.md", path.join(directory, "outside.md"), "@../nested.md", `@../${path.basename(outsideSecret)}`, "@AGENTS.md", "@.git/config", "~/killeros-init-any.txt"];
+    if (hasSymlink) blockedPaths.push("linked.md");
+    if (hasHardLink) blockedPaths.push("hard-linked.md");
+    for (const value of blockedPaths) {
+      const results = await read("read", value);
+      assert.equal(results.some((result) => result?.block), true, value);
+    }
+    const blockedFind = await read("find", ".");
+    assert.equal(blockedFind.some((result) => result?.block), true);
+
+    handlers.get("tool_call").push((event) => {
+      if (event.toolName === "read") event.input.path = "../outside.md";
+    });
+    await assert.rejects(read("read", "allowed.ts"), /read-only property|Cannot assign/u);
+
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+    rmSync(outsideSecret, { force: true });
+  }
+});
+
+test("/init tool scoping never exposes killeros_init_write outside /init", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-tool-scope-"));
+  try {
+    writeFileSync(path.join(directory, "README.md"), "# Probe\n");
+    const { commands, handlers, sentMessages, activeTools } = createHarness();
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = () => {};
+
+    for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
+    assert.ok(activeTools.length > 0);
+    assert.equal(activeTools.includes("killeros_init_write"), false);
+    const fullSet = [...activeTools];
+
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+    assert.deepEqual(activeTools, ["read", "ls", "killeros_init_write"]);
+
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+    assert.deepEqual(activeTools, fullSet);
+
+    for (const handler of handlers.get("session_start")) await handler({ reason: "new" }, ctx);
+    assert.deepEqual(activeTools, fullSet);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1122,6 +1297,66 @@ test("project tool_call hooks can deterministically block a tool", async () => {
   }
 });
 
+test("never-closing hooks report unconfirmed exit after bounded cleanup", async () => {
+  class NeverClosingHook extends EventEmitter {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    pid = undefined;
+    signals = [];
+
+    kill(signal) {
+      this.signals.push(signal);
+      return true;
+    }
+  }
+  const child = new NeverClosingHook();
+  const result = await executeHook("ignored", process.cwd(), {}, 1_000, () => child);
+  assert.equal(result.code, 124);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.exitUnconfirmed, true);
+  assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("timed-out hooks terminate the process tree or report bounded uncertainty", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-tree-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const script = path.join(directory, "hook-child.cjs");
+    const marker = path.join(directory, "late-marker");
+    writeFileSync(script, [
+      "const { spawn } = require('node:child_process');",
+      "const marker = process.argv[1];",
+      "spawn(process.execPath, ['-e', \"require('node:fs').writeFileSync(process.argv[1], 'late')\", marker], { stdio: 'ignore' });",
+      "setTimeout(() => {}, 5000);",
+    ].join("\n"));
+    const command = `"${process.execPath}" "${script}" "${marker}"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { tool_call: [{ matcher: "^write$", command, timeoutMs: 1_000 }] },
+    }));
+
+    const { handlers } = createHarness();
+    const notifications = [];
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    const started = Date.now();
+    const results = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "tree-timeout",
+      toolName: "write",
+      input: { path: "example.txt", content: "test" },
+    }, ctx);
+    assert.equal(results.find((result) => result?.block)?.block, true);
+    assert.ok(Date.now() - started >= 1_000);
+    assert.match(notifications.at(-1).message, /Hook failed \(timed out\)/u);
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    assert.equal(existsSync(marker), false);
+  } finally {
+    await removeDirectoryEventually(directory);
+  }
+});
+
 test("/init reloads only after existing agent-settled hooks complete", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-settled-"));
   try {
@@ -1132,7 +1367,7 @@ test("/init reloads only after existing agent-settled hooks complete", async () 
       hooks: { agent_settled: [{ command, timeoutMs: 5_000 }] },
     }));
 
-    const { commands, handlers, sentMessages } = createHarness();
+    const { commands, handlers, sentMessages, tools } = createHarness();
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.waitForIdle = async () => {};
@@ -1145,7 +1380,7 @@ test("/init reloads only after existing agent-settled hooks complete", async () 
 
     const initRun = commands.get("init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
-    await emitSuccessfulInitWrite(handlers, ctx);
+    await emitSuccessfulInitWrite(handlers, tools, ctx);
     await emitSequentially(handlers.get("agent_settled"), {}, ctx);
     await initRun;
     assert.equal(reloadCalls, 1);
@@ -1203,6 +1438,42 @@ test("custom-answer history does not replace a multiline draft on Up", async () 
 
   second.finish({ kind: "cancelled" });
   await second.result;
+});
+
+test("custom-answer history enforces Unicode character and byte limits", async () => {
+  const { tools, handlers } = createHarness();
+  const first = await startQuestion(tools.get("question"));
+  first.component.handleInput("2");
+  const boundary = "😀".repeat(4_000);
+  first.component.handleInput(`\x1B[200~${boundary}\x1B[201~`);
+  assert.equal(first.notifications.length, 0);
+  first.component.handleInput("\x1B[200~😀\x1B[201~");
+  assert.match(first.notifications.at(-1).message, /4000 characters/u);
+  first.component.handleInput("\r");
+  await first.result;
+
+  for (let index = 0; index < 5; index += 1) {
+    const answer = await startQuestion(tools.get("question"));
+    answer.component.handleInput("2");
+    answer.component.handleInput(`\x1B[200~answer-${index}-${"😀".repeat(3_991)}\x1B[201~`);
+    answer.component.handleInput("\r");
+    await answer.result;
+  }
+  const historyProbe = await startQuestion(tools.get("question"));
+  historyProbe.component.handleInput("2");
+  for (let index = 0; index < 5; index += 1) historyProbe.component.handleInput("\x1B[A");
+  assert.doesNotMatch(historyProbe.component.render(80).join("\n"), /answer-0-/u);
+  historyProbe.finish({ kind: "cancelled" });
+  await historyProbe.result;
+
+  const session = createTuiContext();
+  for (const handler of handlers.get("session_start")) await handler({ reason: "new" }, session.ctx);
+  const afterNewSession = await startQuestion(tools.get("question"));
+  afterNewSession.component.handleInput("2");
+  afterNewSession.component.handleInput("\x1B[A");
+  assert.doesNotMatch(afterNewSession.component.render(80).join("\n"), /😀/u);
+  afterNewSession.finish({ kind: "cancelled" });
+  await afterNewSession.result;
 });
 
 test("context telemetry uses plain language without a progress bar", () => {

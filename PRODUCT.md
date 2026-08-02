@@ -26,7 +26,7 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 
 - Requires Node.js 22.19.0 or later and Pi 0.82.1 or later.
 - Full custom header, editor, footer, and interactive question behavior requires TUI mode.
-- Subagents use isolated ephemeral Pi children, explicit role tool lists, bounded execution, no arbitrary child extension or prompt-template discovery, and skill discovery that loads project-local skills only when the parent project is trusted.
+- Subagents use isolated Pi children, explicit role tool lists, no routine per-child execution quota, an 8 MiB JSONL-record ceiling, bounded retained telemetry, no arbitrary child extension or prompt-template discovery, and skill discovery that loads project-local skills only when the parent project is trusted.
 - Child web research uses the explicitly loaded `pi-web-access` package, which users install alongside KillerOS.
 - Users can choose a child `provider/model` and separate thinking effort per invocation; each bundled role exposes `inherit` placeholders, and KillerOS checks the requested effort against the selected model.
 - Bundled and personal roles are available by default; project roles require Pi project trust, explicit scope, and confirmation.
@@ -35,7 +35,7 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 - UI components must remain legible across narrow and wide terminal widths and use the packaged KillerOS theme in TUI mode.
 - Pending, successful, and failed tool calls share one neutral container surface; status remains distinguishable through restrained text and icons.
 - Active responses use a coral Spark indicator and cycle through a bounded bank of Claude-adjacent verbs; hidden reasoning uses the static `└ Thinking…` label.
-- The startup surface is a compact KillerOS card showing the active model, reasoning level, directory, context remaining, and loaded package capabilities.
+- The startup surface is a compact KillerOS card showing the active model, reasoning level, directory, and repository branch when available; context telemetry remains in the footer.
 
 ## Brand Commitments
 

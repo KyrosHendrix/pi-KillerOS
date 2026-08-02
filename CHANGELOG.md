@@ -2,11 +2,12 @@
 
 All notable changes to KillerOS are documented here.
 
-## [1.4.8] - 2026-08-02
+## [1.4.9] - 2026-08-02
 
 ### Changed
 
-- Parallel batches with write-capable roles now run through a shared pool by default; `writerConcurrency` caps the entire batch and setting it to `1` serializes the writer-containing batch. Reader-only batches reject `writerConcurrency` because it does not apply.
+- Parallel batches with write-capable roles now use one shared slot by default; `writerConcurrency` above `1` opts into concurrent shared-worktree writes only when path ownership is proven. Reader-only batches reject `writerConcurrency` because it does not apply.
+- Added an 8 MiB ceiling for one child JSONL record, bounded thread retention with inspectable tombstones, and scoped atomic `/init` reads and writes.
 
 ## [1.4.7] - 2026-08-01
 
@@ -32,7 +33,7 @@ All notable changes to KillerOS are documented here.
 ### Fixed
 
 - Removed the child-budget extension, its read-tool budget, and the default 250,000-token/$5 quota.
-- Removed default child wall-time, JSONL-line, trace, stderr, returned-output, and model-output-length stops; role `timeoutMs` and other child guards are now opt-in.
+- Removed default child wall-time, trace, stderr, returned-output, and model-output-length stops; role `timeoutMs` and other child guards are opt-in, while the parser retains a finite JSONL-record ceiling.
 - Removed forced early-report prompt text so roles can finish their assigned work naturally.
 - Treat model stop reason `length` as a completed child process instead of inventing a KillerOS `limited` result.
 - Documented the child lifecycle contract: children complete naturally; explicit user interruptions, configured guards, and real child-process failures remain visible.
@@ -115,6 +116,6 @@ All notable changes to KillerOS are documented here.
 ### Changed
 
 - Replaced the animated startup illustration and capability inventory with the Compact startup card and one external tip.
-- Standardized product branding on mixed-case `KillerOS` and the neutral `› KillerOS (v1.2.0)` lockup.
+- Standardized product branding on mixed-case `KillerOS` and the neutral lockup used in the v1.2.0 release.
 - Made theme neutrals achromatic while preserving the coral accent.
 - Replaced the footer progress bar with direct `percent left (tokens)` context telemetry and a critical `/compact` prompt.

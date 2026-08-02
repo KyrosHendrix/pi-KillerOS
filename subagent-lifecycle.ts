@@ -97,6 +97,8 @@ export interface SubagentThread extends SubagentThreadSpec {
   result?: string;
   failure?: { message: string; code?: string };
   stopReason?: string;
+  /** True when close evicted the heavy trace, prompt, handoff, and result fields. */
+  evicted: boolean;
   timestamps: SubagentThreadTimestamps;
   version: number;
 }
@@ -192,6 +194,7 @@ function snapshot(thread: SubagentThread): SubagentThread {
     result: thread.result,
     failure: thread.failure ? { ...thread.failure } : undefined,
     stopReason: thread.stopReason,
+    evicted: thread.evicted,
     timestamps: { ...thread.timestamps },
     version: thread.version,
   };
@@ -287,6 +290,7 @@ export class SubagentThreadRegistry {
       usage: emptyUsage(),
       trace: [],
       steering: [],
+      evicted: false,
       timestamps: { createdAt: timestamp, updatedAt: timestamp },
       version: 1,
     };
@@ -413,7 +417,7 @@ export class SubagentThreadRegistry {
     return snapshot(thread);
   }
 
-  /** Closes a terminal record while retaining its result for inspection. */
+  /** Closes a terminal record and retains only a small tombstone for inspection. */
   close(id: SubagentThreadId): SubagentThread {
     this.assertOpen();
     const thread = this.requireThread(id);
@@ -421,8 +425,30 @@ export class SubagentThreadRegistry {
     if (!isTerminal(thread.state)) throw new Error(`Cannot close thread ${id} from ${thread.state}`);
     thread.state = "closed";
     thread.timestamps.closedAt = this.now();
+    thread.prompt = "[closed thread prompt evicted]";
+    thread.handoff = undefined;
+    thread.trace = [];
+    thread.steering = [];
+    thread.result = undefined;
+    thread.failure = thread.failure ? { message: thread.failure.message.slice(0, 512), code: thread.failure.code } : undefined;
+    thread.evicted = true;
     this.changed(thread, "close");
     return snapshot(thread);
+  }
+
+  /** Remove the oldest closed tombstones and return bounded eviction notices. */
+  pruneClosed(maxRecords: number): SubagentThread[] {
+    this.assertOpen();
+    const closed = [...this.threads.values()]
+      .filter((thread) => thread.state === "closed")
+      .sort((left, right) => (left.timestamps.closedAt ?? left.timestamps.updatedAt) - (right.timestamps.closedAt ?? right.timestamps.updatedAt));
+    const removed: SubagentThread[] = [];
+    while (closed.length > Math.max(0, Math.floor(maxRecords))) {
+      const thread = closed.shift()!;
+      this.threads.delete(thread.id);
+      removed.push(snapshot(thread));
+    }
+    return removed;
   }
 
   subscribe(listener: SubagentThreadListener): () => void {

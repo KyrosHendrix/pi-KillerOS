@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { promises as fs, closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   CONFIG_DIR_NAME,
   CustomEditor,
@@ -31,6 +32,7 @@ import {
   type TUI,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { MAX_NODE_TIMER_MS } from "./subagent-process.ts";
 import { registerSubagentTool } from "./subagents.ts";
 
 const COMMAND_BLUE_RGB = "120;169;255";
@@ -325,14 +327,17 @@ function registerConcisePrompt(pi: ExtensionAPI): void {
   }));
 }
 
-const INIT_READ_ONLY_TOOLS = new Set(["read", "ls", "find", "grep"]);
+const INIT_WRITE_TOOL = "killeros_init_write";
+const INIT_SCOPED_TOOLS = ["read", "ls", INIT_WRITE_TOOL] as const;
+const INIT_GENERATED_CONTENT_LIMIT = 128 * 1024;
 
 interface InitWorkflowState {
   active: boolean;
   targetPath?: string;
   writeAttempted: boolean;
   writeSucceeded: boolean;
-  writeToolCallId?: string;
+  projectRoot?: string;
+  activeTools?: string[];
   settle?: (writeSucceeded: boolean) => void;
 }
 
@@ -341,7 +346,8 @@ function resetInitState(state: InitWorkflowState): void {
   state.targetPath = undefined;
   state.writeAttempted = false;
   state.writeSucceeded = false;
-  state.writeToolCallId = undefined;
+  state.projectRoot = undefined;
+  state.activeTools = undefined;
 }
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
@@ -580,33 +586,19 @@ function scheduleGoalContinuation(
     || runtime.state?.status !== "active"
     || runtime.continuationScheduled
     || runtime.continuationHeld
+    || runtime.goalTurnInFlight
     || initState.active
     || ctx.hasPendingMessages()) return;
   const current = runtime.state;
-  const now = Date.now();
-  const next: GoalState = {
-    ...current,
-    revision: current.revision + 1,
-    turns: current.turns + 1,
-    updatedAt: now,
-    activeStartedAt: current.activeStartedAt ?? now,
-  };
-  try {
-    persistGoalState(pi, runtime, "turn", next);
-  } catch (error) {
-    pauseGoalAfterFailure(pi, runtime, ctx, `continuation state could not be saved: ${error instanceof Error ? error.message : String(error)}`);
-    return;
-  }
-
   runtime.continuationScheduled = true;
-  runtime.goalTurnInFlight = true;
+  runtime.goalTurnInFlight = false;
   runtime.agentEndObserved = false;
   runtime.lastStopReason = undefined;
   runtime.lastError = undefined;
   try {
     pi.sendMessage({
       customType: GOAL_CONTINUATION_TYPE,
-      content: goalContinuationMessage(next, ctx),
+      content: goalContinuationMessage(current, ctx),
       display: false,
     }, { triggerTurn: true, deliverAs: "followUp" });
   } catch (error) {
@@ -772,6 +764,7 @@ function registerGoal(
     runtime.continuationScheduled = false;
     const current = runtime.state;
     if (!isGoalModeSupported(ctx) || !isSavedSession(ctx) || !current || current.status !== "active" || initState.active) return;
+    if (runtime.goalTurnInFlight) return { systemPrompt: `${event.systemPrompt}\n\n${goalSystemPrompt(current)}` };
     const now = Date.now();
     const next: GoalState = {
       ...current,
@@ -990,8 +983,13 @@ function registerGoal(
           scheduleGoalContinuation(pi, runtime, initState, ctx);
           ctx.ui.notify("Goal updated and active", "info");
         } catch (error) {
-          reportError(ctx, "Goal could not be edited", error);
-          scheduleGoalContinuation(pi, runtime, initState, ctx);
+          pauseGoalAfterFailure(
+            pi,
+            runtime,
+            ctx,
+            `Goal could not be edited: ${error instanceof Error ? error.message : String(error)}`,
+            "Automatic continuation is stopped. Retry /goal edit after session storage recovers.",
+          );
         }
         return;
       }
@@ -1064,11 +1062,17 @@ function registerGoalSettlement(
 ): void {
   pi.on("agent_settled", (_event, ctx) => {
     const wasGoalTurn = runtime.goalTurnInFlight;
+    const continuationWasScheduled = runtime.continuationScheduled;
     const agentEndObserved = runtime.agentEndObserved;
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
     runtime.continuationScheduled = false;
-    if (!wasGoalTurn || runtime.state?.status !== "active" || initState.active) return;
+    if (!wasGoalTurn || runtime.state?.status !== "active" || initState.active) {
+      if (continuationWasScheduled && runtime.state?.status === "active" && !initState.active) {
+        pauseGoalAfterFailure(pi, runtime, ctx, "the goal continuation ended before an agent turn started");
+      }
+      return;
+    }
     if (!agentEndObserved) {
       pauseGoalAfterFailure(pi, runtime, ctx, "the goal turn ended without an agent result");
       return;
@@ -1124,14 +1128,9 @@ type QuestionSelection =
   | { kind: "cancelled" }
   | { kind: "aborted" };
 
-const customInputHistory: string[] = [];
-
-function rememberCustomInput(value: string): void {
-  const existingIndex = customInputHistory.indexOf(value);
-  if (existingIndex >= 0) customInputHistory.splice(existingIndex, 1);
-  customInputHistory.push(value);
-  if (customInputHistory.length > 100) customInputHistory.shift();
-}
+const CUSTOM_INPUT_MAX_CHARACTERS = 4_000;
+const CUSTOM_INPUT_HISTORY_LIMIT = 100;
+const CUSTOM_INPUT_HISTORY_BYTES = 64 * 1024;
 
 function isPrintableInput(data: string): boolean {
   return data.length > 0 && !/[\u0000-\u001F\u007F-\u009F]/u.test(data);
@@ -1165,6 +1164,37 @@ function removeLastGrapheme(value: string): string {
 }
 
 function registerQuestionTool(pi: ExtensionAPI): void {
+  const customInputHistory: string[] = [];
+  let customInputHistoryBytes = 0;
+  const clearCustomInputHistory = (): void => {
+    customInputHistory.length = 0;
+    customInputHistoryBytes = 0;
+  };
+  const rememberCustomInput = (value: string): boolean => {
+    const bytes = Buffer.byteLength(value, "utf8");
+    if (bytes > CUSTOM_INPUT_HISTORY_BYTES) return false;
+    const existingIndex = customInputHistory.indexOf(value);
+    if (existingIndex >= 0) {
+      customInputHistoryBytes -= Buffer.byteLength(customInputHistory[existingIndex]!, "utf8");
+      customInputHistory.splice(existingIndex, 1);
+    }
+    while (customInputHistory.length >= CUSTOM_INPUT_HISTORY_LIMIT || customInputHistoryBytes + bytes > CUSTOM_INPUT_HISTORY_BYTES) {
+      const removed = customInputHistory.shift();
+      if (removed !== undefined) customInputHistoryBytes -= Buffer.byteLength(removed, "utf8");
+    }
+    customInputHistory.push(value);
+    customInputHistoryBytes += bytes;
+    return true;
+  };
+  const inputCharacterCount = (value: string): number => {
+    let count = 0;
+    for (const _character of value) count += 1;
+    return count;
+  };
+  pi.on("session_start", clearCustomInputHistory);
+  pi.on("session_tree", clearCustomInputHistory);
+  pi.on("session_shutdown", clearCustomInputHistory);
+
   pi.registerTool<typeof QuestionParams, QuestionDetails>({
     name: "question",
     label: "Question",
@@ -1246,7 +1276,14 @@ function registerQuestionTool(pi: ExtensionAPI): void {
         editor.onSubmit = (value) => {
           const answer = value.trim();
           if (answer) {
-            rememberCustomInput(answer);
+            if (inputCharacterCount(answer) > CUSTOM_INPUT_MAX_CHARACTERS) {
+              ctx.ui.notify(`Custom answers are limited to ${CUSTOM_INPUT_MAX_CHARACTERS} characters`, "error");
+              return;
+            }
+            if (!rememberCustomInput(answer)) {
+              ctx.ui.notify(`Custom answer history is limited to ${CUSTOM_INPUT_HISTORY_BYTES} bytes`, "error");
+              return;
+            }
             finish({ kind: "custom", answer });
             return;
           }
@@ -1268,7 +1305,13 @@ function registerQuestionTool(pi: ExtensionAPI): void {
               refresh();
               return;
             }
+            const before = editor.getExpandedText();
             editor.handleInput(data);
+            const after = editor.getExpandedText();
+            if (inputCharacterCount(after) > CUSTOM_INPUT_MAX_CHARACTERS) {
+              editor.setText(before);
+              ctx.ui.notify(`Custom answers are limited to ${CUSTOM_INPUT_MAX_CHARACTERS} characters`, "error");
+            }
             refresh();
             return;
           }
@@ -1576,6 +1619,7 @@ interface HookExecutionResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  exitUnconfirmed: boolean;
 }
 
 const HOOK_EVENTS: readonly KillerosHookEvent[] = ["tool_call", "tool_result", "agent_settled"];
@@ -1600,7 +1644,7 @@ function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
           && typeof hook.command === "string"
           && hook.command.trim().length > 0
           && (hook.matcher === undefined || typeof hook.matcher === "string")
-          && (hook.timeoutMs === undefined || Number.isFinite(hook.timeoutMs));
+          && (hook.timeoutMs === undefined || Number.isSafeInteger(hook.timeoutMs) && hook.timeoutMs > 0 && hook.timeoutMs <= MAX_NODE_TIMER_MS);
         if (!valid) {
           ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${configPath}`, "warning");
           return false;
@@ -1637,11 +1681,37 @@ function appendBounded(current: string, chunk: Buffer | string): string {
   return (current + chunk.toString()).slice(0, HOOK_OUTPUT_LIMIT);
 }
 
-function executeHook(command: string, cwd: string, environment: Record<string, string>, timeoutMs = 30_000): Promise<HookExecutionResult> {
+function terminateHookProcess(child: ReturnType<typeof spawn>, force: boolean): void {
+  if (process.platform === "win32" && force && child.pid) {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+      shell: false,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    killer.unref();
+    return;
+  }
+  if (process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
+      return;
+    } catch {
+      // Fall back to the shell itself when a custom child has no process group.
+    }
+  }
+  try {
+    child.kill(force ? "SIGKILL" : "SIGTERM");
+  } catch {
+    // The hook may have already exited.
+  }
+}
+
+export function executeHook(command: string, cwd: string, environment: Record<string, string>, timeoutMs = 30_000, spawnProcess: typeof spawn = spawn): Promise<HookExecutionResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, {
+    const child = spawnProcess(command, {
       cwd,
       env: { ...process.env, ...environment },
+      detached: process.platform !== "win32",
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -1650,27 +1720,35 @@ function executeHook(command: string, cwd: string, environment: Record<string, s
     let stderr = "";
     let completed = false;
     let timedOut = false;
+    let exitUnconfirmed = false;
     let timer: NodeJS.Timeout | undefined;
-    const finish = (code: number): void => {
+    let forceTimer: NodeJS.Timeout | undefined;
+    let settleTimer: NodeJS.Timeout | undefined;
+    const finish = (code: number, unconfirmed = false): void => {
       if (completed) return;
       completed = true;
+      exitUnconfirmed = unconfirmed;
       if (timer) clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
+      if (forceTimer) clearTimeout(forceTimer);
+      if (settleTimer) clearTimeout(settleTimer);
+      resolve({ code, stdout, stderr, timedOut, exitUnconfirmed });
     };
     child.stdout.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
     child.on("error", (error) => {
       stderr = appendBounded(stderr, error.message);
-      finish(1);
+      finish(timedOut ? 124 : 1);
     });
-    child.on("close", (code) => finish(code ?? 1));
+    child.once("close", (code) => finish(timedOut ? 124 : code ?? 1));
     timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 1_000).unref?.();
-      finish(124);
+      terminateHookProcess(child, false);
+      forceTimer = setTimeout(() => {
+        if (completed) return;
+        terminateHookProcess(child, true);
+        settleTimer = setTimeout(() => finish(124, true), 1_000);
+      }, 1_000);
     }, Math.max(1_000, Math.min(timeoutMs, 300_000)));
-    timer.unref?.();
   });
 }
 
@@ -1684,7 +1762,7 @@ function hookEnvironment(event: KillerosHookEvent, toolName = "", payload: unkno
 
 function hookFailureMessage(hook: KillerosHook, result: HookExecutionResult): string {
   const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
-  return `Hook failed${result.timedOut ? " (timed out)" : ""}: ${hook.command}\n${detail}`;
+  return `Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}: ${hook.command}\n${detail}`;
 }
 
 function registerLifecycleHooks(pi: ExtensionAPI): void {
@@ -1876,15 +1954,118 @@ Write concise guidance where every line answers: "Would removing this cause an a
 Verify command meaning rather than merely copying command names. Distinguish generated-but-committed artifacts from ignored outputs and use exact contract values. Exclude generic coding advice, directory inventories, obvious scripts, historical narration, personal preferences, secrets, and speculative recommendations.
 
 ## Generate
-Use the write tool exactly once to create or replace only the root AGENTS.md. Start with \`# AGENTS.md\`. Prefer a compact, high-signal guide over exhaustive documentation. Do not use edit and do not modify any other path.
+Use the \`killeros_init_write\` tool exactly once with only the generated text; it creates or replaces the root AGENTS.md and cannot target another path. Start with \`# AGENTS.md\`. Prefer a compact, high-signal guide over exhaustive documentation. Do not use edit, bash, or any other mutation tool.
 
 After writing, read AGENTS.md once to confirm the file is coherent and contains only claims supported by repository evidence. Summarize what was generated. KillerOS reloads Pi resources automatically after this turn, so do not invoke /reload.
 `.trim();
 
-function resolveInitToolPath(input: unknown, cwd: string): string | undefined {
+function initPathWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function initExcludedSegment(segment: string): boolean {
+  const normalized = segment.toLocaleLowerCase();
+  return [...INIT_SURVEY_EXCLUDED_DIRS].some((name) => name.toLocaleLowerCase() === normalized)
+    || [...INIT_SURVEY_EXCLUDED_FILES].some((name) => name.toLocaleLowerCase() === normalized);
+}
+
+function initInputPath(toolName: string, input: unknown): string | undefined {
   if (!input || typeof input !== "object") return undefined;
-  const toolPath = (input as { path?: unknown }).path;
-  return typeof toolPath === "string" ? path.resolve(cwd, toolPath) : undefined;
+  const record = input as Record<string, unknown>;
+  if (toolName === "read" && typeof record.file_path === "string") return record.file_path;
+  return typeof record.path === "string" ? record.path : toolName === "ls" || toolName === "find" || toolName === "grep" ? "." : undefined;
+}
+
+function normalizeInitReadPath(rawPath: string): string {
+  // Mirror Pi's built-in read/ls path normalization (stripAtPrefix, unicode spaces,
+  // tilde expansion, file URLs) so /init validates the exact path the scoped tools
+  // will resolve rather than the raw user text.
+  let normalized = rawPath.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+  if (normalized.startsWith("@")) normalized = normalized.slice(1);
+  if (normalized === "~") normalized = os.homedir();
+  else if (normalized.startsWith("~/") || (process.platform === "win32" && normalized.startsWith("~\\"))) {
+    normalized = path.join(os.homedir(), normalized.slice(2));
+  }
+  if (/^file:\/\//u.test(normalized)) {
+    try {
+      normalized = fileURLToPath(normalized);
+    } catch {
+      return "";
+    }
+  }
+  return normalized;
+}
+
+function resolveInitToolPath(input: unknown, cwd: string): string | undefined {
+  const rawPath = initInputPath("read", input);
+  if (!rawPath) return undefined;
+  const normalizedPath = normalizeInitReadPath(rawPath);
+  return normalizedPath ? path.resolve(cwd, normalizedPath) : undefined;
+}
+
+async function initScopedPathError(
+  toolName: string,
+  input: unknown,
+  projectRoot: string,
+  targetPath: string,
+  writeSucceeded: boolean,
+): Promise<string | undefined> {
+  const rawPath = initInputPath(toolName, input);
+  if (!rawPath) return `/init ${toolName} requires a path under the project root`;
+  const normalizedPath = normalizeInitReadPath(rawPath);
+  if (!normalizedPath || normalizedPath.split(/[\\/]/u).includes("..")) return "/init rejects parent-directory read paths";
+  const candidate = toolName === "read"
+    ? resolveInitToolPath(input, projectRoot)
+    : path.resolve(projectRoot, normalizedPath);
+  if (!candidate || !initPathWithin(projectRoot, candidate)) return "/init reads must remain under the resolved project root";
+  const relativeSegments = path.relative(projectRoot, candidate).split(path.sep).filter(Boolean);
+  const isGeneratedTarget = writeSucceeded && candidate.toLocaleLowerCase() === targetPath.toLocaleLowerCase();
+  for (let index = 0; index < relativeSegments.length; index += 1) {
+    const segment = relativeSegments[index]!;
+    if (initExcludedSegment(segment) && !(isGeneratedTarget && index === relativeSegments.length - 1 && segment.toLocaleLowerCase() === "agents.md")) {
+      return "/init cannot read excluded guidance, skills, or dependency paths";
+    }
+  }
+
+  let current = projectRoot;
+  try {
+    for (const segment of relativeSegments) {
+      current = path.join(current, segment);
+      const stat = await fs.lstat(current);
+      if (stat.isSymbolicLink()) return "/init rejects symbolic-link and junction read paths";
+    }
+    const realPath = await fs.realpath(candidate);
+    if (!initPathWithin(projectRoot, realPath)) return "/init reads must remain under the resolved project root";
+    const stat = await fs.lstat(candidate);
+    if (stat.isSymbolicLink()) return "/init rejects symbolic-link and junction read paths";
+    if (stat.isFile() && stat.nlink > 1) return "/init rejects hard-linked read paths";
+  } catch (error) {
+    return `/init could not validate read path: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return undefined;
+}
+
+interface InitTargetIdentity {
+  dev: number;
+  ino: number;
+  mode: number;
+  nlink: number;
+}
+
+async function initTargetIdentity(targetPath: string): Promise<InitTargetIdentity | undefined> {
+  try {
+    const stat = await fs.lstat(targetPath);
+    return { dev: stat.dev, ino: stat.ino, mode: stat.mode, nlink: stat.nlink };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function sameInitTargetIdentity(left: InitTargetIdentity | undefined, right: InitTargetIdentity | undefined): boolean {
+  if (!left || !right) return left === right;
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode && left.nlink === right.nlink;
 }
 
 async function initTargetSafetyError(targetPath: string): Promise<string | undefined> {
@@ -1901,32 +2082,104 @@ async function initTargetSafetyError(targetPath: string): Promise<string | undef
   return undefined;
 }
 
-function registerInitCommand(pi: ExtensionAPI, initState: InitWorkflowState, goalRuntime: GoalRuntime): void {
-  pi.on("tool_call", async (event) => {
-    const targetPath = initState.targetPath;
-    if (!initState.active || !targetPath || INIT_READ_ONLY_TOOLS.has(event.toolName)) return;
-    const toolPath = resolveInitToolPath(event.input, path.dirname(targetPath));
-    if (event.toolName === "write" && toolPath === targetPath && !initState.writeAttempted) {
-      const safetyError = await initTargetSafetyError(targetPath);
-      if (safetyError) return { block: true, reason: safetyError };
-      initState.writeAttempted = true;
-      initState.writeToolCallId = event.toolCallId;
-      return;
+export async function writeInitAgentsFile(
+  targetPath: string,
+  content: string,
+  renameFile: typeof fs.rename = fs.rename,
+): Promise<void> {
+  const safetyError = await initTargetSafetyError(targetPath);
+  if (safetyError) throw new Error(safetyError);
+  const before = await initTargetIdentity(targetPath);
+  const tempDirectory = await fs.mkdtemp(path.join(path.dirname(targetPath), ".killeros-init-"));
+  const tempPath = path.join(tempDirectory, "AGENTS.md");
+  try {
+    const handle = await fs.open(tempPath, "wx", 0o600);
+    try {
+      await handle.writeFile(content, { encoding: "utf8" });
+      await handle.sync();
+    } finally {
+      await handle.close();
     }
-    return {
-      block: true,
-      reason: "/init may write the root AGENTS.md exactly once and may not modify any other file",
-    };
+    const after = await initTargetIdentity(targetPath);
+    if (!sameInitTargetIdentity(before, after)) throw new Error("/init target changed while AGENTS.md was being generated");
+    await renameFile(tempPath, targetPath);
+  } finally {
+    await fs.rm(tempDirectory, { recursive: true, force: true });
+  }
+}
+
+function setInitTools(pi: ExtensionAPI, initState: InitWorkflowState, active: boolean): void {
+  const runtime = pi as ExtensionAPI & { getActiveTools?: () => string[]; setActiveTools?: (names: string[]) => void };
+  if (!runtime.getActiveTools || !runtime.setActiveTools) return;
+  if (active) {
+    initState.activeTools ??= runtime.getActiveTools().filter((name) => name !== INIT_WRITE_TOOL);
+    runtime.setActiveTools([...INIT_SCOPED_TOOLS]);
+  } else if (initState.activeTools) {
+    runtime.setActiveTools(initState.activeTools);
+    initState.activeTools = undefined;
+  } else {
+    runtime.setActiveTools(runtime.getActiveTools().filter((name) => name !== INIT_WRITE_TOOL));
+  }
+}
+
+function freezeInitToolInput(event: { input: Record<string, unknown> }): void {
+  const safeInput = Object.freeze({ ...event.input });
+  Object.defineProperty(event, "input", {
+    configurable: false,
+    enumerable: true,
+    value: safeInput,
+    writable: false,
+  });
+}
+
+function registerInitCommand(pi: ExtensionAPI, initState: InitWorkflowState, goalRuntime: GoalRuntime): void {
+  pi.registerTool({
+    name: INIT_WRITE_TOOL,
+    label: "Init write",
+    description: "Write the generated root AGENTS.md during /init; the destination is fixed by KillerOS.",
+    promptSnippet: "Write the generated root AGENTS.md during /init",
+    parameters: Type.Object({ content: Type.String({ minLength: 1, maxLength: INIT_GENERATED_CONTENT_LIMIT }) }),
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      if (!initState.active || !initState.targetPath) throw new Error("killeros_init_write is available only during /init");
+      if (initState.writeAttempted) throw new Error("/init may write the root AGENTS.md exactly once and may not modify any other file");
+      if (Buffer.byteLength(params.content, "utf8") > INIT_GENERATED_CONTENT_LIMIT) throw new Error(`/init output exceeds ${INIT_GENERATED_CONTENT_LIMIT} bytes`);
+      initState.writeAttempted = true;
+      try {
+        await writeInitAgentsFile(initState.targetPath, params.content);
+        initState.writeSucceeded = true;
+        return {
+          content: [{ type: "text" as const, text: "Generated root AGENTS.md" }],
+          details: { path: initState.targetPath },
+        };
+      } catch (error) {
+        initState.writeAttempted = false;
+        throw error;
+      }
+    },
   });
 
-  pi.on("tool_result", (event) => {
-    if (!initState.active || event.toolName !== "write" || event.toolCallId !== initState.writeToolCallId) return;
-    if (event.isError) {
-      initState.writeAttempted = false;
-      initState.writeToolCallId = undefined;
+  pi.on("session_start", () => setInitTools(pi, initState, false));
+  pi.on("session_shutdown", () => {
+    setInitTools(pi, initState, false);
+    resetInitState(initState);
+  });
+  pi.on("before_agent_start", () => {
+    if (initState.active) setInitTools(pi, initState, true);
+  });
+  pi.on("tool_call", async (event) => {
+    if (!initState.active || !initState.projectRoot || !initState.targetPath) return;
+    if (event.toolName === INIT_WRITE_TOOL) {
+      if (initState.writeAttempted) return { block: true, reason: "/init may write AGENTS.md exactly once" };
+      freezeInitToolInput(event);
       return;
     }
-    initState.writeSucceeded = true;
+    if (!INIT_SCOPED_TOOLS.includes(event.toolName as (typeof INIT_SCOPED_TOOLS)[number])) {
+      return { block: true, reason: "/init may write the root AGENTS.md exactly once and may not modify any other file" };
+    }
+    const pathError = await initScopedPathError(event.toolName, event.input, initState.projectRoot, initState.targetPath, initState.writeSucceeded);
+    if (pathError) return { block: true, reason: pathError };
+    freezeInitToolInput(event);
   });
 
   pi.registerCommand("init", {
@@ -1953,13 +2206,23 @@ function registerInitCommand(pi: ExtensionAPI, initState: InitWorkflowState, goa
         return;
       }
       await ctx.waitForIdle();
+      let projectRoot: string;
+      try {
+        projectRoot = await fs.realpath(ctx.cwd);
+      } catch (error) {
+        reportError(ctx, "/init could not resolve the project root", error);
+        return;
+      }
       initState.active = true;
-      initState.targetPath = path.join(ctx.cwd, "AGENTS.md");
+      initState.projectRoot = projectRoot;
+      initState.targetPath = path.join(projectRoot, "AGENTS.md");
       initState.writeAttempted = false;
       initState.writeSucceeded = false;
+      setInitTools(pi, initState, true);
 
-      const survey = await runInitSurvey(ctx.cwd);
+      const survey = await runInitSurvey(projectRoot);
       if (!survey.output) {
+        setInitTools(pi, initState, false);
         resetInitState(initState);
         reportError(ctx, "/init could not scan the repository", survey.error ?? "no repository evidence was found");
         return;
@@ -1975,6 +2238,7 @@ function registerInitCommand(pi: ExtensionAPI, initState: InitWorkflowState, goa
           display: false,
         }, { triggerTurn: true });
       } catch (error) {
+        setInitTools(pi, initState, false);
         resetInitState(initState);
         initState.settle = undefined;
         reportError(ctx, "/init failed to start", error);
@@ -2002,6 +2266,7 @@ function registerInitSettlement(pi: ExtensionAPI, initState: InitWorkflowState):
     if (!initState.active) return;
     const settle = initState.settle;
     const writeSucceeded = initState.writeSucceeded;
+    setInitTools(pi, initState, false);
     resetInitState(initState);
     initState.settle = undefined;
     settle?.(writeSucceeded);

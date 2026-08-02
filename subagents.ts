@@ -16,7 +16,7 @@ import {
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { SubagentThreadRegistry, type SubagentThread, type SubagentThreadId, type SubagentThreadState } from "./subagent-lifecycle.ts";
-import { runSubagentProcess, type SubagentProcessHandle, type SubagentProcessResult } from "./subagent-process.ts";
+import { MAX_NODE_TIMER_MS, runSubagentProcess, type SubagentProcessHandle, type SubagentProcessResult } from "./subagent-process.ts";
 import { formatThreadBoard, formatThreadInspection, type ThreadRecord as ThreadBoardRecord } from "./subagent-ui.ts";
 
 export const SUBAGENT_LIMITS = {
@@ -26,6 +26,8 @@ export const SUBAGENT_LIMITS = {
   traceRetentionBytes: 8 * 1024 * 1024,
   stderrRetentionBytes: 1 * 1024 * 1024,
   taskOutputRetentionBytes: 1 * 1024 * 1024,
+  threadRetentionRecords: 64,
+  threadRetentionBytes: 128 * 1024 * 1024,
   roleFileBytes: 64 * 1024,
   taskCharacters: 20_000,
   killGraceMs: 5_000,
@@ -302,7 +304,7 @@ function parseAgentFile(filePath: string, source: AgentSource, limits: SubagentL
     tools,
     model: typeof modelValue === "string" ? modelValue.trim() : undefined,
     thinking: typeof thinkingValue === "string" ? thinkingValue.trim() : undefined,
-    timeoutMs: optionalPositiveInteger(frontmatter, filePath, "timeoutMs"),
+    timeoutMs: optionalPositiveInteger(frontmatter, filePath, "timeoutMs", undefined, MAX_NODE_TIMER_MS),
     prompt,
     source,
     filePath,
@@ -748,8 +750,8 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
     all: Type.Optional(Type.Boolean({ description: "Interrupt every active child thread" })),
     agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
     task: Type.Optional(Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" })),
-    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use a shared pool by default up to ${limits.maxTasks}. Set writerConcurrency to cap that pool, or set it to 1 to serialize the entire writer-containing batch; concurrent writers share the parent worktree, so callers must avoid file conflicts` })),
-    writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to ${limits.maxTasks}; set 1 to serialize the entire writer-containing batch. Concurrent writers share the parent worktree, so callers must avoid file conflicts` })),
+    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use one shared slot by default. Set writerConcurrency to opt into a larger shared pool; concurrent writers share the parent worktree, so callers must prove path ownership` })),
+    writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to 1 when writers are selected; values above 1 opt into concurrent shared-worktree writes. Concurrent writers must prove path ownership` })),
     chain: Type.Optional(Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
     model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
     thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
@@ -773,6 +775,41 @@ function clipCharacters(text: string, maxCharacters: number, fromEnd = false): s
   const characters = [...text];
   if (characters.length <= maxCharacters) return text;
   return (fromEnd ? characters.slice(-maxCharacters) : characters.slice(0, maxCharacters)).join("");
+}
+
+function codePointLength(text: string): number {
+  let length = 0;
+  for (const _character of text) length += 1;
+  return length;
+}
+
+function expandChainTask(template: string, previous: string, maxCharacters: number): string | undefined {
+  const placeholder = "{previous}";
+  let occurrences = 0;
+  let searchFrom = 0;
+  while (true) {
+    const index = template.indexOf(placeholder, searchFrom);
+    if (index < 0) break;
+    occurrences += 1;
+    searchFrom = index + placeholder.length;
+  }
+  if (occurrences === 0) return codePointLength(template) <= maxCharacters ? template : undefined;
+
+  const expandedCharacters = codePointLength(template) + occurrences * (codePointLength(previous) - codePointLength(placeholder));
+  if (expandedCharacters > maxCharacters) return undefined;
+
+  const pieces: string[] = [];
+  let start = 0;
+  while (true) {
+    const index = template.indexOf(placeholder, start);
+    if (index < 0) {
+      pieces.push(template.slice(start));
+      break;
+    }
+    pieces.push(template.slice(start, index), previous);
+    start = index + placeholder.length;
+  }
+  return pieces.join("");
 }
 
 function buildSteeredTask(task: string, steering: readonly string[], maxCharacters: number): string {
@@ -936,6 +973,49 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   const threads = new SubagentThreadRegistry();
   const activeRuntimes = new Map<string, ActiveThreadRuntime>();
   const savedResults = new Map<string, SubagentTaskResult>();
+  const evictedThreadParents = new Map<string, string | undefined>();
+  const maxClosedThreads = Number.isSafeInteger(limits.threadRetentionRecords) && limits.threadRetentionRecords > 0
+    ? limits.threadRetentionRecords
+    : SUBAGENT_LIMITS.threadRetentionRecords;
+
+  const rememberEvictedThreads = (threadsToRemember: readonly SubagentThread[]): void => {
+    for (const thread of threadsToRemember) evictedThreadParents.set(thread.id, thread.parentId);
+    while (evictedThreadParents.size > maxClosedThreads) {
+      const oldest = evictedThreadParents.keys().next().value;
+      if (oldest === undefined) break;
+      evictedThreadParents.delete(oldest);
+    }
+  };
+  const pruneClosedThreads = (): void => {
+    if (threads.isDisposed) return;
+    rememberEvictedThreads(threads.pruneClosed(maxClosedThreads));
+  };
+
+  const resultBytes = (result: SubagentTaskResult): number => Buffer.byteLength([
+    result.task,
+    ...result.trace,
+    result.stderr,
+    result.output,
+    result.errorMessage ?? "",
+  ].join("\n"), "utf8");
+  const trimSavedResults = (): void => {
+    const candidates = threads.listAll()
+      .filter((thread) => ["done", "failed", "stopped"].includes(thread.state))
+      .sort((left, right) => left.timestamps.createdAt - right.timestamps.createdAt);
+    const retainedBytes = (): number => [...savedResults.values()].reduce((total, result) => total + resultBytes(result), 0);
+    while ((savedResults.size > limits.threadRetentionRecords || retainedBytes() > limits.threadRetentionBytes) && candidates.length) {
+      const candidate = candidates.shift()!;
+      savedResults.delete(candidate.id);
+      const current = threads.inspect(candidate.id);
+      if (current && ["done", "failed", "stopped"].includes(current.state)) threads.close(candidate.id);
+    }
+    pruneClosedThreads();
+  };
+  const saveResult = (threadId: string, result: SubagentTaskResult): void => {
+    savedResults.delete(threadId);
+    savedResults.set(threadId, cloneResult(result));
+    trimSavedResults();
+  };
 
   const detailsFor = (
     parentId: string,
@@ -946,13 +1026,17 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   ): SubagentDetails => {
     const all = threads.listAll().filter((thread) => thread.parentId === parentId);
     const visible = all.filter((thread) => thread.state !== "closed");
+    const selectedClosed = selectedThreadId
+      ? all.find((thread) => thread.id === selectedThreadId && thread.state === "closed")
+      : undefined;
+    const listed = selectedClosed ? [...visible, selectedClosed] : visible;
     const results = visible.map((thread) => threadResult(thread, savedResults.get(thread.id)));
     return {
       ...cloneDetails(mode, scope, projectAgentsDir, results),
       parentId,
-      threads: all,
-      activeThreads: all.filter((thread) => thread.state === "active"),
-      doneThreads: all.filter((thread) => ["done", "failed", "stopped"].includes(thread.state)),
+      threads: listed,
+      activeThreads: visible.filter((thread) => thread.state === "active"),
+      doneThreads: visible.filter((thread) => ["done", "failed", "stopped"].includes(thread.state)),
       selectedThreadId,
     };
   };
@@ -980,6 +1064,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         lines.push(`Trace: ${selected.trace.length} entries`);
         if (selected.result) lines.push(`Handoff: ${selected.result}`);
         if (selected.stopReason) lines.push(`Reason: ${selected.stopReason}`);
+        if (selected.evicted) lines.push("Retention: heavy thread data was evicted after close");
       }
     }
     return boundedText(lines.join("\n"), limits.toolOutputBytes, "\n\n[Thread board truncated; inspect a child thread for its bounded detail.]");
@@ -988,7 +1073,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   const syncThread = (threadId: SubagentThreadId, next: SubagentTaskResult, runtime?: ActiveThreadRuntime): SubagentTaskResult => {
     const effective = mergeTaskResults(runtime?.aggregate, next, limits.traceRetentionBytes, limits.stderrRetentionBytes);
     if (runtime?.requestedReason && next.status === "cancelled") effective.terminationReason = runtime.requestedReason;
-    savedResults.set(threadId, cloneResult(effective));
+    saveResult(threadId, effective);
     let thread = threads.inspect(threadId);
     if (!thread || threads.isDisposed) return effective;
     if (thread.state === "queued" && next.status === "running") {
@@ -1042,17 +1127,19 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         runtime.controller.abort();
       }
       threads.dispose();
+      savedResults.clear();
+      evictedThreadParents.clear();
     });
   }
 
   pi.registerTool({
     name: "subagent",
     label: "Subagents",
-    description: `Spawn and manage named child threads. Children finish naturally. Parallel tasks with write-capable roles use one shared pool by default, up to ${limits.maxTasks}; read-only batches run concurrently up to ${limits.maxReadConcurrency}. Set writerConcurrency to cap the shared pool, or set it to 1 to serialize the entire writer-containing batch. Concurrent writers share the parent worktree, so callers must avoid file conflicts. The message parameter is only valid with action steer. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.`,
+    description: `Spawn and manage named child threads. Children finish naturally. Parallel tasks with write-capable roles use one shared slot by default; read-only batches run concurrently up to ${limits.maxReadConcurrency}. Set writerConcurrency above 1 only after proving path ownership in the shared worktree. The message parameter is only valid with action steer. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.`,
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
       "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
-      `Parallel tasks with write-capable roles use one shared pool by default because all children share the parent worktree. Set writerConcurrency to cap the pool, or set it to 1 to serialize the entire writer-containing batch; callers remain responsible for file conflicts.`,
+      "Parallel tasks with write-capable roles use one shared slot by default because all children share the parent worktree. Set writerConcurrency above 1 only when callers have proved path ownership; callers remain responsible for file conflicts.",
       "Every child can load relevant skills with read and can use web_search, source_check, fetch_content, and get_search_content for external research.",
       "When the user names a model or thinking effort, pass model and thinking separately; use inherit when the active parent or role setting should decide.",
       "Keep completed and stopped threads inspectable until the parent explicitly closes them.",
@@ -1080,7 +1167,13 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       if (action === "inspect") {
         if (!params.threadId) throw new Error("inspect requires threadId");
         const thread = threads.inspect(params.threadId as SubagentThreadId);
-        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
+        if (!thread) {
+          if (evictedThreadParents.get(params.threadId) === parentId) {
+            return actionResult(`Thread ${params.threadId} was evicted from bounded retention; its heavy data is no longer available.`, params.threadId);
+          }
+          throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
+        }
+        if (thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
         return actionResult(threadBoardText(parentId, params.threadId), params.threadId);
       }
       if (action === "steer") {
@@ -1138,7 +1231,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         const thread = threads.inspect(params.threadId as SubagentThreadId);
         if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
         threads.close(params.threadId as SubagentThreadId);
-        return actionResult(`Closed ${params.threadId}. Its result record remains inspectable.`, params.threadId);
+        savedResults.delete(params.threadId);
+        pruneClosedThreads();
+        return actionResult(`Closed ${params.threadId}. Heavy trace and handoff data were evicted; a tombstone remains inspectable.`, params.threadId);
       }
 
       const scope: AgentScope = params.agentScope ?? "user";
@@ -1198,11 +1293,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       if (params.writerConcurrency !== undefined && hasParallel && writerIndexes.length === 0) {
         throw new Error("writerConcurrency requires at least one write-capable role");
       }
-      const writerConcurrency = params.writerConcurrency ?? limits.maxTasks;
+      const writerConcurrency = params.writerConcurrency ?? (writerIndexes.length > 0 ? 1 : limits.maxReadConcurrency);
       const useSharedParallelPool = hasParallel && writerIndexes.length > 0;
       const executionNote = hasParallel
         ? writerIndexes.length
-          ? `Parallel schedule: all tasks run through a shared pool of up to ${writerConcurrency}${params.writerConcurrency === undefined ? " (default)" : ""}; concurrent write-capable tasks share the parent worktree, so callers must avoid file conflicts.`
+          ? `Parallel schedule: all tasks run through a shared pool of up to ${writerConcurrency}${params.writerConcurrency === undefined ? " (safe default)" : " (explicit)"}; concurrent write-capable tasks share the parent worktree, so callers must prove path ownership.`
           : `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}.`
         : undefined;
 
@@ -1230,42 +1325,48 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           details: { ...board, executionNote, results: currentResults, aggregateUsage: aggregateUsage(currentResults) },
         });
       };
+      const failQueuedTask = (index: number, reason: string, message: string): void => {
+        const threadId = threadRecords[index]!.id;
+        const thread = threads.inspect(threadId);
+        if (thread?.state === "queued") threads.begin(threadId);
+        results[index] = {
+          ...results[index]!,
+          status: "failed",
+          terminationReason: reason,
+          errorMessage: message,
+        };
+        if (threads.inspect(threadId)?.state === "active") threads.fail(threadId, { message, code: reason });
+        saveResult(threadId, results[index]!);
+        emit();
+      };
       const runAt = async (index: number, task: string): Promise<void> => {
         const threadId = threadRecords[index]!.id;
         const initialThread = threads.inspect(threadId);
         if (signal?.aborted) {
           results[index] = { ...results[index]!, status: "cancelled", terminationReason: "abort" };
           if (initialThread?.state === "queued" || initialThread?.state === "active") threads.stop(threadId, { reason: "abort" });
-          savedResults.set(threadId, cloneResult(results[index]!));
+          saveResult(threadId, results[index]!);
           emit();
           return;
         }
         if (!initialThread) return;
         if (initialThread.state === "closed") {
           results[index] = { ...results[index]!, status: "cancelled", terminationReason: initialThread.stopReason ?? "disposed" };
-          savedResults.set(threadId, cloneResult(results[index]!));
+          saveResult(threadId, results[index]!);
           emit();
           return;
         }
         if (initialThread.state === "stopped") {
           results[index] = { ...results[index]!, status: "cancelled", terminationReason: initialThread.stopReason ?? "interrupted" };
-          savedResults.set(threadId, cloneResult(results[index]!));
+          saveResult(threadId, results[index]!);
           emit();
           return;
         }
         if (initialThread.state !== "queued") return;
         const input = inputs[index]!;
         threads.begin(threadId);
-        if ([...task].length > limits.taskCharacters) {
-          results[index] = {
-            ...results[index]!,
-            status: "failed",
-            terminationReason: "task_limit",
-            errorMessage: `Expanded task exceeds ${limits.taskCharacters} characters`,
-          };
-          threads.fail(threadId, { message: results[index]!.errorMessage ?? "Expanded task exceeds the task limit", code: "task_limit" });
-          savedResults.set(threadId, cloneResult(results[index]!));
-          emit();
+        if (codePointLength(task) > limits.taskCharacters) {
+          failQueuedTask(index, "task_limit", `Expanded task exceeds ${limits.taskCharacters} characters`);
           return;
         }
         const controller = new AbortController();
@@ -1291,7 +1392,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             errorMessage: message,
           };
           threads.fail(threadId, { message, code: "session_error" });
-          savedResults.set(threadId, cloneResult(results[index]!));
+          saveResult(threadId, results[index]!);
           emit();
           return;
         }
@@ -1306,7 +1407,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           const reason = runtime.requestedReason ?? currentThread?.stopReason ?? (threads.isDisposed ? "session_shutdown" : "interrupted");
           results[index] = { ...results[index]!, status: "cancelled", terminationReason: reason };
           if (!threads.isDisposed && currentThread?.state === "active") threads.stop(threadId, { reason });
-          savedResults.set(threadId, cloneResult(results[index]!));
+          saveResult(threadId, results[index]!);
           emit();
           return;
         }
@@ -1321,7 +1422,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           limited.errorMessage = message;
           runtime.aggregate = limited;
           results[index] = cloneResult(limited);
-          savedResults.set(threadId, cloneResult(limited));
+          saveResult(threadId, limited);
           if (!threads.isDisposed && threads.inspect(threadId)?.state === "active") {
             threads.stop(threadId, {
               usage: threadUsage(limited.usage),
@@ -1402,11 +1503,31 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             runtime.aggregate = mergeTaskResults(runtime.aggregate, next, limits.traceRetentionBytes, limits.stderrRetentionBytes);
             runtime.aggregate.task = task;
             results[index] = cloneResult(runtime.aggregate);
-            savedResults.set(threadId, cloneResult(runtime.aggregate));
+            saveResult(threadId, runtime.aggregate);
             const shouldRestart = runtime.steering.length > 0 && !controller.signal.aborted && (runtime.restarting || next.status === "complete" || next.status === "cancelled");
             if (!shouldRestart) break;
             const previousHandle = runtime.handle;
-            if (previousHandle && !(await waitForConfirmedProcessExit(previousHandle))) break;
+            if (previousHandle && !(await waitForConfirmedProcessExit(previousHandle))) {
+              const message = "Child process exit was not confirmed before the steering restart";
+              const unconfirmed = cloneResult(runtime.aggregate ?? results[index]!);
+              unconfirmed.status = "failed";
+              unconfirmed.terminationReason = "process_exit_unconfirmed";
+              unconfirmed.errorMessage = message;
+              runtime.aggregate = unconfirmed;
+              results[index] = cloneResult(unconfirmed);
+              saveResult(threadId, unconfirmed);
+              if (!threads.isDisposed && threads.inspect(threadId)?.state === "active") {
+                threads.fail(threadId, {
+                  usage: threadUsage(unconfirmed.usage),
+                  result: unconfirmed.output || undefined,
+                  handoff: unconfirmed.output ? { summary: unconfirmed.output } : undefined,
+                  message,
+                  code: "process_exit_unconfirmed",
+                });
+              }
+              emit();
+              break;
+            }
             if (controller.signal.aborted || threads.isDisposed) break;
             const steering = runtime.steering.splice(0);
             runtime.restarting = false;
@@ -1444,14 +1565,14 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           if (result.status !== "queued") continue;
           const thread = threads.inspect(threadRecords[index]!.id);
           const alreadyStopped = thread?.state === "stopped";
-          result.status = signal?.aborted || alreadyStopped ? "cancelled" : "failed";
+          result.status = signal?.aborted || alreadyStopped || reason === "chain_stopped" ? "cancelled" : "failed";
           result.terminationReason = alreadyStopped
             ? thread.stopReason ?? "interrupted"
             : signal?.aborted ? "abort" : reason;
           if (thread?.state === "queued" || thread?.state === "active") {
             threads.stop(threadRecords[index]!.id, { reason: result.terminationReason });
           }
-          savedResults.set(threadRecords[index]!.id, cloneResult(result));
+          saveResult(threadRecords[index]!.id, result);
         }
       };
 
@@ -1459,7 +1580,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       if (hasChain) {
         let previous = "";
         for (let index = 0; index < inputs.length; index += 1) {
-          const task = inputs[index]!.task.replaceAll("{previous}", previous);
+          const task = expandChainTask(inputs[index]!.task, previous, limits.taskCharacters);
+          if (task === undefined) {
+            failQueuedTask(index, "task_limit", `Expanded task exceeds ${limits.taskCharacters} characters`);
+            break;
+          }
           await runAt(index, task);
           if (results[index]!.status !== "complete") break;
           previous = results[index]!.output;

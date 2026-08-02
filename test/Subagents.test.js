@@ -307,6 +307,19 @@ test("model resolution supports exact colon IDs and enforces Pi thinking capabil
   }), /unavailable model/u);
 });
 
+test("role timeout validation rejects Node timer overflow values", () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "slow.md", { name: "slow", timeoutMs: 2_147_483_648 });
+    assert.throws(
+      () => discoverAgentRoles(roster.root, "user", true, { bundledAgentsDir: roster.bundled, userAgentsDir: roster.personal }),
+      /timeoutMs.*no greater than 2147483647/u,
+    );
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
 test("isolated child invocation uses explicit tools and reports bounded output, trace, usage, and unique task IDs", async () => {
   const roster = tempRoster();
   try {
@@ -453,7 +466,7 @@ test("mixed partial single fields cannot be combined with parallel or chain mode
   }
 });
 
-test("parallel execution caps read-only batches, runs writers in parallel by default, and supports an optional shared-pool cap", async () => {
+test("parallel execution caps readers, serializes writers by default, and supports an explicit shared-pool cap", async () => {
   const roster = tempRoster();
   try {
     writeRole(roster.bundled, "scout.md", { name: "scout" });
@@ -510,6 +523,7 @@ test("parallel execution caps read-only batches, runs writers in parallel by def
     assert.equal(readOnly.details.results.every((entry) => entry.status === "complete"), true);
     assert.equal(peakReaders, 2);
 
+    peakChildren = 0;
     const mixed = await execute(tool, {
       tasks: [
         { agent: "scout", task: "one" },
@@ -519,7 +533,8 @@ test("parallel execution caps read-only batches, runs writers in parallel by def
       ],
     }, ctx);
     assert.equal(mixed.details.results.every((entry) => entry.status === "complete"), true);
-    assert.match(mixed.details.executionNote, /shared pool of up to 10 \(default\)/u);
+    assert.equal(peakChildren, 1);
+    assert.match(mixed.details.executionNote, /shared pool of up to 1 \(safe default\)/u);
 
     peakWriters = 0;
     writerStartedWithWriter = false;
@@ -531,9 +546,9 @@ test("parallel execution caps read-only batches, runs writers in parallel by def
     }, ctx);
     assert.deepEqual(writers.details.results.map((entry) => entry.status), ["complete", "complete"]);
     assert.deepEqual([...writerTasks.slice(-2)].sort(), ["Task: one", "Task: two"].sort());
-    assert.equal(peakWriters, 2);
-    assert.equal(writerStartedWithWriter, true);
-    assert.match(writers.details.executionNote, /shared pool of up to 10 \(default\)/u);
+    assert.equal(peakWriters, 1);
+    assert.equal(writerStartedWithWriter, false);
+    assert.match(writers.details.executionNote, /shared pool of up to 1 \(safe default\)/u);
 
     peakChildren = 0;
     const cappedMixed = await execute(tool, {
@@ -592,6 +607,103 @@ test("parallel execution caps read-only batches, runs writers in parallel by def
     assert.equal(writerStartedWithWriter, false);
     assert.match(serialWriters.details.executionNote, /shared pool of up to 1/u);
     assert.equal(spawned, 21);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("chain expansion bounds repeated handoffs before spawning", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const expandedTasks = [];
+    const successTool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess(args) {
+        expandedTasks.push(args.at(-1));
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("handoff 😀"));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+    const success = await execute(successTool, {
+      chain: [
+        { agent: "scout", task: "produce the handoff" },
+        { agent: "scout", task: "prefix {previous} suffix" },
+      ],
+    }, toolContext(roster.root));
+    assert.deepEqual(success.details.results.map((entry) => entry.status), ["complete", "complete"]);
+    assert.match(expandedTasks[1], /prefix handoff 😀 suffix/u);
+
+    let spawned = 0;
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        spawned += 1;
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("x".repeat(900_000)));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+    const result = await execute(tool, {
+      chain: [
+        { agent: "scout", task: "produce the handoff" },
+        { agent: "scout", task: "{previous}".repeat(2_000) },
+        { agent: "scout", task: "must not start" },
+      ],
+    }, toolContext(roster.root));
+    assert.equal(spawned, 1);
+    assert.equal(result.details.results[0].status, "complete");
+    assert.equal(result.details.results[1].status, "failed");
+    assert.equal(result.details.results[1].terminationReason, "task_limit");
+    assert.equal(result.details.results[2].status, "cancelled");
+    assert.equal(result.details.results[2].terminationReason, "chain_stopped");
+    assert.equal(result.details.threads[2].stopReason, "chain_stopped");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("default writer serialization preserves both file updates", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
+    const target = path.join(roster.root, "shared.txt");
+    writeFileSync(target, "");
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess(args) {
+        const child = new FakeProcess();
+        const task = args.at(-1);
+        const update = task.includes("first") ? "first" : "second";
+        const before = readFileSync(target, "utf8");
+        setTimeout(() => {
+          writeFileSync(target, `${before}${update}\n`);
+          child.json(assistantEvent(update));
+          child.close(0);
+        }, 5);
+        return child;
+      },
+    });
+    const result = await execute(tool, {
+      tasks: [
+        { agent: "worker", task: "write first update" },
+        { agent: "worker", task: "write second update" },
+      ],
+    }, toolContext(roster.root));
+    assert.deepEqual(result.details.results.map((entry) => entry.status), ["complete", "complete"]);
+    const content = readFileSync(target, "utf8");
+    assert.match(content, /first/u);
+    assert.match(content, /second/u);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
@@ -657,10 +769,10 @@ test("message is scoped to steer and the parallel schedule is described", async 
       writerConcurrency: 2,
       tasks: [{ agent: "scout", task: "map" }],
     }, ctx), /requires at least one write-capable role/u);
-    assert.match(tool.description, /write-capable roles use one shared pool by default[\s\S]*writerConcurrency[\s\S]*serialize the entire writer-containing batch[\s\S]*parent worktree/u);
+    assert.match(tool.description, /write-capable roles use one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership[\s\S]*shared worktree/u);
     assert.match(tool.parameters.properties.message.description, /only valid with action steer/u);
-    assert.match(tool.parameters.properties.tasks.description, /shared pool by default[\s\S]*writerConcurrency[\s\S]*file conflicts/u);
-    assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to[\s\S]*serialize the entire writer-containing batch[\s\S]*file conflicts/u);
+    assert.match(tool.parameters.properties.tasks.description, /one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership/u);
+    assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to 1[\s\S]*values above 1[\s\S]*path ownership/u);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
@@ -1160,6 +1272,44 @@ test("Codex-style thread actions keep a completed handoff visible until close", 
   }
 });
 
+test("closed and over-budget thread records become bounded tombstones", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      limits: { threadRetentionRecords: 2, threadRetentionBytes: 32 * 1024 },
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("retained handoff ".repeat(1_000)));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    const ids = [];
+    for (let index = 0; index < 5; index += 1) {
+      const result = await execute(tool, { agent: "scout", task: `task ${index}` }, ctx);
+      ids.push(result.details.results[0].id);
+    }
+    const listed = await execute(tool, { action: "list" }, ctx);
+    assert.equal(listed.details.threads.every((thread) => thread.state !== "closed"), true);
+    assert.ok(listed.details.doneThreads.length <= 2);
+    const evicted = await execute(tool, { action: "inspect", threadId: ids[2] }, ctx);
+    const tombstone = evicted.details.threads.find((thread) => thread.id === ids[2]);
+    assert.equal(tombstone.state, "closed");
+    assert.equal(tombstone.evicted, true);
+    assert.match(evicted.content[0].text, /heavy thread data was evicted/u);
+    const notice = await execute(tool, { action: "inspect", threadId: ids[1] }, ctx);
+    assert.match(notice.content[0].text, /evicted from bounded retention/u);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
 test("concurrent child spawns share the global task guard", async () => {
   const roster = tempRoster();
   try {
@@ -1360,6 +1510,52 @@ test("steering waits for a forced child to exit before reusing its session", asy
     assert.equal(existsSync(childArgs[0][childArgs[0].indexOf("--session-dir") + 1]), false);
     assert.equal(result.details.results[0].status, "complete");
   } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("steering settles a thread when the previous child never confirms exit", async () => {
+  const roster = tempRoster();
+  let sessionDirectory;
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let resolveFirstMessage;
+    const firstMessage = new Promise((resolve) => { resolveFirstMessage = resolve; });
+    const updates = [];
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      limits: { killGraceMs: 5 },
+      spawnProcess(args) {
+        sessionDirectory = args[args.indexOf("--session-dir") + 1];
+        const child = new FakeProcess();
+        child.kill = (signal = "SIGTERM") => {
+          child.killSignals.push(signal);
+          return true;
+        };
+        setImmediate(() => {
+          child.json(assistantEvent("partial handoff", { stopReason: "toolUse" }));
+          resolveFirstMessage();
+        });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    const run = execute(tool, { agent: "scout", task: "finish the task" }, ctx, new AbortController().signal, updates);
+    await firstMessage;
+    const active = updates.at(-1).details.activeThreads[0];
+    assert.ok(active);
+    await execute(tool, { action: "steer", threadId: active.id, message: "Continue" }, ctx);
+    const result = await run;
+    const task = result.details.results[0];
+    const thread = result.details.threads.find((candidate) => candidate.id === active.id);
+    assert.equal(task.status, "failed");
+    assert.equal(task.terminationReason, "process_exit_unconfirmed");
+    assert.equal(thread.state, "failed");
+    assert.equal(thread.failure.code, "process_exit_unconfirmed");
+    assert.equal(existsSync(sessionDirectory), true);
+  } finally {
+    if (sessionDirectory) rmSync(sessionDirectory, { recursive: true, force: true });
     rmSync(roster.root, { recursive: true, force: true });
   }
 });

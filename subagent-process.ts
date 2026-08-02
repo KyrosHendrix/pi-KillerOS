@@ -3,7 +3,10 @@ import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, write
 import os from "node:os";
 import path from "node:path";
 
+export const MAX_NODE_TIMER_MS = 2_147_483_647;
+
 export const SUBAGENT_PROCESS_LIMITS = {
+  jsonlLineBytes: 8 * 1024 * 1024,
   killGraceMs: 5_000,
 } as const;
 
@@ -219,7 +222,10 @@ function normalizeLimits(overrides: Partial<SubagentProcessLimits> | undefined):
   const limits = { ...SUBAGENT_PROCESS_LIMITS, ...overrides };
   for (const name of ["wallTimeMs", "jsonlLineBytes", "traceBytes", "stderrBytes", "outputBytes", "killGraceMs"] as const) {
     const value = limits[name];
-    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) throw new RangeError(`${name} must be a positive safe integer`);
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0 || value > MAX_NODE_TIMER_MS && (name === "wallTimeMs" || name === "killGraceMs"))) {
+      const bound = name === "wallTimeMs" || name === "killGraceMs" ? ` no greater than ${MAX_NODE_TIMER_MS}` : "";
+      throw new RangeError(`${name} must be a positive safe integer${bound}`);
+    }
   }
   for (const name of ["quotaTokens", "quotaUsd"] as const) {
     const value = limits[name];

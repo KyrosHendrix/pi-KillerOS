@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readdirSync } from "node:fs";
+import os from "node:os";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { SubagentThreadRegistry } from "../subagent-lifecycle.ts";
-import { runSubagentProcess } from "../subagent-process.ts";
+import { MAX_NODE_TIMER_MS, SUBAGENT_PROCESS_LIMITS, runSubagentProcess } from "../subagent-process.ts";
 
 class FakeProcess extends EventEmitter {
   stdout = new PassThrough();
@@ -102,6 +104,8 @@ test("registry keeps child id and parentId stable through queued, active, done, 
 
   const closed = registry.close(child.id);
   assert.equal(closed.state, "closed");
+  assert.equal(closed.evicted, true);
+  assert.equal(closed.trace.length, 0);
   assert.equal(closed.id, child.id);
   assert.equal(registry.inspect(child.id).state, "closed");
   assert.deepEqual(
@@ -254,19 +258,29 @@ test("default child process lets long work complete without execution limits and
   assert.deepEqual(child.killSignals, []);
 });
 
-test("default child process parses a large JSONL line without a process limit", async () => {
-  const child = new FakeProcess();
-  const handle = runWith(child);
+test("default child process bounds one JSONL record and removes its spool", async () => {
+  const below = new FakeProcess();
+  const belowHandle = runWith(below);
+  below.json(assistantEvent("x".repeat(SUBAGENT_PROCESS_LIMITS.jsonlLineBytes - 2_000)));
+  below.close();
+  const belowResult = await belowHandle.result;
+  assert.equal(belowResult.status, "complete");
+  assert.equal(belowResult.terminationReason, "completed");
 
-  child.json(assistantEvent("x".repeat(2 * 1024 * 1024 + 1)));
-  child.close();
-  const result = await handle.result;
-
-  assert.equal(result.status, "complete");
-  assert.equal(result.terminationReason, "completed");
-  assert.ok(result.outputBytes > 2 * 1024 * 1024);
-  assert.ok(result.outputTruncatedBytes > 0);
-  assert.deepEqual(child.killSignals, []);
+  const beforeSpools = new Set(readdirSync(os.tmpdir()).filter((name) => name.startsWith("killeros-jsonl-")));
+  const above = new FakeProcess();
+  const aboveHandle = runWith(above, { retention: { jsonlMemoryBytes: 16 } });
+  above.stdout.write("x".repeat(SUBAGENT_PROCESS_LIMITS.jsonlLineBytes - 1_000));
+  above.stdout.write("x".repeat(1_001));
+  const aboveResult = await aboveHandle.result;
+  assert.equal(aboveResult.status, "limited");
+  assert.equal(aboveResult.terminationReason, "jsonl_line_limit");
+  assert.match(aboveResult.errorMessage, /JSONL line exceeds/u);
+  assert.deepEqual(above.killSignals, ["SIGTERM"]);
+  assert.deepEqual(
+    readdirSync(os.tmpdir()).filter((name) => name.startsWith("killeros-jsonl-") && !beforeSpools.has(name)),
+    [],
+  );
 });
 
 test("process applies output limit across assistant messages", async () => {
@@ -466,6 +480,15 @@ test("forced finalization settles the result without claiming exit when close ne
   assert.equal(handle.hasExited, false);
   assert.equal(exited, false);
   assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("process rejects timer values above Node's supported range", () => {
+  assert.doesNotThrow(() => {
+    const handle = runWith(new FakeProcess(), { limits: { wallTimeMs: MAX_NODE_TIMER_MS } });
+    handle.stop("test");
+  });
+  assert.throws(() => runWith(new FakeProcess(), { limits: { wallTimeMs: MAX_NODE_TIMER_MS + 1 } }), /wallTimeMs.*no greater than/u);
+  assert.throws(() => runWith(new FakeProcess(), { limits: { killGraceMs: MAX_NODE_TIMER_MS + 1 } }), /killGraceMs.*no greater than/u);
 });
 
 test("process keeps an explicit parent abort terminal", async () => {
