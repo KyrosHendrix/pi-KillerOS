@@ -96,6 +96,10 @@ export interface SubagentProcessRetention {
 
 export interface SubagentProcessHandle {
   readonly pid: number | undefined;
+  /** True after the child close event, or when no child was spawned. */
+  readonly hasExited: boolean;
+  /** Resolves after the child close event, or when no child was spawned. */
+  readonly exited: Promise<void>;
   readonly result: Promise<SubagentProcessResult>;
   /** Stop this child and retain any work received before it exits. */
   stop(reason?: string): void;
@@ -324,6 +328,7 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     durationMs: 0,
   };
   let child: SubagentProcessChild | undefined;
+  let processExited = false;
   let closed = false;
   let finishing = false;
   let requestedStatus: Exclude<SubagentProcessStatus, "running" | "complete"> | undefined;
@@ -338,7 +343,14 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
   let settleTimer: NodeJS.Timeout | undefined;
   let timeoutTimer: NodeJS.Timeout | undefined;
   let resolveResult!: (result: SubagentProcessResult) => void;
+  let resolveExited!: () => void;
   const result = new Promise<SubagentProcessResult>((resolve) => { resolveResult = resolve; });
+  const exited = new Promise<void>((resolve) => { resolveExited = resolve; });
+  const markExited = (): void => {
+    if (processExited) return;
+    processExited = true;
+    resolveExited();
+  };
 
   const clearStdoutLine = (): void => {
     if (stdoutLineSpoolDescriptor !== undefined) {
@@ -385,6 +397,7 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
   const finish = (code: number | null): void => {
     if (closed || finishing) return;
     finishing = true;
+    if (!child || processExited) markExited();
     if (stdoutLineBytes && !requestedStatus) processLine(readStdoutLine());
     else clearStdoutLine();
     closed = true;
@@ -559,7 +572,10 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
         }
       });
       child.on("error", (error) => requestTermination("failed", "spawn_error", error.message));
-      child.once("close", finish);
+      child.once("close", (code) => {
+        markExited();
+        finish(code);
+      });
       if (limits.wallTimeMs !== undefined) timeoutTimer = setTimeout(() => requestTermination("limited", "wall_time_limit"), limits.wallTimeMs);
       options.signal?.addEventListener("abort", abortHandler, { once: true });
       if (options.signal?.aborted) abortHandler();
@@ -570,6 +586,8 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
 
   return {
     get pid() { return child?.pid; },
+    get hasExited() { return processExited; },
+    exited,
     result,
     stop(reason = "stopped") { requestTermination("cancelled", reason); },
     snapshot: () => cloneResult(state),

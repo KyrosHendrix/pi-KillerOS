@@ -2,11 +2,19 @@
 
 All notable changes to KillerOS are documented here.
 
+## [1.4.8] - 2026-08-01
+
+### Changed
+
+- Parallel batches with write-capable roles now run through a shared pool by default; `writerConcurrency` can cap the pool or set it to `1` for serialized writers.
+
 ## [1.4.7] - 2026-08-01
 
 ### Fixed
 
 - Serialized every write-capable task in a parallel batch in input order instead of rejecting batches with multiple writers.
+- Added opt-in `writerConcurrency` scheduling for independent batches while keeping serialization as the safe default and documenting shared-worktree conflict responsibility.
+- Parent tool-call aborts now settle only queued tasks; active children finish naturally, and session directories remain until child exit is confirmed.
 - Settled queued tasks on interrupted parallel batches and documented the shared-worktree execution model.
 - Restricted the `message` parameter to `action: "steer"` and added focused regression coverage.
 

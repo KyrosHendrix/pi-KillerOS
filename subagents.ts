@@ -713,6 +713,22 @@ async function mapReadTasks<T>(items: T[], concurrency: number, run: (item: T, i
   await Promise.all(workers);
 }
 
+function waitForConfirmedProcessExit(handle: SubagentProcessHandle, timeoutMs = 1_000): Promise<boolean> {
+  if (handle.hasExited) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      resolve(exited);
+    };
+    timeout = setTimeout(() => finish(handle.hasExited), timeoutMs);
+    void handle.exited.then(() => finish(true));
+  });
+}
+
 function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxReadConcurrency" | "taskCharacters">) {
   const taskSchema = Type.Object({
     agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
@@ -732,7 +748,8 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
     all: Type.Optional(Type.Boolean({ description: "Interrupt every active child thread" })),
     agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
     task: Type.Optional(Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" })),
-    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only roles run concurrently up to ${limits.maxReadConcurrency}; write-capable roles run serially in input order because all children share the parent worktree` })),
+    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use a shared pool by default up to ${limits.maxTasks}. Set writerConcurrency to cap that pool, or set it to 1 to serialize writers; concurrent writers share the parent worktree, so callers must avoid file conflicts` })),
+    writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to ${limits.maxTasks}; set 1 to serialize writers. Concurrent writers share the parent worktree, so callers must avoid file conflicts` })),
     chain: Type.Optional(Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
     model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
     thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
@@ -805,6 +822,7 @@ function statusIcon(status: SubagentStatus): string {
 interface ActiveThreadRuntime {
   controller: AbortController;
   handle?: SubagentProcessHandle;
+  handles: Set<SubagentProcessHandle>;
   steering: string[];
   restarting: boolean;
   traceCount: number;
@@ -1030,11 +1048,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   pi.registerTool({
     name: "subagent",
     label: "Subagents",
-    description: `Spawn and manage named child threads. Children finish naturally. Parallel tasks run read-only roles concurrently up to ${limits.maxReadConcurrency}, then run write-capable roles serially in input order because all children share the parent worktree. The message parameter is only valid with action steer. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.`,
+    description: `Spawn and manage named child threads. Children finish naturally. Parallel tasks with write-capable roles use one shared pool by default, up to ${limits.maxTasks}; read-only batches run concurrently up to ${limits.maxReadConcurrency}. Set writerConcurrency to cap the shared pool, or set it to 1 to serialize writers. Concurrent writers share the parent worktree, so callers must avoid file conflicts. The message parameter is only valid with action steer. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.`,
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
       "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
-      `Parallel tasks run read-only roles concurrently up to ${limits.maxReadConcurrency}, then queue write-capable roles in input order because all children share the parent worktree.`,
+      `Parallel tasks with write-capable roles use one shared pool by default because all children share the parent worktree. Set writerConcurrency to cap the pool, or set it to 1 to serialize writers; callers remain responsible for file conflicts.`,
       "Every child can load relevant skills with read and can use web_search, source_check, fetch_content, and get_search_content for external research.",
       "When the user names a model or thinking effort, pass model and thinking separately; use inherit when the active parent or role setting should decide.",
       "Keep completed and stopped threads inspectable until the parent explicitly closes them.",
@@ -1134,6 +1152,12 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         || hasChain && params.chain!.length === 0) {
         throw new Error("Provide exactly one subagent mode: agent + task, tasks, or chain");
       }
+      if (params.writerConcurrency !== undefined) {
+        if (!hasParallel) throw new Error("writerConcurrency is only valid with parallel tasks");
+        if (!Number.isSafeInteger(params.writerConcurrency) || params.writerConcurrency < 1 || params.writerConcurrency > limits.maxTasks) {
+          throw new Error(`writerConcurrency must be a positive integer no greater than ${limits.maxTasks}`);
+        }
+      }
 
       const discovery = discoverAgentRoles(ctx.cwd, scope, ctx.isProjectTrusted(), options);
       const roles = new Map(discovery.agents.map((agent) => [agent.name, agent]));
@@ -1171,9 +1195,16 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       const writerIndexes = hasParallel
         ? inputs.map((input, index) => ({ input, index })).filter(({ input }) => roles.get(input.agent)!.access === "write").map(({ index }) => index)
         : [];
+      if (params.writerConcurrency !== undefined && hasParallel && writerIndexes.length === 0) {
+        throw new Error("writerConcurrency requires at least one write-capable role");
+      }
+      const writerConcurrency = params.writerConcurrency ?? limits.maxTasks;
+      const useSharedParallelPool = hasParallel && writerIndexes.length > 0 && writerConcurrency > 1;
       const executionNote = hasParallel
         ? writerIndexes.length
-          ? `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}; write-capable tasks are queued (serialized) in input order because all children share the parent worktree.`
+          ? useSharedParallelPool
+            ? `Parallel schedule: all tasks run through a shared pool of up to ${writerConcurrency}${params.writerConcurrency === undefined ? " (default)" : ""}; concurrent write-capable tasks share the parent worktree, so callers must avoid file conflicts.`
+            : `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}; write-capable tasks are queued (serialized) in input order because writerConcurrency is 1 and all children share the parent worktree.`
           : `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}.`
         : undefined;
 
@@ -1239,10 +1270,21 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           emit();
           return;
         }
+        const controller = new AbortController();
+        const runtime: ActiveThreadRuntime = {
+          controller,
+          handles: new Set(),
+          steering: [],
+          restarting: false,
+          traceCount: 0,
+          startedAt: Date.now(),
+        };
+        activeRuntimes.set(threadId, runtime);
         let sessionDirectory: string;
         try {
           sessionDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-subagent-session-"));
         } catch (error) {
+          activeRuntimes.delete(threadId);
           const message = error instanceof Error ? error.message : String(error);
           results[index] = {
             ...results[index]!,
@@ -1255,15 +1297,22 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           emit();
           return;
         }
-        const sessionId = `killeros-${threadId.replace(/[^A-Za-z0-9_.-]/gu, "_")}`;
-        const controller = new AbortController();
-        const abortParent = (): void => controller.abort();
-        if (signal) {
-          if (signal.aborted) controller.abort();
-          else signal.addEventListener("abort", abortParent, { once: true });
+        const currentThread = threads.inspect(threadId);
+        if (controller.signal.aborted || threads.isDisposed || currentThread?.state !== "active") {
+          activeRuntimes.delete(threadId);
+          try {
+            await rm(sessionDirectory, { recursive: true, force: true });
+          } catch {
+            // Temporary child session cleanup is best effort before process startup.
+          }
+          const reason = runtime.requestedReason ?? currentThread?.stopReason ?? (threads.isDisposed ? "session_shutdown" : "interrupted");
+          results[index] = { ...results[index]!, status: "cancelled", terminationReason: reason };
+          if (!threads.isDisposed && currentThread?.state === "active") threads.stop(threadId, { reason });
+          savedResults.set(threadId, cloneResult(results[index]!));
+          emit();
+          return;
         }
-        const runtime: ActiveThreadRuntime = { controller, steering: [], restarting: false, traceCount: 0, startedAt: Date.now() };
-        activeRuntimes.set(threadId, runtime);
+        const sessionId = `killeros-${threadId.replace(/[^A-Za-z0-9_.-]/gu, "_")}`;
         const agent = roles.get(input.agent)!;
         const queuedSteering = initialThread.steering.map((entry) => entry.message);
         let currentTask = queuedSteering.length ? buildSteeredTask(task, queuedSteering, limits.taskCharacters) : task;
@@ -1342,7 +1391,10 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
                 ...(limits.quotaUsd === undefined ? {} : { quotaUsd: limits.quotaUsd - usedCost }),
               },
               timeoutMs: remainingWallTimeMs,
-              onHandle: (handle) => { runtime.handle = handle; },
+              onHandle: (handle) => {
+                runtime.handle = handle;
+                runtime.handles.add(handle);
+              },
               onChange: (changed) => {
                 results[index] = syncThread(threadId, changed, runtime);
                 emit();
@@ -1355,6 +1407,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             savedResults.set(threadId, cloneResult(runtime.aggregate));
             const shouldRestart = runtime.steering.length > 0 && !controller.signal.aborted && (runtime.restarting || next.status === "complete" || next.status === "cancelled");
             if (!shouldRestart) break;
+            const previousHandle = runtime.handle;
+            if (previousHandle && !(await waitForConfirmedProcessExit(previousHandle))) break;
+            if (controller.signal.aborted || threads.isDisposed) break;
             const steering = runtime.steering.splice(0);
             runtime.restarting = false;
             runtime.requestedReason = undefined;
@@ -1369,12 +1424,18 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           }
         } finally {
           activeRuntimes.delete(threadId);
-          signal?.removeEventListener("abort", abortParent);
-          try {
-            await rm(sessionDirectory, { recursive: true, force: true });
-          } catch {
-            // Temporary child session cleanup is best effort after process termination.
-          }
+          const removeSessionDirectory = async (): Promise<void> => {
+            try {
+              await rm(sessionDirectory, { recursive: true, force: true });
+            } catch {
+              // Temporary child session cleanup is best effort after process termination.
+            }
+          };
+          const pendingExits = [...runtime.handles]
+            .filter((handle) => !handle.hasExited)
+            .map((handle) => handle.exited);
+          if (!pendingExits.length) await removeSessionDirectory();
+          else void Promise.all(pendingExits).then(removeSessionDirectory);
         }
         emit();
       };
@@ -1408,8 +1469,13 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         settleQueued("chain_stopped");
       } else if (hasParallel) {
         try {
-          await mapReadTasks(readIndexes, limits.maxReadConcurrency, async ({ index }) => runAt(index, inputs[index]!.task));
-          for (const index of writerIndexes) await runAt(index, inputs[index]!.task);
+          if (useSharedParallelPool) {
+            const indexes = inputs.map((_, index) => index);
+            await mapReadTasks(indexes, writerConcurrency, async (index) => runAt(index, inputs[index]!.task));
+          } else {
+            await mapReadTasks(readIndexes, limits.maxReadConcurrency, async ({ index }) => runAt(index, inputs[index]!.task));
+            for (const index of writerIndexes) await runAt(index, inputs[index]!.task);
+          }
         } finally {
           settleQueued("parallel_stopped");
         }
@@ -1430,7 +1496,12 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     renderCall(args, theme) {
       const scope = args.agentScope ?? "user";
       if (args.action && args.action !== "spawn") return new Text(`${theme.fg("toolTitle", theme.bold("threads "))}${theme.fg("accent", args.action)}${theme.fg("dim", args.threadId ? ` · ${args.threadId}` : "")}`, 0, 0);
-      if (args.tasks?.length) return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${args.tasks.length} · readers first; writers serial`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
+      if (args.tasks?.length) {
+        const schedule = args.writerConcurrency === 1
+          ? "writers serial"
+          : args.writerConcurrency === undefined ? "parallel default" : `shared pool ${args.writerConcurrency}`;
+        return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${args.tasks.length} · ${schedule}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
+      }
       if (args.chain?.length) return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `chain ${args.chain.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
       return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent ?? "…")}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
     },

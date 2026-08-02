@@ -447,6 +447,27 @@ test("process retains partial output and escalates from SIGTERM to SIGKILL", asy
   assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
 });
 
+test("forced finalization settles the result without claiming exit when close never arrives", async () => {
+  const child = new FakeProcess();
+  child.kill = (signal = "SIGTERM") => {
+    child.killSignals.push(signal);
+    return true;
+  };
+  const handle = runWith(child, { limits: { killGraceMs: 5 } });
+  let exited = false;
+  void handle.exited.then(() => { exited = true; });
+
+  handle.stop("user_stop");
+  const result = await handle.result;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.terminationReason, "user_stop");
+  assert.equal(handle.hasExited, false);
+  assert.equal(exited, false);
+  assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
+});
+
 test("process keeps an explicit parent abort terminal", async () => {
   const child = new FakeProcess();
   const controller = new AbortController();
