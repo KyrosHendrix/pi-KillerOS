@@ -2,11 +2,11 @@
 
 All notable changes to KillerOS are documented here.
 
-## [1.4.8] - 2026-08-01
+## [1.4.8] - 2026-08-02
 
 ### Changed
 
-- Parallel batches with write-capable roles now run through a shared pool by default; `writerConcurrency` can cap the pool or set it to `1` for serialized writers.
+- Parallel batches with write-capable roles now run through a shared pool by default; `writerConcurrency` caps the entire batch and setting it to `1` serializes the writer-containing batch. Reader-only batches reject `writerConcurrency` because it does not apply.
 
 ## [1.4.7] - 2026-08-01
 

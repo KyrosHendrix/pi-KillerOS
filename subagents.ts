@@ -748,8 +748,8 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
     all: Type.Optional(Type.Boolean({ description: "Interrupt every active child thread" })),
     agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
     task: Type.Optional(Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" })),
-    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use a shared pool by default up to ${limits.maxTasks}. Set writerConcurrency to cap that pool, or set it to 1 to serialize writers; concurrent writers share the parent worktree, so callers must avoid file conflicts` })),
-    writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to ${limits.maxTasks}; set 1 to serialize writers. Concurrent writers share the parent worktree, so callers must avoid file conflicts` })),
+    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use a shared pool by default up to ${limits.maxTasks}. Set writerConcurrency to cap that pool, or set it to 1 to serialize the entire writer-containing batch; concurrent writers share the parent worktree, so callers must avoid file conflicts` })),
+    writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to ${limits.maxTasks}; set 1 to serialize the entire writer-containing batch. Concurrent writers share the parent worktree, so callers must avoid file conflicts` })),
     chain: Type.Optional(Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
     model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
     thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
@@ -1048,11 +1048,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   pi.registerTool({
     name: "subagent",
     label: "Subagents",
-    description: `Spawn and manage named child threads. Children finish naturally. Parallel tasks with write-capable roles use one shared pool by default, up to ${limits.maxTasks}; read-only batches run concurrently up to ${limits.maxReadConcurrency}. Set writerConcurrency to cap the shared pool, or set it to 1 to serialize writers. Concurrent writers share the parent worktree, so callers must avoid file conflicts. The message parameter is only valid with action steer. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.`,
+    description: `Spawn and manage named child threads. Children finish naturally. Parallel tasks with write-capable roles use one shared pool by default, up to ${limits.maxTasks}; read-only batches run concurrently up to ${limits.maxReadConcurrency}. Set writerConcurrency to cap the shared pool, or set it to 1 to serialize the entire writer-containing batch. Concurrent writers share the parent worktree, so callers must avoid file conflicts. The message parameter is only valid with action steer. Use action list, inspect, steer, interrupt, collect, and close to manage active and completed handoffs.`,
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
       "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
-      `Parallel tasks with write-capable roles use one shared pool by default because all children share the parent worktree. Set writerConcurrency to cap the pool, or set it to 1 to serialize writers; callers remain responsible for file conflicts.`,
+      `Parallel tasks with write-capable roles use one shared pool by default because all children share the parent worktree. Set writerConcurrency to cap the pool, or set it to 1 to serialize the entire writer-containing batch; callers remain responsible for file conflicts.`,
       "Every child can load relevant skills with read and can use web_search, source_check, fetch_content, and get_search_content for external research.",
       "When the user names a model or thinking effort, pass model and thinking separately; use inherit when the active parent or role setting should decide.",
       "Keep completed and stopped threads inspectable until the parent explicitly closes them.",
@@ -1199,12 +1199,10 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         throw new Error("writerConcurrency requires at least one write-capable role");
       }
       const writerConcurrency = params.writerConcurrency ?? limits.maxTasks;
-      const useSharedParallelPool = hasParallel && writerIndexes.length > 0 && writerConcurrency > 1;
+      const useSharedParallelPool = hasParallel && writerIndexes.length > 0;
       const executionNote = hasParallel
         ? writerIndexes.length
-          ? useSharedParallelPool
-            ? `Parallel schedule: all tasks run through a shared pool of up to ${writerConcurrency}${params.writerConcurrency === undefined ? " (default)" : ""}; concurrent write-capable tasks share the parent worktree, so callers must avoid file conflicts.`
-            : `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}; write-capable tasks are queued (serialized) in input order because writerConcurrency is 1 and all children share the parent worktree.`
+          ? `Parallel schedule: all tasks run through a shared pool of up to ${writerConcurrency}${params.writerConcurrency === undefined ? " (default)" : ""}; concurrent write-capable tasks share the parent worktree, so callers must avoid file conflicts.`
           : `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}.`
         : undefined;
 
@@ -1497,9 +1495,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       const scope = args.agentScope ?? "user";
       if (args.action && args.action !== "spawn") return new Text(`${theme.fg("toolTitle", theme.bold("threads "))}${theme.fg("accent", args.action)}${theme.fg("dim", args.threadId ? ` · ${args.threadId}` : "")}`, 0, 0);
       if (args.tasks?.length) {
-        const schedule = args.writerConcurrency === 1
-          ? "writers serial"
-          : args.writerConcurrency === undefined ? "parallel default" : `shared pool ${args.writerConcurrency}`;
+        const schedule = args.writerConcurrency === undefined ? "parallel default" : `shared pool ${args.writerConcurrency}`;
         return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${args.tasks.length} · ${schedule}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
       }
       if (args.chain?.length) return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `chain ${args.chain.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);

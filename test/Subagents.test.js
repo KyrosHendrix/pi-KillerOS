@@ -549,6 +549,19 @@ test("parallel execution caps read-only batches, runs writers in parallel by def
     assert.equal(peakChildren, 2);
     assert.match(cappedMixed.details.executionNote, /shared pool of up to 2/u);
 
+    peakChildren = 0;
+    const serialMixed = await execute(tool, {
+      writerConcurrency: 1,
+      tasks: [
+        { agent: "scout", task: "serial read one" },
+        { agent: "reviewer", task: "serial read two" },
+        { agent: "worker", task: "serial write" },
+      ],
+    }, ctx);
+    assert.deepEqual(serialMixed.details.results.map((entry) => entry.status), ["complete", "complete", "complete"]);
+    assert.equal(peakChildren, 1);
+    assert.match(serialMixed.details.executionNote, /shared pool of up to 1/u);
+
     peakWriters = 0;
     writerStartedWithWriter = false;
     const cappedWriters = await execute(tool, {
@@ -577,8 +590,8 @@ test("parallel execution caps read-only batches, runs writers in parallel by def
     assert.deepEqual(serialWriters.details.results.map((entry) => entry.status), ["complete", "complete"]);
     assert.equal(peakWriters, 1);
     assert.equal(writerStartedWithWriter, false);
-    assert.match(serialWriters.details.executionNote, /queued \(serialized\)/u);
-    assert.equal(spawned, 18);
+    assert.match(serialWriters.details.executionNote, /shared pool of up to 1/u);
+    assert.equal(spawned, 21);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
@@ -644,10 +657,10 @@ test("message is scoped to steer and the parallel schedule is described", async 
       writerConcurrency: 2,
       tasks: [{ agent: "scout", task: "map" }],
     }, ctx), /requires at least one write-capable role/u);
-    assert.match(tool.description, /write-capable roles use one shared pool by default[\s\S]*writerConcurrency[\s\S]*serialize writers[\s\S]*parent worktree/u);
+    assert.match(tool.description, /write-capable roles use one shared pool by default[\s\S]*writerConcurrency[\s\S]*serialize the entire writer-containing batch[\s\S]*parent worktree/u);
     assert.match(tool.parameters.properties.message.description, /only valid with action steer/u);
     assert.match(tool.parameters.properties.tasks.description, /shared pool by default[\s\S]*writerConcurrency[\s\S]*file conflicts/u);
-    assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to[\s\S]*serialize writers[\s\S]*file conflicts/u);
+    assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to[\s\S]*serialize the entire writer-containing batch[\s\S]*file conflicts/u);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
