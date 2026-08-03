@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Resolved bundled subagent role discovery from the package `agents/` directory; the module-relative path broke when subagent modules moved under `killeros/` in v1.5.0, leaving fresh installs with `Unknown subagent "<role>". Available: none`.
+
 ## [1.5.0] - 2026-08-03
 
 ### Changed
