@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import {
   SUBAGENT_LIMITS,
   childProcessEnvironment,
@@ -210,6 +211,43 @@ test("subagent request normalizer classifies valid request shapes", () => {
     assert.equal(normalizeSubagentRequest(input).kind, kind);
   }
   assert.deepEqual(tryNormalizeSubagentRequest({ action: "list", task: "invalid" }).ok, false);
+});
+
+test("subagent schema exposes export parameters without flattening the model schema", () => {
+  const tool = createToolHarness();
+
+  assert.deepEqual(Object.keys(tool.parameters.properties), [
+    "action",
+    "threadId",
+    "message",
+    "all",
+    "agent",
+    "task",
+    "tasks",
+    "writerConcurrency",
+    "chain",
+    "model",
+    "thinking",
+    "agentScope",
+  ]);
+  assert.equal(JSON.parse(JSON.stringify(tool.parameters)).properties, undefined);
+});
+
+test("subagent preparation gives Pi action-specific request errors", () => {
+  const tool = createToolHarness();
+  const validate = (input) => validateToolArguments(tool, {
+    name: "subagent",
+    arguments: tool.prepareArguments ? tool.prepareArguments(input) : input,
+  });
+
+  assert.throws(
+    () => validate({ action: "spawn", agent: "worker", task: "inspect", message: "steer" }),
+    /message is only valid with action "steer"/u,
+  );
+  assert.deepEqual(
+    validate({ action: "spawn", tasks: [{ agent: "worker", task: "inspect" }] }),
+    { action: "spawn", tasks: [{ agent: "worker", task: "inspect" }] },
+  );
 });
 
 test("invalid subagent requests fail before context access or child launch", async () => {
