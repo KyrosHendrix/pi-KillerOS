@@ -4,6 +4,13 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-08-03
+
+### Fixed
+
+- Ignored provider-generated `threadId` values during spawn argument preparation while retaining strict action validation during execution.
+- Connected Pi's parent cancellation signal to active child processes so Escape stops the subagent and returns control to the terminal.
+
 ## [1.5.2] - 2026-08-03
 
 ### Changed

@@ -253,6 +253,10 @@ test("subagent preparation gives Pi action-specific request errors", () => {
     validate({ action: "spawn", tasks: [{ agent: "worker", task: "inspect" }] }),
     { action: "spawn", tasks: [{ agent: "worker", task: "inspect" }] },
   );
+  assert.deepEqual(
+    validate({ action: "spawn", agent: "worker", task: "inspect", threadId: "provider-generated" }),
+    { action: "spawn", agent: "worker", task: "inspect" },
+  );
 });
 
 test("invalid subagent requests fail before context access or child launch", async () => {
@@ -869,7 +873,7 @@ test("default writer serialization preserves both file updates", async () => {
   }
 });
 
-test("parent abort leaves an active writer running and cancels queued writers", async () => {
+test("parent abort stops the active writer and cancels queued writers", async () => {
   const roster = tempRoster();
   try {
     writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
@@ -903,10 +907,10 @@ test("parent abort leaves an active writer running and cancels queued writers", 
     await firstWriterStarted;
     const result = await run;
 
-    assert.deepEqual(result.details.results.map((entry) => entry.status), ["complete", "cancelled"]);
-    assert.deepEqual(result.details.results.map((entry) => entry.terminationReason), ["completed", "abort"]);
-    assert.deepEqual(result.details.threads.map((thread) => thread.state), ["done", "stopped"]);
-    assert.deepEqual(firstChild.killSignals, []);
+    assert.deepEqual(result.details.results.map((entry) => entry.status), ["cancelled", "cancelled"]);
+    assert.deepEqual(result.details.results.map((entry) => entry.terminationReason), ["abort", "abort"]);
+    assert.deepEqual(result.details.threads.map((thread) => thread.state), ["stopped", "stopped"]);
+    assert.deepEqual(firstChild.killSignals, ["SIGTERM"]);
     assert.equal(spawned, 1);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
@@ -1195,7 +1199,7 @@ test("child lifecycle rejects empty success and recovers transient retries witho
   }
 });
 
-test("a parent abort during child startup does not stop the active child", async () => {
+test("a parent abort during child startup stops the active child", async () => {
   const roster = tempRoster();
   try {
     writeRole(roster.bundled, "scout.md", { name: "scout", timeoutMs: 1000 });
@@ -1214,9 +1218,9 @@ test("a parent abort during child startup does not stop the active child", async
       },
     });
     const result = await execute(tool, { agent: "scout", task: "startup" }, toolContext(roster.root), controller.signal);
-    assert.equal(result.details.results[0].status, "complete");
-    assert.equal(result.details.results[0].terminationReason, "completed");
-    assert.deepEqual(child.killSignals, []);
+    assert.equal(result.details.results[0].status, "cancelled");
+    assert.equal(result.details.results[0].terminationReason, "abort");
+    assert.deepEqual(child.killSignals, ["SIGTERM"]);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }

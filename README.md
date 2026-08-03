@@ -33,7 +33,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.5.2
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.5.3
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.

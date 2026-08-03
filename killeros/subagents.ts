@@ -950,6 +950,19 @@ export function tryNormalizeSubagentRequest(
   }
 }
 
+function prepareSubagentRequest(
+  value: unknown,
+  limits: Pick<SubagentLimits, "maxTasks" | "taskCharacters">,
+): NormalizedSubagentRequest {
+  const record = requireRecord(value, "subagent request");
+  const action = record.action ?? SUBAGENT_ACTION.spawn;
+  if (action === SUBAGENT_ACTION.spawn && Object.hasOwn(record, "threadId")) {
+    const { threadId: _generatedThreadId, ...spawnRecord } = record;
+    return normalizeSubagentRequest(spawnRecord, limits);
+  }
+  return normalizeSubagentRequest(record, limits);
+}
+
 function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxReadConcurrency" | "taskCharacters">) {
   const taskSchema = Type.Object({
     agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
@@ -959,9 +972,9 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
     agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
     task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task with optional {previous} handoff placeholder" }),
   }, { additionalProperties: false });
-  const threadId = Type.String({ minLength: 1, maxLength: 128, description: "Stable child thread ID" });
+  const threadId = Type.String({ minLength: 1, maxLength: 128, description: "Existing child thread ID; omit when spawning because KillerOS creates it" });
   return Type.Object({
-    action: Type.Optional(StringEnum(SUBAGENT_ACTIONS, { default: SUBAGENT_ACTION.spawn, description: "Spawn, list, inspect, steer, interrupt, collect, or close" })),
+    action: Type.Optional(StringEnum(SUBAGENT_ACTIONS, { default: SUBAGENT_ACTION.spawn, description: "Spawn, list, inspect, steer, interrupt, collect, or close. Omit threadId when spawning" })),
     threadId: Type.Optional(threadId),
     message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Steering message; valid only with action steer" })),
     all: Type.Optional(Type.Literal(true, { description: "Interrupt every active child thread" })),
@@ -1361,7 +1374,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     ],
     parameters: createSubagentParams(limits),
     prepareArguments(args) {
-      return normalizeSubagentRequest(args, limits).input;
+      return prepareSubagentRequest(args, limits).input;
     },
     executionMode: "parallel",
 
@@ -1584,11 +1597,20 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           traceCount: 0,
           startedAt: Date.now(),
         };
+        const abortFromParent = (): void => {
+          runtime.restarting = false;
+          runtime.requestedReason = "abort";
+          runtime.handle?.stop("abort");
+          controller.abort();
+        };
+        signal?.addEventListener("abort", abortFromParent, { once: true });
+        if (signal?.aborted) abortFromParent();
         activeRuntimes.set(threadId, runtime);
         let sessionDirectory: string;
         try {
           sessionDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-subagent-session-"));
         } catch (error) {
+          signal?.removeEventListener("abort", abortFromParent);
           activeRuntimes.delete(threadId);
           const message = error instanceof Error ? error.message : String(error);
           results[index] = {
@@ -1604,6 +1626,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         }
         const currentThread = threads.inspect(threadId);
         if (controller.signal.aborted || threads.isDisposed || currentThread?.state !== "active") {
+          signal?.removeEventListener("abort", abortFromParent);
           activeRuntimes.delete(threadId);
           try {
             await rm(sessionDirectory, { recursive: true, force: true });
@@ -1748,6 +1771,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             currentTask = buildSteeredTask(task, steering, limits.taskCharacters);
           }
         } finally {
+          signal?.removeEventListener("abort", abortFromParent);
           activeRuntimes.delete(threadId);
           const removeSessionDirectory = async (): Promise<void> => {
             try {
