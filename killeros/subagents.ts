@@ -357,7 +357,7 @@ export function discoverAgentRoles(
   options: Pick<SubagentRuntimeOptions, "bundledAgentsDir" | "userAgentsDir" | "limits"> = {},
 ): AgentDiscoveryResult {
   const limits = { ...SUBAGENT_LIMITS, ...options.limits };
-  const bundledDir = options.bundledAgentsDir ?? fileURLToPath(new URL("./agents/", import.meta.url));
+  const bundledDir = options.bundledAgentsDir ?? fileURLToPath(new URL("../agents/", import.meta.url));
   const userDir = options.userAgentsDir ?? path.join(getAgentDir(), "agents");
   const wantsProject = scope === "project" || scope === "both";
   if (wantsProject && !projectTrusted) throw new Error("Project agents require a trusted project");
