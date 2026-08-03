@@ -15,7 +15,10 @@ export function registerAliases(pi: ExtensionAPI): void {
   pi.registerCommand("clear", { description: "Start a new session after confirmation", handler: startNewSession });
   pi.registerCommand("exit", {
     description: "Quit Pi gracefully",
-    handler: async (_args, ctx) => ctx.shutdown(),
+    handler: async (_args, ctx) => {
+      if (!ctx.isIdle()) ctx.abort();
+      ctx.shutdown();
+    },
   });
 }
 

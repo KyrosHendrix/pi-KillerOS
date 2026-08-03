@@ -343,9 +343,28 @@ test("registers /exit without conflicting with Pi's /quit", async () => {
   assert.equal(commands.has("exit"), true);
   assert.equal(commands.has("quit"), false);
 
-  let shutdownCalled = false;
-  await commands.get("exit").handler("", { shutdown: async () => { shutdownCalled = true; } });
-  assert.equal(shutdownCalled, true);
+  const calls = [];
+  await commands.get("exit").handler("", {
+    isIdle: () => false,
+    abort: () => calls.push("abort"),
+    shutdown: () => calls.push("shutdown"),
+  });
+  assert.deepEqual(calls, ["abort", "shutdown"]);
+
+  calls.length = 0;
+  await commands.get("exit").handler("", {
+    isIdle: () => true,
+    abort: () => calls.push("abort"),
+    shutdown: () => calls.push("shutdown"),
+  });
+  assert.deepEqual(calls, ["shutdown"]);
+});
+
+test("documents background thread control and active-child cancellation", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  assert.match(readme, /Spawn returns the generated thread IDs immediately/iu);
+  assert.match(readme, /terminates active children/iu);
+  assert.doesNotMatch(readme, /lets already-running children finish|leave active children running/iu);
 });
 
 test("registers /goal and completes only through the model goal tool", async () => {

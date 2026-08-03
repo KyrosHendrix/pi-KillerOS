@@ -79,6 +79,7 @@ test("ten parallel read-only reviewers complete past 250,000 tokens without a tu
     registerSubagentTool({ registerTool(value) { tool = value; } }, {
       bundledAgentsDir,
       userAgentsDir,
+      awaitSpawnCompletion: true,
       limits: { maxTasks: 10, maxReadConcurrency: 10 },
       spawnProcess: (args) => {
         assert.equal(args.some((arg) => /max[-_]?turns/i.test(arg)), false);

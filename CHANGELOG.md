@@ -8,8 +8,11 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
-- Ignored provider-generated `threadId` values during spawn argument preparation while retaining strict action validation during execution.
-- Connected Pi's parent cancellation signal to active child processes so Escape stops the subagent and returns control to the terminal.
+- Returned spawned thread IDs immediately and delivered completed handoffs as Pi follow-ups, making active `inspect`, `steer`, and `interrupt` actions reachable through normal parent turns.
+- Ignored provider-generated `threadId` values during spawn argument preparation and TUI rendering while retaining strict action validation during execution.
+- Connected Pi's parent cancellation signal to active child processes so Escape stops the subagent, suppresses replacement follow-up turns, and returns control to the terminal.
+- Made `/exit` abort an active run before requesting Pi's graceful shutdown, and made session teardown await bounded background-child settlement.
+- Corrected the README cancellation contract so it matches active-child termination.
 
 ## [1.5.2] - 2026-08-03
 

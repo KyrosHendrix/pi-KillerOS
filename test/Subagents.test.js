@@ -129,7 +129,10 @@ function assistantEvent(text = "done", overrides = {}) {
 
 function createToolHarness(options) {
   let tool;
-  registerSubagentTool({ registerTool(value) { tool = value; } }, options);
+  registerSubagentTool({ registerTool(value) { tool = value; } }, {
+    ...options,
+    awaitSpawnCompletion: options?.awaitSpawnCompletion ?? true,
+  });
   assert.ok(tool);
   return tool;
 }
@@ -303,10 +306,18 @@ test("renderCall never shows a schedule for an invalid subagent request", () => 
     writerConcurrency: 1,
     agentScope: "both",
   }, theme).render(200).join("\n");
+  const preparedSpawn = tool.renderCall({
+    action: "spawn",
+    agent: "scout",
+    task: "inspect",
+    threadId: "provider-generated",
+  }, theme).render(200).join("\n");
 
   assert.match(invalid, /invalid request/iu);
   assert.doesNotMatch(invalid, /parallel 1|shared pool 1|both/iu);
   assert.match(valid, /parallel 1.*shared pool 1.*both/iu);
+  assert.match(preparedSpawn, /subagent scout/iu);
+  assert.doesNotMatch(preparedSpawn, /invalid request/iu);
 });
 
 test("child process environment does not expose the parent session identity", () => {
@@ -873,6 +884,184 @@ test("default writer serialization preserves both file updates", async () => {
   }
 });
 
+test("production spawn returns thread IDs before completion and permits active interruption", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let tool;
+    let resolveSpawned;
+    let resolveCompletion;
+    const spawned = new Promise((resolve) => { resolveSpawned = resolve; });
+    const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+    registerSubagentTool({
+      registerTool(value) { tool = value; },
+      sendMessage(message, options) { resolveCompletion({ message, options }); },
+    }, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        child.kill = (signal = "SIGTERM") => {
+          child.killSignals.push(signal);
+          setImmediate(() => child.close(143));
+          return true;
+        };
+        resolveSpawned(child);
+        return child;
+      },
+    });
+
+    const ctx = toolContext(roster.root);
+    const started = await execute(tool, { agent: "scout", task: "inspect the repository" }, ctx);
+    const threadId = started.details.results[0].id;
+    const child = await spawned;
+    assert.equal(child.closed, false);
+    assert.equal(started.details.results[0].status, "queued");
+    assert.match(started.content[0].text, new RegExp(threadId, "u"));
+
+    const active = await execute(tool, { action: "inspect", threadId }, ctx);
+    assert.equal(active.details.activeThreads[0].id, threadId);
+    await execute(tool, { action: "interrupt", threadId }, ctx);
+
+    const delivered = await completion;
+    assert.equal(delivered.message.customType, "killeros-subagent-settled");
+    assert.match(delivered.message.content, /cancelled|interrupt/iu);
+    assert.deepEqual(delivered.options, { triggerTurn: true, deliverAs: "followUp" });
+    const finished = await execute(tool, { action: "inspect", threadId }, ctx);
+    assert.equal(finished.details.doneThreads[0].state, "stopped");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("production spawn delivers a successful handoff as a triggered follow-up", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let tool;
+    let resolveCompletion;
+    const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+    registerSubagentTool({
+      registerTool(value) { tool = value; },
+      sendMessage(message, options) { resolveCompletion({ message, options }); },
+    }, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("verified handoff"));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+
+    const started = await execute(tool, { agent: "scout", task: "inspect the repository" }, toolContext(roster.root));
+    assert.match(started.content[0].text, /continue in the background/iu);
+    const delivered = await completion;
+    assert.equal(delivered.message.customType, "killeros-subagent-settled");
+    assert.match(delivered.message.content, /Subagent batch settled[\s\S]*verified handoff/iu);
+    assert.deepEqual(delivered.options, { triggerTurn: true, deliverAs: "followUp" });
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("production parent abort settles children without triggering a replacement turn", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let tool;
+    let resolveSpawned;
+    let resolveClosed;
+    const spawned = new Promise((resolve) => { resolveSpawned = resolve; });
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+    const sentMessages = [];
+    registerSubagentTool({
+      registerTool(value) { tool = value; },
+      sendMessage(message, options) { sentMessages.push({ message, options }); },
+    }, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        child.kill = (signal = "SIGTERM") => {
+          child.killSignals.push(signal);
+          setImmediate(() => {
+            child.close(143);
+            resolveClosed();
+          });
+          return true;
+        };
+        resolveSpawned(child);
+        return child;
+      },
+    });
+
+    const controller = new AbortController();
+    const started = await execute(tool, { agent: "scout", task: "inspect the repository" }, toolContext(roster.root), controller.signal);
+    const threadId = started.details.results[0].id;
+    await spawned;
+    controller.abort();
+    await closed;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(sentMessages, []);
+    const finished = await execute(tool, { action: "inspect", threadId }, toolContext(roster.root));
+    assert.equal(finished.details.doneThreads[0].state, "stopped");
+    assert.equal(finished.details.results[0].terminationReason, "abort");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("production session shutdown awaits active background child settlement", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let tool;
+    let shutdown;
+    let resolveSpawned;
+    const spawned = new Promise((resolve) => { resolveSpawned = resolve; });
+    const sentMessages = [];
+    registerSubagentTool({
+      registerTool(value) { tool = value; },
+      on(event, callback) {
+        if (event === "session_shutdown") shutdown = callback;
+      },
+      sendMessage(message, options) { sentMessages.push({ message, options }); },
+    }, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        child.kill = (signal = "SIGTERM") => {
+          child.killSignals.push(signal);
+          return true;
+        };
+        resolveSpawned(child);
+        return child;
+      },
+    });
+
+    await execute(tool, { agent: "scout", task: "inspect the repository" }, toolContext(roster.root));
+    const child = await spawned;
+    let shutdownSettled = false;
+    const stopping = shutdown().then(() => { shutdownSettled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(child.killSignals, ["SIGTERM"]);
+    assert.equal(shutdownSettled, false);
+
+    child.close(143);
+    await stopping;
+    assert.equal(shutdownSettled, true);
+    assert.deepEqual(sentMessages, []);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
 test("parent abort stops the active writer and cancels queued writers", async () => {
   const roster = tempRoster();
   try {
@@ -1274,6 +1463,7 @@ test("session shutdown during child startup prevents the child from launching", 
     }, {
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
+      awaitSpawnCompletion: true,
       spawnProcess() {
         spawned += 1;
         const child = new FakeProcess();

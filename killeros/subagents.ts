@@ -164,6 +164,8 @@ export interface SubagentRuntimeOptions {
   webExtension?: string;
   spawnProcess?: (args: string[], cwd: string, environment?: NodeJS.ProcessEnv) => SpawnedProcess;
   limits?: Partial<SubagentLimits>;
+  /** Test and embedding compatibility mode; production spawns return immediately. */
+  awaitSpawnCompletion?: boolean;
 }
 
 class AgentConfigurationError extends Error {
@@ -1200,6 +1202,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   const spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
   const threads = new SubagentThreadRegistry();
   const activeRuntimes = new Map<string, ActiveThreadRuntime>();
+  const backgroundBatches = new Set<Promise<unknown>>();
   const savedResults = new Map<string, SubagentTaskResult>();
   const evictedThreadParents = new Map<string, string | undefined>();
   const maxClosedThreads = Number.isSafeInteger(limits.threadRetentionRecords) && limits.threadRetentionRecords > 0
@@ -1347,7 +1350,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   };
 
   if (typeof pi.on === "function") {
-    pi.on("session_shutdown", () => {
+    pi.on("session_shutdown", async () => {
       for (const runtime of activeRuntimes.values()) {
         runtime.restarting = false;
         runtime.requestedReason = "session_shutdown";
@@ -1357,6 +1360,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       threads.dispose();
       savedResults.clear();
       evictedThreadParents.clear();
+      await Promise.allSettled([...backgroundBatches]);
     });
   }
 
@@ -1536,7 +1540,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       const results = threadRecords.map((thread, index) => {
         return makeQueuedResult(thread.id, inputs[index]!.agent, inputs[index]!.task, hasChain ? index + 1 : undefined);
       });
+      let updatesOpen = true;
       const emit = (message = `${mode}: ${results.filter((result) => !["queued", "running"].includes(result.status)).length}/${results.length} settled`): void => {
+        if (!updatesOpen) return;
         const board = detailsFor(parentId, mode, scope, discovery.projectAgentsDir);
         const currentResults = results.map(cloneResult);
         (onUpdate as ToolUpdate | undefined)?.({
@@ -1806,48 +1812,111 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         }
       };
 
+      const finishBatch = async () => {
+        if (hasChain) {
+          let previous = "";
+          for (let index = 0; index < inputs.length; index += 1) {
+            const task = expandChainTask(inputs[index]!.task, previous, limits.taskCharacters);
+            if (task === undefined) {
+              failQueuedTask(index, "task_limit", `Expanded task exceeds ${limits.taskCharacters} characters`);
+              break;
+            }
+            await runAt(index, task);
+            if (results[index]!.status !== "complete") break;
+            previous = results[index]!.output;
+          }
+          settleQueued("chain_stopped");
+        } else if (hasParallel) {
+          try {
+            if (useSharedParallelPool) {
+              const indexes = inputs.map((_, index) => index);
+              await mapReadTasks(indexes, writerConcurrency, async (index) => runAt(index, inputs[index]!.task));
+            } else {
+              await mapReadTasks(readIndexes, limits.maxReadConcurrency, async ({ index }) => runAt(index, inputs[index]!.task));
+              for (const index of writerIndexes) await runAt(index, inputs[index]!.task);
+            }
+          } finally {
+            settleQueued("parallel_stopped");
+          }
+        } else {
+          await runAt(0, inputs[0]!.task);
+        }
+
+        const board = detailsFor(parentId, mode, scope, discovery.projectAgentsDir);
+        const currentResults = results.map(cloneResult);
+        const details: SubagentDetails = { ...board, executionNote, results: currentResults, aggregateUsage: aggregateUsage(currentResults) };
+        return {
+          content: [{ type: "text" as const, text: buildToolContent(mode, details.results, limits.toolOutputBytes) }],
+          details,
+          usage: details.aggregateUsage,
+        };
+      };
+
       emit(`${mode}: ${results.length} queued`);
-      if (hasChain) {
-        let previous = "";
-        for (let index = 0; index < inputs.length; index += 1) {
-          const task = expandChainTask(inputs[index]!.task, previous, limits.taskCharacters);
-          if (task === undefined) {
-            failQueuedTask(index, "task_limit", `Expanded task exceeds ${limits.taskCharacters} characters`);
-            break;
-          }
-          await runAt(index, task);
-          if (results[index]!.status !== "complete") break;
-          previous = results[index]!.output;
-        }
-        settleQueued("chain_stopped");
-      } else if (hasParallel) {
+      if (options.awaitSpawnCompletion === true) {
+        const foregroundBatch = finishBatch();
+        backgroundBatches.add(foregroundBatch);
         try {
-          if (useSharedParallelPool) {
-            const indexes = inputs.map((_, index) => index);
-            await mapReadTasks(indexes, writerConcurrency, async (index) => runAt(index, inputs[index]!.task));
-          } else {
-            await mapReadTasks(readIndexes, limits.maxReadConcurrency, async ({ index }) => runAt(index, inputs[index]!.task));
-            for (const index of writerIndexes) await runAt(index, inputs[index]!.task);
-          }
+          return await foregroundBatch;
         } finally {
-          settleQueued("parallel_stopped");
+          backgroundBatches.delete(foregroundBatch);
         }
-      } else {
-        await runAt(0, inputs[0]!.task);
       }
 
-      const board = detailsFor(parentId, mode, scope, discovery.projectAgentsDir);
-      const currentResults = results.map(cloneResult);
-      const details: SubagentDetails = { ...board, executionNote, results: currentResults, aggregateUsage: aggregateUsage(currentResults) };
+      const queuedBoard = detailsFor(parentId, mode, scope, discovery.projectAgentsDir);
+      const queuedResults = results.map(cloneResult);
+      const queuedDetails: SubagentDetails = {
+        ...queuedBoard,
+        executionNote,
+        results: queuedResults,
+        aggregateUsage: aggregateUsage(queuedResults),
+      };
+      const threadList = threadRecords.map((thread) => `${thread.id} (${thread.role})`).join(", ");
+      updatesOpen = false;
+      const backgroundBatch = finishBatch().then((completed) => {
+        if (threads.isDisposed || completed.details.results.some((result) => result.terminationReason === "abort")) return;
+        try {
+          pi.sendMessage({
+            customType: "killeros-subagent-settled",
+            content: `Subagent batch settled: ${threadList}\n\n${completed.content[0].text}`,
+            display: true,
+          }, { triggerTurn: true, deliverAs: "followUp" });
+        } catch {
+          // The completed handoff remains available through list, inspect, and collect.
+        }
+      }).catch((error) => {
+        if (threads.isDisposed) return;
+        const message = error instanceof Error ? error.message : String(error);
+        try {
+          pi.sendMessage({
+            customType: "killeros-subagent-settled",
+            content: `Subagent batch failed: ${threadList}\n\n${message}`,
+            display: true,
+          }, { triggerTurn: true, deliverAs: "followUp" });
+        } catch {
+          // The thread registry retains any partial state for inspection.
+        }
+      });
+      backgroundBatches.add(backgroundBatch);
+      void backgroundBatch.finally(() => backgroundBatches.delete(backgroundBatch));
       return {
-        content: [{ type: "text", text: buildToolContent(mode, details.results, limits.toolOutputBytes) }],
-        details,
-        usage: details.aggregateUsage,
+        content: [{
+          type: "text",
+          text: boundedText(`Started child threads: ${threadList}. They continue in the background; use list, inspect, steer, interrupt, collect, or close while they run.`, limits.toolOutputBytes, "\n\n[Spawn output truncated.]"),
+        }],
+        details: queuedDetails,
+        usage: queuedDetails.aggregateUsage,
       };
     },
 
     renderCall(args, theme) {
-      const parsed = tryNormalizeSubagentRequest(args, limits);
+      let renderArgs = args;
+      try {
+        renderArgs = prepareSubagentRequest(args, limits).input;
+      } catch {
+        // Strict rendering below displays malformed requests as invalid.
+      }
+      const parsed = tryNormalizeSubagentRequest(renderArgs, limits);
       if (!parsed.ok) {
         return new Text(`${theme.fg("toolTitle", theme.bold("subagent"))}${theme.fg("error", " · invalid request")}`, 0, 0);
       }
