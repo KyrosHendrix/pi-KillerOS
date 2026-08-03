@@ -126,6 +126,17 @@ test("all KillerOS tools expose provider-compatible object schemas", () => {
   }
 });
 
+test("concise guidance encodes action-oriented behavioral anchors", () => {
+  assert.doesNotMatch(CONCISE_SYSTEM_PROMPT, /# Concise output rules/u);
+  assert.match(CONCISE_SYSTEM_PROMPT, /Make each response easy to start and easy to follow/u);
+  assert.match(CONCISE_SYSTEM_PROMPT, /first line serves the user's immediate need/u);
+  assert.match(CONCISE_SYSTEM_PROMPT, /state anchor only when multi-step work spans turns/u);
+  assert.match(CONCISE_SYSTEM_PROMPT, /concrete human execution estimate only when requested or supported by evidence/u);
+  assert.match(CONCISE_SYSTEM_PROMPT, /After three consecutive turns leave the same issue broken/u);
+  assert.match(CONCISE_SYSTEM_PROMPT, /Safety and harness constraints come first/u);
+  assert.match(CONCISE_SYSTEM_PROMPT, /ending is either the verified outcome or one action the user must take/u);
+});
+
 test("applies the fixed concise preset to Responses API payloads", async () => {
   const { handlers } = createHarness();
   const payload = {
@@ -351,7 +362,7 @@ test("registers /goal and completes only through the model goal tool", async () 
   assert.equal(sentMessages[0].message.customType, "killeros-goal-continuation");
   assert.match(sentMessages[0].message.content, /Ship only after every release check passes/u);
   assert.match(sentMessages[0].message.content, /killeros_goal_update/u);
-  assert.match(sentMessages[0].message.content, /Concise output rules/u);
+  assert.match(sentMessages[0].message.content, /Action-oriented response guidance/u);
   assert.deepEqual(sentMessages[0].options, { triggerTurn: true, deliverAs: "followUp" });
   assert.equal(appendedEntries.at(-1).customType, "killeros-goal");
   assert.equal(appendedEntries.at(-1).data.state.status, "active");
