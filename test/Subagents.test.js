@@ -9,8 +9,10 @@ import {
   SUBAGENT_LIMITS,
   childProcessEnvironment,
   discoverAgentRoles,
+  normalizeSubagentRequest,
   registerSubagentTool,
   resolveAgentModel,
+  tryNormalizeSubagentRequest,
 } from "../subagents.ts";
 
 function roleFile({
@@ -144,6 +146,121 @@ function toolContext(cwd, { trusted = true, confirm = true, models } = {}) {
 async function execute(tool, params, ctx, signal = new AbortController().signal, updates = []) {
   return tool.execute("subagent-test", params, signal, (update) => updates.push(update), ctx);
 }
+
+test("subagent request normalizer rejects conflicting and unrelated fields", () => {
+  const invalidRequests = [
+    {
+      input: { action: "spawn", agent: "worker", task: "inspect", message: "steer" },
+      error: /message.*steer/iu,
+    },
+    {
+      input: { action: "spawn", agent: "worker", task: "inspect", tasks: [{ agent: "worker", task: "inspect" }] },
+      error: /exactly one.*spawn/iu,
+    },
+    {
+      input: { action: "spawn", tasks: [{ agent: "worker", task: "inspect" }], chain: [{ agent: "worker", task: "inspect" }] },
+      error: /exactly one.*spawn/iu,
+    },
+    {
+      input: { action: "spawn", agent: "worker", task: "inspect", writerConcurrency: 1 },
+      error: /writerConcurrency.*parallel/iu,
+    },
+    {
+      input: { action: "list", agent: "worker", task: "inspect" },
+      error: /agent.*list|task.*list|unrelated/iu,
+    },
+    { input: { message: "steer" }, error: /message.*steer/iu },
+    { input: { action: "list", model: "provider/model" }, error: /model.*list/iu },
+    { input: { action: "inspect", threadId: "subagent-1", task: "invalid" }, error: /task.*inspect/iu },
+    { input: { action: "steer", threadId: "subagent-1", message: "continue", agent: "worker" }, error: /agent.*steer/iu },
+    { input: { action: "collect", threadId: "subagent-1", tasks: [] }, error: /tasks.*collect/iu },
+    { input: { action: "close", threadId: "subagent-1", message: "invalid" }, error: /message.*steer/iu },
+    { input: { action: "interrupt", all: true, threadId: "subagent-1" }, error: /exactly one.*threadId.*all/iu },
+    { input: { action: "spawn", agent: "worker" }, error: /task.*non-empty string/iu },
+    { input: { action: "spawn", task: "inspect" }, error: /agent.*non-empty string/iu },
+    { input: { action: "spawn", tasks: [] }, error: /tasks.*non-empty array/iu },
+    { input: { action: "spawn", chain: [] }, error: /chain.*non-empty array/iu },
+    { input: { action: "spawn", chain: [{ agent: "worker", task: "inspect" }], writerConcurrency: 1 }, error: /writerConcurrency.*parallel/iu },
+    { input: { action: "spawn", agent: "worker", task: "inspect", all: true }, error: /all.*spawn single/iu },
+  ];
+
+  for (const testCase of invalidRequests) {
+    assert.throws(() => normalizeSubagentRequest(testCase.input), testCase.error);
+  }
+});
+
+test("subagent request normalizer classifies valid request shapes", () => {
+  const validRequests = [
+    [{ agent: "worker", task: "inspect" }, "spawn-single"],
+    [{ action: "spawn", agent: "worker", task: "inspect" }, "spawn-single"],
+    [{ tasks: [{ agent: "worker", task: "inspect" }] }, "spawn-parallel"],
+    [{ action: "spawn", tasks: [{ agent: "worker", task: "inspect" }] }, "spawn-parallel"],
+    [{ chain: [{ agent: "worker", task: "inspect" }] }, "spawn-chain"],
+    [{ action: "spawn", chain: [{ agent: "worker", task: "inspect" }] }, "spawn-chain"],
+    [{ action: "list" }, "list"],
+    [{ action: "inspect", threadId: "subagent-1" }, "inspect"],
+    [{ action: "steer", threadId: "subagent-1", message: "continue" }, "steer"],
+    [{ action: "interrupt", threadId: "subagent-1" }, "interrupt-one"],
+    [{ action: "interrupt", all: true }, "interrupt-all"],
+    [{ action: "collect", threadId: "subagent-1" }, "collect"],
+    [{ action: "close", threadId: "subagent-1" }, "close"],
+  ];
+
+  for (const [input, kind] of validRequests) {
+    assert.equal(normalizeSubagentRequest(input).kind, kind);
+  }
+  assert.deepEqual(tryNormalizeSubagentRequest({ action: "list", task: "invalid" }).ok, false);
+});
+
+test("invalid subagent requests fail before context access or child launch", async () => {
+  let spawned = 0;
+  const tool = createToolHarness({
+    spawnProcess() {
+      spawned += 1;
+      return new FakeProcess();
+    },
+  });
+  const invalidRequests = [
+    [{ action: "spawn", agent: "worker", task: "inspect", message: "steer" }, /message.*steer/iu],
+    [{ action: "spawn", agent: "worker", task: "inspect", tasks: [{ agent: "worker", task: "inspect" }] }, /exactly one.*spawn/iu],
+    [{ action: "spawn", agent: "worker", task: "inspect", writerConcurrency: 1 }, /writerConcurrency.*parallel/iu],
+    [{ action: "list", agent: "worker", task: "inspect" }, /agent.*list|task.*list|unrelated/iu],
+    [{ action: "interrupt", all: true, threadId: "subagent-1" }, /exactly one.*threadId.*all/iu],
+  ];
+
+  for (const [input, error] of invalidRequests) {
+    await assert.rejects(
+      () => tool.execute("test-call", input, undefined, undefined, undefined),
+      error,
+    );
+  }
+  assert.equal(spawned, 0);
+});
+
+test("renderCall never shows a schedule for an invalid subagent request", () => {
+  const tool = createToolHarness();
+  const theme = {
+    bold(text) { return text; },
+    fg(_color, text) { return text; },
+  };
+  const invalid = tool.renderCall({
+    action: "spawn",
+    tasks: [{ agent: "worker", task: "inspect" }],
+    writerConcurrency: 1,
+    agentScope: "both",
+    message: "invalid for spawn",
+  }, theme).render(200).join("\n");
+  const valid = tool.renderCall({
+    action: "spawn",
+    tasks: [{ agent: "worker", task: "inspect" }],
+    writerConcurrency: 1,
+    agentScope: "both",
+  }, theme).render(200).join("\n");
+
+  assert.match(invalid, /invalid request/iu);
+  assert.doesNotMatch(invalid, /parallel 1|shared pool 1|both/iu);
+  assert.match(valid, /parallel 1.*shared pool 1.*both/iu);
+});
 
 test("child process environment does not expose the parent session identity", () => {
   assert.deepEqual(childProcessEnvironment({
@@ -455,11 +572,11 @@ test("mixed partial single fields cannot be combined with parallel or chain mode
     await assert.rejects(execute(tool, {
       agent: "scout",
       tasks: [{ agent: "scout", task: "map" }],
-    }, toolContext(roster.root)), /exactly one subagent mode/u);
+    }, toolContext(roster.root)), /exactly one spawn shape/u);
     await assert.rejects(execute(tool, {
       task: "stray task",
       chain: [{ agent: "scout", task: "map" }],
-    }, toolContext(roster.root)), /exactly one subagent mode/u);
+    }, toolContext(roster.root)), /exactly one spawn shape/u);
     assert.equal(spawned, 0);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
@@ -763,16 +880,19 @@ test("message is scoped to steer and the parallel schedule is described", async 
       spawnProcess() { return new FakeProcess(); },
     });
     const ctx = toolContext(roster.root);
-    await assert.rejects(execute(tool, { agent: "scout", task: "map", message: "extra" }, ctx), /message is only valid with action steer/u);
-    await assert.rejects(execute(tool, { action: "list", message: "extra" }, ctx), /message is only valid with action steer/u);
+    await assert.rejects(execute(tool, { agent: "scout", task: "map", message: "extra" }, ctx), /message is only valid with action "steer"/u);
+    await assert.rejects(execute(tool, { action: "list", message: "extra" }, ctx), /message is only valid with action "steer"/u);
     await assert.rejects(execute(tool, {
       writerConcurrency: 2,
       tasks: [{ agent: "scout", task: "map" }],
     }, ctx), /requires at least one write-capable role/u);
     assert.match(tool.description, /write-capable roles use one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership[\s\S]*shared worktree/u);
-    assert.match(tool.parameters.properties.message.description, /only valid with action steer/u);
-    assert.match(tool.parameters.properties.tasks.description, /one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership/u);
-    assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to 1[\s\S]*values above 1[\s\S]*path ownership/u);
+    const parallelSchema = tool.parameters.anyOf.find((schema) => schema.properties.tasks);
+    const steerSchema = tool.parameters.anyOf.find((schema) => schema.properties.message);
+    assert.equal(tool.parameters.anyOf.every((schema) => schema.additionalProperties === false), true);
+    assert.equal(steerSchema.properties.action.const, "steer");
+    assert.match(parallelSchema.properties.tasks.description, /one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership/u);
+    assert.match(parallelSchema.properties.writerConcurrency.description, /Defaults to 1[\s\S]*values above 1[\s\S]*path ownership/u);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }

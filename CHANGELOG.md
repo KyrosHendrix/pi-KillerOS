@@ -2,6 +2,15 @@
 
 All notable changes to KillerOS are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Hardened the subagent schema and runtime checks with action-specific request shapes.
+- Invalid fields now fail before role discovery, project confirmation, thread creation, or child launch.
+- The TUI no longer shows parallel schedules for malformed subagent requests.
+- Kept valid single, parallel, chain, lifecycle, steering, interruption, collection, and closure behavior unchanged.
+
 ## [1.4.9] - 2026-08-02
 
 ### Changed

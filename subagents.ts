@@ -731,38 +731,257 @@ function waitForConfirmedProcessExit(handle: SubagentProcessHandle, timeoutMs = 
   });
 }
 
+type TaskInput = { agent: string; task: string };
+const SUBAGENT_ACTION = {
+  spawn: "spawn",
+  list: "list",
+  inspect: "inspect",
+  steer: "steer",
+  interrupt: "interrupt",
+  collect: "collect",
+  close: "close",
+} as const;
+type SubagentAction = typeof SUBAGENT_ACTION[keyof typeof SUBAGENT_ACTION];
+
+type SpawnOptions = {
+  model?: string;
+  thinking?: string;
+  agentScope?: AgentScope;
+};
+
+type SpawnSingleRequest = SpawnOptions & {
+  action?: "spawn";
+  agent: string;
+  task: string;
+};
+
+type SpawnParallelRequest = SpawnOptions & {
+  action?: "spawn";
+  tasks: TaskInput[];
+  writerConcurrency?: number;
+};
+
+type SpawnChainRequest = SpawnOptions & {
+  action?: "spawn";
+  chain: TaskInput[];
+};
+
+export type NormalizedSubagentRequest =
+  | { kind: "spawn-single"; input: SpawnSingleRequest }
+  | { kind: "spawn-parallel"; input: SpawnParallelRequest }
+  | { kind: "spawn-chain"; input: SpawnChainRequest }
+  | { kind: "list"; input: { action: "list" } }
+  | { kind: "inspect"; input: { action: "inspect"; threadId: string } }
+  | { kind: "steer"; input: { action: "steer"; threadId: string; message: string } }
+  | { kind: "interrupt-one"; input: { action: "interrupt"; threadId: string } }
+  | { kind: "interrupt-all"; input: { action: "interrupt"; all: true } }
+  | { kind: "collect"; input: { action: "collect"; threadId: string } }
+  | { kind: "close"; input: { action: "close"; threadId: string } };
+
+type SubagentRequestParse =
+  | { ok: true; request: NormalizedSubagentRequest }
+  | { ok: false; message: string };
+
+const SUBAGENT_ACTIONS = Object.values(SUBAGENT_ACTION);
+const SPAWN_OPTION_FIELDS = ["model", "thinking", "agentScope"] as const;
+
+function requireRecord(value: unknown, name: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid ${name}: expected an object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireAction(value: unknown): SubagentAction {
+  if (typeof value !== "string" || !SUBAGENT_ACTIONS.includes(value as SubagentAction)) {
+    throw new Error(`Invalid subagent request: action must be one of ${SUBAGENT_ACTIONS.join(", ")}.`);
+  }
+  return value as SubagentAction;
+}
+
+function requireTextField(record: Record<string, unknown>, field: string, maxLength: number): string {
+  const value = record[field];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`Invalid subagent request: ${field} must be a non-empty string.`);
+  }
+  if ([...value].length > maxLength) {
+    throw new Error(`Invalid subagent request: ${field} must be no longer than ${maxLength} characters.`);
+  }
+  return value;
+}
+
+function requireOnlyFields(record: Record<string, unknown>, allowed: readonly string[], action: string): void {
+  const allowedFields = new Set(allowed);
+  const invalid = Object.keys(record).find((field) => !allowedFields.has(field));
+  if (invalid) throw new Error(`Invalid subagent request: field ${JSON.stringify(invalid)} is not valid with action ${JSON.stringify(action)}.`);
+}
+
+function parseTaskInputs(value: unknown, field: "tasks" | "chain", limits: Pick<SubagentLimits, "maxTasks" | "taskCharacters">): TaskInput[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`Invalid subagent request: ${field} must be a non-empty array.`);
+  }
+  if (value.length > limits.maxTasks) throw new Error(`At most ${limits.maxTasks} subagent tasks are allowed`);
+  return value.map((entry, index) => {
+    const task = requireRecord(entry, `${field}[${index}]`);
+    requireOnlyFields(task, ["agent", "task"], `spawn ${field}`);
+    return {
+      agent: requireTextField(task, "agent", 64),
+      task: requireTextField(task, "task", limits.taskCharacters),
+    };
+  });
+}
+
+function parseSpawnOptions(record: Record<string, unknown>): SpawnOptions {
+  const options: SpawnOptions = {};
+  if (Object.hasOwn(record, "model")) options.model = requireTextField(record, "model", 256);
+  if (Object.hasOwn(record, "thinking")) options.thinking = requireTextField(record, "thinking", 16);
+  if (Object.hasOwn(record, "agentScope")) {
+    const scope = record.agentScope;
+    if (scope !== "user" && scope !== "project" && scope !== "both") {
+      throw new Error('Invalid subagent request: agentScope must be "user", "project", or "both".');
+    }
+    options.agentScope = scope;
+  }
+  return options;
+}
+
+export function normalizeSubagentRequest(
+  value: unknown,
+  limits: Pick<SubagentLimits, "maxTasks" | "taskCharacters"> = SUBAGENT_LIMITS,
+): NormalizedSubagentRequest {
+  const record = requireRecord(value, "subagent request");
+  const action = record.action === undefined ? SUBAGENT_ACTION.spawn : requireAction(record.action);
+
+  if (action !== "steer" && Object.hasOwn(record, "message")) {
+    throw new Error('Invalid subagent request: message is only valid with action "steer". Use {"action":"steer","threadId":"...","message":"..."}.');
+  }
+
+  if (action === "spawn") {
+    const hasSingle = Object.hasOwn(record, "agent") || Object.hasOwn(record, "task");
+    const hasParallel = Object.hasOwn(record, "tasks");
+    const hasChain = Object.hasOwn(record, "chain");
+    if (Number(hasSingle) + Number(hasParallel) + Number(hasChain) !== 1) {
+      throw new Error("Invalid subagent request: choose exactly one spawn shape: agent + task, tasks, or chain.");
+    }
+    if (Object.hasOwn(record, "writerConcurrency") && !hasParallel) {
+      throw new Error("Invalid subagent request: writerConcurrency is only valid with parallel tasks.");
+    }
+    const actionField = Object.hasOwn(record, "action") ? { action: "spawn" as const } : {};
+    const options = parseSpawnOptions(record);
+    if (hasSingle) {
+      requireOnlyFields(record, ["action", "agent", "task", ...SPAWN_OPTION_FIELDS], "spawn single");
+      return {
+        kind: "spawn-single",
+        input: {
+          ...actionField,
+          agent: requireTextField(record, "agent", 64),
+          task: requireTextField(record, "task", limits.taskCharacters),
+          ...options,
+        },
+      };
+    }
+    if (hasParallel) {
+      requireOnlyFields(record, ["action", "tasks", "writerConcurrency", ...SPAWN_OPTION_FIELDS], "spawn parallel");
+      let writerConcurrency: number | undefined;
+      if (Object.hasOwn(record, "writerConcurrency")) {
+        writerConcurrency = record.writerConcurrency as number;
+        if (!Number.isSafeInteger(writerConcurrency) || writerConcurrency < 1 || writerConcurrency > limits.maxTasks) {
+          throw new Error(`writerConcurrency must be a positive integer no greater than ${limits.maxTasks}`);
+        }
+      }
+      return {
+        kind: "spawn-parallel",
+        input: {
+          ...actionField,
+          tasks: parseTaskInputs(record.tasks, "tasks", limits),
+          ...(writerConcurrency === undefined ? {} : { writerConcurrency }),
+          ...options,
+        },
+      };
+    }
+    requireOnlyFields(record, ["action", "chain", ...SPAWN_OPTION_FIELDS], "spawn chain");
+    return {
+      kind: "spawn-chain",
+      input: { ...actionField, chain: parseTaskInputs(record.chain, "chain", limits), ...options },
+    };
+  }
+
+  if (action === "list") {
+    requireOnlyFields(record, ["action"], action);
+    return { kind: "list", input: { action } };
+  }
+  if (action === "inspect" || action === "collect" || action === "close") {
+    requireOnlyFields(record, ["action", "threadId"], action);
+    const input = { action, threadId: requireTextField(record, "threadId", 128) };
+    return { kind: action, input } as NormalizedSubagentRequest;
+  }
+  if (action === "steer") {
+    requireOnlyFields(record, ["action", "threadId", "message"], action);
+    return {
+      kind: "steer",
+      input: {
+        action,
+        threadId: requireTextField(record, "threadId", 128),
+        message: requireTextField(record, "message", 4_000),
+      },
+    };
+  }
+
+  requireOnlyFields(record, ["action", "threadId", "all"], action);
+  const hasThreadId = Object.hasOwn(record, "threadId");
+  const hasAll = Object.hasOwn(record, "all");
+  if (Number(hasThreadId) + Number(hasAll) !== 1 || hasAll && record.all !== true) {
+    throw new Error('Invalid subagent request: action "interrupt" requires exactly one of threadId or all: true.');
+  }
+  if (hasThreadId) {
+    return { kind: "interrupt-one", input: { action, threadId: requireTextField(record, "threadId", 128) } };
+  }
+  return { kind: "interrupt-all", input: { action, all: true } };
+}
+
+export function tryNormalizeSubagentRequest(
+  value: unknown,
+  limits: Pick<SubagentLimits, "maxTasks" | "taskCharacters"> = SUBAGENT_LIMITS,
+): SubagentRequestParse {
+  try {
+    return { ok: true, request: normalizeSubagentRequest(value, limits) };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxReadConcurrency" | "taskCharacters">) {
   const taskSchema = Type.Object({
     agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
     task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Bounded task for the role" }),
-  });
+  }, { additionalProperties: false });
   const chainTaskSchema = Type.Object({
     agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
     task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task with optional {previous} handoff placeholder" }),
-  });
-  return Type.Object({
-    action: Type.Optional(StringEnum(["spawn", "list", "inspect", "steer", "interrupt", "collect", "close"] as const, {
-      default: "spawn",
-      description: "Thread lifecycle action",
-    })),
-    threadId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Stable child thread ID" })),
-    message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Bounded steering message; only valid with action steer" })),
-    all: Type.Optional(Type.Boolean({ description: "Interrupt every active child thread" })),
-    agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
-    task: Type.Optional(Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" })),
-    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use one shared slot by default. Set writerConcurrency to opt into a larger shared pool; concurrent writers share the parent worktree, so callers must prove path ownership` })),
-    writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to 1 when writers are selected; values above 1 opt into concurrent shared-worktree writes. Concurrent writers must prove path ownership` })),
-    chain: Type.Optional(Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
+  }, { additionalProperties: false });
+  const action = Type.Optional(Type.Literal(SUBAGENT_ACTION.spawn, { default: SUBAGENT_ACTION.spawn, description: "Spawn child threads" }));
+  const spawnOptions = {
     model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
     thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
     agentScope: Type.Optional(StringEnum(["user", "project", "both"] as const, {
       default: "user",
       description: "Role sources: user includes bundled and personal; project includes bundled and trusted project; both includes all",
     })),
-  });
+  };
+  const threadId = Type.String({ minLength: 1, maxLength: 128, description: "Stable child thread ID" });
+  return Type.Union([
+    Type.Object({ action, agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" }), task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" }), ...spawnOptions }, { additionalProperties: false }),
+    Type.Object({ action, tasks: Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use one shared slot by default. Set writerConcurrency to opt into a larger shared pool; concurrent writers share the parent worktree, so callers must prove path ownership` }), writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to 1 when writers are selected; values above 1 opt into concurrent shared-worktree writes. Concurrent writers must prove path ownership` })), ...spawnOptions }, { additionalProperties: false }),
+    Type.Object({ action, chain: Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" }), ...spawnOptions }, { additionalProperties: false }),
+    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.list) }, { additionalProperties: false }),
+    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.inspect), threadId }, { additionalProperties: false }),
+    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.steer), threadId, message: Type.String({ minLength: 1, maxLength: 4_000, description: "Bounded steering message" }) }, { additionalProperties: false }),
+    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.interrupt), threadId }, { additionalProperties: false }),
+    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.interrupt), all: Type.Literal(true, { description: "Interrupt every active child thread" }) }, { additionalProperties: false }),
+    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.collect), threadId }, { additionalProperties: false }),
+    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.close), threadId }, { additionalProperties: false }),
+  ]);
 }
-
-type TaskInput = { agent: string; task: string };
 
 type ToolUpdate = (partial: { content: Array<{ type: "text"; text: string }>; details: SubagentDetails }) => void;
 
@@ -1147,13 +1366,10 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     parameters: createSubagentParams(limits),
     executionMode: "parallel",
 
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const action = params.action ?? "spawn";
-      if (params.message !== undefined && action !== "steer") {
-        throw new Error("message is only valid with action steer");
-      }
+    async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
+      const request = normalizeSubagentRequest(rawParams, limits);
       const parentId = parentThreadId(ctx);
-      const actionDetails = (selectedThreadId?: string): SubagentDetails => detailsFor(parentId, "single", params.agentScope ?? "user", null, selectedThreadId);
+      const actionDetails = (selectedThreadId?: string): SubagentDetails => detailsFor(parentId, "single", "user", null, selectedThreadId);
       const actionResult = (text: string, selectedThreadId?: string) => {
         const details = actionDetails(selectedThreadId);
         return {
@@ -1163,45 +1379,45 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         };
       };
 
-      if (action === "list") return actionResult(threadBoardText(parentId));
-      if (action === "inspect") {
-        if (!params.threadId) throw new Error("inspect requires threadId");
-        const thread = threads.inspect(params.threadId as SubagentThreadId);
+      if (request.kind === "list") return actionResult(threadBoardText(parentId));
+      if (request.kind === "inspect") {
+        const { threadId } = request.input;
+        const thread = threads.inspect(threadId as SubagentThreadId);
         if (!thread) {
-          if (evictedThreadParents.get(params.threadId) === parentId) {
-            return actionResult(`Thread ${params.threadId} was evicted from bounded retention; its heavy data is no longer available.`, params.threadId);
+          if (evictedThreadParents.get(threadId) === parentId) {
+            return actionResult(`Thread ${threadId} was evicted from bounded retention; its heavy data is no longer available.`, threadId);
           }
-          throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
+          throw new Error(`Unknown child thread ${JSON.stringify(threadId)}`);
         }
-        if (thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
-        return actionResult(threadBoardText(parentId, params.threadId), params.threadId);
+        if (thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(threadId)}`);
+        return actionResult(threadBoardText(parentId, threadId), threadId);
       }
-      if (action === "steer") {
-        if (!params.threadId || !params.message) throw new Error("steer requires threadId and message");
-        const threadId = params.threadId as SubagentThreadId;
-        const thread = threads.inspect(threadId);
-        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
-        threads.steer(threadId, params.message);
-        const runtime = activeRuntimes.get(params.threadId);
+      if (request.kind === "steer") {
+        const { threadId, message } = request.input;
+        const brandedThreadId = threadId as SubagentThreadId;
+        const thread = threads.inspect(brandedThreadId);
+        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(threadId)}`);
+        threads.steer(brandedThreadId, message);
+        const runtime = activeRuntimes.get(threadId);
         if (runtime) {
-          runtime.steering.push(params.message);
+          runtime.steering.push(message);
           if (runtime.steering.length > MAX_RUNTIME_STEERING_MESSAGES) runtime.steering.splice(0, runtime.steering.length - MAX_RUNTIME_STEERING_MESSAGES);
           runtime.restarting = true;
           runtime.requestedReason = "steer";
           runtime.handle?.stop("steer");
         }
-        return actionResult(`Steering queued for ${params.threadId}. The child keeps the same thread and handoff record.`, params.threadId);
+        return actionResult(`Steering queued for ${threadId}. The child keeps the same thread and handoff record.`, threadId);
       }
-      if (action === "interrupt") {
-        if (!params.all && !params.threadId) throw new Error("interrupt requires threadId or all=true");
+      if (request.kind === "interrupt-one" || request.kind === "interrupt-all") {
         let targets: SubagentThread[];
-        if (params.all) {
+        if (request.kind === "interrupt-all") {
           targets = threads.listActive().filter((thread) => thread.parentId === parentId);
         } else {
-          const target = threads.inspect(params.threadId as SubagentThreadId);
-          if (!target || target.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
+          const { threadId } = request.input;
+          const target = threads.inspect(threadId as SubagentThreadId);
+          if (!target || target.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(threadId)}`);
           if (target.state !== "active" && target.state !== "queued") {
-            throw new Error(`Cannot interrupt thread ${params.threadId} from ${target.state}`);
+            throw new Error(`Cannot interrupt thread ${threadId} from ${target.state}`);
           }
           targets = [target];
         }
@@ -1217,42 +1433,33 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             threads.stop(thread.id, { reason: "interrupt" });
           }
         }
-        return actionResult(params.all ? "Interrupt requested for all active child threads." : `Interrupt requested for ${params.threadId}.`);
+        return actionResult(request.kind === "interrupt-all"
+          ? "Interrupt requested for all active child threads."
+          : `Interrupt requested for ${request.input.threadId}.`);
       }
-      if (action === "collect") {
-        if (!params.threadId) throw new Error("collect requires threadId");
-        const thread = threads.inspect(params.threadId as SubagentThreadId);
-        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
-        const collected = threads.collect(params.threadId as SubagentThreadId);
-        return actionResult(`Collected ${params.threadId}: ${collected.result ?? collected.failure?.message ?? collected.stopReason ?? "no handoff"}`, params.threadId);
+      if (request.kind === "collect") {
+        const { threadId } = request.input;
+        const thread = threads.inspect(threadId as SubagentThreadId);
+        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(threadId)}`);
+        const collected = threads.collect(threadId as SubagentThreadId);
+        return actionResult(`Collected ${threadId}: ${collected.result ?? collected.failure?.message ?? collected.stopReason ?? "no handoff"}`, threadId);
       }
-      if (action === "close") {
-        if (!params.threadId) throw new Error("close requires threadId");
-        const thread = threads.inspect(params.threadId as SubagentThreadId);
-        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(params.threadId)}`);
-        threads.close(params.threadId as SubagentThreadId);
-        savedResults.delete(params.threadId);
+      if (request.kind === "close") {
+        const { threadId } = request.input;
+        const thread = threads.inspect(threadId as SubagentThreadId);
+        if (!thread || thread.parentId !== parentId) throw new Error(`Unknown child thread ${JSON.stringify(threadId)}`);
+        threads.close(threadId as SubagentThreadId);
+        savedResults.delete(threadId);
         pruneClosedThreads();
-        return actionResult(`Closed ${params.threadId}. Heavy trace and handoff data were evicted; a tombstone remains inspectable.`, params.threadId);
+        return actionResult(`Closed ${threadId}. Heavy trace and handoff data were evicted; a tombstone remains inspectable.`, threadId);
       }
 
+      const spawnRequest = request as Extract<NormalizedSubagentRequest, { kind: "spawn-single" | "spawn-parallel" | "spawn-chain" }>;
+      const params = spawnRequest.input;
       const scope: AgentScope = params.agentScope ?? "user";
-      const hasSingleFields = params.agent !== undefined || params.task !== undefined;
-      const hasParallel = params.tasks !== undefined;
-      const hasChain = params.chain !== undefined;
-      const hasSingle = hasSingleFields && Boolean(params.agent && params.task);
-      if (Number(hasSingleFields) + Number(hasParallel) + Number(hasChain) !== 1
-        || hasSingleFields && !hasSingle
-        || hasParallel && params.tasks!.length === 0
-        || hasChain && params.chain!.length === 0) {
-        throw new Error("Provide exactly one subagent mode: agent + task, tasks, or chain");
-      }
-      if (params.writerConcurrency !== undefined) {
-        if (!hasParallel) throw new Error("writerConcurrency is only valid with parallel tasks");
-        if (!Number.isSafeInteger(params.writerConcurrency) || params.writerConcurrency < 1 || params.writerConcurrency > limits.maxTasks) {
-          throw new Error(`writerConcurrency must be a positive integer no greater than ${limits.maxTasks}`);
-        }
-      }
+      const hasParallel = spawnRequest.kind === "spawn-parallel";
+      const hasChain = spawnRequest.kind === "spawn-chain";
+      const writerConcurrencyOverride = hasParallel ? spawnRequest.input.writerConcurrency : undefined;
 
       const discovery = discoverAgentRoles(ctx.cwd, scope, ctx.isProjectTrusted(), options);
       const roles = new Map(discovery.agents.map((agent) => [agent.name, agent]));
@@ -1280,9 +1487,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       }
 
       const mode: SubagentDetails["mode"] = hasParallel ? "parallel" : hasChain ? "chain" : "single";
-      const inputs: TaskInput[] = hasSingle
-        ? [{ agent: params.agent!, task: params.task! }]
-        : hasParallel ? params.tasks! : params.chain!;
+      const inputs: TaskInput[] = spawnRequest.kind === "spawn-single"
+        ? [{ agent: spawnRequest.input.agent, task: spawnRequest.input.task }]
+        : spawnRequest.kind === "spawn-parallel" ? spawnRequest.input.tasks : spawnRequest.input.chain;
       if (inputs.length > limits.maxTasks) throw new Error(`At most ${limits.maxTasks} subagent tasks are allowed`);
       const readIndexes = hasParallel
         ? inputs.map((input, index) => ({ input, index })).filter(({ input }) => roles.get(input.agent)!.access === "read")
@@ -1290,14 +1497,14 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       const writerIndexes = hasParallel
         ? inputs.map((input, index) => ({ input, index })).filter(({ input }) => roles.get(input.agent)!.access === "write").map(({ index }) => index)
         : [];
-      if (params.writerConcurrency !== undefined && hasParallel && writerIndexes.length === 0) {
+      if (writerConcurrencyOverride !== undefined && writerIndexes.length === 0) {
         throw new Error("writerConcurrency requires at least one write-capable role");
       }
-      const writerConcurrency = params.writerConcurrency ?? (writerIndexes.length > 0 ? 1 : limits.maxReadConcurrency);
+      const writerConcurrency = writerConcurrencyOverride ?? (writerIndexes.length > 0 ? 1 : limits.maxReadConcurrency);
       const useSharedParallelPool = hasParallel && writerIndexes.length > 0;
       const executionNote = hasParallel
         ? writerIndexes.length
-          ? `Parallel schedule: all tasks run through a shared pool of up to ${writerConcurrency}${params.writerConcurrency === undefined ? " (safe default)" : " (explicit)"}; concurrent write-capable tasks share the parent worktree, so callers must prove path ownership.`
+          ? `Parallel schedule: all tasks run through a shared pool of up to ${writerConcurrency}${writerConcurrencyOverride === undefined ? " (safe default)" : " (explicit)"}; concurrent write-capable tasks share the parent worktree, so callers must prove path ownership.`
           : `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}.`
         : undefined;
 
@@ -1617,14 +1824,23 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     },
 
     renderCall(args, theme) {
-      const scope = args.agentScope ?? "user";
-      if (args.action && args.action !== "spawn") return new Text(`${theme.fg("toolTitle", theme.bold("threads "))}${theme.fg("accent", args.action)}${theme.fg("dim", args.threadId ? ` · ${args.threadId}` : "")}`, 0, 0);
-      if (args.tasks?.length) {
-        const schedule = args.writerConcurrency === undefined ? "parallel default" : `shared pool ${args.writerConcurrency}`;
-        return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${args.tasks.length} · ${schedule}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
+      const parsed = tryNormalizeSubagentRequest(args, limits);
+      if (!parsed.ok) {
+        return new Text(`${theme.fg("toolTitle", theme.bold("subagent"))}${theme.fg("error", " · invalid request")}`, 0, 0);
       }
-      if (args.chain?.length) return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `chain ${args.chain.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
-      return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent ?? "…")}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
+      const request = parsed.request;
+      if (!request.kind.startsWith("spawn-")) {
+        const threadId = "threadId" in request.input ? request.input.threadId : undefined;
+        return new Text(`${theme.fg("toolTitle", theme.bold("threads "))}${theme.fg("accent", request.input.action ?? "spawn")}${theme.fg("dim", threadId ? ` · ${threadId}` : "")}`, 0, 0);
+      }
+      const spawnRequest = request as Extract<NormalizedSubagentRequest, { kind: "spawn-single" | "spawn-parallel" | "spawn-chain" }>;
+      const scope = spawnRequest.input.agentScope ?? "user";
+      if (spawnRequest.kind === "spawn-parallel") {
+        const schedule = spawnRequest.input.writerConcurrency === undefined ? "parallel default" : `shared pool ${spawnRequest.input.writerConcurrency}`;
+        return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${spawnRequest.input.tasks.length} · ${schedule}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
+      }
+      if (spawnRequest.kind === "spawn-chain") return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `chain ${spawnRequest.input.chain.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
+      return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", spawnRequest.input.agent)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
     },
 
     renderResult(result, { expanded }, theme) {

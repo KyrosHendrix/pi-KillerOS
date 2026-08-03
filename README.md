@@ -97,7 +97,22 @@ KillerOS ships `planner`, `reviewer`, `scout`, and `security` as read-only roles
 
 The default `agentScope: "user"` uses bundled and personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project override requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. Optional fields are `model`, `thinking`, and `timeoutMs`. Every bundled role shows `model: inherit` and `thinking: inherit` as editable placeholders. Replace them with an available `provider/model` and a separate thinking level when you want to pin a role; `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` are checked against that model’s supported capabilities.
 
-The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Read-only-only batches run concurrently, up to four at a time. Batches with write-capable roles use one shared slot by default; set `writerConcurrency` above `1` only after proving path ownership in the shared worktree. Reader-only batches reject `writerConcurrency` because it does not apply. All children share the parent worktree, so concurrent writers must avoid file conflicts. A call can also set `model` and `thinking` for every task, overriding role settings; use `inherit` to fall back to each role and then the active parent model. The `message` field is only valid with `action: "steer"`. For example:
+The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Read-only-only batches run concurrently, up to four at a time. Batches with write-capable roles use one shared slot by default; set `writerConcurrency` above `1` only after proving path ownership in the shared worktree. Reader-only batches reject `writerConcurrency` because it does not apply. All children share the parent worktree, so concurrent writers must avoid file conflicts. A call can also set `model` and `thinking` for every task, overriding role settings; use `inherit` to fall back to each role and then the active parent model.
+
+| Action | Required fields | Allowed optional fields |
+|---|---|---|
+| omitted / `spawn` single | `agent`, `task` | `model`, `thinking`, `agentScope` |
+| omitted / `spawn` parallel | `tasks` | `writerConcurrency`, `model`, `thinking`, `agentScope` |
+| omitted / `spawn` chain | `chain` | `model`, `thinking`, `agentScope` |
+| `list` | none | none |
+| `inspect` | `threadId` | none |
+| `steer` | `threadId`, `message` | none |
+| `interrupt` one | `threadId` | none |
+| `interrupt` all | `all: true` | none |
+| `collect` | `threadId` | none |
+| `close` | `threadId` | none |
+
+The three spawn shapes cannot be mixed. The `message` field is only valid with `action: "steer"`, and lifecycle actions reject spawn fields. KillerOS rejects malformed requests before role discovery, project confirmation, thread creation, or child launch. The TUI shows a parallel or shared-pool schedule only after shape validation; malformed calls show `invalid request` instead of queued work. For example:
 
 ```json
 {"agent":"reviewer","task":"Review the change","model":"provider/model","thinking":"high"}
