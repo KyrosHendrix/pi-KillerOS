@@ -959,45 +959,24 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
     agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
     task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task with optional {previous} handoff placeholder" }),
   }, { additionalProperties: false });
-  const action = Type.Optional(Type.Literal(SUBAGENT_ACTION.spawn, { default: SUBAGENT_ACTION.spawn, description: "Spawn child threads" }));
-  const spawnOptions = {
+  const threadId = Type.String({ minLength: 1, maxLength: 128, description: "Stable child thread ID" });
+  return Type.Object({
+    action: Type.Optional(StringEnum(SUBAGENT_ACTIONS, { default: SUBAGENT_ACTION.spawn, description: "Spawn, list, inspect, steer, interrupt, collect, or close" })),
+    threadId: Type.Optional(threadId),
+    message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Steering message; valid only with action steer" })),
+    all: Type.Optional(Type.Literal(true, { description: "Interrupt every active child thread" })),
+    agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
+    task: Type.Optional(Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" })),
+    tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use one shared slot by default. Set writerConcurrency to opt into a larger shared pool; concurrent writers share the parent worktree, so callers must prove path ownership` })),
+    writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to 1 when writers are selected; values above 1 opt into concurrent shared-worktree writes. Concurrent writers must prove path ownership` })),
+    chain: Type.Optional(Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
     model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
     thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
     agentScope: Type.Optional(StringEnum(["user", "project", "both"] as const, {
       default: "user",
       description: "Role sources: user includes bundled and personal; project includes bundled and trusted project; both includes all",
     })),
-  };
-  const threadId = Type.String({ minLength: 1, maxLength: 128, description: "Stable child thread ID" });
-  const exportProperties = {
-    action: Type.String({ description: "Spawn, list, inspect, steer, interrupt, collect, or close" }),
-    threadId: Type.String({ description: "Child thread ID for a lifecycle action" }),
-    message: Type.String({ description: "Steering message; valid only with action steer" }),
-    all: Type.Boolean({ description: "Interrupt every active child thread" }),
-    agent: Type.String({ description: "Agent role for a single spawn" }),
-    task: Type.String({ description: "Task for a single spawn" }),
-    tasks: Type.Array(Type.Any(), { description: "Parallel role tasks" }),
-    writerConcurrency: Type.Integer({ description: "Shared-pool cap for parallel writer tasks" }),
-    chain: Type.Array(Type.Any(), { description: "Sequential role tasks" }),
-    model: Type.String({ description: "Model for every spawned task" }),
-    thinking: Type.String({ description: "Thinking effort for every spawned task" }),
-    agentScope: Type.String({ description: "Role sources for a spawn" }),
-  };
-  const schema = Type.Union([
-    Type.Object({ action, agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" }), task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" }), ...spawnOptions }, { additionalProperties: false }),
-    Type.Object({ action, tasks: Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use one shared slot by default. Set writerConcurrency to opt into a larger shared pool; concurrent writers share the parent worktree, so callers must prove path ownership` }), writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to 1 when writers are selected; values above 1 opt into concurrent shared-worktree writes. Concurrent writers must prove path ownership` })), ...spawnOptions }, { additionalProperties: false }),
-    Type.Object({ action, chain: Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" }), ...spawnOptions }, { additionalProperties: false }),
-    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.list) }, { additionalProperties: false }),
-    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.inspect), threadId }, { additionalProperties: false }),
-    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.steer), threadId, message: Type.String({ minLength: 1, maxLength: 4_000, description: "Bounded steering message" }) }, { additionalProperties: false }),
-    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.interrupt), threadId }, { additionalProperties: false }),
-    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.interrupt), all: Type.Literal(true, { description: "Interrupt every active child thread" }) }, { additionalProperties: false }),
-    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.collect), threadId }, { additionalProperties: false }),
-    Type.Object({ action: Type.Literal(SUBAGENT_ACTION.close), threadId }, { additionalProperties: false }),
-  ]);
-  // Pi's HTML export reads properties; providers receive only the action-specific union.
-  Object.defineProperty(schema, "properties", { value: exportProperties });
-  return schema;
+  }, { additionalProperties: false });
 }
 
 type ToolUpdate = (partial: { content: Array<{ type: "text"; text: string }>; details: SubagentDetails }) => void;

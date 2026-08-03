@@ -213,10 +213,14 @@ test("subagent request normalizer classifies valid request shapes", () => {
   assert.deepEqual(tryNormalizeSubagentRequest({ action: "list", task: "invalid" }).ok, false);
 });
 
-test("subagent schema exposes export parameters without flattening the model schema", () => {
+test("subagent schema is a top-level object for strict providers", () => {
   const tool = createToolHarness();
+  const schema = JSON.parse(JSON.stringify(tool.parameters));
 
-  assert.deepEqual(Object.keys(tool.parameters.properties), [
+  assert.equal(schema.type, "object");
+  assert.equal(schema.additionalProperties, false);
+  assert.equal(schema.anyOf, undefined);
+  assert.deepEqual(Object.keys(schema.properties), [
     "action",
     "threadId",
     "message",
@@ -230,7 +234,8 @@ test("subagent schema exposes export parameters without flattening the model sch
     "thinking",
     "agentScope",
   ]);
-  assert.equal(JSON.parse(JSON.stringify(tool.parameters)).properties, undefined);
+  assert.equal(schema.properties.tasks.items.type, "object");
+  assert.equal(schema.properties.chain.items.type, "object");
 });
 
 test("subagent preparation gives Pi action-specific request errors", () => {
@@ -925,12 +930,10 @@ test("message is scoped to steer and the parallel schedule is described", async 
       tasks: [{ agent: "scout", task: "map" }],
     }, ctx), /requires at least one write-capable role/u);
     assert.match(tool.description, /write-capable roles use one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership[\s\S]*shared worktree/u);
-    const parallelSchema = tool.parameters.anyOf.find((schema) => schema.properties.tasks);
-    const steerSchema = tool.parameters.anyOf.find((schema) => schema.properties.message);
-    assert.equal(tool.parameters.anyOf.every((schema) => schema.additionalProperties === false), true);
-    assert.equal(steerSchema.properties.action.const, "steer");
-    assert.match(parallelSchema.properties.tasks.description, /one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership/u);
-    assert.match(parallelSchema.properties.writerConcurrency.description, /Defaults to 1[\s\S]*values above 1[\s\S]*path ownership/u);
+    assert.equal(tool.parameters.additionalProperties, false);
+    assert.ok(tool.parameters.properties.action.enum.includes("steer"));
+    assert.match(tool.parameters.properties.tasks.description, /one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership/u);
+    assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to 1[\s\S]*values above 1[\s\S]*path ownership/u);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }

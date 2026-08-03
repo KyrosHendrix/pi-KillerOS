@@ -8,6 +8,18 @@ All notable changes to KillerOS are documented here.
 
 - Resolved bundled subagent role discovery from the package `agents/` directory; the module-relative path broke when subagent modules moved under `killeros/` in v1.5.0, leaving fresh installs with `Unknown subagent "<role>". Available: none`.
 
+## [1.5.1] - 2026-08-03
+
+### Changed
+
+- Added a fixed pragmatic response style, low GPT-5 Responses API verbosity, and concise reasoning summaries without changing reasoning effort.
+
+### Fixed
+
+- Replaced the `subagent` tool's top-level union with a provider-compatible object schema, fixing request rejection by Console Go and other providers that require function schemas with `type: "object"`.
+- Kept strict action-specific subagent validation at runtime, including single, parallel, chain, steering, interruption, collection, and closure requests.
+- Scoped native concise settings to supported Responses APIs while leaving completion and unrelated provider payloads unchanged.
+
 ## [1.5.0] - 2026-08-03
 
 ### Changed

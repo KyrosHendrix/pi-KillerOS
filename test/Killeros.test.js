@@ -5,7 +5,7 @@ import os from "node:os";
 import { PassThrough } from "node:stream";
 import path from "node:path";
 import test from "node:test";
-import Killeros, { executeHook, formatContextProgress, INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "../Killeros.ts";
+import Killeros, { CONCISE_SYSTEM_PROMPT, executeHook, formatContextProgress, INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "../Killeros.ts";
 import { formatThreadBoard, formatThreadState } from "../subagent-ui.ts";
 
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -113,6 +113,59 @@ function createHarness() {
   activeTools.push(...tools.keys());
   return { api, activeTools, appendedEntries, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
 }
+
+test("all KillerOS tools expose provider-compatible object schemas", () => {
+  const { tools } = createHarness();
+
+  for (const tool of tools.values()) {
+    const schema = JSON.parse(JSON.stringify(tool.parameters));
+    assert.equal(schema.type, "object", `${tool.name} must use a top-level object schema`);
+    assert.equal(typeof schema.properties, "object", `${tool.name} must declare object properties`);
+    assert.equal(schema.anyOf, undefined, `${tool.name} must not use a top-level anyOf`);
+    assert.equal(schema.oneOf, undefined, `${tool.name} must not use a top-level oneOf`);
+  }
+});
+
+test("applies the fixed concise preset to Responses API payloads", async () => {
+  const { handlers } = createHarness();
+  const payload = {
+    model: "gpt-5.6",
+    input: [],
+    text: { format: { type: "text" }, verbosity: "high" },
+    reasoning: { effort: "high", summary: "detailed" },
+  };
+
+  const [result] = await emitSequentially(handlers.get("before_provider_request"), { payload }, {
+    model: { api: "openai-codex-responses", id: "gpt-5.6" },
+  });
+
+  assert.deepEqual(result, {
+    ...payload,
+    text: { format: { type: "text" }, verbosity: "low" },
+    reasoning: { effort: "high", summary: "concise" },
+  });
+});
+
+test("keeps concise provider settings scoped to compatible payload fields", async () => {
+  const { handlers } = createHarness();
+  const handler = handlers.get("before_provider_request")[0];
+  const withoutSettings = { model: "gpt-5.6-luna", input: [] };
+  const incompatible = { model: "deepseek-v4-flash", input: [], text: { verbosity: "high" } };
+
+  assert.deepEqual(await handler({ payload: withoutSettings }, {
+    model: { api: "openai-responses", id: "gpt-5.6-luna" },
+  }), {
+    model: "gpt-5.6-luna",
+    input: [],
+    text: { verbosity: "low" },
+  });
+  assert.strictEqual(await handler({ payload: incompatible }, {
+    model: { api: "openai-completions", id: "deepseek-v4-flash" },
+  }), incompatible);
+  assert.equal(await handler({ payload: null }, {
+    model: { api: "openai-responses", id: "gpt-5.6-luna" },
+  }), null);
+});
 
 async function emitSequentially(handlers, event, ctx) {
   const results = [];
