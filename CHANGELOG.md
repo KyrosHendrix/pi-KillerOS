@@ -4,6 +4,12 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-08-03
+
+### Changed
+
+- Hardened always-on concise guidance around low-friction action, visible multi-turn state, evidence-backed outcomes, material ambiguity, diagnostic resets, and explicit safety and correctness precedence.
+
 ### Fixed
 
 - Resolved bundled subagent role discovery from the package `agents/` directory; the module-relative path broke when subagent modules moved under `killeros/` in v1.5.0, leaving fresh installs with `Unknown subagent "<role>". Available: none`.
