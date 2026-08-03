@@ -1382,6 +1382,15 @@ test("bundled roster declares read-only auditors and focused writers", () => {
   for (const agent of agents) assert.equal(agent.timeoutMs, undefined);
 });
 
+test("discovers bundled roles through the default module-relative agents path", () => {
+  const agents = discoverAgentRoles(process.cwd(), "user", true, {
+    userAgentsDir: path.join(process.cwd(), "test", "missing-agents"),
+  }).agents;
+  const names = agents.map((agent) => agent.name);
+  assert.deepEqual(names, ["debugger", "documenter", "planner", "reviewer", "scout", "security", "tester", "worker"]);
+  assert.equal(agents.every((agent) => agent.source === "bundled"), true);
+});
+
 test("Codex-style thread actions keep a completed handoff visible until close", async () => {
   const roster = tempRoster();
   try {
