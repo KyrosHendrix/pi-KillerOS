@@ -4,6 +4,13 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-03
+
+### Changed
+
+- Split the main extension into feature modules under `killeros/` while keeping `Killeros.ts` as the stable entry point.
+- Moved subagent modules under `killeros/` and kept root re-export files for existing deep imports.
+
 ### Fixed
 
 - Hardened the subagent schema and runtime checks with action-specific request shapes.

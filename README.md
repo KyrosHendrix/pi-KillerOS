@@ -33,7 +33,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.4.9
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.5.0
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -178,7 +178,7 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog.
 
-For release `1.4.9`, publish after the validation checks pass:
+For release `1.5.0`, publish after the validation checks pass:
 
 ```bash
 npm login

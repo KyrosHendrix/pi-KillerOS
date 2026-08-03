@@ -1,0 +1,164 @@
+import { type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
+
+async function confirmNewSession(ctx: ExtensionCommandContext): Promise<boolean> {
+  if (!ctx.hasUI) return true;
+  return ctx.ui.confirm("Start new session", "Start a new session and leave the current history?");
+}
+
+export function registerAliases(pi: ExtensionAPI): void {
+  const startNewSession = async (_args: string, ctx: ExtensionCommandContext): Promise<void> => {
+    await ctx.waitForIdle();
+    if (!await confirmNewSession(ctx)) return;
+    await ctx.newSession();
+  };
+  pi.registerCommand("clear", { description: "Start a new session after confirmation", handler: startNewSession });
+  pi.registerCommand("exit", {
+    description: "Quit Pi gracefully",
+    handler: async (_args, ctx) => ctx.shutdown(),
+  });
+}
+
+interface CommandInfo {
+  name: string;
+  description?: string;
+  category: "Built-in" | "Extension" | "Prompt" | "Skill";
+  syntaxHint?: string;
+}
+
+const BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
+  { name: "settings", description: "Open settings menu" },
+  { name: "model", description: "Select model" },
+  { name: "scoped-models", description: "Configure models for Ctrl+P cycling" },
+  { name: "export", description: "Export the current session" },
+  { name: "import", description: "Import and resume a JSONL session" },
+  { name: "share", description: "Share the session as a secret GitHub gist" },
+  { name: "copy", description: "Copy the last agent message" },
+  { name: "name", description: "Set the session display name" },
+  { name: "session", description: "Show session usage and stats" },
+  { name: "changelog", description: "Show changelog entries" },
+  { name: "hotkeys", description: "Show keyboard shortcuts" },
+  { name: "fork", description: "Fork from a previous user message" },
+  { name: "clone", description: "Duplicate the session at the current position" },
+  { name: "tree", description: "Navigate the session tree" },
+  { name: "trust", description: "Save the project trust decision" },
+  { name: "login", description: "Configure provider authentication" },
+  { name: "logout", description: "Remove provider authentication" },
+  { name: "new", description: "Start a new session" },
+  { name: "compact", description: "Compact the session context" },
+  { name: "resume", description: "Resume a different session" },
+  { name: "reload", description: "Reload extensions and resources" },
+  { name: "quit", description: "Quit Pi" },
+];
+
+const COMMAND_SYNTAX_HINTS: Readonly<Record<string, string>> = {
+  goal: "/goal [objective|clear|edit|pause|resume]",
+  variants: "/variants [level]",
+  model: "/model [provider/model]",
+  "scoped-models": "/scoped-models",
+  login: "/login [provider]",
+  export: "/export [filename]",
+  import: "/import [path]",
+  name: "/name [session-name]",
+};
+
+interface TaggedAutocompleteItem extends AutocompleteItem {
+  killerosCommand?: string;
+}
+
+function scoreCommandMatch(name: string, prefix: string): number {
+  if (!prefix) return 1;
+  const normalizedName = name.toLocaleLowerCase();
+  const normalizedPrefix = prefix.toLocaleLowerCase();
+  if (normalizedName.startsWith(normalizedPrefix)) return 100;
+  if (normalizedName.split(/[:\-_]/).some((token) => token.startsWith(normalizedPrefix))) return 80;
+  if (normalizedName.includes(normalizedPrefix)) return 50;
+  return 0;
+}
+
+export function registerSlashAutocomplete(pi: ExtensionAPI): void {
+  const usage = new Map<string, number>();
+  pi.on("session_start", (_event, ctx) => {
+    if (ctx.mode !== "tui") return;
+    ctx.ui.addAutocompleteProvider((current) => ({
+      triggerCharacters: ["/"],
+      async getSuggestions(lines, cursorLine, cursorCol, options) {
+        const line = lines[cursorLine] ?? "";
+        const beforeCursor = line.slice(0, cursorCol);
+        const match = beforeCursor.match(/(?:^|[ \t])\/([^\s/]*)$/);
+        if (!match) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+
+        const prefix = (match[1] ?? "").toLocaleLowerCase();
+        const baseSuggestions = await current.getSuggestions(lines, cursorLine, cursorCol, options);
+        const commands = new Map<string, CommandInfo>();
+        BUILTIN_COMMANDS.forEach((command) => commands.set(command.name, {
+          ...command,
+          category: "Built-in",
+          syntaxHint: COMMAND_SYNTAX_HINTS[command.name],
+        }));
+
+        for (const command of pi.getCommands()) {
+          const category: CommandInfo["category"] = command.source === "skill"
+            ? "Skill"
+            : command.source === "prompt"
+              ? "Prompt"
+              : "Extension";
+          commands.set(command.name, {
+            name: command.name,
+            description: command.description,
+            category,
+            syntaxHint: COMMAND_SYNTAX_HINTS[command.name],
+          });
+        }
+
+        for (const item of baseSuggestions?.items ?? []) {
+          const name = (item.value || item.label).replace(/^\//, "").trim().split(/\s+/)[0] ?? "";
+          if (name && !commands.has(name)) {
+            commands.set(name, { name, description: item.description, category: "Built-in" });
+          }
+        }
+
+        const ranked = [...commands.values()]
+          .map((command) => ({
+            command,
+            score: scoreCommandMatch(command.name, prefix) + Math.min((usage.get(command.name) ?? 0) * 2, 15),
+          }))
+          .filter(({ command }) => scoreCommandMatch(command.name, prefix) > 0)
+          .sort((left, right) => right.score - left.score || left.command.name.localeCompare(right.command.name));
+        if (!ranked.length) return baseSuggestions;
+
+        return {
+          prefix: `/${prefix}`,
+          items: ranked.map(({ command }): TaggedAutocompleteItem => {
+            const syntax = command.syntaxHint ? `${command.syntaxHint} — ` : "";
+            return {
+              value: `/${command.name} `,
+              label: `/${command.name}`,
+              description: `[${command.category}] ${syntax}${command.description ?? ""}`.trim(),
+              killerosCommand: command.name,
+            };
+          }),
+        };
+      },
+      applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+        const tagged = item as TaggedAutocompleteItem;
+        if (!tagged.killerosCommand) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+        usage.set(tagged.killerosCommand, (usage.get(tagged.killerosCommand) ?? 0) + 1);
+        const line = lines[cursorLine] ?? "";
+        const beforeCursor = line.slice(0, cursorCol);
+        let afterCursor = line.slice(cursorCol);
+        const match = beforeCursor.match(/(?:^|[ \t])\/([^\s/]*)$/);
+        if (!match || match.index === undefined) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+        const slashIndex = match.index + (match[0].startsWith("/") ? 0 : 1);
+        const newBefore = beforeCursor.slice(0, slashIndex) + item.value;
+        if (item.value.endsWith(" ") && afterCursor.startsWith(" ")) afterCursor = afterCursor.trimStart();
+        const nextLines = [...lines];
+        nextLines[cursorLine] = newBefore + afterCursor;
+        return { lines: nextLines, cursorLine, cursorCol: newBefore.length };
+      },
+      shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+        return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+      },
+    }));
+  });
+}
