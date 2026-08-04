@@ -33,7 +33,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.5.3
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v1.5.4
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -45,6 +45,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Coral Spark activity indicator with Claude-adjacent verbs that advance between agent runs and a quiet hidden-thinking label
 - Framed multiline editor with Shift+Enter support
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
+- Automatic non-destructive context compaction at 30% remaining with a structured handoff; active goals continue after the saved summary
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` for durable long-running objectives with pause, resume, edit, clear, automatic continuation, and explicit completion
 - Pi-native `subagent` tool with named, inspectable child threads, Markdown roles, explicit read/write boundaries, parent controls, natural completion, and cancellation propagation
@@ -66,6 +67,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 /goal clear               Remove the current goal
 /variants                 Open the reasoning-level selector
 /variants high            Set a reasoning level directly
+/subagents                Open child-thread selectors in TUI mode
 /clear                    Start a new session after confirmation
 /exit                     Quit Pi gracefully
 ```
@@ -97,48 +99,66 @@ KillerOS ships `planner`, `reviewer`, `scout`, and `security` as read-only roles
 
 The default `agentScope: "user"` uses bundled and personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project override requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. Optional fields are `model`, `thinking`, and `timeoutMs`. Every bundled role shows `model: inherit` and `thinking: inherit` as editable placeholders. Replace them with an available `provider/model` and a separate thinking level when you want to pin a role; `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` are checked against that model’s supported capabilities.
 
-The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Read-only-only batches run concurrently, up to four at a time. Batches with write-capable roles use one shared slot by default; set `writerConcurrency` above `1` only after proving path ownership in the shared worktree. Reader-only batches reject `writerConcurrency` because it does not apply. All children share the parent worktree, so concurrent writers must avoid file conflicts. A call can also set `model` and `thinking` for every task, overriding role settings; use `inherit` to fall back to each role and then the active parent model.
+The tool supports a single `agent` + `task`, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Each task may set a `name`; names are unique within the parent session without regard to case and are passed to child Pi as `--name`. Read-only-only batches run concurrently, up to four at a time. Batches with write-capable roles are serialized in the shared worktree with one shared slot. Reader-only batches reject `writerConcurrency` because it does not apply. A call can also set `model` and `thinking` for every task, overriding role settings; use `inherit` to fall back to each role and then the active parent model.
 
 | Action | Required fields | Allowed optional fields |
 |---|---|---|
-| omitted / `spawn` single | `agent`, `task` | `model`, `thinking`, `agentScope` |
-| omitted / `spawn` parallel | `tasks` | `writerConcurrency`, `model`, `thinking`, `agentScope` |
-| omitted / `spawn` chain | `chain` | `model`, `thinking`, `agentScope` |
+| omitted / `spawn` single | `agent`, `task` | `name`, `model`, `thinking`, `agentScope` |
+| omitted / `spawn` parallel | `tasks` | per-task `name`, `writerConcurrency`, `model`, `thinking`, `agentScope` |
+| omitted / `spawn` chain | `chain` | per-task `name`, `model`, `thinking`, `agentScope` |
 | `list` | none | none |
 | `inspect` | `threadId` | none |
+| `wait` | none | `threadId`, `all: true`, `timeoutMs` |
 | `steer` | `threadId`, `message` | none |
 | `interrupt` one | `threadId` | none |
 | `interrupt` all | `all: true` | none |
 | `collect` | `threadId` | none |
+| `resume` | `threadId` | `task` |
 | `close` | `threadId` | none |
 
-The three spawn shapes cannot be mixed. The `message` field is only valid with `action: "steer"`, and lifecycle actions reject spawn fields. KillerOS rejects malformed requests before role discovery, project confirmation, thread creation, or child launch. The TUI shows a parallel or shared-pool schedule only after shape validation; malformed calls show `invalid request` instead of queued work. For example:
+The three spawn shapes cannot be mixed. The `message` field is only valid with `action: "steer"`, and lifecycle actions reject spawn fields. The `wait` action defaults to all queued or active children, waits up to 30 seconds by default, and never stops a child when it times out. The `resume` action keeps the same thread ID, name, session ID, and session directory and increments `attempt`. KillerOS rejects malformed requests before role discovery, project confirmation, thread creation, or child launch. The TUI shows a parallel or shared-pool schedule only after shape validation; malformed calls show `invalid request` instead of queued work. For example:
 
 ```json
-{"agent":"reviewer","task":"Review the change","model":"provider/model","thinking":"high"}
+{"agent":"reviewer","task":"Review the change","name":"auth-audit","model":"provider/model","thinking":"high"}
 ```
 
-Spawn returns the generated thread IDs immediately while the children continue in the background. This lets the parent use `list`, `inspect`, `steer`, `interrupt`, `collect`, and `close` in later tool calls. When the batch settles, KillerOS delivers its bounded handoff as a Pi follow-up and triggers the parent turn. A batch cancelled by parent Escape remains inspectable but does not trigger a replacement turn.
+Spawn returns the generated thread IDs immediately while the children continue in the background. This lets the parent use `list`, `inspect`, `wait`, `steer`, `interrupt`, `collect`, `resume`, and `close` in later tool calls. Compact thread records persist through Pi custom session entries. On parent restart, an active record restores as `orphaned`; `close` removes the child session only after confirmed process exit. When the batch settles, KillerOS delivers its bounded handoff as a Pi follow-up and triggers the parent turn. A batch cancelled by parent Escape remains inspectable but does not trigger a replacement turn.
 
-Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as isolated `pi --mode json -p` processes with a private `--session-dir` and `--session-id`, plus explicit local tools and `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Steering restarts the same child session, so the child keeps its prior conversation. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` and report useful evidence. Children have no default token, dollar, turn, tool-call, research, wall-time, trace, stderr, or returned-output execution quota; each JSONL record still has a bounded 8 MiB parser ceiling. KillerOS bounds retained trace, stderr, and returned text and spills a large JSONL line to temporary storage; retention never stops a child or marks it `limited`. The parent limits each request to ten tasks, read-only-only batches to four concurrent readers, and bounds role files, task input, and combined parent output. An embedding caller may opt into named child resource guards. Aborting the originating parent turn stops its queued and active children; explicit `interrupt` actions and session shutdown also terminate active children and escalate after five seconds.
+Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as isolated `pi --mode json -p` processes with a private `--session-dir` and `--session-id`, plus explicit local tools and `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Steering restarts the same child session, so the child keeps its prior conversation. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` and report useful evidence. An empty final assistant response is a failure. The default child wall time is 30 minutes; token and dollar quotas remain opt-in. Each JSONL record still has a bounded 8 MiB parser ceiling. KillerOS bounds retained trace, stderr, and returned text and spills a large JSONL line to temporary storage; retention never stops a child or marks it `limited`. The parent limits each request to ten tasks, read-only-only batches to four concurrent readers, and bounds role files, task input, and combined parent output. An embedding caller may opt into named child resource guards. Aborting the originating parent turn stops its queued and active children; explicit `interrupt` actions and session shutdown also terminate active children and use a bounded 10-second process-exit wait.
+
+The command grammar is:
+
+```text
+/subagents
+/subagents list
+/subagents inspect <id-or-name>
+/subagents wait [<id-or-name>] [timeout-ms]
+/subagents steer <id-or-name> <message>
+/subagents interrupt <id-or-name|all>
+/subagents collect <id-or-name>
+/subagents resume <id-or-name> [task]
+/subagents close <id-or-name>
+```
+
+Bare `/subagents` opens TUI selectors. RPC, JSON, and print modes require an explicit verb and never open a UI prompt.
 
 ### Thread lifecycle
 
 Each delegated task creates a named child thread. Its contract records the parent ID, child ID, role, prompt, model, requested capability boundary, trace, usage, and result state. Roles define the child’s access and tools; they do not own lifecycle controls or grant new filesystem powers. The parent owns scope, waits, inspection, steering, collection, and closure.
 
-Threads move through `queued`, `active`, `done`, `failed`, `stopped`, and `closed`. The parent renders separate **Active** and **Done** lists. Active threads show their name, task, model, usage, and direct controls. Done threads keep their handoff and trace available until the parent closes them.
+Threads move through `queued`, `active`, `done`, `failed`, `stopped`, `orphaned`, and `closed`. The parent renders separate **Active** and **Done** lists. Active threads show their name, task, model, usage, and direct controls. Done threads keep their handoff and trace available until the parent closes them.
 
-The parent can inspect a thread’s prompt, role, model, tools, trace, usage, and handoff; steer an active thread with one bounded follow-up; interrupt one child or all active children; collect a concise handoff into parent context; and close a finished or stopped thread. An interrupt preserves the partial trace, states the reason, and reports the handoff as partial rather than successful. Closing removes a thread from the active workspace; heavy trace and result payloads are evicted as needed under the bounded retention budget, leaving a small inspectable tombstone.
+The parent can inspect a thread’s prompt, role, model, tools, trace, usage, and handoff; wait for one named or ID child or all queued and active children; steer an active or queued thread with a bounded follow-up (at most 20 pending messages; further steering is rejected explicitly until the child restarts or drains the queue); interrupt one child or all active and queued children; collect a concise handoff into parent context; resume a terminal or orphaned child; and close a finished, stopped, or orphaned thread. An interrupt preserves the partial trace, states the reason, and reports the handoff as partial rather than successful. Closing removes a thread from the active workspace; heavy trace and result payloads are evicted as needed under the bounded retention budget, leaving a small inspectable tombstone.
 
-A child completes naturally when it returns a final answer. The default path has no per-child execution quota, while every JSONL record has an 8 MiB parser ceiling. Explicit embedding options can add wall-time, output, trace, stderr, JSONL, token, or cost guards; those guards report their cause and return partial work clearly. The parent still bounds task count, reader concurrency, role files, task input, and combined parent output. Aborting the originating parent turn settles queued work as cancelled and terminates active children; explicit `interrupt` actions and real child-process failures remain visible. Session shutdown also terminates active children and escalates after five seconds.
+A child completes only when it returns usable final assistant text. The default wall time is 30 minutes; token and dollar quotas remain opt-in, while every JSONL record has an 8 MiB parser ceiling. Explicit embedding options can add output, trace, stderr, JSONL, token, or cost guards; those guards report their cause and return partial work clearly. The parent still bounds task count, reader concurrency, role files, task input, and combined parent output. Aborting the originating parent turn settles queued work as cancelled and terminates active children; explicit `interrupt` actions and real child-process failures remain visible. Session shutdown also terminates active children and waits up to 10 seconds for confirmed process exit.
 
 The replacement lifecycle has nine phases:
 
 1. **Dispatch:** create a named thread and store its contract before launch.
 2. **Track:** maintain lifecycle states and Active/Done visibility.
 3. **Inspect:** keep the trace in the child thread, not the parent context.
-4. **Steer:** append a bounded parent follow-up to an active thread.
-5. **Interrupt:** stop one or all active children while preserving partial work.
+4. **Steer:** append a bounded parent follow-up to an active or queued thread.
+5. **Interrupt:** stop one or all active or queued children while preserving partial work.
 6. **Collect:** return a concise handoff while retaining the expanded trace.
 7. **Guard:** honor only explicitly configured child resource guards; do not impose a routine turn stop.
 8. **Close:** remove a finished or stopped thread from the workspace while retaining a small inspectable tombstone; heavy payloads may be evicted under the retention budget.
@@ -149,6 +169,8 @@ The replacement lifecycle has nine phases:
 KillerOS activates its packaged `killeros` theme when a TUI session starts. Tool-call backgrounds stay neutral across pending, successful, and failed states; restrained text and icons preserve status visibility.
 
 KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar. When a goal exists, the footer adds its active time or terminal state; at narrow widths, context pressure and goal state take priority.
+
+KillerOS checks context after each agent turn. At 30% remaining, it starts Pi compaction after the current run settles, so the active turn is not aborted. Manual `/compact` remains available, and the compaction summary keeps the goal, progress, decisions, next steps, and changed files.
 
 For trusted projects, KillerOS loads `AGENTS.local.md` after Pi's shared repository context. A one-line `@path` or `@~/path` file imports personal guidance from another location.
 
@@ -180,7 +202,7 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog.
 
-For release `1.5.0`, publish after the validation checks pass:
+For a release, publish after the validation checks pass:
 
 ```bash
 npm login

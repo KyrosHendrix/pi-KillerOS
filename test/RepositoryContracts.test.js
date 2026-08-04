@@ -28,4 +28,12 @@ test("product and design docs match current runtime contracts", () => {
   assert.doesNotMatch(design, /\(v1\.2\.0\)/u);
   assert.match(changelog, /one shared slot[\s\S]*8 MiB[\s\S]*scoped atomic/u);
   assert.doesNotMatch(changelog, /Removed default child wall-time, JSONL-line/iu);
+  assert.match(readme, /display name|named child|--name/iu);
+  assert.match(readme, /action `wait`|`wait` action/iu);
+  assert.match(readme, /action `resume`|`resume` action/iu);
+  assert.match(readme, /30 minutes|1_800_000|1,800,000/iu);
+  assert.match(readme, /\/subagents/iu);
+  assert.match(product, /parent session|appendEntry|persistent child session/iu);
+  assert.match(design, /orphaned|parent_restarted/iu);
+  assert.match(changelog, /named|wait|resume|30-minute/iu);
 });

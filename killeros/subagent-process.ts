@@ -8,6 +8,7 @@ export const MAX_NODE_TIMER_MS = 2_147_483_647;
 export const SUBAGENT_PROCESS_LIMITS = {
   jsonlLineBytes: 8 * 1024 * 1024,
   killGraceMs: 5_000,
+  processExitWaitMs: 10_000,
 } as const;
 
 export const SUBAGENT_PROCESS_RETENTION = {
@@ -54,6 +55,7 @@ export interface SubagentProcessResult {
   terminationReason?: string;
   errorMessage?: string;
   exitCode: number | null;
+  exitConfirmed: boolean;
   durationMs: number;
 }
 
@@ -88,6 +90,7 @@ export interface SubagentProcessLimits {
   quotaTokens?: number;
   quotaUsd?: number;
   killGraceMs: number;
+  processExitWaitMs?: number;
 }
 
 export interface SubagentProcessRetention {
@@ -220,10 +223,11 @@ function hasIsolatedSession(args: readonly string[]): boolean {
 
 function normalizeLimits(overrides: Partial<SubagentProcessLimits> | undefined): SubagentProcessLimits {
   const limits = { ...SUBAGENT_PROCESS_LIMITS, ...overrides };
-  for (const name of ["wallTimeMs", "jsonlLineBytes", "traceBytes", "stderrBytes", "outputBytes", "killGraceMs"] as const) {
+  for (const name of ["wallTimeMs", "jsonlLineBytes", "traceBytes", "stderrBytes", "outputBytes", "killGraceMs", "processExitWaitMs"] as const) {
     const value = limits[name];
-    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0 || value > MAX_NODE_TIMER_MS && (name === "wallTimeMs" || name === "killGraceMs"))) {
-      const bound = name === "wallTimeMs" || name === "killGraceMs" ? ` no greater than ${MAX_NODE_TIMER_MS}` : "";
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0 || value > MAX_NODE_TIMER_MS
+      && (name === "wallTimeMs" || name === "killGraceMs" || name === "processExitWaitMs"))) {
+      const bound = name === "wallTimeMs" || name === "killGraceMs" || name === "processExitWaitMs" ? ` no greater than ${MAX_NODE_TIMER_MS}` : "";
       throw new RangeError(`${name} must be a positive safe integer${bound}`);
     }
   }
@@ -331,6 +335,7 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     toolCallCount: 0,
     usage: emptyUsage(),
     exitCode: null,
+    exitConfirmed: false,
     durationMs: 0,
   };
   let child: SubagentProcessChild | undefined;
@@ -348,6 +353,7 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
   let forceTimer: NodeJS.Timeout | undefined;
   let settleTimer: NodeJS.Timeout | undefined;
   let timeoutTimer: NodeJS.Timeout | undefined;
+  let hasUsableAssistantResponse = false;
   let resolveResult!: (result: SubagentProcessResult) => void;
   let resolveExited!: () => void;
   const result = new Promise<SubagentProcessResult>((resolve) => { resolveResult = resolve; });
@@ -399,7 +405,15 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     return line;
   };
 
-  const publish = (): void => options.onUpdate?.(cloneResult(state));
+  const publish = (): void => {
+    if (!options.onUpdate) return;
+    try {
+      options.onUpdate(cloneResult(state));
+    } catch {
+      // Update callbacks are best-effort telemetry: a throwing callback must
+      // neither escape into the host event loop nor strand the result promise.
+    }
+  };
   const finish = (code: number | null): void => {
     if (closed || finishing) return;
     finishing = true;
@@ -420,10 +434,10 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     } else if (code !== 0 || state.errorMessage || state.stopReason === "error" || state.stopReason === "aborted") {
       state.status = state.stopReason === "aborted" ? "cancelled" : "failed";
       state.terminationReason ??= code === null ? "process_closed" : `exit_${code}`;
-    } else if (state.stopReason !== undefined && !["stop", "toolUse", "length"].includes(state.stopReason)) {
+    } else if (state.stopReason !== undefined && !["stop", "length", "toolUse"].includes(state.stopReason)) {
       state.status = "failed";
       state.terminationReason = state.stopReason;
-    } else if (state.usage.turns === 0) {
+    } else if (!hasUsableAssistantResponse) {
       state.status = "failed";
       state.terminationReason = "missing_assistant_message";
       state.errorMessage = "Child exited without an assistant response";
@@ -449,7 +463,7 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     forceTimer = setTimeout(() => {
       if (closed || !child) return;
       terminateProcess(child, true);
-      settleTimer = setTimeout(() => finish(null), 1_000);
+      settleTimer = setTimeout(() => finish(null), limits.processExitWaitMs ?? 1_000);
     }, limits.killGraceMs);
   };
   const processLine = (line: string): void => {
@@ -497,6 +511,9 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
         state.stopReason = message.stopReason;
         if (message.stopReason === "stop" || message.stopReason === "toolUse") state.errorMessage = undefined;
         else state.terminationReason = message.stopReason;
+        if (output.trim() && (message.stopReason === "stop" || message.stopReason === "length")) {
+          hasUsableAssistantResponse = true;
+        }
       }
       if (typeof message.errorMessage === "string") state.errorMessage = message.errorMessage;
       publish();
@@ -579,6 +596,7 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
       });
       child.on("error", (error) => requestTermination("failed", "spawn_error", error.message));
       child.once("close", (code) => {
+        state.exitConfirmed = true;
         markExited();
         finish(code);
       });

@@ -65,6 +65,30 @@ function assistantReport(index) {
   };
 }
 
+function throwingUi() {
+  return new Proxy({}, {
+    get(_target, property) {
+      return async () => {
+        throw new Error(`Unexpected UI call: ${String(property)}`);
+      };
+    },
+  });
+}
+
+function toolContext(cwd, { mode, hasUI = true } = {}) {
+  const model = { provider: "test", id: "parent-model", reasoning: true };
+  return {
+    cwd,
+    mode,
+    hasUI,
+    isProjectTrusted: () => true,
+    model,
+    thinkingLevel: "high",
+    modelRegistry: { getAvailable: () => [model] },
+    ui: throwingUi(),
+  };
+}
+
 test("ten parallel read-only reviewers complete past 250,000 tokens without a turn cap or default limit", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "killeros-codex-parity-"));
   const bundledAgentsDir = path.join(root, "bundled");
@@ -97,7 +121,7 @@ test("ten parallel read-only reviewers complete past 250,000 tokens without a tu
     assert.equal(tool.parameters.properties.tasks.maxItems, 10);
 
     const result = await tool.execute("subagent-codex-parity", {
-      tasks: Array.from({ length: 10 }, (_, index) => ({ agent: "reviewer", task: `Review scope ${index + 1}` })),
+      tasks: Array.from({ length: 10 }, (_, index) => ({ agent: "reviewer", task: `Review scope ${index + 1}`, name: `review-${index + 1}` })),
     }, new AbortController().signal, () => {}, {
       cwd: root,
       hasUI: true,
@@ -123,3 +147,42 @@ test("ten parallel read-only reviewers complete past 250,000 tokens without a tu
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const mode of ["tui", "rpc", "json", "print"]) {
+  test(`subagent control works in ${mode} mode without relying on TUI prompts`, async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "killeros-codex-mode-"));
+    const bundledAgentsDir = path.join(root, "bundled");
+    const userAgentsDir = path.join(root, "personal");
+    mkdirSync(bundledAgentsDir);
+    mkdirSync(userAgentsDir);
+    writeFileSync(path.join(bundledAgentsDir, "scout.md"), reviewerRole().replace(/reviewer/gu, "scout"));
+
+    try {
+      let tool;
+      registerSubagentTool({ registerTool(value) { tool = value; } }, {
+        bundledAgentsDir,
+        userAgentsDir,
+        awaitSpawnCompletion: true,
+        spawnProcess() {
+          const child = new FakeProcess();
+          queueMicrotask(() => {
+            child.json(assistantReport(1));
+            child.close();
+          });
+          return child;
+        },
+      });
+      const ctx = toolContext(root, { mode, hasUI: mode === "tui" });
+      const result = await tool.execute(
+        `subagent-codex-${mode}`,
+        { agent: "scout", task: `mode:${mode}` },
+        new AbortController().signal,
+        () => {},
+        ctx,
+      );
+      assert.equal(result.details.results[0].status, "complete");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

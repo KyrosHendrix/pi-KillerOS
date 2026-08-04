@@ -29,6 +29,7 @@ export interface GoalRuntime {
   state?: GoalState;
   continuationScheduled: boolean;
   continuationHeld: boolean;
+  continuationHeldForCompaction: boolean;
   goalTurnInFlight: boolean;
   agentEndObserved: boolean;
   persistenceRetryNeeded: boolean;
@@ -45,6 +46,7 @@ export function createGoalRuntime(): GoalRuntime {
   return {
     continuationScheduled: false,
     continuationHeld: false,
+    continuationHeldForCompaction: false,
     goalTurnInFlight: false,
     agentEndObserved: false,
     persistenceRetryNeeded: false,
@@ -58,4 +60,27 @@ export function resetInitRuntime(state: InitRuntime): void {
   state.writeSucceeded = false;
   state.projectRoot = undefined;
   state.activeTools = undefined;
+}
+
+export interface CompactionRuntime {
+  compactionInFlight: boolean;
+  automaticCompactionArmed: boolean;
+  automaticCompactionAwaitingHook: boolean;
+  automaticCompactionPending: boolean;
+  compactionOperationId: number;
+  sessionGeneration: number;
+  lastCompactionAt?: number;
+  thresholdPercent: number;
+}
+
+export function createCompactionRuntime(): CompactionRuntime {
+  return {
+    compactionInFlight: false,
+    automaticCompactionArmed: true,
+    automaticCompactionAwaitingHook: false,
+    automaticCompactionPending: false,
+    compactionOperationId: 0,
+    sessionGeneration: 0,
+    thresholdPercent: 30,
+  };
 }

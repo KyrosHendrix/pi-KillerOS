@@ -149,13 +149,36 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 
 ## Subagent Thread Lifecycle
 
-KillerOS presents each delegated task as a named child thread, not as an invisible turn-limited run. The thread contract records its parent ID, child ID, role, prompt, model, requested capability boundary, trace, usage, and result state. The parent owns scope, waiting, inspection, steering, collection, and closure.
+KillerOS presents each delegated task as a named child thread, not as an invisible turn-limited run. The thread contract records its parent ID, child ID, display name, attempt, role, prompt, model, requested capability boundary, stable session ID and directory, trace, usage, and result state. The parent owns scope, waiting, inspection, steering, collection, resumption, and closure.
 
-Threads use `queued`, `active`, `done`, `failed`, `stopped`, and `closed` states. The parent surface keeps separate **Active** and **Done** lists. Active rows show the thread name, task, model, usage, and controls. Done rows retain the handoff and trace for inspection until the parent closes the thread.
+Threads use `queued`, `active`, `done`, `failed`, `stopped`, `orphaned`, and `closed` states. The parent surface keeps separate **Active** and **Done** lists. Active rows show the thread name, task, model, usage, and controls. Done rows retain the handoff and trace for inspection until the parent closes the thread.
 
-The controls are explicit: **inspect** opens the prompt, role, model, tools, trace, usage, and handoff; **steer** sends one bounded follow-up to an active thread; **interrupt** stops one or all active children; **collect** distills the handoff into parent context; and **close** removes a finished or stopped thread from the workspace while retaining a small inspectable tombstone and evicting heavy payloads under the retention budget. Interruption preserves the trace, names the reason, and labels the handoff as partial, never successful.
+```mermaid
+flowchart LR
+  spawn["spawn"] --> queued["queued"] --> active["active"]
+  active --> done["done"]
+  active --> failed["failed"]
+  active --> stopped["stopped"]
+  active --> orphaned["orphaned: parent_restarted"]
+  done --> resume["resume"]
+  failed --> resume
+  stopped --> resume
+  orphaned --> resume
+  resume --> queued
+  done --> closed["closed"]
+  failed --> closed
+  stopped --> closed
+  orphaned --> closed
+  active -. "wait: observe only" .-> active
+```
 
-A child becomes done when it returns a final answer. The default path has no per-child execution quota and gives each child a private Pi session directory and session ID; every JSONL record still has an 8 MiB parser ceiling. Steering restarts that same session so the child keeps its prior conversation. KillerOS bounds retained trace, stderr, and returned text and spills a large JSONL line to temporary storage; retention does not stop the child or mark it `limited`. Embedding callers may apply explicit wall-time, output, trace, stderr, JSONL, token, or cost guards; each guard must name its cause and return partial work clearly. The parent still bounds task count, reader concurrency, role files, task input, and combined parent output. Explicit user interruptions and real child-process failures remain visible. Markdown roles continue to define access and tools; lifecycle controls do not expand those permissions.
+The controls are explicit: **inspect** opens the prompt, role, model, tools, trace, usage, and handoff; **wait** observes one named or ID child or all queued and active children without changing state; **steer** sends one bounded follow-up to an active thread; **interrupt** stops one or all active children; **collect** distills the handoff into parent context; **resume** requeues a terminal or orphaned child with the same identity and session; and **close** removes a finished, stopped, or orphaned thread from the workspace while retaining a small inspectable tombstone and evicting heavy payloads under the retention budget. Interruption preserves the trace, names the reason, and labels the handoff as partial, never successful.
+
+Each spawn, terminal snapshot, resume, and close writes a compact versioned custom entry through Pi’s `appendEntry()` API. On `session_start`, a reducer scans only the parent’s entries, applies them in file order, bounds stored output, and hydrates the registry. A queued or active latest record becomes `orphaned` with `parent_restarted`; a close record restores only a bounded tombstone. The child session path is stable under the parent session directory at `killeros-subagents/<safe-parent-session-id>/<thread-id>`, and the child uses one stable session ID for every attempt. No absolute child path appears in tool output.
+
+A child becomes done only when it returns usable final assistant text. The default wall time is 30 minutes, token and dollar quotas are opt-in, and every JSONL record still has an 8 MiB parser ceiling. Steering restarts the same session so the child keeps its prior conversation. KillerOS bounds retained trace, stderr, and returned text and spills a large JSONL line to temporary storage; retention does not stop the child or mark it `limited`. When closing or replacing a process, KillerOS waits up to 10 seconds for confirmed exit; an unconfirmed exit keeps the child session directory and records the cause. Embedding callers may apply explicit output, trace, stderr, JSONL, token, or cost guards; each guard must name its cause and return partial work clearly. The parent still bounds task count, reader concurrency, role files, task input, and combined parent output. Explicit user interruptions and real child-process failures remain visible. Markdown roles continue to define access and tools; lifecycle controls do not expand those permissions.
+
+Nested child delegation and automatic parent-transcript forks are non-goals. A resumed child sees its own saved Pi session, not a copy of the parent conversation.
 
 Implementation proceeds in nine phases:
 

@@ -1,4 +1,4 @@
-export type ThreadStatus = "queued" | "running" | "complete" | "failed" | "cancelled" | "limited";
+export type ThreadStatus = "queued" | "running" | "complete" | "failed" | "cancelled" | "limited" | "orphaned";
 
 export interface ThreadUsage {
   input: number;
@@ -12,6 +12,8 @@ export interface ThreadUsage {
 
 export interface ThreadRecord {
   id: string;
+  displayName?: string;
+  attempt?: number;
   agent: string;
   task: string;
   status: ThreadStatus;
@@ -30,7 +32,9 @@ export const THREAD_BOARD_CONTROL_LABELS = {
   inspect: "Inspect",
   steer: "Steer",
   interrupt: "Interrupt",
+  wait: "Wait",
   collect: "Collect",
+  resume: "Resume",
   close: "Close",
 } as const;
 
@@ -73,6 +77,8 @@ export interface ThreadHandoffView {
 export interface ThreadListItem {
   record: ThreadRecord;
   id: string;
+  displayName?: string;
+  attempt?: number;
   agent: string;
   task: string;
   step?: number;
@@ -83,6 +89,8 @@ export interface ThreadListItem {
 
 export interface ThreadInspectionView {
   id: string;
+  displayName?: string;
+  attempt?: number;
   agent: string;
   task: string;
   step?: number;
@@ -122,6 +130,7 @@ function toRecord(item: ThreadListItem): ThreadRecord {
 
 function threadStatus(thread: Pick<ThreadRecord, "status" | "terminationReason">): ThreadStatus {
   const reason = thread.terminationReason;
+  if (thread.status === "orphaned") return "orphaned";
   if (thread.status === "failed" || reason === "error" || reason === "spawn_error" || reason === "process_closed" || reason === "missing_assistant_message" || reason === "malformed_jsonl" || reason === "invalid_usage" || reason?.startsWith("exit_")) return "failed";
   if (thread.status === "cancelled" || reason === "abort" || reason === "interrupt") return "cancelled";
   if (thread.status === "complete" || reason === "completed") return "complete";
@@ -143,6 +152,7 @@ export function formatThreadState(thread: Pick<ThreadRecord, "status" | "termina
   if (status === "failed") return { status, label: "Failed", reason, partialWork: "Failed before completion. Any saved output is partial work." };
   if (status === "cancelled") return { status, label: "Stopped", reason, partialWork: "Stopped before completion. Any saved output is partial work." };
   if (status === "limited") return { status, label: "Limited", reason, partialWork: "Stopped at a limit before completion. Any saved output is partial work." };
+  if (status === "orphaned") return { status, label: "Orphaned", reason, partialWork: "The parent session restarted before completion. Any saved output is partial work." };
   if (status === "running") return { status, label: "Running", reason };
   return { status, label: "Queued", reason };
 }
@@ -176,7 +186,9 @@ export function formatThreadControls(status: ThreadStatus): readonly ThreadBoard
     { id: "inspect", label: THREAD_BOARD_CONTROL_LABELS.inspect, enabled: true },
     { id: "steer", label: THREAD_BOARD_CONTROL_LABELS.steer, enabled: active },
     { id: "interrupt", label: THREAD_BOARD_CONTROL_LABELS.interrupt, enabled: active },
+    { id: "wait", label: THREAD_BOARD_CONTROL_LABELS.wait, enabled: active },
     { id: "collect", label: THREAD_BOARD_CONTROL_LABELS.collect, enabled: isDone(status) },
+    { id: "resume", label: THREAD_BOARD_CONTROL_LABELS.resume, enabled: isDone(status) },
     { id: "close", label: THREAD_BOARD_CONTROL_LABELS.close, enabled: isDone(status) },
   ];
 }
@@ -184,6 +196,8 @@ export function formatThreadControls(status: ThreadStatus): readonly ThreadBoard
 export function formatThreadInspection(thread: ThreadRecord): ThreadInspectionView {
   return {
     id: thread.id,
+    displayName: thread.displayName,
+    attempt: thread.attempt,
     agent: thread.agent,
     task: thread.task,
     step: thread.step,
@@ -199,6 +213,8 @@ function formatThreadListItem(thread: ThreadRecord, selectedThreadId: string | u
   return {
     record: { ...thread, trace: thread.trace ? [...thread.trace] : undefined, usage: { ...thread.usage } },
     id: thread.id,
+    displayName: thread.displayName,
+    attempt: thread.attempt,
     agent: thread.agent,
     task: thread.task,
     step: thread.step,

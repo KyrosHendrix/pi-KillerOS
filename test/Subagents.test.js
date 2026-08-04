@@ -137,13 +137,20 @@ function createToolHarness(options) {
   return tool;
 }
 
-function toolContext(cwd, { trusted = true, confirm = true, models } = {}) {
+function toolContext(cwd, { trusted = true, confirm = true, models, sessionRoot, sessionId = "parent-session", entries = [] } = {}) {
   return {
     ...modelContext(models),
     cwd,
     hasUI: true,
     isProjectTrusted: () => trusted,
     ui: { confirm: async () => confirm },
+    ...(sessionRoot ? {
+      sessionManager: {
+        getSessionDir: () => sessionRoot,
+        getSessionId: () => sessionId,
+        getEntries: () => entries,
+      },
+    } : {}),
   };
 }
 
@@ -226,8 +233,10 @@ test("subagent schema is a top-level object for strict providers", () => {
   assert.deepEqual(Object.keys(schema.properties), [
     "action",
     "threadId",
+    "name",
     "message",
     "all",
+    "timeoutMs",
     "agent",
     "task",
     "tasks",
@@ -239,6 +248,432 @@ test("subagent schema is a top-level object for strict providers", () => {
   ]);
   assert.equal(schema.properties.tasks.items.type, "object");
   assert.equal(schema.properties.chain.items.type, "object");
+});
+
+test("schema accepts named children, wait, and resume", () => {
+  const tool = createToolHarness();
+  const schema = JSON.parse(JSON.stringify(tool.parameters));
+  assert.equal(schema.properties.tasks.items.properties.name.maxLength, 48);
+  assert.equal(schema.properties.tasks.items.properties.name.pattern, "^[A-Za-z0-9][A-Za-z0-9._ -]{0,47}$");
+  assert.equal(normalizeSubagentRequest({ action: "wait", timeoutMs: 100 }).kind, "wait");
+  assert.equal(normalizeSubagentRequest({ action: "resume", threadId: "reviewer" }).kind, "resume");
+  assert.throws(() => normalizeSubagentRequest({ agent: "scout", task: "map", name: "" }), /name.*non-empty/iu);
+  assert.throws(() => normalizeSubagentRequest({ agent: "scout", task: "map", name: "x".repeat(49) }), /name.*match|name.*48/iu);
+  assert.throws(() => normalizeSubagentRequest({ action: "wait", threadId: "one", all: true }), /wait.*threadId.*all|cannot combine/iu);
+  assert.throws(() => normalizeSubagentRequest({ action: "wait", timeoutMs: 0 }), /timeoutMs.*positive/iu);
+  assert.throws(() => normalizeSubagentRequest({ action: "resume" }), /threadId.*non-empty/iu);
+});
+
+test("named child arguments use a persistent parent-session directory", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const calls = [];
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess(args) {
+        calls.push(args);
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("named output")); child.close(0); });
+        return child;
+      },
+    });
+    const result = await execute(tool, { agent: "scout", task: "Map auth", name: "auth-audit" }, toolContext(roster.root, { sessionRoot, sessionId: "parent/one" }));
+    const args = calls[0];
+    assert.equal(args[args.indexOf("--name") + 1], "auth-audit");
+    const directory = args[args.indexOf("--session-dir") + 1];
+    assert.match(directory, /killeros-subagents/u);
+    assert.equal(existsSync(directory), true);
+    assert.equal(result.details.results[0].name, "auth-audit");
+    assert.equal(result.details.results[0].attempt, 1);
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("empty final assistant content fails with a deterministic reason", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("", { stopReason: "stop" })); child.close(0); });
+        return child;
+      },
+    });
+    const result = await execute(tool, { agent: "scout", task: "empty" }, toolContext(roster.root));
+    assert.equal(result.details.results[0].status, "failed");
+    assert.equal(result.details.results[0].terminationReason, "missing_assistant_message");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("default wall time applies when a role omits timeoutMs", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      limits: { defaultWallTimeMs: 20, processExitWaitMs: 10 },
+      spawnProcess() { return new FakeProcess(); },
+    });
+    const result = await execute(tool, { agent: "scout", task: "wait" }, toolContext(roster.root));
+    assert.equal(result.details.results[0].terminationReason, "wall_time_limit");
+    assert.equal(result.details.results[0].exitConfirmed, true);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("wait returns a timeout without stopping the child and wakes after completion", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let child;
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      awaitSpawnCompletion: false,
+      spawnProcess() { child = new FakeProcess(); return child; },
+    });
+    const ctx = toolContext(roster.root);
+    const started = await execute(tool, { agent: "scout", task: "wait", name: "waiter" }, ctx);
+    const threadId = started.details.results[0].id;
+    for (let attempt = 0; attempt < 100 && !child; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.ok(child);
+    const timedOut = await execute(tool, { action: "wait", threadId: "waiter", timeoutMs: 1 }, ctx);
+    assert.equal(timedOut.details.wait.timedOut, true);
+    assert.deepEqual(timedOut.details.wait.pendingThreadIds, [threadId]);
+    assert.equal((await execute(tool, { action: "inspect", threadId }, ctx)).details.threads[0].state, "active");
+    const settled = execute(tool, { action: "wait", threadId, timeoutMs: 100 }, ctx);
+    child.json(assistantEvent("waited"));
+    child.close(0);
+    const completed = await settled;
+    assert.equal(completed.details.wait.timedOut, false);
+    assert.deepEqual(completed.details.wait.pendingThreadIds, []);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("resume keeps the child identity and session path while increasing attempt", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const calls = [];
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess(args) {
+        calls.push(args);
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent(calls.length === 1 ? "first" : "second")); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "resume-parent" });
+    const first = await execute(tool, { agent: "scout", task: "first", name: "reviewer" }, ctx);
+    const firstThread = first.details.threads.find((thread) => thread.state === "done");
+    const resumed = await execute(tool, { action: "resume", threadId: "REVIEWER", task: "Continue review" }, ctx);
+    const resumedThread = resumed.details.threads.find((thread) => thread.id === firstThread.id);
+    assert.equal(resumed.details.selectedThreadId, firstThread.id);
+    assert.equal(resumedThread.displayName, "reviewer");
+    assert.equal(resumedThread.attempt, 2);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0][calls[0].indexOf("--name") + 1], "reviewer");
+    assert.equal(calls[1][calls[1].indexOf("--name") + 1], "reviewer");
+    assert.equal(calls[0][calls[0].indexOf("--session-id") + 1], calls[1][calls[1].indexOf("--session-id") + 1]);
+    assert.equal(calls[0][calls[0].indexOf("--session-dir") + 1], calls[1][calls[1].indexOf("--session-dir") + 1]);
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("session hooks persist terminal snapshots and restore them on session start", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  const entries = [];
+  const handlers = new Map();
+  let tool;
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const pi = {
+      registerTool(value) { tool = value; },
+      appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
+      on(event, handler) { handlers.set(event, handler); },
+    };
+    registerSubagentTool(pi, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      awaitSpawnCompletion: true,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("persisted")); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "persist-parent", entries });
+    const first = await execute(tool, { agent: "scout", task: "save me", name: "saved-child" }, ctx);
+    assert.deepEqual(entries.map((entry) => entry.data.event), ["spawn", "snapshot"]);
+    assert.equal(first.details.results[0].output, "persisted");
+    const expectedSessionDirectory = path.join(sessionRoot, "killeros-subagents", "persist-parent", first.details.results[0].id);
+    assert.equal(entries[0].data.thread.session.directory, expectedSessionDirectory);
+    handlers.get("session_start")(undefined, ctx);
+    const restored = await execute(tool, { action: "list" }, ctx);
+    assert.equal(restored.details.doneThreads[0].displayName, "saved-child");
+    assert.equal(restored.details.results[0].output, "persisted");
+    assert.equal(restored.details.doneThreads[0].session.directory, expectedSessionDirectory);
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("session start ignores malformed custom thread records", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  const entries = [];
+  const handlers = new Map();
+  let tool;
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const pi = {
+      registerTool(value) { tool = value; },
+      appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
+      on(event, handler) { handlers.set(event, handler); },
+    };
+    registerSubagentTool(pi, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      awaitSpawnCompletion: true,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("saved")); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "malformed-parent", entries });
+    await execute(tool, { agent: "scout", task: "save me", name: "saved-child" }, ctx);
+    const malformed = JSON.parse(JSON.stringify(entries[1]));
+    malformed.data.thread.state = "not-a-thread-state";
+    entries.splice(0, entries.length, malformed);
+
+    assert.doesNotThrow(() => handlers.get("session_start")(undefined, ctx));
+    const restored = await execute(tool, { action: "list" }, ctx);
+    assert.deepEqual(restored.details.threads, []);
+    assert.deepEqual(restored.details.results, []);
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("session start ignores malformed persisted results", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  const entries = [];
+  const handlers = new Map();
+  let tool;
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const pi = {
+      registerTool(value) { tool = value; },
+      appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
+      on(event, handler) { handlers.set(event, handler); },
+    };
+    registerSubagentTool(pi, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      awaitSpawnCompletion: true,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("saved")); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "malformed-result-parent", entries });
+    await execute(tool, { agent: "scout", task: "save me", name: "saved-child" }, ctx);
+    const malformed = JSON.parse(JSON.stringify(entries[1]));
+    malformed.data.result.output = { not: "text" };
+    entries.splice(0, entries.length, malformed);
+
+    assert.doesNotThrow(() => handlers.get("session_start")(undefined, ctx));
+    const restored = await execute(tool, { action: "list" }, ctx);
+    assert.deepEqual(restored.details.threads, []);
+    assert.deepEqual(restored.details.results, []);
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("session start ignores a persisted child session path outside the parent session", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  const entries = [];
+  const handlers = new Map();
+  let tool;
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const pi = {
+      registerTool(value) { tool = value; },
+      appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
+      on(event, handler) { handlers.set(event, handler); },
+    };
+    registerSubagentTool(pi, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      awaitSpawnCompletion: true,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("saved")); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "safe-parent", entries });
+    await execute(tool, { agent: "scout", task: "save me", name: "saved-child" }, ctx);
+    const outside = mkdtempSync(path.join(os.tmpdir(), "killeros-outside-session-"));
+    try {
+      const malformed = JSON.parse(JSON.stringify(entries[1]));
+      malformed.data.thread.session.directory = outside;
+      entries.splice(0, entries.length, malformed);
+      handlers.get("session_start")(undefined, ctx);
+      const restored = await execute(tool, { action: "list" }, ctx);
+      assert.deepEqual(restored.details.threads, []);
+      assert.equal(existsSync(outside), true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("restored active snapshots expose orphaned status in task results", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  const entries = [];
+  const handlers = new Map();
+  let tool;
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const pi = {
+      registerTool(value) { tool = value; },
+      appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
+      on(event, handler) { handlers.set(event, handler); },
+    };
+    registerSubagentTool(pi, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      awaitSpawnCompletion: true,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("saved")); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "orphan-parent", entries });
+    await execute(tool, { agent: "scout", task: "save me", name: "saved-child" }, ctx);
+    const orphaned = JSON.parse(JSON.stringify(entries[1]));
+    orphaned.data.thread.state = "active";
+    orphaned.data.result.status = "running";
+    entries.splice(0, entries.length, orphaned);
+    handlers.get("session_start")(undefined, ctx);
+    const restored = await execute(tool, { action: "list" }, ctx);
+    assert.equal(restored.details.doneThreads[0].state, "orphaned");
+    assert.equal(restored.details.results[0].status, "orphaned");
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("resume persistence clears the prior terminal result before the child runs", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  const entries = [];
+  const handlers = new Map();
+  const children = [];
+  let tool;
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const pi = {
+      registerTool(value) { tool = value; },
+      appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
+      on(event, handler) { handlers.set(event, handler); },
+    };
+    registerSubagentTool(pi, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      awaitSpawnCompletion: false,
+      spawnProcess() {
+        const child = new FakeProcess();
+        children.push(child);
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "resume-persist-parent", entries });
+    const started = await execute(tool, { agent: "scout", task: "first", name: "reviewer" }, ctx);
+    for (let attempt = 0; attempt < 100 && !children[0]; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.ok(children[0]);
+    children[0].json(assistantEvent("first"));
+    children[0].close(0);
+    await execute(tool, { action: "wait", threadId: started.details.results[0].id, timeoutMs: 100 }, ctx);
+
+    const resumed = await execute(tool, { action: "resume", threadId: "reviewer", task: "second" }, ctx);
+    for (let attempt = 0; attempt < 100 && !children[1]; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.ok(children[1]);
+    const snapshots = entries.filter((entry) => entry.data.event === "snapshot");
+    const latest = snapshots.at(-1).data;
+    assert.equal(latest.thread.state, "queued");
+    assert.equal(Object.hasOwn(latest, "result"), false);
+    assert.equal(resumed.details.results[0].output, "");
+
+    children[1].json(assistantEvent("second"));
+    children[1].close(0);
+    await execute(tool, { action: "wait", threadId: started.details.results[0].id, timeoutMs: 100 }, ctx);
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("resume keeps a terminal child unchanged when role validation fails", async () => {
+  const roster = tempRoster();
+  try {
+    const rolePath = writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("saved")); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    const started = await execute(tool, { agent: "scout", task: "save this", name: "reviewer" }, ctx);
+    rmSync(rolePath);
+    await assert.rejects(
+      execute(tool, { action: "resume", threadId: started.details.results[0].id }, ctx),
+      /Unknown subagent.*scout/iu,
+    );
+    const listed = await execute(tool, { action: "list" }, ctx);
+    assert.equal(listed.details.threads.find((thread) => thread.id === started.details.results[0].id).state, "done");
+    assert.equal(listed.details.results.find((result) => result.id === started.details.results[0].id).output, "saved");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
 });
 
 test("subagent preparation gives Pi action-specific request errors", () => {
@@ -725,8 +1160,7 @@ test("parallel execution caps readers, serializes writers by default, and suppor
     assert.equal(writerStartedWithWriter, false);
     assert.match(writers.details.executionNote, /shared pool of up to 1 \(safe default\)/u);
 
-    peakChildren = 0;
-    const cappedMixed = await execute(tool, {
+    await assert.rejects(() => execute(tool, {
       writerConcurrency: 2,
       tasks: [
         { agent: "scout", task: "read one" },
@@ -734,10 +1168,7 @@ test("parallel execution caps readers, serializes writers by default, and suppor
         { agent: "worker", task: "write one" },
         { agent: "worker", task: "write two" },
       ],
-    }, ctx);
-    assert.deepEqual(cappedMixed.details.results.map((entry) => entry.status), ["complete", "complete", "complete", "complete"]);
-    assert.equal(peakChildren, 2);
-    assert.match(cappedMixed.details.executionNote, /shared pool of up to 2/u);
+    }, ctx), /writerConcurrency above 1.*share the parent worktree.*use 1/iu);
 
     peakChildren = 0;
     const serialMixed = await execute(tool, {
@@ -754,22 +1185,6 @@ test("parallel execution caps readers, serializes writers by default, and suppor
 
     peakWriters = 0;
     writerStartedWithWriter = false;
-    const cappedWriters = await execute(tool, {
-      writerConcurrency: 2,
-      tasks: [
-        { agent: "worker", task: "parallel one" },
-        { agent: "worker", task: "parallel two" },
-        { agent: "worker", task: "parallel three" },
-      ],
-    }, ctx);
-    assert.deepEqual(cappedWriters.details.results.map((entry) => entry.status), ["complete", "complete", "complete"]);
-    assert.deepEqual([...writerTasks.slice(-3)].sort(), ["Task: parallel one", "Task: parallel two", "Task: parallel three"].sort());
-    assert.equal(peakWriters, 2);
-    assert.equal(writerStartedWithWriter, true);
-    assert.match(cappedWriters.details.executionNote, /shared pool of up to 2/u);
-
-    peakWriters = 0;
-    writerStartedWithWriter = false;
     const serialWriters = await execute(tool, {
       writerConcurrency: 1,
       tasks: [
@@ -781,7 +1196,7 @@ test("parallel execution caps readers, serializes writers by default, and suppor
     assert.equal(peakWriters, 1);
     assert.equal(writerStartedWithWriter, false);
     assert.match(serialWriters.details.executionNote, /shared pool of up to 1/u);
-    assert.equal(spawned, 21);
+    assert.equal(spawned, 14);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
@@ -1122,11 +1537,11 @@ test("message is scoped to steer and the parallel schedule is described", async 
       writerConcurrency: 2,
       tasks: [{ agent: "scout", task: "map" }],
     }, ctx), /requires at least one write-capable role/u);
-    assert.match(tool.description, /write-capable roles use one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership[\s\S]*shared worktree/u);
+    assert.match(tool.description, /write-capable tasks are serialized in the shared parent worktree/iu);
     assert.equal(tool.parameters.additionalProperties, false);
     assert.ok(tool.parameters.properties.action.enum.includes("steer"));
-    assert.match(tool.parameters.properties.tasks.description, /one shared slot by default[\s\S]*writerConcurrency[\s\S]*path ownership/u);
-    assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to 1[\s\S]*values above 1[\s\S]*path ownership/u);
+    assert.match(tool.parameters.properties.tasks.description, /one shared slot by default/u);
+    assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to 1/u);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
@@ -1184,8 +1599,8 @@ test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits 
         }));
         child.close(0);
       },
-      expectedStatus: "complete",
-      expectedReason: "completed",
+      expectedStatus: "failed",
+      expectedReason: "missing_assistant_message",
     },
     {
       name: "trace",
@@ -1509,7 +1924,7 @@ test("session cleanup waits for the child close event after forced termination",
     const result = await execute(tool, { agent: "scout", task: "timeout" }, toolContext(roster.root));
     assert.equal(result.details.results[0].status, "limited");
     assert.equal(result.details.results[0].terminationReason, "wall_time_limit");
-    assert.equal(existsSync(sessionDirectory), true);
+    assert.equal(existsSync(sessionDirectory), false);
 
     await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(existsSync(sessionDirectory), false);
@@ -1525,7 +1940,7 @@ test("session cleanup retains the session when forced termination never confirms
     writeRole(roster.bundled, "scout.md", { name: "scout" });
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
-      limits: { wallTimeMs: 50, killGraceMs: 5 },
+      limits: { wallTimeMs: 50, killGraceMs: 5, processExitWaitMs: 10 },
       spawnProcess(args) {
         sessionDirectory = args[args.indexOf("--session-dir") + 1];
         const child = new FakeProcess();
@@ -1538,8 +1953,9 @@ test("session cleanup retains the session when forced termination never confirms
     });
     const result = await execute(tool, { agent: "scout", task: "timeout" }, toolContext(roster.root));
 
-    assert.equal(result.details.results[0].status, "limited");
-    assert.equal(result.details.results[0].terminationReason, "wall_time_limit");
+    assert.equal(result.details.results[0].status, "failed");
+    assert.equal(result.details.results[0].terminationReason, "process_exit_unconfirmed");
+    assert.equal(result.details.results[0].exitConfirmed, false);
     assert.equal(existsSync(sessionDirectory), true);
   } finally {
     if (sessionDirectory) rmSync(sessionDirectory, { recursive: true, force: true });

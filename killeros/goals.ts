@@ -6,7 +6,7 @@ import { CONCISE_SYSTEM_PROMPT } from "./concise.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
-import type { GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import type { CompactionRuntime, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
 const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
@@ -185,7 +185,7 @@ function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
   return lines.join("\n");
 }
 
-function pauseGoalAfterFailure(
+export function pauseGoalAfterFailure(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   ctx: ExtensionContext,
@@ -339,6 +339,7 @@ export function registerGoal(
     runtime.state = restoreGoalState(ctx);
     runtime.continuationScheduled = false;
     runtime.continuationHeld = false;
+    runtime.continuationHeldForCompaction = false;
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
     runtime.persistenceRetryNeeded = false;
@@ -354,6 +355,7 @@ export function registerGoal(
     runtime.state = restoreGoalState(ctx);
     runtime.continuationScheduled = false;
     runtime.continuationHeld = false;
+    runtime.continuationHeldForCompaction = false;
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
     runtime.persistenceRetryNeeded = false;
@@ -382,6 +384,7 @@ export function registerGoal(
     runtime.state = undefined;
     runtime.continuationScheduled = false;
     runtime.continuationHeld = false;
+    runtime.continuationHeldForCompaction = false;
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
     runtime.persistenceRetryNeeded = false;
@@ -688,6 +691,7 @@ export function registerGoalSettlement(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   initState: InitRuntime,
+  compactionRuntime?: CompactionRuntime,
 ): void {
   pi.on("agent_settled", (_event, ctx) => {
     const wasGoalTurn = runtime.goalTurnInFlight;
@@ -713,8 +717,27 @@ export function registerGoalSettlement(
       pauseGoalAfterFailure(pi, runtime, ctx, reason);
       return;
     }
+    if (compactionRuntime?.compactionInFlight) {
+      runtime.continuationHeld = true;
+      runtime.continuationHeldForCompaction = true;
+      runtime.requestRender?.();
+      return;
+    }
     runtime.lastStopReason = undefined;
     runtime.lastError = undefined;
     scheduleGoalContinuation(pi, runtime, initState, ctx);
   });
+
+  if (compactionRuntime) {
+    pi.on("session_compact", (_event, ctx) => {
+      if (!runtime.continuationHeldForCompaction) return;
+      runtime.continuationHeldForCompaction = false;
+      if (!runtime.continuationHeld || runtime.state?.status !== "active" || initState.active) {
+        runtime.continuationHeld = false;
+        return;
+      }
+      runtime.continuationHeld = false;
+      setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+    });
+  }
 }

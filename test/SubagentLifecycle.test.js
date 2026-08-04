@@ -33,8 +33,11 @@ class FakeProcess extends EventEmitter {
   }
 }
 
+let nextThreadSpecName = 0;
+
 function threadSpec(overrides = {}) {
   return {
+    displayName: `scout-${++nextThreadSpecName}`,
     role: "scout",
     prompt: "Map the codebase",
     model: "test/model",
@@ -44,9 +47,42 @@ function threadSpec(overrides = {}) {
       network: "read",
       process: "none",
       childThreads: false,
-    },
+      },
+    session: { id: "killeros-test", directory: "C:/tmp/killeros-test" },
     ...overrides,
   };
+}
+
+function threadSnapshot(overrides = {}) {
+  return {
+    ...threadSpec(overrides),
+    id: "subagent-snapshot",
+    attempt: 1,
+    state: "done",
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+      costUsd: 0,
+      turns: 0,
+    },
+    trace: [],
+    steering: [],
+    result: undefined,
+    failure: undefined,
+    stopReason: undefined,
+    evicted: false,
+    timestamps: { createdAt: 1, updatedAt: 1 },
+    version: 1,
+    ...overrides,
+  };
+}
+
+function ids(...values) {
+  let index = 0;
+  return () => values[index++] ?? `subagent-${index}`;
 }
 
 function piArgs() {
@@ -187,11 +223,54 @@ test("registry bounds steering history and returns defensive snapshots", () => {
   inspected.handoff.artifacts.push("mutated.ts");
 
   const current = registry.inspect(thread.id);
-  assert.deepEqual(current.steering.map((message) => message.message), ["check tests", "check docs"]);
+  assert.deepEqual(current.steering.map((message) => message.message), ["check auth", "check tests"]);
   assert.deepEqual(current.tools, ["read"]);
   assert.equal(current.capabilityBoundary.filesystem, "read");
   assert.equal(current.prompt, "Map the codebase");
   assert.deepEqual(current.handoff.artifacts, ["auth.ts"]);
+});
+
+test("registry rejects duplicate display names within one parent and resolves names", () => {
+  const registry = new SubagentThreadRegistry({ createId: ids("subagent-1", "subagent-2") });
+  const first = registry.spawn(threadSpec({ displayName: "Auth audit", parentId: "main:parent" }));
+  assert.throws(
+    () => registry.spawn(threadSpec({ displayName: "auth audit", parentId: "main:parent" })),
+    /display name.*already exists/iu,
+  );
+  const otherParent = registry.spawn(threadSpec({ displayName: "auth audit", parentId: "main:other" }));
+  assert.equal(registry.resolve("Auth audit", "main:parent").id, first.id);
+  assert.equal(registry.resolve("auth audit", "main:other").id, otherParent.id);
+});
+
+test("registry hydrates active records as orphaned and resumes the same thread", () => {
+  const registry = new SubagentThreadRegistry({ now: () => 100 });
+  const hydrated = registry.hydrate(threadSnapshot({
+    id: "subagent-9",
+    displayName: "reviewer",
+    state: "active",
+    parentId: "main:parent",
+  }));
+  assert.equal(hydrated.state, "orphaned");
+  const resumed = registry.resume(hydrated.id, "Continue the review");
+  assert.equal(resumed.id, hydrated.id);
+  assert.equal(resumed.displayName, "reviewer");
+  assert.equal(resumed.attempt, 2);
+  assert.equal(resumed.state, "queued");
+  assert.equal(resumed.prompt, "Continue the review");
+});
+
+test("waitForTerminal returns pending IDs at the timeout and wakes on completion", async () => {
+  const registry = new SubagentThreadRegistry({ createId: ids("subagent-1") });
+  const thread = registry.spawn(threadSpec({ displayName: "scout" }));
+  registry.begin(thread.id);
+  const pending = await registry.waitForTerminal([thread.id], 1);
+  assert.equal(pending.timedOut, true);
+  assert.deepEqual(pending.pendingThreadIds, [thread.id]);
+  const waiting = registry.waitForTerminal([thread.id], 100);
+  registry.complete(thread.id, { result: "done" });
+  const complete = await waiting;
+  assert.equal(complete.timedOut, false);
+  assert.deepEqual(complete.completedThreadIds, [thread.id]);
 });
 
 test("process completes naturally after multiple Pi assistant messages without a turn cap", async () => {

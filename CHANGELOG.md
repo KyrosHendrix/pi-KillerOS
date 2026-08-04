@@ -4,6 +4,21 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-08-04
+
+### Added
+
+- Added named child sessions with `wait` and `resume`, persisted lifecycle records, real `/subagents` controls, empty-response failure, a 30-minute default wall time, bounded process-exit cleanup, and serialized shared-worktree writers.
+
+### Fixed
+
+- Added guarded automatic context compaction at 30% remaining, with structured summaries and goal continuation after the compaction is saved.
+- Kept the parent-facing cancellation reason when a steer was already in flight: aborting the parent turn after a steer now reports `abort` on the settled thread and result and no longer triggers a replacement follow-up turn for the cancelled batch.
+- Isolated host update callbacks in child-process and tool telemetry paths so a throwing callback cannot crash the host, strand the result promise, or fail a settled batch.
+- Rejected steering explicitly once 20 messages are pending for a thread instead of silently dropping the oldest steers; task-size overflow is also rejected before mutation, and bounded steering history keeps the earliest messages.
+- `interrupt all` now also stops queued children of the batch, matching `interrupt` on one thread and parent-turn abort, so queued writers cannot run after a stop command.
+- Recreated the subagent thread registry on `session_start`, stopped old children, and fenced old callbacks so embedding hosts that keep the extension instance between sessions can still spawn children without stale follow-ups.
+
 ## [1.5.3] - 2026-08-03
 
 ### Fixed
