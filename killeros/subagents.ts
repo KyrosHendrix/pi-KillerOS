@@ -31,6 +31,8 @@ export const SUBAGENT_LIMITS = {
   roleFileBytes: 64 * 1024,
   taskCharacters: 20_000,
   killGraceMs: 5_000,
+  defaultMaxTurns: 64,
+  defaultQuotaTokens: 2_000_000,
   defaultWallTimeMs: 1_800_000,
   processExitWaitMs: 10_000,
 } as const;
@@ -138,6 +140,7 @@ export interface SubagentDetails {
   doneThreads?: SubagentThread[];
   selectedThreadId?: string;
   wait?: SubagentWaitSummary;
+  backgroundStarted?: boolean;
 }
 
 export interface SubagentWaitSummary {
@@ -194,6 +197,7 @@ interface SpawnedProcess {
 
 type SubagentLimits = { [Key in keyof typeof SUBAGENT_LIMITS]: number } & {
   wallTimeMs?: number;
+  maxTurns?: number;
   jsonlLineBytes?: number;
   traceBytes?: number;
   stderrBytes?: number;
@@ -725,6 +729,7 @@ async function runTask(options: RunTaskOptions): Promise<SubagentTaskResult> {
       spawnProcess: options.spawnProcess,
       limits: {
         ...(options.timeoutMs === undefined ? {} : { wallTimeMs: options.timeoutMs }),
+        ...(limits.maxTurns === undefined ? {} : { maxTurns: limits.maxTurns }),
         ...(limits.jsonlLineBytes === undefined ? {} : { jsonlLineBytes: limits.jsonlLineBytes }),
         ...(limits.traceBytes === undefined ? {} : { traceBytes: limits.traceBytes }),
         ...(limits.stderrBytes === undefined ? {} : { stderrBytes: limits.stderrBytes }),
@@ -2595,6 +2600,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             const usedOutputBytes = aggregate?.outputBytes ?? 0;
             const usedTokens = aggregate?.usage.totalTokens ?? 0;
             const usedCost = aggregate?.usage.cost.total ?? 0;
+            const usedTurns = aggregate?.usage.turns ?? 0;
+            const maxTurns = limits.maxTurns ?? limits.defaultMaxTurns;
+            const quotaTokens = limits.quotaTokens ?? limits.defaultQuotaTokens;
             if (remainingWallTimeMs !== undefined && remainingWallTimeMs <= 0) {
               stopForBudget("wall_time_limit", `Child thread exceeds ${wallTimeMs} ms`);
               break;
@@ -2611,8 +2619,12 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               stopForBudget("output_limit", `Child thread emits more than ${limits.taskOutputBytes} output bytes`);
               break;
             }
-            if (limits.quotaTokens !== undefined && usedTokens >= limits.quotaTokens) {
-              stopForBudget("quota_tokens", `Child thread exceeds ${limits.quotaTokens} tokens`);
+            if (usedTurns >= maxTurns) {
+              stopForBudget("turn_limit", `Child thread reaches ${maxTurns} turns`);
+              break;
+            }
+            if (usedTokens >= quotaTokens) {
+              stopForBudget("quota_tokens", `Child thread reaches ${quotaTokens} tokens`);
               break;
             }
             if (limits.quotaUsd !== undefined && usedCost >= limits.quotaUsd) {
@@ -2640,7 +2652,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
                 ...(limits.traceBytes === undefined ? {} : { traceBytes: limits.traceBytes - usedTraceBytes }),
                 ...(limits.stderrBytes === undefined ? {} : { stderrBytes: limits.stderrBytes - usedStderrBytes }),
                 ...(limits.taskOutputBytes === undefined ? {} : { taskOutputBytes: limits.taskOutputBytes - usedOutputBytes }),
-                ...(limits.quotaTokens === undefined ? {} : { quotaTokens: limits.quotaTokens - usedTokens }),
+                maxTurns: maxTurns - usedTurns,
+                quotaTokens: quotaTokens - usedTokens,
                 ...(limits.quotaUsd === undefined ? {} : { quotaUsd: limits.quotaUsd - usedCost }),
               },
               timeoutMs: remainingWallTimeMs,
@@ -2878,6 +2891,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       const queuedResults = results.map(cloneResult);
       const queuedDetails: SubagentDetails = {
         ...queuedBoard,
+        backgroundStarted: true,
         executionNote,
         results: queuedResults,
         aggregateUsage: aggregateUsage(queuedResults),
@@ -2963,6 +2977,15 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       if (!details?.results.length) {
         const first = result.content[0];
         return new Text(first?.type === "text" ? first.text : "(no output)", 0, 0);
+      }
+      if (details.backgroundStarted) {
+        const lines = [
+          theme.fg("toolTitle", theme.bold(`Started in background (${details.results.length})`)),
+          ...details.results.map((task) => `${theme.fg("toolTitle", theme.bold(task.name ?? task.agent))}${theme.fg("dim", ` Â· role ${task.agent} Â· ${task.id} Â· attempt ${task.attempt ?? 1}`)}`),
+        ];
+        if (details.executionNote) lines.push(theme.fg("dim", details.executionNote));
+        lines.push(theme.fg("dim", "Live status appears below while child threads run."));
+        return new Text(lines.join("\n"), 0, 0);
       }
       const board = formatThreadBoard({
         title: `Subagents · ${details.mode}`,

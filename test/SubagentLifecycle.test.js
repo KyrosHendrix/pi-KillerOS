@@ -466,6 +466,66 @@ test("process rejects malformed assistant usage", async () => {
   assert.match(result.errorMessage, /usage must contain non-negative numbers/u);
 });
 
+test("process leaves model errors and aborts to Pi until the child exits", async () => {
+  const scenarios = [
+    { stopReason: "error", status: "failed", reason: "error", errorMessage: "Provider failed" },
+    { stopReason: "aborted", status: "cancelled", reason: "aborted", errorMessage: "Request aborted" },
+  ];
+
+  for (const scenario of scenarios) {
+    const child = new FakeProcess();
+    const handle = runWith(child);
+    child.json(assistantEvent("partial", {
+      stopReason: scenario.stopReason,
+      errorMessage: scenario.errorMessage,
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+    const killSignals = [...child.killSignals];
+    child.close(1);
+    const result = await handle.result;
+
+    assert.equal(result.status, scenario.status, scenario.stopReason);
+    assert.equal(result.terminationReason, scenario.reason, scenario.stopReason);
+    assert.equal(result.errorMessage, scenario.errorMessage, scenario.stopReason);
+    assert.deepEqual(killSignals, [], scenario.stopReason);
+  }
+});
+
+test("process stops a child at its turn limit", async () => {
+  const child = new FakeProcess();
+  const handle = runWith(child, { limits: { maxTurns: 2 } });
+  child.json(assistantEvent("first tool", { stopReason: "toolUse" }));
+  child.json(assistantEvent("second tool", { stopReason: "toolUse" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  const killSignals = [...child.killSignals];
+  child.close(0);
+  const result = await handle.result;
+
+  assert.equal(result.status, "limited");
+  assert.equal(result.terminationReason, "turn_limit");
+  assert.equal(result.usage.turns, 2);
+  assert.deepEqual(killSignals, ["SIGTERM"]);
+});
+
+test("process exposes a turn-limit stop before child exit confirms", async () => {
+  const child = new FakeProcess();
+  child.closeOnTerm = false;
+  const handle = runWith(child, { limits: { maxTurns: 1, killGraceMs: 50 } });
+  child.json(assistantEvent("one tool too many", { stopReason: "toolUse" }));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const stopping = handle.snapshot();
+  assert.equal(stopping.status, "limited");
+  assert.equal(stopping.terminationReason, "turn_limit");
+  assert.equal(handle.hasExited, false);
+  assert.deepEqual(child.killSignals, ["SIGTERM"]);
+
+  child.close(143);
+  const result = await handle.result;
+  assert.equal(result.status, "limited");
+  assert.equal(result.exitConfirmed, true);
+});
+
 test("process applies output limit to a final JSONL message without a newline", async () => {
   const child = new FakeProcess();
   const handle = runWith(child, { limits: { outputBytes: 3 } });
@@ -502,7 +562,7 @@ test("process names wall, JSONL-line, and stderr limits", async () => {
     },
     {
       name: "token quota",
-      limits: { quotaTokens: 17, killGraceMs: 5 },
+      limits: { quotaTokens: 18, killGraceMs: 5 },
       emit(child) { child.json(assistantEvent("partial")); },
       reason: "quota_tokens",
     },
@@ -568,6 +628,7 @@ test("process rejects timer values above Node's supported range", () => {
   });
   assert.throws(() => runWith(new FakeProcess(), { limits: { wallTimeMs: MAX_NODE_TIMER_MS + 1 } }), /wallTimeMs.*no greater than/u);
   assert.throws(() => runWith(new FakeProcess(), { limits: { killGraceMs: MAX_NODE_TIMER_MS + 1 } }), /killGraceMs.*no greater than/u);
+  assert.throws(() => runWith(new FakeProcess(), { limits: { maxTurns: 0 } }), /maxTurns.*positive safe integer/u);
 });
 
 test("process keeps an explicit parent abort terminal", async () => {

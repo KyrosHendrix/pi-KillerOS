@@ -65,6 +65,27 @@ test("child board keeps a completed handoff whole when the completion event wins
   assert.equal(board.selected?.handoff.isPartial, false);
 });
 
+test("child board keeps a retrying model error active until process exit", () => {
+  const board = formatThreadBoard({
+    selectedThreadId: "child-1",
+    threads: [{
+      id: "child-1",
+      agent: "reviewer",
+      task: "Review the change",
+      status: "running",
+      terminationReason: "error",
+      errorMessage: "Provider failed",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, turns: 1 },
+    }],
+  });
+
+  assert.equal(board.active.length, 1);
+  assert.equal(board.done.length, 0);
+  assert.equal(board.active[0].state.label, "Running");
+  assert.equal(board.selected?.controls.find((control) => control.id === "interrupt")?.enabled, true);
+  assert.equal(board.selected?.controls.find((control) => control.id === "collect")?.enabled, false);
+});
+
 function createHarness() {
   const commands = new Map();
   const handlers = new Map();

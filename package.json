@@ -1,6 +1,6 @@
 {
   "name": "killeros",
-  "version": "1.5.6",
+  "version": "1.5.7",
   "description": "A production-hardened TUI and workflow extension for the Pi coding agent.",
   "type": "module",
   "keywords": [

@@ -4,6 +4,14 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [1.5.7] - 2026-08-06
+
+### Fixed
+
+- Stopped runaway subagents at 64 turns or 2,000,000 reported tokens by default while preserving Pi's built-in model retries and the 30-minute wall limit.
+- Kept in-flight model retries labeled `Running`, exposed requested stops as terminal at once, and kept failed or limited children out of the **Active** list.
+- Replaced the frozen queued spawn result with a static launch receipt so only the separate live widget claims current state and usage.
+
 ## [1.5.6] - 2026-08-05
 
 ### Fixed

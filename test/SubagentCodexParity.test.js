@@ -89,7 +89,7 @@ function toolContext(cwd, { mode, hasUI = true } = {}) {
   };
 }
 
-test("ten parallel read-only reviewers complete past 250,000 tokens without a turn cap or default limit", async () => {
+test("ten parallel read-only reviewers complete past 250,000 tokens within the default safety limits", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "killeros-codex-parity-"));
   const bundledAgentsDir = path.join(root, "bundled");
   const userAgentsDir = path.join(root, "personal");

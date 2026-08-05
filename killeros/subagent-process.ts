@@ -83,6 +83,7 @@ export interface SubagentProcessOptions {
 
 export interface SubagentProcessLimits {
   wallTimeMs?: number;
+  maxTurns?: number;
   jsonlLineBytes?: number;
   traceBytes?: number;
   stderrBytes?: number;
@@ -223,7 +224,7 @@ function hasIsolatedSession(args: readonly string[]): boolean {
 
 function normalizeLimits(overrides: Partial<SubagentProcessLimits> | undefined): SubagentProcessLimits {
   const limits = { ...SUBAGENT_PROCESS_LIMITS, ...overrides };
-  for (const name of ["wallTimeMs", "jsonlLineBytes", "traceBytes", "stderrBytes", "outputBytes", "killGraceMs", "processExitWaitMs"] as const) {
+  for (const name of ["wallTimeMs", "maxTurns", "jsonlLineBytes", "traceBytes", "stderrBytes", "outputBytes", "killGraceMs", "processExitWaitMs"] as const) {
     const value = limits[name];
     if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0 || value > MAX_NODE_TIMER_MS
       && (name === "wallTimeMs" || name === "killGraceMs" || name === "processExitWaitMs"))) {
@@ -455,6 +456,9 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
     requestedStatus = status;
     requestedReason = reason;
     if (errorMessage) state.errorMessage = errorMessage;
+    state.status = status;
+    state.terminationReason = reason;
+    publish();
     if (!child) {
       finish(null);
       return;
@@ -485,8 +489,8 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
       state.usage.turns += 1;
       addUsage(state.usage, { ...message.usage, turns: 0 });
       state.toolCallCount += toolCallCount(message);
-      if (limits.quotaTokens !== undefined && state.usage.totalTokens > limits.quotaTokens) {
-        requestTermination("limited", "quota_tokens", `Child token usage exceeds ${limits.quotaTokens}`);
+      if (limits.quotaTokens !== undefined && state.usage.totalTokens >= limits.quotaTokens) {
+        requestTermination("limited", "quota_tokens", `Child token usage reaches ${limits.quotaTokens}`);
       } else if (limits.quotaUsd !== undefined && state.usage.cost.total > limits.quotaUsd) {
         requestTermination("limited", "quota_cost", `Child cost exceeds $${limits.quotaUsd}`);
       }
@@ -516,6 +520,9 @@ export function runSubagentProcess(options: SubagentProcessOptions): SubagentPro
         }
       }
       if (typeof message.errorMessage === "string") state.errorMessage = message.errorMessage;
+      if (message.stopReason === "toolUse" && limits.maxTurns !== undefined && state.usage.turns >= limits.maxTurns) {
+        requestTermination("limited", "turn_limit", `Child turn count reached ${limits.maxTurns}`);
+      }
       publish();
     } else if (event?.type === "tool_result_end" && event.message) {
       const name = typeof event.message.toolName === "string" ? event.message.toolName : "tool";

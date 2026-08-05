@@ -32,6 +32,9 @@ test("product and design docs match current runtime contracts", () => {
   assert.match(readme, /action `wait`|`wait` action/iu);
   assert.match(readme, /action `resume`|`resume` action/iu);
   assert.match(readme, /30 minutes|1_800_000|1,800,000/iu);
+  assert.match(readme, /64 turns/iu);
+  assert.match(readme, /2,000,000 reported tokens/iu);
+  assert.match(readme, /static launch receipt/iu);
   assert.match(readme, /\/subagents/iu);
   assert.match(product, /parent session|appendEntry|persistent child session/iu);
   assert.match(design, /orphaned|parent_restarted/iu);

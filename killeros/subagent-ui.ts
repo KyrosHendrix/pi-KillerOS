@@ -131,7 +131,8 @@ function toRecord(item: ThreadListItem): ThreadRecord {
 function threadStatus(thread: Pick<ThreadRecord, "status" | "terminationReason">): ThreadStatus {
   const reason = thread.terminationReason;
   if (thread.status === "orphaned") return "orphaned";
-  if (thread.status === "failed" || reason === "error" || reason === "spawn_error" || reason === "process_closed" || reason === "missing_assistant_message" || reason === "malformed_jsonl" || reason === "invalid_usage" || reason?.startsWith("exit_")) return "failed";
+  if (thread.status === "queued" || thread.status === "running") return thread.status;
+  if (thread.status === "failed" || reason === "error" || reason === "model_error" || reason === "spawn_error" || reason === "process_closed" || reason === "missing_assistant_message" || reason === "malformed_jsonl" || reason === "invalid_usage" || reason?.startsWith("exit_")) return "failed";
   if (thread.status === "cancelled" || reason === "abort" || reason === "interrupt") return "cancelled";
   if (thread.status === "complete" || reason === "completed") return "complete";
   return thread.status;
@@ -194,6 +195,7 @@ export function formatThreadControls(status: ThreadStatus): readonly ThreadBoard
 }
 
 export function formatThreadInspection(thread: ThreadRecord): ThreadInspectionView {
+  const state = formatThreadState(thread);
   return {
     id: thread.id,
     displayName: thread.displayName,
@@ -201,11 +203,11 @@ export function formatThreadInspection(thread: ThreadRecord): ThreadInspectionVi
     agent: thread.agent,
     task: thread.task,
     step: thread.step,
-    state: formatThreadState(thread),
+    state,
     usage: formatThreadUsage(thread.usage),
     trace: formatThreadTrace(thread),
     handoff: formatThreadHandoff(thread),
-    controls: formatThreadControls(thread.status),
+    controls: formatThreadControls(state.status),
   };
 }
 
@@ -231,8 +233,8 @@ export function formatThreadBoard(input: ThreadBoardInput): ParentThreadBoard {
     .filter((thread) => !closed.has(thread.id) && !current.has(thread.id))
     .map(toRecord) ?? [];
   const threads = [...current.values(), ...retained];
-  const active = threads.filter((thread) => !isDone(thread.status)).map((thread) => formatThreadListItem(thread, input.selectedThreadId));
-  const done = threads.filter((thread) => isDone(thread.status)).map((thread) => formatThreadListItem(thread, input.selectedThreadId));
+  const active = threads.filter((thread) => !isDone(threadStatus(thread))).map((thread) => formatThreadListItem(thread, input.selectedThreadId));
+  const done = threads.filter((thread) => isDone(threadStatus(thread))).map((thread) => formatThreadListItem(thread, input.selectedThreadId));
   const selectedThread = input.selectedThreadId ? threads.find((thread) => thread.id === input.selectedThreadId) : undefined;
   return {
     title: input.title ?? "Threads",

@@ -1503,6 +1503,10 @@ test("production spawn shows live child state and usage after the tool call retu
     const started = await execute(tool, { agent: "scout", task: "inspect the repository" }, ctx);
     assert.equal(started.details.results[0].status, "queued");
     assert.match(started.content[0].text, /Live progress appears above the editor/iu);
+    const launchReceipt = tool.renderResult(started, { expanded: false }, {
+      bold(text) { return text; },
+      fg(_color, text) { return text; },
+    }).render(200).join("\n");
     assert.ok(widgets.some(({ content }) => content?.some((line) => /Queued.*0 turns.*0 tokens/iu.test(line))));
     const child = await spawned;
     child.json(assistantEvent("working"));
@@ -1512,10 +1516,93 @@ test("production spawn shows live child state and usage after the tool call retu
     child.close(0);
     await completion;
     await new Promise((resolve) => setImmediate(resolve));
+    assert.match(launchReceipt, /Started in background \(1\)/iu);
+    assert.match(launchReceipt, /scout.*role scout.*attempt 1/iu);
+    assert.match(launchReceipt, /Live status appears below/iu);
+    assert.doesNotMatch(launchReceipt, /Queued|0 turns|0 tokens/iu);
     assert.ok(sawLiveUsage);
     assert.ok(widgets.some(({ content }) => content?.some((line) => /Complete.*1 turn.*18 tokens/iu.test(line))));
     assert.equal(widgets.at(-1).content, undefined);
   } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("default token quota stops a runaway child and saves a terminal thread", async () => {
+  const roster = tempRoster();
+  let fallbackTimer;
+  try {
+    writeRole(roster.bundled, "reviewer.md", { name: "reviewer" });
+    let child;
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        child = new FakeProcess();
+        setImmediate(() => {
+          const usage = {
+            input: 1_100_000,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 1_100_001,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          };
+          child.json(assistantEvent("first tool", { stopReason: "toolUse", usage }));
+          child.json(assistantEvent("second tool", { stopReason: "toolUse", usage }));
+          fallbackTimer = setTimeout(() => child.close(0), 50);
+        });
+        return child;
+      },
+    });
+
+    const result = await execute(tool, { agent: "reviewer", task: "review the change" }, toolContext(roster.root));
+    const task = result.details.results[0];
+    const thread = result.details.threads.find((candidate) => candidate.id === task.id);
+
+    assert.equal(task.status, "limited");
+    assert.equal(task.terminationReason, "quota_tokens");
+    assert.equal(task.usage.turns, 2);
+    assert.equal(thread.state, "stopped");
+    assert.deepEqual(child.killSignals, ["SIGTERM"]);
+  } finally {
+    if (fallbackTimer) clearTimeout(fallbackTimer);
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("default turn limit reaches the child process and stops tool loops", async () => {
+  const roster = tempRoster();
+  let fallbackTimer;
+  try {
+    writeRole(roster.bundled, "reviewer.md", { name: "reviewer" });
+    let child;
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      limits: { defaultMaxTurns: 2, defaultQuotaTokens: 10_000_000 },
+      spawnProcess() {
+        child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("first tool", { stopReason: "toolUse" }));
+          child.json(assistantEvent("second tool", { stopReason: "toolUse" }));
+          fallbackTimer = setTimeout(() => child.close(0), 50);
+        });
+        return child;
+      },
+    });
+
+    const result = await execute(tool, { agent: "reviewer", task: "review the change" }, toolContext(roster.root));
+    const task = result.details.results[0];
+    const thread = result.details.threads.find((candidate) => candidate.id === task.id);
+
+    assert.equal(task.status, "limited");
+    assert.equal(task.terminationReason, "turn_limit");
+    assert.equal(task.usage.turns, 2);
+    assert.equal(thread.state, "stopped");
+    assert.deepEqual(child.killSignals, ["SIGTERM"]);
+  } finally {
+    if (fallbackTimer) clearTimeout(fallbackTimer);
     rmSync(roster.root, { recursive: true, force: true });
   }
 });
@@ -1962,7 +2049,7 @@ test("turn, retained trace, stderr, malformed JSONL, timeout, and output limits 
   }
 });
 
-test("child lifecycle rejects empty success and recovers transient retries without a turn cap", async () => {
+test("child lifecycle rejects empty success and recovers transient retries within the default safety limits", async () => {
   const scenarios = [
     {
       name: "empty",
@@ -2226,6 +2313,8 @@ test("bundled roster declares read-only auditors and focused writers", () => {
   assert.deepEqual(worker.tools, ["read", "grep", "find", "ls", "edit", "write", "bash", "web_search", "source_check", "fetch_content", "get_search_content"]);
   assert.equal(SUBAGENT_LIMITS.maxTasks, 10);
   assert.equal(SUBAGENT_LIMITS.maxReadConcurrency, 4);
+  assert.equal(SUBAGENT_LIMITS.defaultMaxTurns, 64);
+  assert.equal(SUBAGENT_LIMITS.defaultQuotaTokens, 2_000_000);
   assert.equal("maxTimeoutMs" in SUBAGENT_LIMITS, false);
   for (const agent of agents) assert.equal(agent.timeoutMs, undefined);
 });
