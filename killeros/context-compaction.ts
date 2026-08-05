@@ -3,6 +3,7 @@ import type {
   ExtensionContext,
   SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
+import { compact, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { pauseGoalAfterFailure } from "./goals.ts";
 import type { CompactionRuntime, GoalRuntime } from "./runtime.ts";
 
@@ -21,7 +22,9 @@ const MAX_CONTEXT_ITEMS = 80;
 const MAX_FILES = 40;
 const MAX_PREVIOUS_SUMMARY = 6_000;
 const MAX_CUSTOM_INSTRUCTIONS = 4_000;
-const COMPACTION_STATE_TIMEOUT_MS = 60_000;
+const COMPACTION_STATE_TIMEOUT_MS = 5 * 60_000;
+const DETERMINISTIC_FALLBACK_PREFIX = "This summary was produced deterministically without model understanding. Verify its details before relying on it.";
+const COMPACTION_ACCURACY_WARNING = "Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.";
 
 type NotificationLevel = Parameters<ExtensionContext["ui"]["notify"]>[1];
 
@@ -231,6 +234,8 @@ function buildStructuredSummary(
   }
 
   return [
+    DETERMINISTIC_FALLBACK_PREFIX,
+    "",
     "# KillerOS Compaction Summary",
     "",
     ...(preparation.previousSummary?.trim()
@@ -254,6 +259,38 @@ function buildStructuredSummary(
       ? ["", "## Custom Instructions", quoteText(customInstructions, MAX_CUSTOM_INSTRUCTIONS)]
       : []),
   ].join("\n");
+}
+
+async function buildModelSummary(
+  event: SessionBeforeCompactEvent,
+  ctx: ExtensionContext,
+) {
+  const model = ctx.model;
+  if (!model) throw new Error("No model is available for compaction");
+
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok) throw new Error(auth.error);
+
+  const provider = ctx.modelRegistry.getProvider(model.provider);
+  const streamFn = provider
+    ? provider.streamSimple.bind(provider)
+    : undefined;
+  const retry = SettingsManager.create(ctx.cwd, undefined, {
+    projectTrusted: ctx.isProjectTrusted(),
+  }).getRetrySettings();
+
+  return compact(
+    event.preparation,
+    model,
+    auth.apiKey,
+    auth.headers,
+    event.customInstructions,
+    event.signal,
+    ctx.thinkingLevel,
+    streamFn,
+    auth.env,
+    retry,
+  );
 }
 
 function exactPercentRemaining(ctx: ExtensionContext): number | null {
@@ -293,7 +330,7 @@ function isCurrentCompaction(runtime: CompactionRuntime, operationId: number): b
 }
 
 function armCompactionTimeout(runtime: CompactionRuntime, operationId: number): void {
-  // ponytail: recover stale state after 60s because Pi exposes no failed-compaction extension event; replace with that event if Pi adds one.
+  // ponytail: recover stale state after five minutes because Pi exposes no failed-compaction extension event; replace with that event if Pi adds one.
   const timer = setTimeout(() => {
     if (!isCurrentCompaction(runtime, operationId)) return;
     const onFailure = compactionFailureHandlers.get(runtime);
@@ -519,7 +556,7 @@ export function registerContextCompaction(
     requestAutomaticCompaction(pi, ctx, compactionRuntime, goalRuntime, percentRemaining);
   });
 
-  pi.on("session_before_compact", (event, ctx) => {
+  pi.on("session_before_compact", async (event, ctx) => {
     const expectedAutomaticHook = compactionRuntime.automaticCompactionAwaitingHook;
     const sessionGeneration = compactionRuntime.sessionGeneration;
     const operationId = markCompactionInFlight(
@@ -544,23 +581,34 @@ export function registerContextCompaction(
         },
     );
     if (operationId === null) return { cancel: true };
-    const goalObjective = goalRuntime.state?.status === "active"
-      ? goalRuntime.state.objective
-      : undefined;
-    const summary = buildStructuredSummary(event.preparation, goalObjective, event.customInstructions);
 
-    return {
-      compaction: {
-        summary,
-        firstKeptEntryId: event.preparation.firstKeptEntryId,
-        tokensBefore: event.preparation.tokensBefore,
-      },
-    };
+    try {
+      return { compaction: await buildModelSummary(event, ctx) };
+    } catch (error) {
+      if (event.signal.aborted) return { cancel: true };
+      notify(ctx, `Model compaction failed: ${errorMessage(error)}. Using the deterministic fallback.`, "warning");
+      const goalObjective = goalRuntime.state?.status === "active"
+        ? goalRuntime.state.objective
+        : undefined;
+      const summary = buildStructuredSummary(event.preparation, goalObjective, event.customInstructions);
+
+      return {
+        compaction: {
+          summary,
+          firstKeptEntryId: event.preparation.firstKeptEntryId,
+          tokensBefore: event.preparation.tokensBefore,
+          details: { killerosDeterministicFallback: true },
+        },
+      };
+    }
   });
 
-  pi.on("session_compact", () => {
+  pi.on("session_compact", (event, ctx) => {
     resetCompactionState(compactionRuntime);
     compactionFailureHandlers.delete(compactionRuntime);
     compactionRuntime.lastCompactionAt = Date.now();
+    if (asRecord(event.compactionEntry.details)?.killerosDeterministicFallback === true) {
+      notify(ctx, COMPACTION_ACCURACY_WARNING, "warning");
+    }
   });
 }

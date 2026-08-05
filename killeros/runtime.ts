@@ -81,6 +81,6 @@ export function createCompactionRuntime(): CompactionRuntime {
     automaticCompactionPending: false,
     compactionOperationId: 0,
     sessionGeneration: 0,
-    thresholdPercent: 30,
+    thresholdPercent: 40,
   };
 }

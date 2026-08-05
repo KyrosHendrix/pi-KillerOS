@@ -45,7 +45,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Coral Spark activity indicator with Claude-adjacent verbs that advance between agent runs and a quiet hidden-thinking label
 - Framed multiline editor with Shift+Enter support
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
-- Automatic non-destructive context compaction at 30% remaining with a structured handoff; active goals continue after the saved summary
+- Automatic model-backed context compaction at 40% remaining; active goals continue after the saved summary
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` for durable long-running objectives with pause, resume, edit, clear, automatic continuation, and explicit completion
 - Pi-native `subagent` tool with named, inspectable child threads, Markdown roles, explicit read/write boundaries, parent controls, natural completion, and cancellation propagation
@@ -170,7 +170,7 @@ KillerOS activates its packaged `killeros` theme when a TUI session starts. Tool
 
 KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar. When a goal exists, the footer adds its active time or terminal state; at narrow widths, context pressure and goal state take priority.
 
-KillerOS checks context after each agent turn. At 30% remaining, it starts Pi compaction after the current run settles, so the active turn is not aborted. Manual `/compact` remains available, and the compaction summary keeps the goal, progress, decisions, next steps, and changed files.
+KillerOS checks context after each agent turn. At 40% remaining, it starts Pi's model-backed compaction after the current run settles, so the active turn is not aborted. Manual `/compact` uses the same model path and keeps custom focus instructions. If model compaction is unavailable or exhausts its retries, KillerOS uses the disclosed deterministic fallback and warns that repeated compaction can reduce accuracy.
 
 For trusted projects, KillerOS loads `AGENTS.local.md` after Pi's shared repository context. A one-line `@path` or `@~/path` file imports personal guidance from another location.
 

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Killeros from "../Killeros.ts";
@@ -55,23 +57,30 @@ function createHarness() {
   return { api, activeTools, appendedEntries, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
 }
 
-function createContext({ entries = [], usage = { tokens: 1_000, contextWindow: 128_000 }, notifications = [], compactCalls = [] } = {}) {
+function createContext({
+  entries = [],
+  usage = { tokens: 1_000, contextWindow: 128_000 },
+  notifications = [],
+  compactCalls = [],
+  cwd = process.cwd(),
+  model,
+  modelRegistry = {
+    getApiKeyAndHeaders: async () => ({ ok: false, error: "No model auth is available" }),
+    getProvider: () => undefined,
+  },
+} = {}) {
   const captured = {};
   const tui = { requestRender() {}, terminal: { rows: 40 } };
   const ctx = {
-    cwd: process.cwd(),
+    cwd,
     getContextUsage: () => (typeof usage === "function" ? usage() : usage),
     hasPendingMessages: () => false,
     hasUI: true,
     isIdle: () => true,
     isProjectTrusted: () => true,
     mode: "tui",
-    model: {
-      id: "test-model",
-      name: "Test model",
-      provider: "test",
-      reasoning: true,
-    },
+    model,
+    modelRegistry,
     sessionManager: {
       getBranch: () => entries,
       getEntries: () => entries,
@@ -115,9 +124,20 @@ function createCompactionEvent({ preparation = {}, ...overrides } = {}) {
     preparation: {
       messagesToSummarize: [],
       turnPrefixMessages: [],
+      isSplitTurn: false,
       tokensBefore: 80_000,
       firstKeptEntryId: "entry-5",
       previousSummary: undefined,
+      fileOps: {
+        read: new Set(),
+        written: new Set(),
+        edited: new Set(),
+      },
+      settings: {
+        enabled: true,
+        reserveTokens: 16_384,
+        keepRecentTokens: 20_000,
+      },
       ...preparation,
     },
     branchEntries: [],
@@ -141,6 +161,51 @@ function getHandler(handlers, event) {
   return registered.at(-1);
 }
 
+function createSummaryModel({ summary, errorMessage } = {}) {
+  const requests = [];
+  const model = {
+    api: "openai-completions",
+    id: "test-model",
+    name: "Test model",
+    provider: "test",
+    baseUrl: "https://example.invalid",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 16_384,
+  };
+  const modelRegistry = {
+    getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+    getProvider: () => ({
+      streamSimple: (_model, context) => {
+        requests.push(context);
+        return {
+          result: async () => ({
+            role: "assistant",
+            content: summary ? [{ type: "text", text: summary }] : [],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: {
+              input: summary ? 10 : 0,
+              output: summary ? 5 : 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: summary ? 15 : 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: errorMessage ? "error" : "stop",
+            ...(errorMessage ? { errorMessage } : {}),
+            timestamp: Date.now(),
+          }),
+        };
+      },
+    }),
+  };
+  return { model, modelRegistry, requests };
+}
+
 test("CompactionRuntime starts with no in-flight compaction", async () => {
   const { createCompactionRuntime } = await import("../killeros/runtime.ts");
   assert.equal(typeof createCompactionRuntime, "function");
@@ -153,7 +218,7 @@ test("CompactionRuntime starts with no in-flight compaction", async () => {
   assert.equal(runtime.compactionOperationId, 0);
   assert.equal(runtime.sessionGeneration, 0);
   assert.equal(runtime.lastCompactionAt, undefined);
-  assert.equal(runtime.thresholdPercent, 30);
+  assert.equal(runtime.thresholdPercent, 40);
 });
 
 test("Killeros registers context compaction handlers", () => {
@@ -197,10 +262,73 @@ test("contextPercentRemaining treats unknown usage as unknown", async () => {
   }), null);
 });
 
-test("session_before_compact returns Pi fields and a structured summary", async () => {
+test("manual and threshold compaction use Pi's model summarizer", async () => {
+  for (const reason of ["manual", "threshold"]) {
+    const { handlers } = createHarness();
+    const { model, modelRegistry, requests } = createSummaryModel({
+      summary: `Model summary for ${reason}`,
+    });
+    const { ctx } = createContext({ model, modelRegistry });
+    const result = await getHandler(handlers, "session_before_compact")(
+      createCompactionEvent({
+        customInstructions: "Keep the auth decision.",
+        reason,
+        preparation: {
+          messagesToSummarize: [
+            { role: "user", content: [{ type: "text", text: "Fix authentication." }] },
+          ],
+        },
+      }),
+      ctx,
+    );
+
+    assert.match(result.compaction.summary, new RegExp(`Model summary for ${reason}`, "u"));
+    assert.doesNotMatch(result.compaction.summary, /produced deterministically/u);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].messages[0].content[0].text, /Additional focus: Keep the auth decision\./u);
+  }
+});
+
+test("deterministic compaction waits for model retries to exhaust", async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "killeros-compaction-"));
+  t.after(() => rm(cwd, { force: true, recursive: true }));
+  await mkdir(path.join(cwd, ".pi"));
+  await writeFile(path.join(cwd, ".pi", "settings.json"), JSON.stringify({
+    retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 },
+  }));
+
   const { handlers } = createHarness();
-  const { ctx } = createContext({ usage: { tokens: 80_000, contextWindow: 128_000 } });
+  const notifications = [];
+  const { model, modelRegistry, requests } = createSummaryModel({ errorMessage: "terminated" });
+  const { ctx } = createContext({ cwd, model, modelRegistry, notifications });
+
+  const result = await getHandler(handlers, "session_before_compact")(
+    createCompactionEvent({
+      reason: "manual",
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: [{ type: "text", text: "Keep this context." }] },
+        ],
+      },
+    }),
+    ctx,
+  );
+
+  assert.equal(requests.length, 3, "the initial model call and both configured retries must run first");
+  assert.match(result.compaction.summary, /^This summary was produced deterministically/u);
+  assert.match(notifications.at(-1).message, /Model compaction failed: Summarization failed: terminated/u);
+});
+
+test("overflow compaction returns Pi fields and a disclosed structured fallback", async () => {
+  const { handlers } = createHarness();
+  const notifications = [];
+  const { ctx } = createContext({
+    notifications,
+    usage: { tokens: 80_000, contextWindow: 128_000 },
+  });
   const event = createCompactionEvent({
+    reason: "overflow",
+    willRetry: true,
     preparation: {
       messagesToSummarize: [
         { role: "user", content: [{ type: "text", text: "Fix the login bug in src/auth/login.ts." }] },
@@ -222,7 +350,8 @@ test("session_before_compact returns Pi fields and a structured summary", async 
   assert.equal(result.cancel, undefined);
 
   const summary = result.compaction.summary;
-  assert.match(summary, /^# KillerOS Compaction Summary/u);
+  assert.match(summary, /^This summary was produced deterministically without model understanding\./u);
+  assert.match(summary, /# KillerOS Compaction Summary/u);
   assert.match(summary, /## Goal\s+[\s\S]*Fix the login bug/u);
   assert.match(summary, /## Progress\s+[\s\S]*### Done\s+[\s\S]*auth failure[\s\S]*### In Progress\s+[\s\S]*final regression run[\s\S]*## Key Decisions/u);
   assert.match(summary, /## Key Decisions\s+[\s\S]*Extracted from conversation context/u);
@@ -232,6 +361,17 @@ test("session_before_compact returns Pi fields and a structured summary", async 
   assert.match(modifiedFiles, /(?:^|\n)- src\/auth\/login\.ts(?:\r?\n|$)/u);
   assert.match(modifiedFiles, /(?:^|\n)- test\/auth\.test\.js(?:\r?\n|$)/u);
   assert.doesNotMatch(modifiedFiles, /(?:login\.ts|test\.js)[.,;]/u);
+  assert.equal(result.compaction.details.killerosDeterministicFallback, true);
+
+  await emitSequentially(handlers.get("session_compact"), {
+    type: "session_compact",
+    compactionEntry: result.compaction,
+    fromExtension: true,
+    reason: "overflow",
+    willRetry: true,
+  }, ctx);
+  assert.match(notifications.at(-1).message, /multiple compactions can cause the model to be less accurate/u);
+  assert.equal(notifications.at(-1).level, "warning");
 });
 
 test("compaction summary uses Pi file operation paths", async () => {
@@ -239,6 +379,7 @@ test("compaction summary uses Pi file operation paths", async () => {
   const { ctx } = createContext();
   const result = await getHandler(handlers, "session_before_compact")(
     createCompactionEvent({
+      reason: "overflow",
       preparation: {
         fileOps: {
           read: new Set(["README.md"]),
@@ -261,6 +402,7 @@ test("compaction summary carries the previous summary", async () => {
   const { ctx } = createContext();
   const result = await getHandler(handlers, "session_before_compact")(
     createCompactionEvent({
+      reason: "overflow",
       preparation: {
         previousSummary: "The database schema and migration are already complete.",
       },
@@ -277,6 +419,7 @@ test("compaction summary keeps the tail of a long previous summary", async () =>
   const { ctx } = createContext();
   const result = await getHandler(handlers, "session_before_compact")(
     createCompactionEvent({
+      reason: "overflow",
       preparation: {
         previousSummary: `${"Earlier progress. ".repeat(500)}\n## Modified Files\n- retained-at-tail.ts`,
       },
@@ -291,7 +434,10 @@ test("compaction summary carries custom instructions", async () => {
   const { handlers } = createHarness();
   const { ctx } = createContext();
   const result = await getHandler(handlers, "session_before_compact")(
-    createCompactionEvent({ customInstructions: "Keep the handoff short and verify the API contract." }),
+    createCompactionEvent({
+      customInstructions: "Keep the handoff short and verify the API contract.",
+      reason: "overflow",
+    }),
     ctx,
   );
 
@@ -305,7 +451,7 @@ test("compaction summary uses the active goal objective", async () => {
   await commands.get("goal").handler("Implement user authentication", ctx);
 
   const result = await getHandler(handlers, "session_before_compact")(
-    createCompactionEvent(),
+    createCompactionEvent({ reason: "overflow" }),
     ctx,
   );
   assert.match(result.compaction.summary, /## Goal\s+Implement user authentication/u);
@@ -316,7 +462,7 @@ test("threshold compacts after the run settles and stays quiet above it", async 
   const thresholdNotifications = [];
   const thresholdCompactions = [];
   const { ctx: thresholdCtx } = createContext({
-    usage: { tokens: 89_600, contextWindow: 128_000 },
+    usage: { tokens: 76_800, contextWindow: 128_000 },
     notifications: thresholdNotifications,
     compactCalls: thresholdCompactions,
   });
@@ -328,7 +474,7 @@ test("threshold compacts after the run settles and stays quiet above it", async 
   }, thresholdCtx);
   assert.equal(thresholdNotifications.length, 1);
   assert.equal(thresholdNotifications[0].level, "warning");
-  assert.match(thresholdNotifications[0].message, /30% remaining/u);
+  assert.match(thresholdNotifications[0].message, /40% remaining/u);
   assert.match(thresholdNotifications[0].message, /automatic compaction/iu);
   assert.equal(thresholdCompactions.length, 0, "compaction must wait for the settled boundary");
   await emitSequentially(handlers.get("turn_end"), {
@@ -348,7 +494,7 @@ test("threshold compacts after the run settles and stays quiet above it", async 
   const justAboveNotifications = [];
   const justAboveCompactions = [];
   const { ctx: justAboveCtx } = createContext({
-    usage: { tokens: 89_000, contextWindow: 128_000 },
+    usage: { tokens: 76_200, contextWindow: 128_000 },
     notifications: justAboveNotifications,
     compactCalls: justAboveCompactions,
   });
@@ -359,7 +505,7 @@ test("threshold compacts after the run settles and stays quiet above it", async 
     toolResults: [],
   }, justAboveCtx);
   await emitSequentially(handlers.get("agent_settled"), { type: "agent_settled" }, justAboveCtx);
-  assert.equal(justAboveNotifications.length, 0, "30.47% remaining is above the exact threshold");
+  assert.equal(justAboveNotifications.length, 0, "40.47% remaining is above the exact threshold");
   assert.equal(justAboveCompactions.length, 0);
 
   const aboveThresholdNotifications = [];
@@ -678,7 +824,7 @@ test("turn_end does not warn for unknown usage or while compaction is in flight"
     message: {},
     toolResults: [],
   }, lowUsage.ctx);
-  assert.equal(notifications.length, 0);
+  assert.equal(notifications.length, 1, "in-flight compaction must suppress a threshold warning");
 });
 
 test("compaction lifecycle clears in-flight state and permits a new warning", async () => {
@@ -697,7 +843,7 @@ test("compaction lifecycle clears in-flight state and permits a new warning", as
     message: {},
     toolResults: [],
   }, ctx);
-  assert.equal(notifications.length, 0);
+  assert.equal(notifications.length, 1, "in-flight compaction must suppress a threshold warning");
 
   await emitSequentially(handlers.get("session_compact"), {
     type: "session_compact",
@@ -712,7 +858,7 @@ test("compaction lifecycle clears in-flight state and permits a new warning", as
     message: {},
     toolResults: [],
   }, ctx);
-  assert.equal(notifications.length, 1);
+  assert.equal(notifications.length, 2);
 
   notifications.length = 0;
   await getHandler(handlers, "session_before_compact")(beforeEvent, ctx);
@@ -723,7 +869,7 @@ test("compaction lifecycle clears in-flight state and permits a new warning", as
     message: {},
     toolResults: [],
   }, ctx);
-  assert.equal(notifications.length, 1);
+  assert.equal(notifications.length, 2);
 
   notifications.length = 0;
   await getHandler(handlers, "session_before_compact")(beforeEvent, ctx);
@@ -734,7 +880,7 @@ test("compaction lifecycle clears in-flight state and permits a new warning", as
     message: {},
     toolResults: [],
   }, ctx);
-  assert.equal(notifications.length, 1);
+  assert.equal(notifications.length, 2);
 });
 
 test("aborted compaction clears in-flight state", async () => {
@@ -758,7 +904,7 @@ test("aborted compaction clears in-flight state", async () => {
     toolResults: [],
   }, ctx);
 
-  assert.equal(notifications.length, 1);
+  assert.equal(notifications.length, 2);
 });
 
 test("the main entry exports the extension and contextPercentRemaining", async () => {
