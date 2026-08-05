@@ -130,7 +130,11 @@ function assistantEvent(text = "done", overrides = {}) {
 
 function createToolHarness(options) {
   let tool;
-  registerSubagentTool({ registerTool(value) { tool = value; } }, {
+  const parentTools = options?.parentTools ?? ["read", "grep", "find", "ls", "bash", "edit", "write", "web_search", "source_check", "fetch_content", "get_search_content"];
+  registerSubagentTool({
+    getActiveTools: () => parentTools,
+    registerTool(value) { tool = value; },
+  }, {
     ...options,
     awaitSpawnCompletion: options?.awaitSpawnCompletion ?? true,
   });
@@ -162,10 +166,6 @@ async function execute(tool, params, ctx, signal = new AbortController().signal,
 test("subagent request normalizer rejects conflicting and unrelated fields", () => {
   const invalidRequests = [
     {
-      input: { action: "spawn", agent: "worker", task: "inspect", message: "steer" },
-      error: /message.*steer/iu,
-    },
-    {
       input: { action: "spawn", agent: "worker", task: "inspect", tasks: [{ agent: "worker", task: "inspect" }] },
       error: /exactly one.*spawn/iu,
     },
@@ -181,7 +181,7 @@ test("subagent request normalizer rejects conflicting and unrelated fields", () 
       input: { action: "list", agent: "worker", task: "inspect" },
       error: /agent.*list|task.*list|unrelated/iu,
     },
-    { input: { message: "steer" }, error: /message.*steer/iu },
+    { input: { message: "steer" }, error: /agent.*non-empty string/iu },
     { input: { action: "list", model: "provider/model" }, error: /model.*list/iu },
     { input: { action: "inspect", threadId: "subagent-1", task: "invalid" }, error: /task.*inspect/iu },
     { input: { action: "steer", threadId: "subagent-1", message: "continue", agent: "worker" }, error: /agent.*steer/iu },
@@ -224,6 +224,30 @@ test("subagent request normalizer classifies valid request shapes", () => {
   assert.deepEqual(tryNormalizeSubagentRequest({ action: "list", task: "invalid" }).ok, false);
 });
 
+test("spawn accepts message as task and validates inline role descriptors", () => {
+  const inline = { name: "focused", description: "Inspect the target only.", access: "read", tools: ["read", "grep"] };
+  const alias = normalizeSubagentRequest({ action: "spawn", agent: "worker", message: "inspect" });
+  assert.equal(alias.kind, "spawn-single");
+  assert.equal(alias.input.task, "inspect");
+  assert.deepEqual(normalizeSubagentRequest({ agent: inline, task: "inspect" }).input.agent, inline);
+  assert.throws(
+    () => normalizeSubagentRequest({ agent: { ...inline, extra: true }, task: "inspect" }),
+    /extra.*unknown role field/iu,
+  );
+  assert.throws(
+    () => normalizeSubagentRequest({ agent: { ...inline, tools: ["read", "made_up"] }, task: "inspect" }),
+    /unknown child tool.*made_up/iu,
+  );
+  assert.throws(
+    () => normalizeSubagentRequest({ agent: { ...inline, access: "read", tools: ["bash"] }, task: "inspect" }),
+    /read-only roles cannot use bash/iu,
+  );
+  assert.throws(
+    () => normalizeSubagentRequest({ action: "list", message: "inspect" }),
+    /message.*steer/iu,
+  );
+});
+
 test("subagent schema is a top-level object for strict providers", () => {
   const tool = createToolHarness();
   const schema = JSON.parse(JSON.stringify(tool.parameters));
@@ -249,6 +273,8 @@ test("subagent schema is a top-level object for strict providers", () => {
   ]);
   assert.equal(schema.properties.tasks.items.type, "object");
   assert.equal(schema.properties.chain.items.type, "object");
+  assert.match(tool.description, /debugger, documenter, planner, reviewer, scout, security, tester, worker/u);
+  assert.equal(schema.properties.agent.anyOf[1].additionalProperties, false);
 });
 
 test("schema accepts named children, wait, and resume", () => {
@@ -433,6 +459,51 @@ test("session hooks persist terminal snapshots and restore them on session start
     assert.equal(restored.details.doneThreads[0].displayName, "saved-child");
     assert.equal(restored.details.results[0].output, "persisted");
     assert.equal(restored.details.doneThreads[0].session.directory, expectedSessionDirectory);
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("inline roles remain non-resumable after session restore", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  const entries = [];
+  const handlers = new Map();
+  let tool;
+  try {
+    writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
+    const pi = {
+      getActiveTools: () => ["read"],
+      registerTool(value) { tool = value; },
+      appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
+      on(event, handler) { handlers.set(event, handler); },
+    };
+    registerSubagentTool(pi, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      awaitSpawnCompletion: true,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("inline saved")); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "inline-parent", entries });
+    const started = await execute(tool, {
+      agent: { name: "worker", description: "Inspect one target.", access: "read", tools: ["read"] },
+      task: "inspect",
+    }, ctx);
+    assert.equal(started.details.results[0].agentSource, "inline");
+    assert.equal(entries.at(-1).data.result.agentSource, "inline");
+
+    handlers.get("session_start")(undefined, ctx);
+    const restored = await execute(tool, { action: "list" }, ctx);
+    assert.equal(restored.details.results[0].agentSource, "inline");
+    await assert.rejects(
+      execute(tool, { action: "resume", threadId: started.details.results[0].id }, ctx),
+      /inline role.*cannot be resumed|cannot resume inline role/iu,
+    );
   } finally {
     rmSync(sessionRoot, { recursive: true, force: true });
     rmSync(roster.root, { recursive: true, force: true });
@@ -653,6 +724,7 @@ test("resume keeps a terminal child unchanged when role validation fails", async
   const roster = tempRoster();
   try {
     const rolePath = writeRole(roster.bundled, "scout.md", { name: "scout" });
+    writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
@@ -686,8 +758,14 @@ test("subagent preparation gives Pi action-specific request errors", () => {
 
   assert.throws(
     () => validate({ action: "spawn", agent: "worker", task: "inspect", message: "steer" }),
-    /message is only valid with action "steer"/u,
+    /cannot combine task with its message alias/u,
   );
+  assert.deepEqual(
+    validate({ action: "spawn", agent: "worker", message: "inspect" }),
+    { action: "spawn", agent: "worker", task: "inspect" },
+  );
+  const inline = { name: "focused", description: "Inspect only.", access: "read", tools: ["read"] };
+  assert.deepEqual(validate({ agent: inline, task: "inspect" }), { agent: inline, task: "inspect" });
   assert.deepEqual(
     validate({ action: "spawn", tasks: [{ agent: "worker", task: "inspect" }] }),
     { action: "spawn", tasks: [{ agent: "worker", task: "inspect" }] },
@@ -707,7 +785,7 @@ test("invalid subagent requests fail before context access or child launch", asy
     },
   });
   const invalidRequests = [
-    [{ action: "spawn", agent: "worker", task: "inspect", message: "steer" }, /message.*steer/iu],
+    [{ action: "spawn", agent: "worker", task: "inspect", message: "steer" }, /cannot combine task.*message alias/iu],
     [{ action: "spawn", agent: "worker", task: "inspect", tasks: [{ agent: "worker", task: "inspect" }] }, /exactly one.*spawn/iu],
     [{ action: "spawn", agent: "worker", task: "inspect", writerConcurrency: 1 }, /writerConcurrency.*parallel/iu],
     [{ action: "list", agent: "worker", task: "inspect" }, /agent.*list|task.*list|unrelated/iu],
@@ -1611,10 +1689,18 @@ test("message is scoped to steer and the parallel schedule is described", async 
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
-      spawnProcess() { return new FakeProcess(); },
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("mapped"));
+          child.close(0);
+        });
+        return child;
+      },
     });
     const ctx = toolContext(roster.root);
-    await assert.rejects(execute(tool, { agent: "scout", task: "map", message: "extra" }, ctx), /message is only valid with action "steer"/u);
+    const spawned = await execute(tool, { agent: "scout", message: "map" }, ctx);
+    assert.equal(spawned.details.results[0].task, "map");
     await assert.rejects(execute(tool, { action: "list", message: "extra" }, ctx), /message is only valid with action "steer"/u);
     await assert.rejects(execute(tool, {
       writerConcurrency: 2,
@@ -1625,6 +1711,48 @@ test("message is scoped to steer and the parallel schedule is described", async 
     assert.ok(tool.parameters.properties.action.enum.includes("steer"));
     assert.match(tool.parameters.properties.tasks.description, /one shared slot by default/u);
     assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to 1/u);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("inline roles stay bounded to parent tools and unknown roles fall back visibly", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      parentTools: ["read", "grep"],
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("done"));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+
+    const fallback = await execute(tool, { agent: "general-purpose", task: "fix it" }, ctx);
+    assert.equal(fallback.details.results[0].agent, "worker");
+    assert.match(fallback.details.executionNote, /Unknown role "general-purpose".*used worker/iu);
+    assert.match(fallback.content[0].text, /Unknown role "general-purpose".*used worker/iu);
+
+    const inline = await execute(tool, {
+      agent: { name: "focused", description: "Inspect only the named file.", access: "read", tools: ["read", "grep"] },
+      message: "inspect auth",
+    }, ctx);
+    assert.equal(inline.details.results[0].agent, "focused");
+    assert.equal(inline.details.results[0].agentSource, "inline");
+    assert.deepEqual(inline.details.results[0].tools, ["read", "grep"]);
+    assert.equal(inline.details.results[0].task, "inspect auth");
+
+    await assert.rejects(execute(tool, {
+      agent: { name: "shell", description: "Run a command.", access: "write", tools: ["bash"] },
+      task: "run it",
+    }, ctx), /tool "bash".*not active for the parent/iu);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }

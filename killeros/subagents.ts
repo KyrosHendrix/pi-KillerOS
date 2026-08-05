@@ -46,7 +46,7 @@ const ROLE_FIELDS = new Set(["name", "description", "access", "tools", "model", 
 
 type ThinkingLevel = ModelThinkingLevel;
 export type AgentAccess = "read" | "write";
-export type AgentSource = "bundled" | "personal" | "project";
+export type AgentSource = "bundled" | "personal" | "project" | "inline";
 export type AgentScope = "user" | "project" | "both";
 export type SubagentStatus = "queued" | "running" | "complete" | "failed" | "cancelled" | "limited" | "orphaned";
 
@@ -62,6 +62,15 @@ export interface AgentRole {
   source: AgentSource;
   filePath: string;
 }
+
+export interface InlineAgentRole {
+  name: string;
+  description: string;
+  access: AgentAccess;
+  tools: string[];
+}
+
+export type AgentSpec = string | InlineAgentRole;
 
 export interface AgentDiscoveryResult {
   agents: AgentRole[];
@@ -804,7 +813,7 @@ type SpawnOptions = {
 
 type SpawnSingleRequest = SpawnOptions & {
   action?: "spawn";
-  agent: string;
+  agent: AgentSpec;
   task: string;
   name?: string;
 };
@@ -891,6 +900,58 @@ function requireOnlyFields(record: Record<string, unknown>, allowed: readonly st
   if (invalid) throw new Error(`Invalid subagent request: field ${JSON.stringify(invalid)} is not valid with action ${JSON.stringify(action)}.`);
 }
 
+function parseAgentSpec(value: unknown): AgentSpec {
+  if (typeof value === "string") {
+    if (!value.length) throw new Error("Invalid subagent request: agent must be a non-empty string or inline role.");
+    if ([...value].length > 64) throw new Error("Invalid subagent request: agent must be no longer than 64 characters.");
+    return value;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid subagent request: agent must be a non-empty string or inline role.");
+  }
+  const role = requireRecord(value, "inline role");
+  for (const field of Object.keys(role)) {
+    if (!["name", "description", "access", "tools"].includes(field)) {
+      throw new AgentConfigurationError("inline role", field, "unknown role field");
+    }
+  }
+  const name = requiredString(role, "inline role", "name");
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/u.test(name)) {
+    throw new AgentConfigurationError("inline role", "name", "must use 1-64 letters, numbers, dots, underscores, or hyphens");
+  }
+  const description = requiredString(role, "inline role", "description");
+  if (description.length > 500) throw new AgentConfigurationError("inline role", "description", "must not exceed 500 characters");
+  const access = requiredString(role, "inline role", "access");
+  if (access !== "read" && access !== "write") {
+    throw new AgentConfigurationError("inline role", "access", 'must be "read" or "write"');
+  }
+  if (!Array.isArray(role.tools) || role.tools.length === 0) {
+    throw new AgentConfigurationError("inline role", "tools", "must contain at least one tool");
+  }
+  const tools = [...new Set(role.tools.map((tool) => {
+    if (typeof tool !== "string" || !tool.trim()) {
+      throw new AgentConfigurationError("inline role", "tools", "must contain non-empty tool names");
+    }
+    return tool.trim();
+  }))];
+  for (const tool of tools) {
+    if (!KNOWN_TOOLS.has(tool)) throw new AgentConfigurationError("inline role", "tools", `unknown child tool ${JSON.stringify(tool)}`);
+    if (access === "read" && WRITE_TOOLS.has(tool)) {
+      throw new AgentConfigurationError("inline role", "tools", `read-only roles cannot use ${tool}`);
+    }
+  }
+  return { name, description, access, tools };
+}
+
+function inlineAgentRole(role: InlineAgentRole): AgentRole {
+  return {
+    ...role,
+    prompt: role.description,
+    source: "inline",
+    filePath: `inline:${role.name}`,
+  };
+}
+
 function parseTaskInputs(value: unknown, field: "tasks" | "chain", limits: Pick<SubagentLimits, "maxTasks" | "taskCharacters">): TaskInput[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error(`Invalid subagent request: ${field} must be a non-empty array.`);
@@ -901,7 +962,7 @@ function parseTaskInputs(value: unknown, field: "tasks" | "chain", limits: Pick<
     requireOnlyFields(task, ["agent", "task", "name"], `spawn ${field}`);
     const name = optionalThreadName(task);
     return {
-      agent: requireTextField(task, "agent", 64),
+      agent: parseAgentSpec(task.agent),
       task: requireTextField(task, "task", limits.taskCharacters),
       ...(name === undefined ? {} : { name }),
     };
@@ -929,12 +990,12 @@ export function normalizeSubagentRequest(
   const record = requireRecord(value, "subagent request");
   const action = record.action === undefined ? SUBAGENT_ACTION.spawn : requireAction(record.action);
 
-  if (action !== "steer" && Object.hasOwn(record, "message")) {
+  if (action !== "steer" && action !== "spawn" && Object.hasOwn(record, "message")) {
     throw new Error('Invalid subagent request: message is only valid with action "steer". Use {"action":"steer","threadId":"...","message":"..."}.');
   }
 
   if (action === "spawn") {
-    const hasSingle = Object.hasOwn(record, "agent") || Object.hasOwn(record, "task");
+    const hasSingle = Object.hasOwn(record, "agent") || Object.hasOwn(record, "task") || Object.hasOwn(record, "message");
     const hasParallel = Object.hasOwn(record, "tasks");
     const hasChain = Object.hasOwn(record, "chain");
     if (Number(hasSingle) + Number(hasParallel) + Number(hasChain) !== 1) {
@@ -946,14 +1007,17 @@ export function normalizeSubagentRequest(
     const actionField = Object.hasOwn(record, "action") ? { action: "spawn" as const } : {};
     const options = parseSpawnOptions(record);
     if (hasSingle) {
-      requireOnlyFields(record, ["action", "agent", "task", "name", ...SPAWN_OPTION_FIELDS], "spawn single");
+      requireOnlyFields(record, ["action", "agent", "task", "message", "name", ...SPAWN_OPTION_FIELDS], "spawn single");
+      if (Object.hasOwn(record, "task") && Object.hasOwn(record, "message")) {
+        throw new Error("Invalid subagent request: spawn single cannot combine task with its message alias.");
+      }
       const name = optionalThreadName(record);
       return {
         kind: "spawn-single",
         input: {
           ...actionField,
-          agent: requireTextField(record, "agent", 64),
-          task: requireTextField(record, "task", limits.taskCharacters),
+          agent: parseAgentSpec(record.agent),
+          task: requireTextField(record, Object.hasOwn(record, "message") ? "message" : "task", limits.taskCharacters),
           ...(name === undefined ? {} : { name }),
           ...options,
         },
@@ -1077,13 +1141,23 @@ function prepareSubagentRequest(
 }
 
 function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxReadConcurrency" | "taskCharacters">) {
+  const inlineAgentSchema = Type.Object({
+    name: Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$" }),
+    description: Type.String({ minLength: 1, maxLength: 500 }),
+    access: StringEnum(["read", "write"] as const),
+    tools: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, uniqueItems: true }),
+  }, { additionalProperties: false, description: "Ephemeral role for this spawn only; tools must be active for the parent" });
+  const agentSchema = Type.Union([
+    Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
+    inlineAgentSchema,
+  ]);
   const taskSchema = Type.Object({
-    agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
+    agent: agentSchema,
     task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Bounded task for the role" }),
     name: Type.Optional(Type.String({ minLength: 1, maxLength: 48, pattern: THREAD_NAME_PATTERN, description: "Parent-scoped child display name" })),
   }, { additionalProperties: false });
   const chainTaskSchema = Type.Object({
-    agent: Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
+    agent: agentSchema,
     task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task with optional {previous} handoff placeholder" }),
     name: Type.Optional(Type.String({ minLength: 1, maxLength: 48, pattern: THREAD_NAME_PATTERN, description: "Parent-scoped child display name" })),
   }, { additionalProperties: false });
@@ -1092,10 +1166,10 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
     action: Type.Optional(StringEnum(SUBAGENT_ACTIONS, { default: SUBAGENT_ACTION.spawn, description: "Spawn, list, inspect, steer, interrupt, collect, wait, resume, or close. Omit threadId when spawning" })),
     threadId: Type.Optional(threadId),
     name: Type.Optional(Type.String({ minLength: 1, maxLength: 48, pattern: THREAD_NAME_PATTERN, description: "Parent-scoped child display name" })),
-    message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Steering message; valid only with action steer" })),
+    message: Type.Optional(Type.String({ minLength: 1, maxLength: Math.max(4_000, limits.taskCharacters), description: "Task alias when spawning; steering message with action steer" })),
     all: Type.Optional(Type.Literal(true, { description: "Target every active or queued child thread for interrupt or wait" })),
     timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_WAIT_TIMEOUT_MS, description: "Wait timeout in milliseconds; defaults to 30 seconds" })),
-    agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Agent role for single mode" })),
+    agent: Type.Optional(agentSchema),
     task: Type.Optional(Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task for single mode" })),
     tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use one shared slot by default. Set writerConcurrency to opt into a larger shared pool; concurrent writers share the parent worktree, so callers must prove path ownership` })),
     writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to 1 when writers are selected; values above 1 opt into concurrent shared-worktree writes. Concurrent writers must prove path ownership` })),
@@ -1110,11 +1184,6 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
 }
 
 type ToolUpdate = (partial: { content: Array<{ type: "text"; text: string }>; details: SubagentDetails }) => void;
-
-function requestedAgents(params: { agent?: string; tasks?: TaskInput[]; chain?: TaskInput[] }): string[] {
-  if (params.agent) return [params.agent];
-  return (params.tasks ?? params.chain ?? []).map((task) => task.agent);
-}
 
 function clipCharacters(text: string, maxCharacters: number, fromEnd = false): string {
   const characters = [...text];
@@ -1165,7 +1234,7 @@ function buildSteeredTask(task: string, steering: readonly string[], maxCharacte
   return `${taskText}${steeringLabel}${steeringText}`;
 }
 
-export type TaskInput = { agent: string; task: string; name?: string };
+export type TaskInput = { agent: AgentSpec; task: string; name?: string };
 
 function steeredTaskWouldExceedLimit(task: string, steering: readonly string[], maxCharacters: number): boolean {
   if (!steering.length) return false;
@@ -1376,6 +1445,7 @@ function restorePersistedResult(value: unknown, thread: ThreadSnapshot): Subagen
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const source = value as Record<string, any>;
   const statuses = new Set<SubagentStatus>(["queued", "running", "complete", "failed", "cancelled", "limited"]);
+  const agentSources = new Set<SubagentTaskResult["agentSource"]>(["bundled", "personal", "project", "inline", "unknown"]);
   if (typeof source.id !== "string" || source.id !== thread.id) return undefined;
   const status = source.status ?? (thread.state === "done" ? "complete" : thread.state === "failed" ? "failed" : "cancelled");
   if (typeof status !== "string" || !statuses.has(status as SubagentStatus)) return undefined;
@@ -1402,6 +1472,7 @@ function restorePersistedResult(value: unknown, thread: ThreadSnapshot): Subagen
   if (source.terminationReason !== undefined && typeof source.terminationReason !== "string") return undefined;
   if (source.errorMessage !== undefined && typeof source.errorMessage !== "string") return undefined;
   if (source.exitConfirmed !== undefined && typeof source.exitConfirmed !== "boolean") return undefined;
+  if (source.agentSource !== undefined && (typeof source.agentSource !== "string" || !agentSources.has(source.agentSource as SubagentTaskResult["agentSource"]))) return undefined;
   const attempt = Number.isSafeInteger(source.attempt) && source.attempt > 0 ? source.attempt : thread.attempt;
   const result = makeQueuedResult(
     thread.id,
@@ -1412,6 +1483,7 @@ function restorePersistedResult(value: unknown, thread: ThreadSnapshot): Subagen
     attempt,
   );
   result.status = status as SubagentStatus;
+  result.agentSource = source.agentSource ?? "unknown";
   result.output = output;
   result.outputBytes = outputBytes;
   result.outputTruncatedBytes = outputTruncatedBytes;
@@ -1534,6 +1606,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           id: result.id,
           name: result.name,
           agent: result.agent,
+          agentSource: result.agentSource,
           task: clipCharacters(result.task, limits.taskCharacters),
           status: result.status,
           output: persistText(result.output, 256 * 1024),
@@ -2027,7 +2100,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   const toolDefinition: Parameters<ExtensionAPI["registerTool"]>[0] = {
     name: "subagent",
     label: "Subagents",
-    description: `Spawn and manage named child threads. Children finish naturally. Parallel tasks with write-capable roles use one shared slot; read-only batches run concurrently up to ${limits.maxReadConcurrency}. Write-capable tasks are serialized in the shared parent worktree. The message parameter is only valid with action steer. Use action list, inspect, wait, steer, interrupt, collect, resume, and close to manage child handoffs.`,
+    description: `Spawn and manage named child threads. Bundled roles: debugger, documenter, planner, reviewer, scout, security, tester, worker. Agent accepts a role name or an inline { name, description, access, tools } role. On spawn, message aliases task. Parallel tasks with write-capable roles use one shared slot; read-only batches run concurrently up to ${limits.maxReadConcurrency}. Write-capable tasks are serialized in the shared parent worktree. Use action list, inspect, wait, steer, interrupt, collect, resume, and close to manage child handoffs.`,
     promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
     promptGuidelines: [
       "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
@@ -2199,6 +2272,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         if (!terminalThread(target) || target.state === "closed") {
           throw new Error(`Cannot resume thread ${target.id} from ${target.state}`);
         }
+        if (savedResults.get(target.id)?.agentSource === "inline") {
+          throw new Error(`Cannot resume inline role ${JSON.stringify(target.role)}; inline roles are scoped to one spawn`);
+        }
         resumePrompt = request.input.task;
         resumeTarget = target;
       }
@@ -2213,15 +2289,36 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
 
       const discovery = discoverAgentRoles(ctx.cwd, scope, ctx.isProjectTrusted(), options);
       const roles = new Map(discovery.agents.map((agent) => [agent.name, agent]));
-      const requested = requestedAgents(params);
-      for (const name of requested) {
-        if (!roles.has(name)) {
-          const available = discovery.agents.map((agent) => `${agent.name} (${agent.source})`).join(", ") || "none";
-          throw new Error(`Unknown subagent ${JSON.stringify(name)}. Available: ${available}`);
+      const rawInputs: TaskInput[] = spawnRequest.kind === "spawn-single"
+        ? [{ agent: spawnRequest.input.agent, task: spawnRequest.input.task, ...(spawnRequest.input.name ? { name: spawnRequest.input.name } : {}) }]
+        : spawnRequest.kind === "spawn-parallel" ? spawnRequest.input.tasks : spawnRequest.input.chain;
+      const fallbackNotices: string[] = [];
+      const rolesForInputs = rawInputs.map((input) => {
+        if (typeof input.agent !== "string") {
+          const parentTools = new Set(pi.getActiveTools());
+          for (const tool of input.agent.tools) {
+            if (!parentTools.has(tool)) throw new Error(`Inline role ${JSON.stringify(input.agent.name)} tool ${JSON.stringify(tool)} is not active for the parent`);
+          }
+          return inlineAgentRole(input.agent);
         }
-      }
+        const selected = roles.get(input.agent);
+        if (selected) return selected;
+        if (isResume) {
+          const available = discovery.agents.map((agent) => `${agent.name} (${agent.source})`).join(", ") || "none";
+          throw new Error(`Unknown subagent ${JSON.stringify(input.agent)}. Available: ${available}`);
+        }
+        const worker = roles.get("worker");
+        if (!worker) throw new Error(`Unknown subagent ${JSON.stringify(input.agent)} and fallback role "worker" is unavailable`);
+        const notice = `Unknown role ${JSON.stringify(input.agent)} - used worker`;
+        if (!fallbackNotices.includes(notice)) fallbackNotices.push(notice);
+        return worker;
+      });
+      const inputs: Array<Omit<TaskInput, "agent"> & { agent: string }> = rawInputs.map((input, index) => ({
+        ...input,
+        agent: rolesForInputs[index]!.name,
+      }));
 
-      const projectRoles = [...new Set(requested.map((name) => roles.get(name)!).filter((role) => role.source === "project"))];
+      const projectRoles = [...new Set(rolesForInputs.filter((role) => role.source === "project"))];
       if (projectRoles.length) {
         if (!ctx.hasUI) throw new Error("Project-local subagents require interactive confirmation");
         const approved = await ctx.ui.confirm(
@@ -2231,21 +2328,15 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         if (!approved) throw new Error("Project-local subagents were not approved");
       }
 
-      const resolvedModels = new Map<string, ResolvedModel>();
-      for (const name of new Set(requested)) {
-        resolvedModels.set(name, resolveAgentModel(roles.get(name)!, ctx, params.model, params.thinking));
-      }
+      const resolvedModels = rolesForInputs.map((role) => resolveAgentModel(role, ctx, params.model, params.thinking));
 
       const mode: SubagentDetails["mode"] = hasParallel ? "parallel" : hasChain ? "chain" : "single";
-      const inputs: TaskInput[] = spawnRequest.kind === "spawn-single"
-        ? [{ agent: spawnRequest.input.agent, task: spawnRequest.input.task, ...(spawnRequest.input.name ? { name: spawnRequest.input.name } : {}) }]
-        : spawnRequest.kind === "spawn-parallel" ? spawnRequest.input.tasks : spawnRequest.input.chain;
       if (inputs.length > limits.maxTasks) throw new Error(`At most ${limits.maxTasks} subagent tasks are allowed`);
       const readIndexes = hasParallel
-        ? inputs.map((input, index) => ({ input, index })).filter(({ input }) => roles.get(input.agent)!.access === "read")
+        ? inputs.map((input, index) => ({ input, index })).filter(({ index }) => rolesForInputs[index]!.access === "read")
         : [];
       const writerIndexes = hasParallel
-        ? inputs.map((input, index) => ({ input, index })).filter(({ input }) => roles.get(input.agent)!.access === "write").map(({ index }) => index)
+        ? inputs.map((input, index) => ({ input, index })).filter(({ index }) => rolesForInputs[index]!.access === "write").map(({ index }) => index)
         : [];
       if (writerConcurrencyOverride !== undefined && writerIndexes.length === 0) {
         throw new Error("writerConcurrency requires at least one write-capable role");
@@ -2255,11 +2346,12 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       }
       const writerConcurrency = writerConcurrencyOverride ?? (writerIndexes.length > 0 ? 1 : limits.maxReadConcurrency);
       const useSharedParallelPool = hasParallel && writerIndexes.length > 0;
-      const executionNote = hasParallel
+      const scheduleNote = hasParallel
         ? writerIndexes.length
           ? `Parallel schedule: all tasks run through a shared pool of up to ${writerConcurrency}${writerConcurrencyOverride === undefined ? " (safe default)" : " (explicit)"}. Write-capable tasks are serialized in the shared parent worktree.`
           : `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}.`
         : undefined;
+      const executionNote = [...fallbackNotices, ...(scheduleNote ? [scheduleNote] : [])].join("\n") || undefined;
 
       const inFlight = threads.listAll().filter((thread) => ["queued", "active"].includes(thread.state)).length;
       if (inFlight + inputs.length > limits.maxTasks) {
@@ -2271,7 +2363,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       if (isResume) resumeTarget = resumeThread(resumeTarget!, resumePrompt);
       const threadRecords = isResume
         ? [resumeTarget!]
-        : inputs.map((input) => {
+        : inputs.map((input, index) => {
         const allocated = [...allocatedNames].map((name) => ({ role: name, displayName: name } as ThreadSnapshot));
         const displayName = input.name ?? defaultThreadName(input.agent, [...existingThreads, ...allocated]);
         validateThreadName(displayName);
@@ -2283,9 +2375,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           parentId: parentId as SubagentThreadId,
           role: input.agent,
           prompt: input.task,
-          model: resolvedModels.get(input.agent)!.model,
-          tools: roles.get(input.agent)!.tools,
-          capabilityBoundary: threadCapabilityBoundary(roles.get(input.agent)!),
+          model: resolvedModels[index]!.model,
+          tools: rolesForInputs[index]!.tools,
+          capabilityBoundary: threadCapabilityBoundary(rolesForInputs[index]!),
           displayName,
           attempt: 1,
           session: { id: "killeros-pending", directory: path.join(os.tmpdir(), "killeros-subagent-pending") },
@@ -2480,7 +2572,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         }
         const metadata = threadMetadata.get(threadId)!;
         const sessionId = metadata.session.id;
-        const agent = roles.get(input.agent)!;
+        const agent = rolesForInputs[index]!;
         let currentTask = queuedSteering.length ? buildSteeredTask(task, queuedSteering, limits.taskCharacters) : task;
         const stopForBudget = (reason: string, message: string): void => {
           if (runtime.sessionGeneration !== sessionGeneration) return;
@@ -2538,13 +2630,13 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             runtime.traceCount = 0;
             const next = await runTask({
               cwd: ctx.cwd,
-              agent: roles.get(input.agent)!,
+              agent,
               task: currentTask,
               id: results[index]!.id,
               displayName: metadata.displayName,
               attempt: metadata.attempt,
               step: results[index]!.step,
-              model: resolvedModels.get(input.agent)!,
+              model: resolvedModels[index]!,
               signal: controller.signal,
               webExtension: options.webExtension,
               projectTrusted: ctx.isProjectTrusted(),
@@ -2766,8 +2858,14 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         const board = detailsFor(parentId, mode, scope, discovery.projectAgentsDir, isResume ? resumeTarget?.id : undefined);
         const currentResults = results.map(cloneResult);
         const details: SubagentDetails = { ...board, executionNote, results: currentResults, aggregateUsage: aggregateUsage(currentResults) };
+        const toolContent = buildToolContent(mode, details.results, limits.toolOutputBytes);
         return {
-          content: [{ type: "text" as const, text: buildToolContent(mode, details.results, limits.toolOutputBytes) }],
+          content: [{
+            type: "text" as const,
+            text: executionNote
+              ? boundedText(`${executionNote}\n\n${toolContent}`, limits.toolOutputBytes, "\n\n[Spawn output truncated.]")
+              : toolContent,
+          }],
           details,
           usage: details.aggregateUsage,
         };
@@ -2834,7 +2932,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       return {
         content: [{
           type: "text",
-          text: boundedText(`${isResume ? "Resumed" : "Started"} child threads: ${threadList}. They continue in the background. Live progress appears above the editor while they run; use list, inspect, wait, steer, interrupt, collect, resume, or close for current details.`, limits.toolOutputBytes, "\n\n[Spawn output truncated.]"),
+          text: boundedText(`${executionNote ? `${executionNote}\n\n` : ""}${isResume ? "Resumed" : "Started"} child threads: ${threadList}. They continue in the background. Live progress appears above the editor while they run; use list, inspect, wait, steer, interrupt, collect, resume, or close for current details.`, limits.toolOutputBytes, "\n\n[Spawn output truncated.]"),
         }],
         details: queuedDetails,
         usage: queuedDetails.aggregateUsage,
@@ -2864,7 +2962,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${spawnRequest.input.tasks.length} · ${schedule}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
       }
       if (spawnRequest.kind === "spawn-chain") return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `chain ${spawnRequest.input.chain.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
-      return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", spawnRequest.input.agent)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
+      const agentName = typeof spawnRequest.input.agent === "string" ? spawnRequest.input.agent : spawnRequest.input.agent.name;
+      return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", agentName)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
     },
 
     renderResult(result, { expanded }, theme) {

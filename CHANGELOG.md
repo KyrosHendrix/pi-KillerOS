@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added single-spawn inline subagent roles bounded to active parent tools, `message` as a spawn-task alias, and visible unknown-role fallback to `worker`. Inline roles cannot be resumed.
+
 ## [1.5.4] - 2026-08-04
 
 ### Added
