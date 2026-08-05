@@ -6,6 +6,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { validateToolArguments } from "@earendil-works/pi-ai";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import {
   SUBAGENT_LIMITS,
   childProcessEnvironment,
@@ -1378,6 +1379,88 @@ test("production spawn delivers a successful handoff as a triggered follow-up", 
     assert.equal(delivered.message.customType, "killeros-subagent-settled");
     assert.match(delivered.message.content, /Subagent batch settled[\s\S]*verified handoff/iu);
     assert.deepEqual(delivered.options, { triggerTurn: true, deliverAs: "followUp" });
+    const modelMessages = convertToLlm([{ role: "custom", ...delivered.message, timestamp: Date.now() }]);
+    assert.equal(modelMessages[0].role, "user");
+    assert.match(modelMessages[0].content[0].text, /Subagent batch settled[\s\S]*verified handoff/iu);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("production spawn shows live child state and usage after the tool call returns", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let tool;
+    let resolveSpawned;
+    let resolveCompletion;
+    const spawned = new Promise((resolve) => { resolveSpawned = resolve; });
+    const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+    const widgets = [];
+    registerSubagentTool({
+      registerTool(value) { tool = value; },
+      sendMessage(message, options) { resolveCompletion({ message, options }); },
+    }, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        resolveSpawned(child);
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    ctx.ui.setWidget = (key, content) => widgets.push({ key, content });
+
+    const started = await execute(tool, { agent: "scout", task: "inspect the repository" }, ctx);
+    assert.equal(started.details.results[0].status, "queued");
+    assert.match(started.content[0].text, /Live progress appears above the editor/iu);
+    assert.ok(widgets.some(({ content }) => content?.some((line) => /Queued.*0 turns.*0 tokens/iu.test(line))));
+    const child = await spawned;
+    child.json(assistantEvent("working"));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const sawLiveUsage = widgets.some(({ content }) => content?.some((line) => /Running.*1 turn.*18 tokens/iu.test(line)));
+    child.close(0);
+    await completion;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(sawLiveUsage);
+    assert.ok(widgets.some(({ content }) => content?.some((line) => /Complete.*1 turn.*18 tokens/iu.test(line))));
+    assert.equal(widgets.at(-1).content, undefined);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("production spawn reports a failed follow-up delivery in the TUI", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let tool;
+    let resolveNotice;
+    const notice = new Promise((resolve) => { resolveNotice = resolve; });
+    registerSubagentTool({
+      registerTool(value) { tool = value; },
+      sendMessage() { throw new Error("delivery failed"); },
+    }, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("saved result"));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    ctx.ui.notify = (message, type) => resolveNotice({ message, type });
+
+    await execute(tool, { agent: "scout", task: "inspect the repository" }, ctx);
+    const delivered = await notice;
+    assert.match(delivered.message, /follow-up could not be delivered.*list or collect/iu);
+    assert.equal(delivered.type, "warning");
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
