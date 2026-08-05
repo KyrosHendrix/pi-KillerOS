@@ -4,9 +4,22 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-08-05
+
 ### Added
 
-- Added single-spawn inline subagent roles bounded to active parent tools, `message` as a spawn-task alias, and visible unknown-role fallback to `worker`. Inline roles cannot be resumed.
+- Added live background subagent progress with queued, running, and completed states plus per-child and batch usage.
+- Added inline subagent roles for single, parallel, and chain spawns, bounded their tools to those active for the parent, and kept them scoped to one non-resumable spawn.
+- Added `message` as a single-spawn task alias and visible fallback to `worker` for unknown named roles.
+
+### Changed
+
+- Replaced default deterministic context compaction with model-backed summaries at 40% remaining context, preserved manual focus prompts, and disclosed deterministic fallback after model retries fail.
+
+### Fixed
+
+- Warned when a settled or failed background subagent handoff cannot reach the parent and pointed users to `list` and `collect` for recovery.
+- Overrode vulnerable transitive `brace-expansion` and `undici` versions with patched releases in the development and CI install tree.
 
 ## [1.5.4] - 2026-08-04
 
