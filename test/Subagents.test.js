@@ -229,6 +229,16 @@ test("spawn accepts message as task and validates inline role descriptors", () =
   const alias = normalizeSubagentRequest({ action: "spawn", agent: "worker", message: "inspect" });
   assert.equal(alias.kind, "spawn-single");
   assert.equal(alias.input.task, "inspect");
+  assert.equal(normalizeSubagentRequest({ agent: "worker", message: "x".repeat(20_000) }).input.task.length, 20_000);
+  assert.throws(
+    () => normalizeSubagentRequest({ agent: "worker", message: "x".repeat(20_001) }),
+    /message.*20000 characters/iu,
+  );
+  assert.equal(normalizeSubagentRequest({ action: "steer", threadId: "subagent-1", message: "x".repeat(4_000) }).input.message.length, 4_000);
+  assert.throws(
+    () => normalizeSubagentRequest({ action: "steer", threadId: "subagent-1", message: "x".repeat(4_001) }),
+    /message.*4000 characters/iu,
+  );
   assert.deepEqual(normalizeSubagentRequest({ agent: inline, task: "inspect" }).input.agent, inline);
   assert.throws(
     () => normalizeSubagentRequest({ agent: { ...inline, extra: true }, task: "inspect" }),
@@ -1711,20 +1721,23 @@ test("message is scoped to steer and the parallel schedule is described", async 
     assert.ok(tool.parameters.properties.action.enum.includes("steer"));
     assert.match(tool.parameters.properties.tasks.description, /one shared slot by default/u);
     assert.match(tool.parameters.properties.writerConcurrency.description, /Defaults to 1/u);
+    assert.match(tool.parameters.properties.message.description, /spawn.*20,000.*steer.*4,000/iu);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }
 });
 
-test("inline roles stay bounded to parent tools and unknown roles fall back visibly", async () => {
+test("inline roles cover every spawn shape and unknown roles fail before launch", async () => {
   const roster = tempRoster();
   try {
     writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
+    let spawned = 0;
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
       parentTools: ["read", "grep"],
       spawnProcess() {
+        spawned += 1;
         const child = new FakeProcess();
         setImmediate(() => {
           child.json(assistantEvent("done"));
@@ -1735,19 +1748,30 @@ test("inline roles stay bounded to parent tools and unknown roles fall back visi
     });
     const ctx = toolContext(roster.root);
 
-    const fallback = await execute(tool, { agent: "general-purpose", task: "fix it" }, ctx);
-    assert.equal(fallback.details.results[0].agent, "worker");
-    assert.match(fallback.details.executionNote, /Unknown role "general-purpose".*used worker/iu);
-    assert.match(fallback.content[0].text, /Unknown role "general-purpose".*used worker/iu);
+    await assert.rejects(
+      execute(tool, { agent: "general-purpose", task: "fix it" }, ctx),
+      /Unknown subagent "general-purpose".*Available: worker \(bundled\)/iu,
+    );
+    assert.equal(spawned, 0);
 
+    const inlineRole = { name: "focused", description: "Inspect only the named file.", access: "read", tools: ["read", "grep"] };
     const inline = await execute(tool, {
-      agent: { name: "focused", description: "Inspect only the named file.", access: "read", tools: ["read", "grep"] },
+      agent: inlineRole,
       message: "inspect auth",
     }, ctx);
     assert.equal(inline.details.results[0].agent, "focused");
     assert.equal(inline.details.results[0].agentSource, "inline");
     assert.deepEqual(inline.details.results[0].tools, ["read", "grep"]);
     assert.equal(inline.details.results[0].task, "inspect auth");
+
+    const parallel = await execute(tool, { tasks: [{ agent: inlineRole, task: "inspect sessions" }] }, ctx);
+    assert.equal(parallel.details.mode, "parallel");
+    assert.equal(parallel.details.results[0].agentSource, "inline");
+
+    const chain = await execute(tool, { chain: [{ agent: inlineRole, task: "inspect storage" }] }, ctx);
+    assert.equal(chain.details.mode, "chain");
+    assert.equal(chain.details.results[0].agentSource, "inline");
+    assert.equal(spawned, 3);
 
     await assert.rejects(execute(tool, {
       agent: { name: "shell", description: "Run a command.", access: "write", tools: ["bash"] },

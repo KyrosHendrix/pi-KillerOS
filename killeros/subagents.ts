@@ -1166,7 +1166,7 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
     action: Type.Optional(StringEnum(SUBAGENT_ACTIONS, { default: SUBAGENT_ACTION.spawn, description: "Spawn, list, inspect, steer, interrupt, collect, wait, resume, or close. Omit threadId when spawning" })),
     threadId: Type.Optional(threadId),
     name: Type.Optional(Type.String({ minLength: 1, maxLength: 48, pattern: THREAD_NAME_PATTERN, description: "Parent-scoped child display name" })),
-    message: Type.Optional(Type.String({ minLength: 1, maxLength: Math.max(4_000, limits.taskCharacters), description: "Task alias when spawning; steering message with action steer" })),
+    message: Type.Optional(Type.String({ minLength: 1, maxLength: Math.max(4_000, limits.taskCharacters), description: `Spawn task alias up to ${limits.taskCharacters.toLocaleString("en-US")} characters; steer message up to 4,000 characters` })),
     all: Type.Optional(Type.Literal(true, { description: "Target every active or queued child thread for interrupt or wait" })),
     timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_WAIT_TIMEOUT_MS, description: "Wait timeout in milliseconds; defaults to 30 seconds" })),
     agent: Type.Optional(agentSchema),
@@ -2292,7 +2292,6 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       const rawInputs: TaskInput[] = spawnRequest.kind === "spawn-single"
         ? [{ agent: spawnRequest.input.agent, task: spawnRequest.input.task, ...(spawnRequest.input.name ? { name: spawnRequest.input.name } : {}) }]
         : spawnRequest.kind === "spawn-parallel" ? spawnRequest.input.tasks : spawnRequest.input.chain;
-      const fallbackNotices: string[] = [];
       const rolesForInputs = rawInputs.map((input) => {
         if (typeof input.agent !== "string") {
           const parentTools = new Set(pi.getActiveTools());
@@ -2303,15 +2302,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         }
         const selected = roles.get(input.agent);
         if (selected) return selected;
-        if (isResume) {
-          const available = discovery.agents.map((agent) => `${agent.name} (${agent.source})`).join(", ") || "none";
-          throw new Error(`Unknown subagent ${JSON.stringify(input.agent)}. Available: ${available}`);
-        }
-        const worker = roles.get("worker");
-        if (!worker) throw new Error(`Unknown subagent ${JSON.stringify(input.agent)} and fallback role "worker" is unavailable`);
-        const notice = `Unknown role ${JSON.stringify(input.agent)} - used worker`;
-        if (!fallbackNotices.includes(notice)) fallbackNotices.push(notice);
-        return worker;
+        const available = discovery.agents.map((agent) => `${agent.name} (${agent.source})`).join(", ") || "none";
+        throw new Error(`Unknown subagent ${JSON.stringify(input.agent)}. Available: ${available}`);
       });
       const inputs: Array<Omit<TaskInput, "agent"> & { agent: string }> = rawInputs.map((input, index) => ({
         ...input,
@@ -2351,7 +2343,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           ? `Parallel schedule: all tasks run through a shared pool of up to ${writerConcurrency}${writerConcurrencyOverride === undefined ? " (safe default)" : " (explicit)"}. Write-capable tasks are serialized in the shared parent worktree.`
           : `Parallel schedule: read-only tasks run concurrently up to ${limits.maxReadConcurrency}.`
         : undefined;
-      const executionNote = [...fallbackNotices, ...(scheduleNote ? [scheduleNote] : [])].join("\n") || undefined;
+      const executionNote = scheduleNote;
 
       const inFlight = threads.listAll().filter((thread) => ["queued", "active"].includes(thread.state)).length;
       if (inFlight + inputs.length > limits.maxTasks) {

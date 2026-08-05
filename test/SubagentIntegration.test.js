@@ -86,7 +86,7 @@ test("real child boundary passes isolated named sessions and reuses them on resu
       userAgentsDir,
       awaitSpawnCompletion: true,
       spawnProcess(args, cwd, environment) {
-        const childEnvironment = { ...process.env, ...(environment ?? {}) };
+        const childEnvironment = { ...(environment ?? {}) };
         childArguments.push([...args]);
         childEnvironments.push(childEnvironment);
         assert.equal(childEnvironment.PI_SESSION_FILE, undefined);

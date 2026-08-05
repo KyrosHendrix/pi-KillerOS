@@ -4,6 +4,14 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [1.5.6] - 2026-08-05
+
+### Fixed
+
+- Rejected unknown named subagent roles before child launch and returned the available roles instead of falling back to the write-capable `worker`.
+- Kept the real child-boundary test isolated from parent Pi session variables and added direct coverage for inline parallel and chain spawns.
+- Clarified and tested the shared `message` field limits: 20,000 characters for a spawn task alias and 4,000 characters for steering.
+
 ## [1.5.5] - 2026-08-05
 
 ### Added
