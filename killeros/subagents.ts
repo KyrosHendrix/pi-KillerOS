@@ -2300,11 +2300,43 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         return makeQueuedResult(thread.id, inputs[index]!.agent, inputs[index]!.task, hasChain ? index + 1 : undefined, metadata.displayName, metadata.attempt);
       });
       const batchSessionGeneration = sessionGeneration;
+      const liveWidgetKey = `killeros-subagents:${results[0]!.id}`;
+      const showLiveWidget = options.awaitSpawnCompletion !== true && ctx.hasUI;
+      const updateLiveWidget = (currentResults: SubagentTaskResult[]): void => {
+        if (!showLiveWidget) return;
+        const board = formatThreadBoard({
+          title: `Subagents · ${mode} · live`,
+          threads: currentResults.map(threadBoardRecord),
+        });
+        const row = (task: (typeof board.active)[number]): string => `${task.state.label} · ${task.displayName ?? task.agent} · ${task.usage.text}`;
+        try {
+          ctx.ui.setWidget(liveWidgetKey, [
+            board.title,
+            `Active (${board.active.length})`,
+            ...(board.active.length ? board.active.map(row) : ["None"]),
+            `Done (${board.done.length})`,
+            ...(board.done.length ? board.done.map(row) : ["None"]),
+            `Total · ${formatUsage(aggregateUsage(currentResults))}`,
+          ]);
+        } catch {
+          // Live UI updates must not fail the child batch.
+        }
+      };
+      const clearLiveWidget = (): void => {
+        if (!showLiveWidget) return;
+        try {
+          ctx.ui.setWidget(liveWidgetKey, undefined);
+        } catch {
+          // The session may close before the child batch settles.
+        }
+      };
       let updatesOpen = true;
       const emit = (message = `${mode}: ${results.filter((result) => !["queued", "running"].includes(result.status)).length}/${results.length} settled`): void => {
-        if (!updatesOpen || batchSessionGeneration !== sessionGeneration) return;
+        if (batchSessionGeneration !== sessionGeneration) return;
         const board = detailsFor(parentId, mode, scope, discovery.projectAgentsDir, isResume ? resumeTarget?.id : undefined);
         const currentResults = results.map(cloneResult);
+        updateLiveWidget(currentResults);
+        if (!updatesOpen) return;
         try {
           (onUpdate as ToolUpdate | undefined)?.({
             content: [{ type: "text", text: message }],
@@ -2761,6 +2793,14 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         aggregateUsage: aggregateUsage(queuedResults),
       };
       const threadList = threadRecords.map((thread) => `${threadDisplayName(threadView(thread, threadMetadata), threadMetadata)} (${thread.id})`).join(", ");
+      const reportUndeliveredFollowUp = (outcome: "settled" | "failed"): void => {
+        if (!ctx.hasUI) return;
+        try {
+          ctx.ui.notify(`Subagent batch ${outcome}, but its follow-up could not be delivered. Use list or collect for the saved result.`, "warning");
+        } catch {
+          // The thread registry still retains the result when the UI is closing.
+        }
+      };
       updatesOpen = false;
       const backgroundBatch = finishBatch().then((completed) => {
         if (batchSessionGeneration !== sessionGeneration
@@ -2774,7 +2814,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             display: true,
           }, { triggerTurn: true, deliverAs: "followUp" });
         } catch {
-          // The completed handoff remains available through list, inspect, and collect.
+          reportUndeliveredFollowUp("settled");
         }
       }).catch((error) => {
         if (batchSessionGeneration !== sessionGeneration || threads.isDisposed || signal?.aborted) return;
@@ -2786,15 +2826,15 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             display: true,
           }, { triggerTurn: true, deliverAs: "followUp" });
         } catch {
-          // The thread registry retains any partial state for inspection.
+          reportUndeliveredFollowUp("failed");
         }
-      });
+      }).finally(clearLiveWidget);
       backgroundBatches.add(backgroundBatch);
       void backgroundBatch.finally(() => backgroundBatches.delete(backgroundBatch));
       return {
         content: [{
           type: "text",
-          text: boundedText(`${isResume ? "Resumed" : "Started"} child threads: ${threadList}. They continue in the background; use list, inspect, wait, steer, interrupt, collect, resume, or close while they run.`, limits.toolOutputBytes, "\n\n[Spawn output truncated.]"),
+          text: boundedText(`${isResume ? "Resumed" : "Started"} child threads: ${threadList}. They continue in the background. Live progress appears above the editor while they run; use list, inspect, wait, steer, interrupt, collect, resume, or close for current details.`, limits.toolOutputBytes, "\n\n[Spawn output truncated.]"),
         }],
         details: queuedDetails,
         usage: queuedDetails.aggregateUsage,
