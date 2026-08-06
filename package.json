@@ -26,7 +26,6 @@
     "subagent-lifecycle.ts",
     "subagent-process.ts",
     "subagent-ui.ts",
-    "agents/*.md",
     "themes/killeros.json",
     "README.md",
     "CHANGELOG.md"

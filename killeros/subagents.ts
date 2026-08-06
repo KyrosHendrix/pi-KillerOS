@@ -3,7 +3,6 @@ import { closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { getSupportedThinkingLevels, StringEnum, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   CONFIG_DIR_NAME,
@@ -207,6 +206,7 @@ type SubagentLimits = { [Key in keyof typeof SUBAGENT_LIMITS]: number } & {
 };
 
 export interface SubagentRuntimeOptions {
+  /** Explicit test or embedding role directory; KillerOS ships no bundled roles. */
   bundledAgentsDir?: string;
   userAgentsDir?: string;
   webExtension?: string;
@@ -407,13 +407,14 @@ export function discoverAgentRoles(
   options: Pick<SubagentRuntimeOptions, "bundledAgentsDir" | "userAgentsDir" | "limits"> = {},
 ): AgentDiscoveryResult {
   const limits = { ...SUBAGENT_LIMITS, ...options.limits };
-  const bundledDir = options.bundledAgentsDir ?? fileURLToPath(new URL("../agents/", import.meta.url));
+  const bundledDir = options.bundledAgentsDir;
   const userDir = options.userAgentsDir ?? path.join(getAgentDir(), "agents");
   const wantsProject = scope === "project" || scope === "both";
   if (wantsProject && !projectTrusted) throw new Error("Project agents require a trusted project");
   const projectAgentsDir = wantsProject ? findProjectAgentsDir(cwd) : null;
 
-  const layers: Array<{ dir: string; source: AgentSource }> = [{ dir: bundledDir, source: "bundled" }];
+  const layers: Array<{ dir: string; source: AgentSource }> = [];
+  if (bundledDir) layers.push({ dir: bundledDir, source: "bundled" });
   if (scope === "user" || scope === "both") layers.push({ dir: userDir, source: "personal" });
   if (wantsProject && projectAgentsDir) layers.push({ dir: projectAgentsDir, source: "project" });
 
@@ -818,7 +819,7 @@ type SpawnOptions = {
 
 type SpawnSingleRequest = SpawnOptions & {
   action?: "spawn";
-  agent: AgentSpec;
+  agent?: AgentSpec;
   task: string;
   name?: string;
 };
@@ -905,14 +906,15 @@ function requireOnlyFields(record: Record<string, unknown>, allowed: readonly st
   if (invalid) throw new Error(`Invalid subagent request: field ${JSON.stringify(invalid)} is not valid with action ${JSON.stringify(action)}.`);
 }
 
-function parseAgentSpec(value: unknown): AgentSpec {
+function parseAgentSpec(value: unknown): AgentSpec | undefined {
+  if (value === undefined) return undefined;
   if (typeof value === "string") {
-    if (!value.length) throw new Error("Invalid subagent request: agent must be a non-empty string or inline role.");
+    if (!value.length) throw new Error("Invalid subagent request: agent must be a non-empty role name or inline role.");
     if ([...value].length > 64) throw new Error("Invalid subagent request: agent must be no longer than 64 characters.");
     return value;
   }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Invalid subagent request: agent must be a non-empty string or inline role.");
+    throw new Error("Invalid subagent request: agent must be a role name, inline role, or omitted.");
   }
   const role = requireRecord(value, "inline role");
   for (const field of Object.keys(role)) {
@@ -957,6 +959,74 @@ function inlineAgentRole(role: InlineAgentRole): AgentRole {
   };
 }
 
+function activeParentTools(pi: ExtensionAPI): Set<string> | undefined {
+  const getActiveTools = (pi as unknown as { getActiveTools?: () => string[] }).getActiveTools;
+  return typeof getActiveTools === "function" ? new Set(getActiveTools.call(pi)) : undefined;
+}
+
+function validateAgentTools(agent: AgentRole, parentTools: ReadonlySet<string> | undefined): void {
+  if (!parentTools) return;
+  const unavailable = agent.tools.find((tool) => !parentTools.has(tool));
+  if (unavailable) throw new Error(`Role ${JSON.stringify(agent.name)} tool ${JSON.stringify(unavailable)} is not active for the parent`);
+}
+
+function genericAgentRole(parentTools: ReadonlySet<string> | undefined): AgentRole {
+  const tools = [...READ_TOOLS].filter((tool) => !parentTools || parentTools.has(tool));
+  if (tools.length === 0) throw new Error("No read-only child tools are active for the parent");
+  return {
+    name: "generic",
+    description: "Complete the assigned task and return the result to the parent.",
+    access: "read",
+    tools,
+    prompt: "Complete the assigned task and return the result to the parent.",
+    source: "inline",
+    filePath: "inline:generic",
+  };
+}
+
+function cloneAgentRole(agent: AgentRole): AgentRole {
+  return { ...agent, tools: [...agent.tools] };
+}
+
+function restorePersistedAgent(value: unknown): AgentRole | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const role = value as Record<string, unknown>;
+  const name = role.name;
+  const description = role.description;
+  const access = role.access;
+  const tools = role.tools;
+  const prompt = role.prompt;
+  const source = role.source;
+  const filePath = role.filePath;
+  if (typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/u.test(name)) return undefined;
+  if (typeof description !== "string" || !description.trim() || description.length > 500) return undefined;
+  if (access !== "read" && access !== "write") return undefined;
+  if (!Array.isArray(tools) || tools.length === 0 || tools.some((tool) => typeof tool !== "string" || !KNOWN_TOOLS.has(tool))) return undefined;
+  const uniqueTools = [...new Set(tools as string[])];
+  if (uniqueTools.length !== tools.length || access === "read" && uniqueTools.some((tool) => WRITE_TOOLS.has(tool))) return undefined;
+  if (typeof prompt !== "string" || !prompt.trim() || prompt.length > SUBAGENT_LIMITS.roleFileBytes) return undefined;
+  if (source !== "bundled" && source !== "personal" && source !== "project" && source !== "inline") return undefined;
+  if (typeof filePath !== "string" || !filePath) return undefined;
+  const optionalString = (field: string): string | undefined => {
+    const item = role[field];
+    return item === undefined ? undefined : typeof item === "string" && item.trim() ? item : undefined;
+  };
+  const timeoutMs = role.timeoutMs;
+  if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_NODE_TIMER_MS)) return undefined;
+  return {
+    name,
+    description,
+    access,
+    tools: uniqueTools,
+    model: optionalString("model"),
+    thinking: optionalString("thinking"),
+    timeoutMs: typeof timeoutMs === "number" ? timeoutMs : undefined,
+    prompt,
+    source,
+    filePath,
+  };
+}
+
 function parseTaskInputs(value: unknown, field: "tasks" | "chain", limits: Pick<SubagentLimits, "maxTasks" | "taskCharacters">): TaskInput[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error(`Invalid subagent request: ${field} must be a non-empty array.`);
@@ -966,8 +1036,9 @@ function parseTaskInputs(value: unknown, field: "tasks" | "chain", limits: Pick<
     const task = requireRecord(entry, `${field}[${index}]`);
     requireOnlyFields(task, ["agent", "task", "name"], `spawn ${field}`);
     const name = optionalThreadName(task);
+    const agent = parseAgentSpec(task.agent);
     return {
-      agent: parseAgentSpec(task.agent),
+      ...(agent === undefined ? {} : { agent }),
       task: requireTextField(task, "task", limits.taskCharacters),
       ...(name === undefined ? {} : { name }),
     };
@@ -1151,19 +1222,19 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
     description: Type.String({ minLength: 1, maxLength: 500 }),
     access: StringEnum(["read", "write"] as const),
     tools: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, uniqueItems: true }),
-  }, { additionalProperties: false, description: "Ephemeral role for this spawn only; tools must be active for the parent" });
+  }, { additionalProperties: false, description: "Optional role definition for this spawn; tools must be active for the parent" });
   const agentSchema = Type.Union([
-    Type.String({ minLength: 1, maxLength: 64, description: "Agent role name" }),
+    Type.String({ minLength: 1, maxLength: 64, description: "Optional custom role name from an approved agents folder" }),
     inlineAgentSchema,
   ]);
   const taskSchema = Type.Object({
-    agent: agentSchema,
-    task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Bounded task for the role" }),
+    agent: Type.Optional(agentSchema),
+    task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Bounded task; omitted agent uses the generic read-only child" }),
     name: Type.Optional(Type.String({ minLength: 1, maxLength: 48, pattern: THREAD_NAME_PATTERN, description: "Parent-scoped child display name" })),
   }, { additionalProperties: false });
   const chainTaskSchema = Type.Object({
-    agent: agentSchema,
-    task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task with optional {previous} handoff placeholder" }),
+    agent: Type.Optional(agentSchema),
+    task: Type.String({ minLength: 1, maxLength: limits.taskCharacters, description: "Task with optional {previous}; omitted agent uses the generic read-only child" }),
     name: Type.Optional(Type.String({ minLength: 1, maxLength: 48, pattern: THREAD_NAME_PATTERN, description: "Parent-scoped child display name" })),
   }, { additionalProperties: false });
   const threadId = Type.String({ minLength: 1, maxLength: 128, description: "Existing child thread ID; omit when spawning because KillerOS creates it" });
@@ -1179,11 +1250,11 @@ function createSubagentParams(limits: Pick<SubagentLimits, "maxTasks" | "maxRead
     tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: limits.maxTasks, description: `Parallel role tasks: read-only batches run concurrently up to ${limits.maxReadConcurrency}; batches with writers use one shared slot by default. Set writerConcurrency to opt into a larger shared pool; concurrent writers share the parent worktree, so callers must prove path ownership` })),
     writerConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: limits.maxTasks, description: `Optional shared-pool cap for parallel tasks that include writers. Defaults to 1 when writers are selected; values above 1 opt into concurrent shared-worktree writes. Concurrent writers must prove path ownership` })),
     chain: Type.Optional(Type.Array(chainTaskSchema, { minItems: 1, maxItems: limits.maxTasks, description: "Sequential role tasks; {previous} inserts the prior result" })),
-    model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Model for every task as provider/model; inherit uses each role setting or the active parent" })),
-    thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit" })),
+    model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Optional model for every task as provider/model; omitted or inherit uses the selected role default, then the active parent. Set this when the user requires one model for the batch" })),
+    thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 16, description: "Optional thinking effort for every task: off, minimal, low, medium, high, xhigh, max, or inherit. Omitted or inherit uses the selected role default, then the active parent" })),
     agentScope: Type.Optional(StringEnum(["user", "project", "both"] as const, {
       default: "user",
-      description: "Role sources: user includes bundled and personal; project includes bundled and trusted project; both includes all",
+      description: "Custom role sources: user includes personal; project includes trusted project; both includes both",
     })),
   }, { additionalProperties: false });
 }
@@ -1239,7 +1310,7 @@ function buildSteeredTask(task: string, steering: readonly string[], maxCharacte
   return `${taskText}${steeringLabel}${steeringText}`;
 }
 
-export type TaskInput = { agent: AgentSpec; task: string; name?: string };
+export type TaskInput = { agent?: AgentSpec; task: string; name?: string };
 
 function steeredTaskWouldExceedLimit(task: string, steering: readonly string[], maxCharacters: number): boolean {
   if (!steering.length) return false;
@@ -1308,6 +1379,8 @@ interface ThreadMetadata {
   attempt: number;
   session: ChildSession;
   persistentSession: boolean;
+  agent?: AgentRole;
+  thinking?: ThinkingLevel;
 }
 
 type ThreadSnapshot = SubagentThread & {
@@ -1568,6 +1641,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   };
   const persistedThread = (thread: ThreadSnapshot): Record<string, unknown> => {
     const session = threadSession(thread, threadMetadata) ?? { id: `killeros-${safeSessionId(thread.id)}`, directory: "" };
+    const metadata = threadMetadata.get(thread.id);
+    const agent = metadata?.agent;
     return {
       id: thread.id,
       parentId: thread.parentId,
@@ -1577,6 +1652,21 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       prompt: clipCharacters(thread.prompt, limits.taskCharacters),
       model: thread.model,
       tools: thread.tools.slice(0, 32).map((tool) => clipCharacters(tool, 64)),
+      ...(agent ? {
+        roleDefinition: {
+          name: agent.name,
+          description: persistText(agent.description, 500),
+          access: agent.access,
+          tools: agent.tools.slice(0, 32).map((tool) => clipCharacters(tool, 64)),
+          model: agent.model,
+          thinking: agent.thinking,
+          timeoutMs: agent.timeoutMs,
+          prompt: persistText(agent.prompt, limits.roleFileBytes),
+          source: agent.source,
+          filePath: persistText(agent.filePath, 4_000),
+        },
+        thinking: metadata?.thinking,
+      } : {}),
       capabilityBoundary: { ...thread.capabilityBoundary },
       session: { ...session },
       state: thread.state,
@@ -1650,8 +1740,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     entries: readonly unknown[],
     parentId: string,
     expectedSession?: (threadId: string) => ChildSession | undefined,
-  ): Array<{ thread: ThreadSnapshot; result?: SubagentTaskResult }> => {
-    const records = new Map<string, { thread: ThreadSnapshot; result?: SubagentTaskResult }>();
+  ): Array<{ thread: ThreadSnapshot; result?: SubagentTaskResult; agent?: AgentRole; thinking?: ThinkingLevel }> => {
+    const records = new Map<string, { thread: ThreadSnapshot; result?: SubagentTaskResult; agent?: AgentRole; thinking?: ThinkingLevel }>();
     for (const entry of entries) {
       try {
         if (!entry || typeof entry !== "object") continue;
@@ -1666,6 +1756,12 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           if (!rawThread || typeof rawThread !== "object" || typeof rawThread.id !== "string" || rawThread.parentId !== parentId) continue;
           if (typeof rawThread.role !== "string" || typeof rawThread.prompt !== "string" || typeof rawThread.model !== "string") continue;
           const thread = { ...rawThread } as ThreadSnapshot;
+          const agent = rawThread.roleDefinition === undefined ? undefined : restorePersistedAgent(rawThread.roleDefinition);
+          if (rawThread.roleDefinition !== undefined && !agent) continue;
+          const thinking = rawThread.thinking === undefined
+            ? undefined
+            : typeof rawThread.thinking === "string" && rawThread.thinking.trim() ? rawThread.thinking as ThinkingLevel : undefined;
+          if (rawThread.thinking !== undefined && thinking === undefined) continue;
           thread.prompt = clipCharacters(thread.prompt, limits.taskCharacters);
           thread.result = typeof rawThread.result === "string" ? persistText(rawThread.result, 256 * 1024) : rawThread.result;
           thread.tools = Array.isArray(rawThread.tools) ? rawThread.tools.slice(0, 32) : [];
@@ -1688,7 +1784,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           }
           const result = record.result === undefined ? undefined : restorePersistedResult(record.result, thread);
           if (record.result !== undefined && !result) continue;
-          records.set(thread.id, { thread, result });
+          records.set(thread.id, { thread, result, agent, thinking });
         } else if (record.event === "close" && typeof record.id === "string") {
           const previous = records.get(record.id);
           if (!previous) continue;
@@ -1711,7 +1807,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     return [...records.values()];
   };
 
-  const installRestoredThreads = (restored: Array<{ thread: ThreadSnapshot; result?: SubagentTaskResult }>): void => {
+  const installRestoredThreads = (restored: Array<{ thread: ThreadSnapshot; result?: SubagentTaskResult; agent?: AgentRole; thinking?: ThinkingLevel }>): void => {
     if (!restored.length) return;
     const ids = [...restored.map(({ thread }) => thread.id)];
     let idIndex = 0;
@@ -1740,6 +1836,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           attempt: thread.attempt ?? 1,
           session: thread.session ?? { id: `killeros-${safeSessionId(thread.id)}`, directory: "" },
           persistentSession: Boolean(thread.session?.directory),
+          ...(entry.agent ? { agent: cloneAgentRole(entry.agent) } : {}),
+          ...(entry.thinking ? { thinking: entry.thinking } : {}),
         });
         if (entry.result) saveResult(created.id, entry.result);
         if (!(threads as any).hydrate) {
@@ -2149,13 +2247,13 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   const toolDefinition: Parameters<ExtensionAPI["registerTool"]>[0] = {
     name: "subagent",
     label: "Subagents",
-    description: `Spawn and manage named child threads. Bundled roles: debugger, documenter, planner, reviewer, scout, security, tester, worker. Agent accepts a role name or an inline { name, description, access, tools } role. On spawn, message aliases task. Parallel tasks with write-capable roles use one shared slot; read-only batches run concurrently up to ${limits.maxReadConcurrency}. Write-capable tasks are serialized in the shared parent worktree. Use action list, inspect, wait, steer, interrupt, collect, resume, and close to manage child handoffs.`,
-    promptSnippet: "Delegate bounded specialist work to isolated KillerOS subagents",
+    description: `Spawn and manage named child threads. A task-only spawn creates a generic read-only child; agent may name an optional custom role from an approved agents folder or provide an inline { name, description, access, tools } role. On spawn, message aliases task. Parallel tasks with write-capable roles use one shared slot; read-only batches run concurrently up to ${limits.maxReadConcurrency}. Write-capable tasks are serialized in the shared parent worktree. Use action list, inspect, wait, steer, interrupt, collect, resume, and close to manage child handoffs.`,
+    promptSnippet: "Delegate bounded work to isolated KillerOS subagents",
     promptGuidelines: [
-      "Use subagent for clearly separable specialist work; prefer read-only scout, planner, reviewer, or security roles before a writer.",
+      "Omit agent for a generic read-only child; use an approved custom role name or inline role when the task needs a specific prompt or write access.",
       "Parallel tasks with write-capable roles use one shared slot because all children share the parent worktree.",
       "Every child can load relevant skills with read and can use web_search, source_check, fetch_content, and get_search_content for external research.",
-      "When the user names a model or thinking effort, pass model and thinking separately; use inherit when the active parent or role setting should decide.",
+      "Default model and thinking are inherited. If the user requires one model for the batch, pass model; set thinking only when requested, and use inherit to follow the selected role default or active parent.",
       "Keep completed and stopped threads inspectable until the parent explicitly closes them.",
     ],
     parameters: createSubagentParams(limits),
@@ -2302,6 +2400,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
 
       let resumeTarget: ThreadSnapshot | undefined;
       let resumePrompt: string | undefined;
+      let resumeAgent: AgentRole | undefined;
+      const parentTools = activeParentTools(pi);
       const isResume = request.kind === "resume";
       if (isResume) {
         const target = resolveOwnedThread(request.input.threadId, parentId);
@@ -2309,14 +2409,26 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         if (!terminalThread(target) || target.state === "closed") {
           throw new Error(`Cannot resume thread ${target.id} from ${target.state}`);
         }
-        if (savedResults.get(target.id)?.agentSource === "inline") {
+        resumeAgent = threadMetadata.get(target.id)?.agent;
+        if (!resumeAgent && target.role === "generic") resumeAgent = genericAgentRole(parentTools);
+        if (!resumeAgent && savedResults.get(target.id)?.agentSource === "inline") {
           throw new Error(`Cannot resume inline role ${JSON.stringify(target.role)}; inline roles are scoped to one spawn`);
         }
         resumePrompt = request.input.task;
         resumeTarget = target;
       }
       const spawnRequest = (isResume
-        ? { kind: "spawn-single", input: { agent: resumeTarget!.role, task: resumePrompt ?? resumeTarget!.prompt } }
+        ? {
+          kind: "spawn-single",
+          input: {
+            agent: resumeAgent ?? resumeTarget!.role,
+            task: resumePrompt ?? resumeTarget!.prompt,
+            model: resumeTarget!.model,
+            ...(threadMetadata.get(resumeTarget!.id)?.thinking
+              ? { thinking: threadMetadata.get(resumeTarget!.id)!.thinking }
+              : {}),
+          },
+        }
         : request) as Extract<NormalizedSubagentRequest, { kind: "spawn-single" | "spawn-parallel" | "spawn-chain" }>;
       const params = spawnRequest.input;
       const scope: AgentScope = params.agentScope ?? "user";
@@ -2330,18 +2442,23 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         ? [{ agent: spawnRequest.input.agent, task: spawnRequest.input.task, ...(spawnRequest.input.name ? { name: spawnRequest.input.name } : {}) }]
         : spawnRequest.kind === "spawn-parallel" ? spawnRequest.input.tasks : spawnRequest.input.chain;
       const rolesForInputs = rawInputs.map((input) => {
+        if (isResume && resumeAgent && input.agent === resumeAgent) {
+          const role = cloneAgentRole(resumeAgent);
+          validateAgentTools(role, parentTools);
+          return role;
+        }
+        if (input.agent === undefined) return genericAgentRole(parentTools);
         if (typeof input.agent !== "string") {
-          const parentTools = new Set(pi.getActiveTools());
-          for (const tool of input.agent.tools) {
-            if (!parentTools.has(tool)) throw new Error(`Inline role ${JSON.stringify(input.agent.name)} tool ${JSON.stringify(tool)} is not active for the parent`);
-          }
-          return inlineAgentRole(input.agent);
+          const role = inlineAgentRole(input.agent);
+          validateAgentTools(role, parentTools);
+          return role;
         }
         const selected = roles.get(input.agent);
         if (selected) return selected;
         const available = discovery.agents.map((agent) => `${agent.name} (${agent.source})`).join(", ") || "none";
-        throw new Error(`Unknown subagent ${JSON.stringify(input.agent)}. Available: ${available}`);
+        throw new Error(`Unknown custom subagent ${JSON.stringify(input.agent)}. Available: ${available}`);
       });
+      rolesForInputs.forEach((role) => validateAgentTools(role, parentTools));
       const inputs: Array<Omit<TaskInput, "agent"> & { agent: string }> = rawInputs.map((input, index) => ({
         ...input,
         agent: rolesForInputs[index]!.name,
@@ -2389,7 +2506,14 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
 
       const existingThreads = threads.listAll().filter((thread) => thread.parentId === parentId).map((thread) => threadView(thread, threadMetadata));
       const allocatedNames = new Set<string>();
-      if (isResume) resumeTarget = resumeThread(resumeTarget!, resumePrompt);
+      if (isResume) {
+        resumeTarget = resumeThread(resumeTarget!, resumePrompt);
+        const metadata = threadMetadata.get(resumeTarget.id);
+        if (metadata) {
+          metadata.agent = cloneAgentRole(rolesForInputs[0]!);
+          metadata.thinking = resolvedModels[0]!.thinking;
+        }
+      }
       const threadRecords = isResume
         ? [resumeTarget!]
         : inputs.map((input, index) => {
@@ -2412,7 +2536,14 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           session: { id: "killeros-pending", directory: path.join(os.tmpdir(), "killeros-subagent-pending") },
         } as any);
         const session = childSessionPath(ctx, thread.id) ?? { id: `killeros-${safeSessionId(thread.id)}`, directory: "" };
-        threadMetadata.set(thread.id, { displayName, attempt: 1, session, persistentSession: Boolean(session.directory) });
+        threadMetadata.set(thread.id, {
+          displayName,
+          attempt: 1,
+          session,
+          persistentSession: Boolean(session.directory),
+          agent: cloneAgentRole(rolesForInputs[index]!),
+          thinking: resolvedModels[index]!.thinking,
+        });
         recordSpawn(thread);
         return thread;
       });
@@ -3008,7 +3139,9 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `parallel ${spawnRequest.input.tasks.length} · ${schedule}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
       }
       if (spawnRequest.kind === "spawn-chain") return new Text(`${theme.fg("toolTitle", theme.bold("subagents "))}${theme.fg("accent", `chain ${spawnRequest.input.chain.length}`)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
-      const agentName = typeof spawnRequest.input.agent === "string" ? spawnRequest.input.agent : spawnRequest.input.agent.name;
+      const agentName = spawnRequest.input.agent === undefined
+        ? "generic"
+        : typeof spawnRequest.input.agent === "string" ? spawnRequest.input.agent : spawnRequest.input.agent.name;
       return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", agentName)}${theme.fg("dim", ` · ${scope}`)}`, 0, 0);
     },
 

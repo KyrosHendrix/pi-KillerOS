@@ -181,7 +181,6 @@ test("subagent request normalizer rejects conflicting and unrelated fields", () 
       input: { action: "list", agent: "worker", task: "inspect" },
       error: /agent.*list|task.*list|unrelated/iu,
     },
-    { input: { message: "steer" }, error: /agent.*non-empty string/iu },
     { input: { action: "list", model: "provider/model" }, error: /model.*list/iu },
     { input: { action: "inspect", threadId: "subagent-1", task: "invalid" }, error: /task.*inspect/iu },
     { input: { action: "steer", threadId: "subagent-1", message: "continue", agent: "worker" }, error: /agent.*steer/iu },
@@ -189,7 +188,6 @@ test("subagent request normalizer rejects conflicting and unrelated fields", () 
     { input: { action: "close", threadId: "subagent-1", message: "invalid" }, error: /message.*steer/iu },
     { input: { action: "interrupt", all: true, threadId: "subagent-1" }, error: /exactly one.*threadId.*all/iu },
     { input: { action: "spawn", agent: "worker" }, error: /task.*non-empty string/iu },
-    { input: { action: "spawn", task: "inspect" }, error: /agent.*non-empty string/iu },
     { input: { action: "spawn", tasks: [] }, error: /tasks.*non-empty array/iu },
     { input: { action: "spawn", chain: [] }, error: /chain.*non-empty array/iu },
     { input: { action: "spawn", chain: [{ agent: "worker", task: "inspect" }], writerConcurrency: 1 }, error: /writerConcurrency.*parallel/iu },
@@ -205,6 +203,7 @@ test("subagent request normalizer classifies valid request shapes", () => {
   const validRequests = [
     [{ agent: "worker", task: "inspect" }, "spawn-single"],
     [{ action: "spawn", agent: "worker", task: "inspect" }, "spawn-single"],
+    [{ action: "spawn", task: "inspect" }, "spawn-single"],
     [{ tasks: [{ agent: "worker", task: "inspect" }] }, "spawn-parallel"],
     [{ action: "spawn", tasks: [{ agent: "worker", task: "inspect" }] }, "spawn-parallel"],
     [{ chain: [{ agent: "worker", task: "inspect" }] }, "spawn-chain"],
@@ -258,6 +257,30 @@ test("spawn accepts message as task and validates inline role descriptors", () =
   );
 });
 
+test("task-only spawns use a generic read-only child", async () => {
+  const roster = tempRoster();
+  const calls = [];
+  try {
+    const tool = createToolHarness({
+      userAgentsDir: roster.personal,
+      spawnProcess(args) {
+        calls.push(args);
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent("generic output")); child.close(0); });
+        return child;
+      },
+    });
+    const result = await execute(tool, { task: "Map the repository", name: "repo-map" }, toolContext(roster.root));
+    const task = result.details.results[0];
+    assert.equal(task.agent, "generic");
+    assert.equal(task.access, "read");
+    assert.deepEqual(task.tools, ["read", "grep", "find", "ls", "web_search", "source_check", "fetch_content", "get_search_content"]);
+    assert.equal(calls[0][calls[0].indexOf("--tools") + 1], task.tools.join(","));
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
 test("subagent schema is a top-level object for strict providers", () => {
   const tool = createToolHarness();
   const schema = JSON.parse(JSON.stringify(tool.parameters));
@@ -283,8 +306,9 @@ test("subagent schema is a top-level object for strict providers", () => {
   ]);
   assert.equal(schema.properties.tasks.items.type, "object");
   assert.equal(schema.properties.chain.items.type, "object");
-  assert.match(tool.description, /debugger, documenter, planner, reviewer, scout, security, tester, worker/u);
+  assert.match(tool.description, /task-only spawn creates a generic read-only child/u);
   assert.equal(schema.properties.agent.anyOf[1].additionalProperties, false);
+  assert.equal(schema.properties.tasks.items.required?.includes("agent") ?? false, false);
 });
 
 test("schema accepts named children, wait, and resume", () => {
@@ -515,11 +539,12 @@ test("session hooks persist terminal snapshots and restore them on session start
   }
 });
 
-test("inline roles remain non-resumable after session restore", async () => {
+test("inline roles remain resumable after session restore", async () => {
   const roster = tempRoster();
   const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
   const entries = [];
   const handlers = new Map();
+  const promptContents = [];
   let tool;
   try {
     writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
@@ -533,7 +558,9 @@ test("inline roles remain non-resumable after session restore", async () => {
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
       awaitSpawnCompletion: true,
-      spawnProcess() {
+      spawnProcess(args) {
+        const promptPath = args[args.indexOf("--append-system-prompt") + 1];
+        promptContents.push(readFileSync(promptPath, "utf8"));
         const child = new FakeProcess();
         setImmediate(() => { child.json(assistantEvent("inline saved")); child.close(0); });
         return child;
@@ -546,14 +573,14 @@ test("inline roles remain non-resumable after session restore", async () => {
     }, ctx);
     assert.equal(started.details.results[0].agentSource, "inline");
     assert.equal(entries.at(-1).data.result.agentSource, "inline");
+    assert.equal(entries.at(-1).data.thread.roleDefinition.name, "worker");
 
     handlers.get("session_start")(undefined, ctx);
     const restored = await execute(tool, { action: "list" }, ctx);
     assert.equal(restored.details.results[0].agentSource, "inline");
-    await assert.rejects(
-      execute(tool, { action: "resume", threadId: started.details.results[0].id }, ctx),
-      /inline role.*cannot be resumed|cannot resume inline role/iu,
-    );
+    const resumed = await execute(tool, { action: "resume", threadId: started.details.results[0].id }, ctx);
+    assert.equal(resumed.details.results[0].output, "inline saved");
+    assert.deepEqual(promptContents, ["Inspect one target.", "Inspect one target."]);
   } finally {
     rmSync(sessionRoot, { recursive: true, force: true });
     rmSync(roster.root, { recursive: true, force: true });
@@ -770,27 +797,33 @@ test("resume persistence clears the prior terminal result before the child runs"
   }
 });
 
-test("resume keeps a terminal child unchanged when role validation fails", async () => {
+test("resume uses the persisted role when its source file is gone", async () => {
   const roster = tempRoster();
   try {
     const rolePath = writeRole(roster.bundled, "scout.md", { name: "scout" });
     writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
+    const selectedModel = { provider: "test", id: "selected-model", name: "Selected model", reasoning: true };
+    const calls = [];
     const tool = createToolHarness({
       bundledAgentsDir: roster.bundled,
       userAgentsDir: roster.personal,
-      spawnProcess() {
+      spawnProcess(args) {
+        calls.push(args);
         const child = new FakeProcess();
         setImmediate(() => { child.json(assistantEvent("saved")); child.close(0); });
         return child;
       },
     });
-    const ctx = toolContext(roster.root);
-    const started = await execute(tool, { agent: "scout", task: "save this", name: "reviewer" }, ctx);
+    const ctx = toolContext(roster.root, { models: [parentModel, selectedModel] });
+    const started = await execute(tool, { agent: "scout", task: "save this", name: "reviewer", model: "test/selected-model" }, ctx);
     rmSync(rolePath);
-    await assert.rejects(
-      execute(tool, { action: "resume", threadId: started.details.results[0].id }, ctx),
-      /Unknown subagent.*scout/iu,
-    );
+    const resumed = await execute(tool, { action: "resume", threadId: started.details.results[0].id }, ctx);
+    assert.equal(resumed.details.results[0].output, "saved");
+    assert.equal(calls.length, 2);
+    for (const args of calls) {
+      assert.equal(args[args.indexOf("--model") + 1], "test/selected-model");
+      assert.equal(args[args.indexOf("--thinking") + 1], "high");
+    }
     const listed = await execute(tool, { action: "list" }, ctx);
     assert.equal(listed.details.threads.find((thread) => thread.id === started.details.results[0].id).state, "done");
     assert.equal(listed.details.results.find((result) => result.id === started.details.results[0].id).output, "saved");
@@ -995,6 +1028,12 @@ test("model resolution supports exact colon IDs and enforces Pi thinking capabil
     thinking: "high",
     definition: parentModel,
   });
+  const alternate = { provider: "test", id: "alternate", name: "Alternate model", reasoning: true };
+  assert.deepEqual(resolveAgentModel({ ...base, model: "test/alternate" }, modelContext([parentModel, alternate])), {
+    model: "test/alternate",
+    thinking: "high",
+    definition: alternate,
+  });
   assert.deepEqual(resolveAgentModel({ ...base, model: "inherit", thinking: "low" }, modelContext()), {
     model: "test/parent-model",
     thinking: "low",
@@ -1142,6 +1181,16 @@ test("model and thinking overrides select the requested child configuration inde
         return child;
       },
     });
+    const inheritedThinking = await execute(tool, {
+      agent: "scout",
+      task: "Pin only the model",
+      model: "test/selected-model",
+    }, toolContext(roster.root, { models: [parentModel, selectedModel] }));
+    assert.equal(inheritedThinking.details.results[0].model, "test/selected-model");
+    assert.equal(inheritedThinking.details.results[0].thinking, "high");
+    assert.equal(capturedArgs[capturedArgs.indexOf("--model") + 1], "test/selected-model");
+    assert.equal(capturedArgs[capturedArgs.indexOf("--thinking") + 1], "high");
+
     const result = await execute(tool, {
       agent: "scout",
       task: "Use the selected configuration",
@@ -1877,7 +1926,7 @@ test("inline roles cover every spawn shape and unknown roles fail before launch"
 
     await assert.rejects(
       execute(tool, { agent: "general-purpose", task: "fix it" }, ctx),
-      /Unknown subagent "general-purpose".*Available: worker \(bundled\)/iu,
+      /Unknown custom subagent "general-purpose".*Available: worker \(bundled\)/iu,
     );
     assert.equal(spawned, 0);
 
@@ -2325,47 +2374,24 @@ test("session cleanup retains the session when forced termination never confirms
   }
 });
 
-test("bundled roster declares read-only auditors and focused writers", () => {
-  const agents = discoverAgentRoles(process.cwd(), "user", true, {
-    bundledAgentsDir: path.join(process.cwd(), "agents"),
-    userAgentsDir: path.join(process.cwd(), "test", "missing-agents"),
-  }).agents;
-  assert.deepEqual(agents.map((agent) => agent.name), ["debugger", "documenter", "planner", "reviewer", "scout", "security", "tester", "worker"]);
-  for (const name of ["planner", "reviewer", "scout", "security"]) {
-    const agent = agents.find((candidate) => candidate.name === name);
-    assert.equal(agent.access, "read");
-    assert.equal(agent.tools.some((tool) => ["bash", "edit", "write"].includes(tool)), false);
+test("custom roles are discovered from the approved personal folder", () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.personal, "reviewer.md", { name: "reviewer", description: "A user-defined reviewer" });
+    const agents = discoverAgentRoles(roster.root, "user", true, { userAgentsDir: roster.personal }).agents;
+    assert.deepEqual(agents.map((agent) => agent.name), ["reviewer"]);
+    assert.equal(agents[0].source, "personal");
+    assert.equal(agents[0].description, "A user-defined reviewer");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
   }
-  for (const name of ["debugger", "documenter", "tester", "worker"]) {
-    const agent = agents.find((candidate) => candidate.name === name);
-    assert.equal(agent.access, "write");
-  }
-  const worker = agents.find((agent) => agent.name === "worker");
-  for (const agent of agents) {
-    for (const tool of ["web_search", "source_check", "fetch_content", "get_search_content"]) {
-      assert.equal(agent.tools.includes(tool), true, `${agent.name} must expose ${tool}`);
-    }
-    assert.equal(agent.model, "inherit", `${agent.name} must expose a model placeholder`);
-    assert.equal(agent.thinking, "inherit", `${agent.name} must expose a thinking placeholder`);
-    assert.match(agent.prompt, /## Skills and web research/u);
-    assert.match(agent.prompt, /load the most relevant skill/u);
-  }
-  assert.deepEqual(worker.tools, ["read", "grep", "find", "ls", "edit", "write", "bash", "web_search", "source_check", "fetch_content", "get_search_content"]);
-  assert.equal(SUBAGENT_LIMITS.maxTasks, 10);
-  assert.equal(SUBAGENT_LIMITS.maxReadConcurrency, 4);
-  assert.equal(SUBAGENT_LIMITS.defaultMaxTurns, 64);
-  assert.equal(SUBAGENT_LIMITS.defaultQuotaTokens, 2_000_000);
-  assert.equal("maxTimeoutMs" in SUBAGENT_LIMITS, false);
-  for (const agent of agents) assert.equal(agent.timeoutMs, undefined);
 });
 
-test("discovers bundled roles through the default module-relative agents path", () => {
+test("does not load package-local roles by default", () => {
   const agents = discoverAgentRoles(process.cwd(), "user", true, {
     userAgentsDir: path.join(process.cwd(), "test", "missing-agents"),
   }).agents;
-  const names = agents.map((agent) => agent.name);
-  assert.deepEqual(names, ["debugger", "documenter", "planner", "reviewer", "scout", "security", "tester", "worker"]);
-  assert.equal(agents.every((agent) => agent.source === "bundled"), true);
+  assert.deepEqual(agents, []);
 });
 
 test("Codex-style thread actions keep a completed handoff visible until close", async () => {

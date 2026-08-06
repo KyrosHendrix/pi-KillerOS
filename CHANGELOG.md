@@ -4,6 +4,12 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Removed KillerOS's eight bundled subagent roles. The main agent now chooses each child; omitting `agent` creates a generic read-only child, while optional custom roles come from approved personal or trusted project agent folders or an inline definition.
+- Persisted the selected child role contract for resume and rechecked its tools against the main agent's current authority.
+- Made model and thinking selection inherit the selected role or active parent by default; an explicit `model` value can pin a whole batch to one available model while omitted thinking still inherits.
+
 ### Fixed
 
 - Treated whitespace-only child output as missing lifecycle output, failed the thread cleanly, and freed the task slot while retaining the raw child result.

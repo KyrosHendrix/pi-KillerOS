@@ -80,32 +80,20 @@ Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh
 
 ## Subagents
 
-KillerOS ships `planner`, `reviewer`, `scout`, and `security` as read-only roles plus focused write-capable `debugger`, `documenter`, and `tester` roles; `worker` remains the general-purpose implementation role. Each invocation rediscovers Markdown roles with this precedence:
+KillerOS ships no subagent roles. The main agent chooses each child. Omit `agent` for a generic read-only child, use a custom role name from an approved agents folder, or provide an inline `{name, description, access, tools}` role when the child needs a custom contract.
 
-| Role | Access | Focus |
-|---|---|---|
-| `debugger` | write | Reproduce failures, fix root causes, and verify regressions |
-| `documenter` | write | Keep repository documentation accurate and audience-focused |
-| `planner` | read | Turn repository constraints into an executable implementation route |
-| `reviewer` | read | Report proven correctness, security, and regression risks |
-| `scout` | read | Map unfamiliar code and return an evidence trail |
-| `security` | read | Audit trust boundaries and report concrete security findings |
-| `tester` | write | Add focused coverage and run deterministic verification |
-| `worker` | write | Execute the assigned repository change |
+1. Personal: `~/.pi/agent/agents/*.md`
+2. Trusted project: `<repo>/.pi/agents/*.md`
 
-1. Bundled: `<killeros>/agents/*.md`
-2. Personal: `~/.pi/agent/agents/*.md`
-3. Trusted project: `<repo>/.pi/agents/*.md`
+The default `agentScope: "user"` uses personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project role requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. The Markdown body is the child prompt. Optional fields are `model`, `thinking`, and `timeoutMs`; without a role or dispatch setting, model and thinking inherit the active parent. KillerOS does not load package-local role files.
 
-The default `agentScope: "user"` uses bundled and personal roles. Use `"project"` or `"both"` to opt into trusted project roles; a selected project override requires interactive confirmation. Role frontmatter requires `name`, `description`, `access`, and an explicit `tools` list. Optional fields are `model`, `thinking`, and `timeoutMs`. Every bundled role shows `model: inherit` and `thinking: inherit` as editable placeholders. Replace them with an available `provider/model` and a separate thinking level when you want to pin a role; `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` are checked against that model’s supported capabilities.
-
-The tool supports a single `agent` plus `task` or its `message` alias, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. `agent` may be a role name or an inline `{name, description, access, tools}` role for one spawn. Inline tools must be active for the parent, and inline role settings are not saved or resumable. Each task may set a `name`; names are unique within the parent session without regard to case and are passed to child Pi as `--name`. Read-only-only batches run concurrently, up to four at a time. Batches with write-capable roles are serialized in the shared worktree with one shared slot. Reader-only batches reject `writerConcurrency` because it does not apply. A call can also set `model` and `thinking` for every task, overriding role settings; use `inherit` to fall back to each role and then the active parent model.
+The tool supports a single task, parallel `tasks`, or a sequential `chain` whose task text may include `{previous}`. Omit `agent` for a generic read-only child, pass a custom role name from an approved agents folder, or provide an inline `{name, description, access, tools}` role. Inline and file role tools must be active for the parent. Each task may set a `name`; names are unique within the parent session without regard to case and are passed to child Pi as `--name`. Read-only-only batches run concurrently, up to four at a time. Batches with write-capable roles are serialized in the shared worktree with one shared slot. Reader-only batches reject `writerConcurrency` because it does not apply. Model and thinking default to inherit the selected role setting or active parent. Set `model` to pin every task in the call to one available model, or set `thinking` when the user asks for a specific effort; either field accepts `inherit`. Selected role contracts persist with the child thread and are checked against the current parent tool set when resumed.
 
 | Action | Required fields | Allowed optional fields |
 |---|---|---|
-| omitted / `spawn` single | `agent`, one of `task` or `message` | `name`, `model`, `thinking`, `agentScope` |
-| omitted / `spawn` parallel | `tasks` | per-task `name`, `writerConcurrency`, `model`, `thinking`, `agentScope` |
-| omitted / `spawn` chain | `chain` | per-task `name`, `model`, `thinking`, `agentScope` |
+| omitted / `spawn` single | one of `task` or `message` | `agent`, `name`, `model`, `thinking`, `agentScope` |
+| omitted / `spawn` parallel | `tasks` | per-task `agent`, per-task `name`, `writerConcurrency`, `model`, `thinking`, `agentScope` |
+| omitted / `spawn` chain | `chain` | per-task `agent`, per-task `name`, `model`, `thinking`, `agentScope` |
 | `list` | none | none |
 | `inspect` | `threadId` | none |
 | `wait` | none | `threadId`, `all: true`, `timeoutMs` |
@@ -116,15 +104,16 @@ The tool supports a single `agent` plus `task` or its `message` alias, parallel 
 | `resume` | `threadId` | `task` |
 | `close` | `threadId` | none |
 
-The three spawn shapes cannot be mixed. On a single spawn, `message` aliases `task` with the same 20,000-character limit; supplying both is invalid. With `action: "steer"`, `message` remains required and has a 4,000-character limit, while other lifecycle actions reject it. An unknown named role fails before child launch and reports the available roles. The `wait` action defaults to all queued or active children, waits up to 30 seconds by default, and never stops a child when it times out. The `resume` action keeps the same thread ID, name, session ID, and session directory and increments `attempt`; it requires the original named role and rejects inline roles. KillerOS rejects malformed requests before role discovery, project confirmation, thread creation, or child launch. The TUI shows a parallel or shared-pool schedule only after shape validation; malformed calls show `invalid request` instead of queued work. For example:
+The three spawn shapes cannot be mixed. On a single spawn, `message` aliases `task` with the same 20,000-character limit; supplying both is invalid. With `action: "steer"`, `message` remains required and has a 4,000-character limit, while other lifecycle actions reject it. An unknown named custom role fails before child launch. The `wait` action defaults to all queued or active children, waits up to 30 seconds by default, and never stops a child when it times out. The `resume` action keeps the same thread ID, name, session ID, and session directory and increments `attempt`; it restores the saved role contract and checks its tools against the current parent authority. KillerOS rejects malformed requests before role discovery, project confirmation, thread creation, or child launch. The TUI shows a parallel or shared-pool schedule only after shape validation; malformed calls show `invalid request` instead of queued work. For example:
 
 ```json
-{"agent":"reviewer","task":"Review the change","name":"auth-audit","model":"provider/model","thinking":"high"}
+{"task":"Inspect the change","name":"repo-scan"}
+{"agent":{"name":"auth-audit","description":"Review the change","access":"read","tools":["read","grep","find"]},"task":"Review the change","model":"provider/model","thinking":"high"}
 ```
 
 Spawn returns the generated thread IDs immediately while the children continue in the background. The completed spawn card is a static launch receipt; the separate live widget shows current state and usage until the batch settles. This lets the parent use `list`, `inspect`, `wait`, `steer`, `interrupt`, `collect`, `resume`, and `close` in later tool calls. Compact thread records persist through Pi custom session entries. On parent restart, an active record restores as `orphaned`; `close` removes the child session only after confirmed process exit. When the batch settles, KillerOS delivers its bounded handoff as a Pi follow-up and triggers the parent turn. A batch cancelled by parent Escape remains inspectable but does not trigger a replacement turn.
 
-Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as isolated `pi --mode json -p` processes with a private `--session-dir` and `--session-id`, plus explicit local tools and `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Steering restarts the same child session, so the child keeps its prior conversation. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. Every bundled role is instructed to load the most relevant `SKILL.md` and report useful evidence. An empty final assistant response is a failure. Each child stops at the first default limit reached: 64 turns, 2,000,000 reported tokens, or 30 minutes. Dollar quotas remain opt-in. Each JSONL record still has a bounded 8 MiB parser ceiling. KillerOS bounds retained trace, stderr, and returned text and spills a large JSONL line to temporary storage; retention never stops a child or marks it `limited`. The parent limits each request to ten tasks, read-only-only batches to four concurrent readers, and bounds role files, task input, and combined parent output. Embedding options can adjust the turn, token, wall-time, and other named resource guards. Aborting the originating parent turn stops its queued and active children; explicit `interrupt` actions and session shutdown also terminate active children and use a bounded 10-second process-exit wait.
+Use the separate `model` and `thinking` fields for new configuration. The older `provider/model:thinking` model form remains accepted. Children run as isolated `pi --mode json -p` processes with a private `--session-dir` and `--session-id`, plus explicit local tools and `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Steering restarts the same child session, so the child keeps its prior conversation. Each child explicitly loads `npm:pi-web-access`, discovers available skills, and keeps arbitrary extensions and prompt templates disabled; project-local skills load only when the parent project is trusted. A generic child uses read-only tools. A selected custom or inline role uses its saved prompt, access, and tools. An empty final assistant response is a failure. Each child stops at the first default limit reached: 64 turns, 2,000,000 reported tokens, or 30 minutes. Dollar quotas remain opt-in. Each JSONL record still has a bounded 8 MiB parser ceiling. KillerOS bounds retained trace, stderr, and returned text and spills a large JSONL line to temporary storage; retention never stops a child or marks it `limited`. The parent limits each request to ten tasks, read-only-only batches to four concurrent readers, and bounds role files, task input, and combined parent output. Embedding options can adjust the turn, token, wall-time, and other named resource guards. Aborting the originating parent turn stops its queued and active children; explicit `interrupt` actions and session shutdown also terminate active children and use a bounded 10-second process-exit wait.
 
 The command grammar is:
 
@@ -144,7 +133,7 @@ Bare `/subagents` opens TUI selectors. RPC, JSON, and print modes require an exp
 
 ### Thread lifecycle
 
-Each delegated task creates a named child thread. Its contract records the parent ID, child ID, role, prompt, model, requested capability boundary, trace, usage, and result state. Roles define the child’s access and tools; they do not own lifecycle controls or grant new filesystem powers. The parent owns scope, waits, inspection, steering, collection, and closure.
+Each delegated task creates a named child thread. Its contract records the parent ID, child ID, selected generic or custom role, prompt, model, requested capability boundary, trace, usage, and result state. The selected role defines the child’s access and tools; it does not own lifecycle controls or grant new filesystem powers. The parent owns scope, waits, inspection, steering, collection, and closure.
 
 Threads move through `queued`, `active`, `done`, `failed`, `stopped`, `orphaned`, and `closed`. The parent renders separate **Active** and **Done** lists. Active threads show their name, task, model, usage, and direct controls. Done threads keep their handoff and trace available until the parent closes them.
 
