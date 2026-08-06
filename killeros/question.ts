@@ -56,6 +56,8 @@ type QuestionSelection =
 const CUSTOM_INPUT_MAX_CHARACTERS = 4_000;
 const CUSTOM_INPUT_HISTORY_LIMIT = 100;
 const CUSTOM_INPUT_HISTORY_BYTES = 64 * 1024;
+const FILTER_QUERY_MAX_CHARACTERS = 4_000;
+const FILTER_QUERY_MAX_BYTES = 16_000;
 
 function isPrintableInput(data: string): boolean {
   return data.length > 0 && !/[\u0000-\u001F\u007F-\u009F]/u.test(data);
@@ -123,7 +125,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
   pi.registerTool<typeof QuestionParams, QuestionDetails>({
     name: "question",
     label: "Question",
-    description: "Ask one interactive multiple-choice question. Provide 1-9 concise options. The user can filter options or type a custom answer.",
+    description: `Ask one interactive multiple-choice question. Provide 1-9 concise options. The user can filter options or type a custom answer. Filter queries are limited to ${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()} characters and ${FILTER_QUERY_MAX_BYTES.toLocaleString()} bytes.`,
     promptSnippet: "Ask the user one multiple-choice question when a decision is required to proceed",
     promptGuidelines: [
       "Use question only when user input is required to choose between concrete alternatives; do not use question for rhetorical or optional follow-up prompts.",
@@ -196,6 +198,21 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
         const refresh = (): void => {
           invalidate();
           tui.requestRender();
+        };
+
+        const appendFilterInput = (value: string): void => {
+          const nextCharacters = inputCharacterCount(filterQuery) + inputCharacterCount(value);
+          const nextBytes = Buffer.byteLength(filterQuery, "utf8") + Buffer.byteLength(value, "utf8");
+          if (nextCharacters > FILTER_QUERY_MAX_CHARACTERS || nextBytes > FILTER_QUERY_MAX_BYTES) {
+            ctx.ui.notify(
+              `Question filters are limited to ${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()} characters and ${FILTER_QUERY_MAX_BYTES.toLocaleString()} bytes`,
+              "error",
+            );
+            return;
+          }
+          filterQuery += value;
+          optionIndex = 0;
+          refresh();
         };
 
         editor.onSubmit = (value) => {
@@ -288,9 +305,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
             return;
           }
           if (printableInput) {
-            filterQuery += printableInput;
-            optionIndex = 0;
-            refresh();
+            appendFilterInput(printableInput);
           }
         };
 

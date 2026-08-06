@@ -209,7 +209,7 @@ function scheduleGoalContinuation(
   runtime: GoalRuntime,
   initState: InitRuntime,
   ctx: ExtensionContext,
-): void {
+): boolean {
   if (!isGoalModeSupported(ctx)
     || !isSavedSession(ctx)
     || runtime.state?.status !== "active"
@@ -217,7 +217,7 @@ function scheduleGoalContinuation(
     || runtime.continuationHeld
     || runtime.goalTurnInFlight
     || initState.active
-    || ctx.hasPendingMessages()) return;
+    || ctx.hasPendingMessages()) return false;
   const current = runtime.state;
   runtime.continuationScheduled = true;
   runtime.goalTurnInFlight = false;
@@ -230,10 +230,12 @@ function scheduleGoalContinuation(
       content: goalContinuationMessage(current, ctx),
       display: false,
     }, { triggerTurn: true, deliverAs: "followUp" });
+    return true;
   } catch (error) {
     runtime.continuationScheduled = false;
     runtime.goalTurnInFlight = false;
     pauseGoalAfterFailure(pi, runtime, ctx, `continuation could not start: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
   }
 }
 
@@ -551,8 +553,7 @@ export function registerGoal(
         try {
           transitionGoal(pi, runtime, "resume", "active", undefined, true);
           runtime.continuationScheduled = false;
-          scheduleGoalContinuation(pi, runtime, initState, ctx);
-          ctx.ui.notify("Goal resumed", "info");
+          if (scheduleGoalContinuation(pi, runtime, initState, ctx)) ctx.ui.notify("Goal resumed", "info");
         } catch (error) {
           reportError(ctx, "Goal could not be resumed", error);
         }
@@ -612,8 +613,7 @@ export function registerGoal(
         try {
           persistGoalState(pi, runtime, "edit", next);
           runtime.continuationScheduled = false;
-          scheduleGoalContinuation(pi, runtime, initState, ctx);
-          ctx.ui.notify("Goal updated and active", "info");
+          if (scheduleGoalContinuation(pi, runtime, initState, ctx)) ctx.ui.notify("Goal updated and active", "info");
         } catch (error) {
           pauseGoalAfterFailure(
             pi,
@@ -677,8 +677,9 @@ export function registerGoal(
       };
       try {
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
-        scheduleGoalContinuation(pi, runtime, initState, ctx);
-        ctx.ui.notify("Goal active. KillerOS will continue until completion, a repeated blocker, or pause.", "info");
+        if (scheduleGoalContinuation(pi, runtime, initState, ctx)) {
+          ctx.ui.notify("Goal active. KillerOS will continue until completion, a repeated blocker, or pause.", "info");
+        }
       } catch (error) {
         reportError(ctx, "Goal could not be started", error);
         scheduleGoalContinuation(pi, runtime, initState, ctx);

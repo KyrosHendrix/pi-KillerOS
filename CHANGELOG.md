@@ -4,6 +4,13 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Treated whitespace-only child output as missing lifecycle output, failed the thread cleanly, and freed the task slot while retaining the raw child result.
+- Removed persistent child-session directories when retained terminal threads aged out after confirmed child exit, while keeping unconfirmed sessions recoverable until exit was confirmed.
+- Bounded question filter input to 4,000 characters and 16,000 UTF-8 bytes, with a clear rejection notice for excess input.
+- Reported goal start, resume, and edit success only after continuation dispatch succeeded, and paused the goal when dispatch failed.
+
 ## [1.5.7] - 2026-08-06
 
 ### Fixed

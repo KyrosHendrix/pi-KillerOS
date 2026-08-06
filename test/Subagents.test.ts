@@ -352,6 +352,46 @@ test("empty final assistant content fails with a deterministic reason", async ()
   }
 });
 
+test("whitespace-only final assistant content fails the thread and frees its slot", async () => {
+  const roster = tempRoster();
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let processCount = 0;
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      limits: { maxTasks: 1 },
+      spawnProcess() {
+        const child = new FakeProcess();
+        processCount += 1;
+        setImmediate(() => {
+          child.json(assistantEvent(processCount === 1 ? " \t\n " : "recovered"));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    const failed = await execute(tool, { agent: "scout", task: "whitespace" }, ctx);
+    const failedTask = failed.details.results[0];
+    const failedThread = failed.details.threads.find((thread) => thread.id === failedTask.id);
+
+    assert.equal(failedTask.status, "failed");
+    assert.equal(failedTask.output, " \t\n ");
+    assert.equal(failedTask.terminationReason, "missing_assistant_message");
+    assert.equal(failedThread.state, "failed");
+    assert.equal(failedThread.failure.code, "missing_assistant_message");
+    assert.equal(failedThread.result, undefined);
+    assert.equal(failedThread.handoff, undefined);
+
+    const recovered = await execute(tool, { agent: "scout", task: "retry" }, ctx);
+    assert.equal(recovered.details.results[0].status, "complete");
+    assert.equal(processCount, 2);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
 test("default wall time applies when a role omits timeoutMs", async () => {
   const roster = tempRoster();
   try {
@@ -2409,6 +2449,98 @@ test("closed and over-budget thread records become bounded tombstones", async ()
     assert.match(evicted.content[0].text, /heavy thread data was evicted/u);
     const notice = await execute(tool, { action: "inspect", threadId: ids[1] }, ctx);
     assert.match(notice.content[0].text, /evicted from bounded retention/u);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("automatic retention removes confirmed persistent child sessions", async () => {
+  const roster = tempRoster();
+  const sessionRoot = path.join(roster.root, "parent-session");
+  mkdirSync(sessionRoot);
+  const sessionDirectories = [];
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      limits: { threadRetentionRecords: 1, processExitWaitMs: 20 },
+      spawnProcess(args) {
+        const directory = args[args.indexOf("--session-dir") + 1];
+        sessionDirectories.push(directory);
+        const child = new FakeProcess();
+        setImmediate(() => {
+          child.json(assistantEvent("retained handoff"));
+          child.close(0);
+        });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "parent/one" });
+    const first = await execute(tool, { agent: "scout", task: "first task" }, ctx);
+    assert.equal(existsSync(sessionDirectories[0]), true);
+
+    const second = await execute(tool, { agent: "scout", task: "second task" }, ctx);
+    assert.equal(existsSync(sessionDirectories[0]), false);
+    assert.equal(existsSync(sessionDirectories[1]), true);
+    assert.equal(second.details.doneThreads.length, 1);
+
+    const evicted = await execute(tool, { action: "inspect", threadId: first.details.results[0].id }, ctx);
+    assert.equal(evicted.details.threads.find((thread) => thread.id === first.details.results[0].id).state, "closed");
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("automatic retention keeps an unconfirmed persistent child recoverable", async () => {
+  const roster = tempRoster();
+  const sessionRoot = path.join(roster.root, "parent-session");
+  mkdirSync(sessionRoot);
+  let firstDirectory;
+  let lingeringChild;
+  try {
+    writeRole(roster.bundled, "scout.md", { name: "scout" });
+    let processCount = 0;
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      limits: { threadRetentionRecords: 1, wallTimeMs: 10, killGraceMs: 1, processExitWaitMs: 5 },
+      spawnProcess(args) {
+        const child = new FakeProcess();
+        processCount += 1;
+        if (processCount === 1) {
+          firstDirectory = args[args.indexOf("--session-dir") + 1];
+          lingeringChild = child;
+          child.closeOnTerminate = false;
+          child.kill = (signal = "SIGTERM") => {
+            child.killSignals.push(signal);
+            return true;
+          };
+          setImmediate(() => child.json(assistantEvent("partial handoff", { stopReason: "toolUse" })));
+        } else {
+          setImmediate(() => {
+            child.json(assistantEvent("second handoff"));
+            child.close(0);
+          });
+        }
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "parent/one" });
+    const first = await execute(tool, { agent: "scout", task: "first task" }, ctx);
+    assert.equal(first.details.results[0].exitConfirmed, false);
+    assert.equal(existsSync(firstDirectory), true);
+
+    await execute(tool, { agent: "scout", task: "second task" }, ctx);
+    assert.equal(existsSync(firstDirectory), true);
+
+    lingeringChild.close(0);
+    for (let attempt = 0; attempt < 20 && existsSync(firstDirectory); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(existsSync(firstDirectory), false);
+    const closed = await execute(tool, { action: "close", threadId: first.details.results[0].id }, ctx);
+    assert.equal(closed.details.threads.find((thread) => thread.id === first.details.results[0].id).state, "closed");
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }

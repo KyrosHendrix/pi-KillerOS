@@ -1543,10 +1543,12 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   let threads = new SubagentThreadRegistry();
   const activeRuntimes = new Map<string, ActiveThreadRuntime>();
   const threadMetadata = new Map<string, ThreadMetadata>();
-  const threadResources = new Map<string, { directory: string; persistent: boolean; handles: Set<SubagentProcessHandle> }>();
+  type ThreadResource = { directory: string; persistent: boolean; handles: Set<SubagentProcessHandle> };
+  const threadResources = new Map<string, ThreadResource>();
   const backgroundBatches = new Set<Promise<unknown>>();
   const savedResults = new Map<string, SubagentTaskResult>();
   const evictedThreadParents = new Map<string, string | undefined>();
+  let terminalCleanupQueue: Promise<void> = Promise.resolve();
   let sessionGeneration = 0;
   let persistenceWarning: string | undefined;
 
@@ -1554,6 +1556,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     if (value === undefined) return undefined;
     return truncateUtf8(value, maxBytes).text;
   };
+  const lifecycleOutput = (value: string | undefined): string | undefined => value?.trim() ? value : undefined;
   const persistenceAppend = (record: Record<string, unknown>): void => {
     const appendEntry = (pi as unknown as { appendEntry?: (type: string, data: unknown) => void }).appendEntry;
     if (!appendEntry) return;
@@ -1742,7 +1745,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         if (!(threads as any).hydrate) {
           if (thread.state === "done") {
             threads.begin(created.id);
-            threads.complete(created.id, { result: thread.result ?? entry.result?.output });
+            const output = lifecycleOutput(thread.result ?? entry.result?.output);
+            threads.complete(created.id, { result: output });
           } else if (thread.state === "failed") {
             threads.begin(created.id);
             threads.fail(created.id, { message: thread.failure?.message ?? entry.result?.errorMessage ?? "restored failure" });
@@ -1797,6 +1801,42 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     result.output,
     result.errorMessage ?? "",
   ].join("\n"), "utf8");
+  const cleanupTerminalThread = async (
+    threadId: string,
+    resource: ThreadResource | undefined,
+    metadata: ThreadMetadata | undefined,
+  ): Promise<boolean> => {
+    const exits = resource
+      ? await Promise.all([...resource.handles].map((handle) => waitForConfirmedProcessExit(handle, limits.processExitWaitMs)))
+      : [];
+    if (!exits.every(Boolean)) {
+      for (const handle of resource?.handles ?? []) {
+        if (!handle.hasExited) {
+          void handle.exited.then(() => queueTerminalCleanup(threadId)).catch(() => {});
+        }
+      }
+      return false;
+    }
+    const directory = resource?.directory ?? metadata?.session.directory;
+    if ((resource?.persistent || metadata?.persistentSession) && directory) {
+      await rm(directory, { recursive: true, force: true });
+    }
+    if (threadResources.get(threadId) === resource) threadResources.delete(threadId);
+    return true;
+  };
+  const queueTerminalCleanup = (threadId: string): Promise<boolean> => {
+    const resource = threadResources.get(threadId);
+    const metadata = threadMetadata.get(threadId);
+    const generation = sessionGeneration;
+    const cleanup = terminalCleanupQueue.then(() => generation === sessionGeneration
+      ? cleanupTerminalThread(threadId, resource, metadata)
+      : false);
+    terminalCleanupQueue = cleanup.then(() => undefined, () => undefined);
+    return cleanup;
+  };
+  const waitForTerminalCleanup = async (): Promise<void> => {
+    await terminalCleanupQueue;
+  };
   const trimSavedResults = (): void => {
     const candidates = threads.listAll()
       .filter((thread) => ["done", "failed", "stopped"].includes(thread.state))
@@ -1806,7 +1846,10 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       const candidate = candidates.shift()!;
       savedResults.delete(candidate.id);
       const current = threads.inspect(candidate.id);
-      if (current && ["done", "failed", "stopped"].includes(current.state)) threads.close(candidate.id);
+      if (current && ["done", "failed", "stopped"].includes(current.state)) {
+        threads.close(candidate.id);
+        void queueTerminalCleanup(candidate.id).catch(() => {});
+      }
     }
     pruneClosedThreads();
   };
@@ -1901,16 +1944,17 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
       }
     }
     if (runtime) runtime.traceCount = next.trace.length;
-    const handoff = effective.output ? { summary: effective.output } : undefined;
-    thread = threads.patch(threadId, { usage: threadUsage(effective.usage), result: effective.output || undefined, handoff });
+    const output = lifecycleOutput(effective.output);
+    const handoff = output ? { summary: output } : undefined;
+    thread = threads.patch(threadId, { usage: threadUsage(effective.usage), result: output, handoff });
     const restartPending = runtime?.restarting === true && ["cancelled", "complete"].includes(next.status);
     if (restartPending) return effective;
     if (effective.status === "complete") {
-      threads.complete(threadId, { usage: threadUsage(effective.usage), result: effective.output || undefined, handoff });
+      threads.complete(threadId, { usage: threadUsage(effective.usage), result: output, handoff });
     } else if (effective.status === "failed") {
       threads.fail(threadId, {
         usage: threadUsage(effective.usage),
-        result: effective.output || undefined,
+        result: output,
         handoff,
         message: effective.errorMessage ?? effective.terminationReason ?? "child failed",
         code: effective.terminationReason,
@@ -1918,7 +1962,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
     } else if (effective.status === "cancelled" || effective.status === "limited") {
       threads.stop(threadId, {
         usage: threadUsage(effective.usage),
-        result: effective.output || undefined,
+        result: output,
         handoff,
         reason: effective.terminationReason ?? (effective.status === "limited" ? "resource_limit" : "interrupted"),
       });
@@ -2235,9 +2279,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         if (thread.state === "queued" || thread.state === "active") {
           throw new Error(`Cannot close thread ${thread.id} from ${thread.state}`);
         }
-        const resource = threadResources.get(thread.id);
-        const exits = resource ? await Promise.all([...resource.handles].map((handle) => waitForConfirmedProcessExit(handle, limits.processExitWaitMs))) : [];
-        const exitConfirmed = exits.every(Boolean);
+        const exitConfirmed = await queueTerminalCleanup(thread.id);
         if (!exitConfirmed) {
           const current = savedResults.get(thread.id);
           if (current) {
@@ -2249,18 +2291,8 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             saveResult(thread.id, failed);
             recordSnapshot(thread, failed);
           }
-        } else {
-          const session = threadSession(thread, threadMetadata);
-          const directory = resource?.directory ?? session?.directory;
-          const expectedDirectory = childSessionPath(ctx, thread.id)?.directory;
-          const trustedRestoredDirectory = !resource && directory && expectedDirectory
-            && path.resolve(directory) === path.resolve(expectedDirectory);
-          if ((resource?.persistent || trustedRestoredDirectory) && directory) {
-            await rm(directory, { recursive: true, force: true });
-          }
         }
         threads.close(thread.id as SubagentThreadId);
-        if (exitConfirmed) threadResources.delete(thread.id);
         savedResults.delete(thread.id);
         pruneClosedThreads();
         return actionResult(exitConfirmed
@@ -2581,10 +2613,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           results[index] = cloneResult(limited);
           saveResult(threadId, limited);
           if (!threads.isDisposed && threads.inspect(threadId)?.state === "active") {
+            const output = lifecycleOutput(limited.output);
             threads.stop(threadId, {
               usage: threadUsage(limited.usage),
-              result: limited.output || undefined,
-              handoff: limited.output ? { summary: limited.output } : undefined,
+              result: output,
+              handoff: output ? { summary: output } : undefined,
               reason,
             });
           }
@@ -2691,10 +2724,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
                 if (runtime.sessionGeneration === sessionGeneration) {
                   saveResult(threadId, cancelled);
                   if (!threads.isDisposed && threads.inspect(threadId)?.state === "active") {
+                    const output = lifecycleOutput(cancelled.output);
                     threads.stop(threadId, {
                       usage: threadUsage(cancelled.usage),
-                      result: cancelled.output || undefined,
-                      handoff: cancelled.output ? { summary: cancelled.output } : undefined,
+                      result: output,
+                      handoff: output ? { summary: output } : undefined,
                       reason: cancelled.terminationReason,
                     });
                   }
@@ -2711,10 +2745,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               results[index] = cloneResult(unconfirmed);
               if (runtime.sessionGeneration === sessionGeneration) saveResult(threadId, unconfirmed);
               if (runtime.sessionGeneration === sessionGeneration && !threads.isDisposed && threads.inspect(threadId)?.state === "active") {
+                const output = lifecycleOutput(unconfirmed.output);
                 threads.fail(threadId, {
                   usage: threadUsage(unconfirmed.usage),
-                  result: unconfirmed.output || undefined,
-                  handoff: unconfirmed.output ? { summary: unconfirmed.output } : undefined,
+                  result: output,
+                  handoff: output ? { summary: output } : undefined,
                   message,
                   code: "process_exit_unconfirmed",
                 });
@@ -2727,10 +2762,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
             runtime.restarting = false;
             runtime.requestedReason = undefined;
             if (!threads.isDisposed && threads.inspect(threadId)?.state === "active") {
+              const output = lifecycleOutput(runtime.aggregate.output);
               threads.patch(threadId, {
                 usage: threadUsage(runtime.aggregate.usage),
-                result: runtime.aggregate.output || undefined,
-                handoff: runtime.aggregate.output ? { summary: runtime.aggregate.output } : undefined,
+                result: output,
+                handoff: output ? { summary: output } : undefined,
               });
             }
             if (steeredTaskWouldExceedLimit(task, steering, limits.taskCharacters)) {
@@ -2743,10 +2779,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               if (runtime.sessionGeneration === sessionGeneration) {
                 saveResult(threadId, failed);
                 if (!threads.isDisposed && threads.inspect(threadId)?.state === "active") {
+                  const output = lifecycleOutput(failed.output);
                   threads.fail(threadId, {
                     usage: threadUsage(failed.usage),
-                    result: failed.output || undefined,
-                    handoff: failed.output ? { summary: failed.output } : undefined,
+                    result: output,
+                    handoff: output ? { summary: output } : undefined,
                     message: failed.errorMessage,
                     code: failed.terminationReason,
                   });
@@ -2780,10 +2817,11 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               const current = threads.inspect(threadId);
               if (current?.state === "active") {
                 if (unconfirmed.status === "failed") {
+                  const output = lifecycleOutput(unconfirmed.output);
                   threads.fail(threadId, {
                     usage: threadUsage(unconfirmed.usage),
-                    result: unconfirmed.output || undefined,
-                    handoff: unconfirmed.output ? { summary: unconfirmed.output } : undefined,
+                    result: output,
+                    handoff: output ? { summary: output } : undefined,
                     message: unconfirmed.errorMessage ?? "Child process exit was not confirmed before cleanup",
                     code: unconfirmed.terminationReason,
                   });
@@ -2800,6 +2838,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
               // Temporary child session cleanup is best effort after process termination.
             }
           }
+          if (allExited && runtime.sessionGeneration === sessionGeneration) threadResources.delete(threadId);
         }
         emit();
       };
@@ -2860,6 +2899,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           await runAt(0, inputs[0]!.task);
         }
 
+        await waitForTerminalCleanup();
         const board = detailsFor(parentId, mode, scope, discovery.projectAgentsDir, isResume ? resumeTarget?.id : undefined);
         const currentResults = results.map(cloneResult);
         const details: SubagentDetails = { ...board, executionNote, results: currentResults, aggregateUsage: aggregateUsage(currentResults) };

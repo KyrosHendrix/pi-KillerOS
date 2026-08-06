@@ -467,6 +467,67 @@ test("/goal pauses when a scheduled continuation fails before the agent starts",
   assert.equal(lastGoalEntry.data.state.turns, 0);
 });
 
+test("/goal does not report start, resume, or edit success after dispatch failure", async () => {
+  for (const control of ["start", "resume", "edit"]) {
+    const { api, appendedEntries, commands, sentMessages } = createHarness();
+    const { ctx } = createTuiContext();
+    const notifications = [];
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+
+    if (control === "start") {
+      api.sendMessage = () => { throw new Error("provider unavailable"); };
+      await commands.get("goal").handler("Start reliably", ctx);
+    } else {
+      await commands.get("goal").handler("Original objective", ctx);
+      api.sendMessage = () => { throw new Error("provider unavailable"); };
+      if (control === "resume") {
+        await commands.get("goal").handler("pause", ctx);
+        await commands.get("goal").handler("resume", ctx);
+      } else {
+        ctx.ui.editor = async () => "Edited objective";
+        await commands.get("goal").handler("edit", ctx);
+      }
+    }
+
+    const state = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1).data.state;
+    assert.equal(state.status, "paused", `${control} failure must pause the goal`);
+    assert.match(state.result, /continuation could not start: provider unavailable/u);
+    assert.equal(sentMessages.length, control === "start" ? 0 : 1);
+    assert.equal(notifications.some(({ message }) => new RegExp(control === "start" ? "Goal active" : control === "resume" ? "Goal resumed" : "Goal updated and active", "u").test(message)), false);
+    assert.equal(notifications.at(-1).level, "error");
+  }
+});
+
+test("/goal reports start, resume, and edit success after dispatch", async () => {
+  const { commands, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+
+  await commands.get("goal").handler("Original objective", ctx);
+  assert.match(notifications.at(-1).message, /Goal active/u);
+  await commands.get("goal").handler("pause", ctx);
+  await commands.get("goal").handler("resume", ctx);
+  assert.match(notifications.at(-1).message, /Goal resumed/u);
+  ctx.ui.editor = async () => "Edited objective";
+  await commands.get("goal").handler("edit", ctx);
+  assert.match(notifications.at(-1).message, /Goal updated and active/u);
+  assert.equal(sentMessages.length, 3);
+});
+
+test("/goal does not claim success when a pending message defers dispatch", async () => {
+  const { appendedEntries, commands, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  ctx.hasPendingMessages = () => true;
+
+  await commands.get("goal").handler("Wait for the pending message", ctx);
+  assert.equal(sentMessages.length, 0);
+  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+  assert.equal(notifications.some(({ message }) => /Goal active/u.test(message)), false);
+});
+
 test("/goal pauses after an aborted or failed goal turn", async () => {
   const { appendedEntries, commands, handlers } = createHarness();
   const { ctx } = createTuiContext();
@@ -1518,6 +1579,41 @@ test("question filtering decodes Kitty input, paste, and grapheme backspace", as
 
   question.finish({ kind: "cancelled" });
   await question.result;
+});
+
+test("question filter bounds character and byte input", async () => {
+  const { tools } = createHarness();
+  assert.match(tools.get("question").description, /4,000 characters and 16,000 bytes/u);
+
+  const huge = await startQuestion(tools.get("question"));
+  huge.component.handleInput(`\x1B[200~${"Q".repeat(1_000_000)}\x1B[201~`);
+  assert.match(huge.notifications.at(-1).message, /4,000 characters/u);
+  assert.ok(huge.component.render(80).join("\n").length < 20_000);
+  huge.finish({ kind: "cancelled" });
+  await huge.result;
+
+  const question = await startQuestion(tools.get("question"));
+  const boundary = "Z".repeat(4_000);
+  question.component.handleInput(`\x1B[200~${boundary}\x1B[201~`);
+  const boundaryRender = question.component.render(80).join("\n");
+  assert.equal((boundaryRender.match(/Z/gu) ?? []).length, 4_000);
+  assert.ok(boundaryRender.length < 20_000);
+
+  question.component.handleInput("\x1B[200~Z\x1B[201~");
+  assert.match(question.notifications.at(-1).message, /4,000 characters/u);
+  assert.equal((question.component.render(80).join("\n").match(/Z/gu) ?? []).length, 4_000);
+  question.finish({ kind: "cancelled" });
+  await question.result;
+
+  const unicode = await startQuestion(tools.get("question"));
+  const emojiBoundary = "😀".repeat(4_000);
+  unicode.component.handleInput(`\x1B[200~${emojiBoundary}\x1B[201~`);
+  assert.equal((unicode.component.render(80).join("\n").match(/😀/gu) ?? []).length, 4_000);
+  unicode.component.handleInput("\x1B[200~😀\x1B[201~");
+  assert.match(unicode.notifications.at(-1).message, /4,000 characters|16,000 bytes/u);
+  assert.equal((unicode.component.render(80).join("\n").match(/😀/gu) ?? []).length, 4_000);
+  unicode.finish({ kind: "cancelled" });
+  await unicode.result;
 });
 
 test("custom-answer history does not replace a multiline draft on Up", async () => {
