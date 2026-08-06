@@ -539,6 +539,59 @@ test("session hooks persist terminal snapshots and restore them on session start
   }
 });
 
+test("legacy persisted roles restore bounded read and write contracts", async () => {
+  const roster = tempRoster();
+  const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
+  const entries = [];
+  const handlers = new Map();
+  const calls = [];
+  let tool;
+  try {
+    const readRolePath = writeRole(roster.bundled, "scout.md", { name: "scout" });
+    const writeRolePath = writeRole(roster.bundled, "worker.md", { name: "worker", access: "write", tools: "read, edit, write, bash" });
+    const pi = {
+      registerTool(value) { tool = value; },
+      appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
+      on(event, handler) { handlers.set(event, handler); },
+    };
+    registerSubagentTool(pi, {
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      awaitSpawnCompletion: true,
+      spawnProcess(args) {
+        calls.push(args);
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent(`run-${calls.length}`)); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root, { sessionRoot, sessionId: "legacy-parent", entries });
+    const readStarted = await execute(tool, { agent: "scout", task: "read old role" }, ctx);
+    const writeStarted = await execute(tool, { agent: "worker", task: "write old role" }, ctx);
+    const readId = readStarted.details.results[0].id;
+    const writeId = writeStarted.details.results[0].id;
+
+    for (const entry of entries) delete entry.data.thread.roleDefinition;
+    rmSync(readRolePath);
+    rmSync(writeRolePath);
+    handlers.get("session_start")(undefined, ctx);
+
+    const restored = await execute(tool, { action: "list" }, ctx);
+    assert.equal(restored.details.results.find((result) => result.id === readId).agentSource, "bundled");
+    assert.equal(restored.details.results.find((result) => result.id === writeId).agentSource, "bundled");
+
+    const resumedRead = await execute(tool, { action: "resume", threadId: readId, task: "continue read" }, ctx);
+    const resumedWrite = await execute(tool, { action: "resume", threadId: writeId, task: "continue write" }, ctx);
+    assert.equal(resumedRead.details.results[0].output, "run-3");
+    assert.equal(resumedWrite.details.results[0].output, "run-4");
+    assert.equal(calls[2][calls[2].indexOf("--tools") + 1], "read,grep,find,ls,web_search,source_check,fetch_content,get_search_content");
+    assert.equal(calls[3][calls[3].indexOf("--tools") + 1], "read,edit,write,bash");
+  } finally {
+    rmSync(sessionRoot, { recursive: true, force: true });
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
 test("inline roles remain resumable after session restore", async () => {
   const roster = tempRoster();
   const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "killeros-parent-session-"));
@@ -1225,6 +1278,61 @@ test("project overrides require trust, explicit scope, and interactive approval"
     noUi.hasUI = false;
     await assert.rejects(execute(tool, { agent: "reviewer", task: "Review", agentScope: "both" }, noUi), /interactive confirmation/u);
     assert.equal(spawned, 0);
+  } finally {
+    rmSync(roster.root, { recursive: true, force: true });
+  }
+});
+
+test("resume revalidates trust and approval for persisted project roles", async () => {
+  const roster = tempRoster();
+  try {
+    const rolePath = writeRole(path.join(roster.root, ".pi", "agents"), "worker.md", {
+      name: "worker",
+      access: "write",
+      tools: "read, edit, write, bash",
+    });
+    let trusted = true;
+    let approved = true;
+    let confirmations = 0;
+    let spawned = 0;
+    const tool = createToolHarness({
+      bundledAgentsDir: roster.bundled,
+      userAgentsDir: roster.personal,
+      spawnProcess() {
+        spawned += 1;
+        const child = new FakeProcess();
+        setImmediate(() => { child.json(assistantEvent(spawned === 1 ? "first" : "resumed")); child.close(0); });
+        return child;
+      },
+    });
+    const ctx = toolContext(roster.root);
+    ctx.isProjectTrusted = () => trusted;
+    ctx.ui.confirm = async () => {
+      confirmations += 1;
+      return approved;
+    };
+
+    const started = await execute(tool, { agent: "worker", task: "first", agentScope: "project" }, ctx);
+    assert.equal(started.details.results[0].agentSource, "project");
+    rmSync(rolePath);
+
+    trusted = false;
+    await assert.rejects(execute(tool, { action: "resume", threadId: started.details.results[0].id }, ctx), /trusted project/u);
+    assert.equal(confirmations, 1);
+    assert.equal(spawned, 1);
+
+    trusted = true;
+    approved = false;
+    await assert.rejects(execute(tool, { action: "resume", threadId: started.details.results[0].id }, ctx), /not approved/u);
+    assert.equal(confirmations, 2);
+    assert.equal(spawned, 1);
+
+    approved = true;
+    const resumed = await execute(tool, { action: "resume", threadId: started.details.results[0].id }, ctx);
+    assert.equal(resumed.details.results[0].agentSource, "project");
+    assert.equal(resumed.details.results[0].output, "resumed");
+    assert.equal(confirmations, 3);
+    assert.equal(spawned, 2);
   } finally {
     rmSync(roster.root, { recursive: true, force: true });
   }

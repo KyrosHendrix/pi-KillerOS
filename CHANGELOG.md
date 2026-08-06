@@ -4,11 +4,14 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [1.5.8] - 2026-08-07
+
 ### Changed
 
 - Removed KillerOS's eight bundled subagent roles. The main agent now chooses each child; omitting `agent` creates a generic read-only child, while optional custom roles come from approved personal or trusted project agent folders or an inline definition.
 - Persisted the selected child role contract for resume and rechecked its tools against the main agent's current authority.
 - Made model and thinking selection inherit the selected role or active parent by default; an explicit `model` value can pin a whole batch to one available model while omitted thinking still inherits.
+- Preserved bounded role contracts for child threads written by KillerOS 1.5.7, so saved read and write roles can resume after the bundled role files are removed.
 
 ### Fixed
 
@@ -16,6 +19,8 @@ All notable changes to KillerOS are documented here.
 - Removed persistent child-session directories when retained terminal threads aged out after confirmed child exit, while keeping unconfirmed sessions recoverable until exit was confirmed.
 - Bounded question filter input to 4,000 characters and 16,000 UTF-8 bytes, with a clear rejection notice for excess input.
 - Reported goal start, resume, and edit success only after continuation dispatch succeeded, and paused the goal when dispatch failed.
+- Rechecked project trust and approval when resuming a persisted project role.
+- Removed terminal role metadata when closed threads leave bounded retention.
 
 ## [1.5.7] - 2026-08-06
 

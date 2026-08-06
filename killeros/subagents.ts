@@ -47,7 +47,7 @@ const ROLE_FIELDS = new Set(["name", "description", "access", "tools", "model", 
 
 type ThinkingLevel = ModelThinkingLevel;
 export type AgentAccess = "read" | "write";
-export type AgentSource = "bundled" | "personal" | "project" | "inline";
+export type AgentSource = "bundled" | "personal" | "project" | "inline" | "legacy";
 export type AgentScope = "user" | "project" | "both";
 export type SubagentStatus = "queued" | "running" | "complete" | "failed" | "cancelled" | "limited" | "orphaned";
 
@@ -1005,7 +1005,7 @@ function restorePersistedAgent(value: unknown): AgentRole | undefined {
   const uniqueTools = [...new Set(tools as string[])];
   if (uniqueTools.length !== tools.length || access === "read" && uniqueTools.some((tool) => WRITE_TOOLS.has(tool))) return undefined;
   if (typeof prompt !== "string" || !prompt.trim() || prompt.length > SUBAGENT_LIMITS.roleFileBytes) return undefined;
-  if (source !== "bundled" && source !== "personal" && source !== "project" && source !== "inline") return undefined;
+  if (source !== "bundled" && source !== "personal" && source !== "project" && source !== "inline" && source !== "legacy") return undefined;
   if (typeof filePath !== "string" || !filePath) return undefined;
   const optionalString = (field: string): string | undefined => {
     const item = role[field];
@@ -1024,6 +1024,28 @@ function restorePersistedAgent(value: unknown): AgentRole | undefined {
     prompt,
     source,
     filePath,
+  };
+}
+
+function restoreLegacyAgent(thread: ThreadSnapshot, sourceHint?: SubagentTaskResult["agentSource"]): AgentRole | undefined {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/u.test(thread.role)) return undefined;
+  if (!Array.isArray(thread.tools) || thread.tools.length === 0) return undefined;
+  const tools = [...new Set(thread.tools)];
+  if (tools.length !== thread.tools.length || tools.some((tool) => !KNOWN_TOOLS.has(tool))) return undefined;
+  const access = thread.capabilityBoundary?.filesystem;
+  if (access !== "read" && access !== "write") return undefined;
+  if (access === "read" && tools.some((tool) => WRITE_TOOLS.has(tool))) return undefined;
+  const source = sourceHint === "bundled" || sourceHint === "personal" || sourceHint === "project"
+    ? sourceHint
+    : "legacy";
+  return {
+    name: thread.role,
+    description: "Persisted role contract from an earlier KillerOS release.",
+    access,
+    tools,
+    prompt: "Continue the saved child task. Use only the retained role tools and return a handoff to the parent.",
+    source,
+    filePath: `legacy:${source}:${thread.role}`,
   };
 }
 
@@ -1523,7 +1545,7 @@ function restorePersistedResult(value: unknown, thread: ThreadSnapshot): Subagen
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const source = value as Record<string, any>;
   const statuses = new Set<SubagentStatus>(["queued", "running", "complete", "failed", "cancelled", "limited"]);
-  const agentSources = new Set<SubagentTaskResult["agentSource"]>(["bundled", "personal", "project", "inline", "unknown"]);
+  const agentSources = new Set<SubagentTaskResult["agentSource"]>(["bundled", "personal", "project", "inline", "legacy", "unknown"]);
   if (typeof source.id !== "string" || source.id !== thread.id) return undefined;
   const status = source.status ?? (thread.state === "done" ? "complete" : thread.state === "failed" ? "failed" : "cancelled");
   if (typeof status !== "string" || !statuses.has(status as SubagentStatus)) return undefined;
@@ -1756,8 +1778,6 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           if (!rawThread || typeof rawThread !== "object" || typeof rawThread.id !== "string" || rawThread.parentId !== parentId) continue;
           if (typeof rawThread.role !== "string" || typeof rawThread.prompt !== "string" || typeof rawThread.model !== "string") continue;
           const thread = { ...rawThread } as ThreadSnapshot;
-          const agent = rawThread.roleDefinition === undefined ? undefined : restorePersistedAgent(rawThread.roleDefinition);
-          if (rawThread.roleDefinition !== undefined && !agent) continue;
           const thinking = rawThread.thinking === undefined
             ? undefined
             : typeof rawThread.thinking === "string" && rawThread.thinking.trim() ? rawThread.thinking as ThinkingLevel : undefined;
@@ -1784,6 +1804,10 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           }
           const result = record.result === undefined ? undefined : restorePersistedResult(record.result, thread);
           if (record.result !== undefined && !result) continue;
+          const agent = rawThread.roleDefinition === undefined
+            ? restoreLegacyAgent(thread, result?.agentSource)
+            : restorePersistedAgent(rawThread.roleDefinition);
+          if (rawThread.roleDefinition !== undefined && !agent) continue;
           records.set(thread.id, { thread, result, agent, thinking });
         } else if (record.event === "close" && typeof record.id === "string") {
           const previous = records.get(record.id);
@@ -1880,7 +1904,10 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
   };
 
   const rememberEvictedThreads = (threadsToRemember: readonly SubagentThread[]): void => {
-    for (const thread of threadsToRemember) evictedThreadParents.set(thread.id, thread.parentId);
+    for (const thread of threadsToRemember) {
+      evictedThreadParents.set(thread.id, thread.parentId);
+      threadMetadata.delete(thread.id);
+    }
     while (evictedThreadParents.size > maxClosedThreads) {
       const oldest = evictedThreadParents.keys().next().value;
       if (oldest === undefined) break;
@@ -2431,7 +2458,7 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
         }
         : request) as Extract<NormalizedSubagentRequest, { kind: "spawn-single" | "spawn-parallel" | "spawn-chain" }>;
       const params = spawnRequest.input;
-      const scope: AgentScope = params.agentScope ?? "user";
+      const scope: AgentScope = params.agentScope ?? (isResume && resumeAgent?.source === "project" ? "project" : "user");
       const hasParallel = spawnRequest.kind === "spawn-parallel";
       const hasChain = spawnRequest.kind === "spawn-chain";
       const writerConcurrencyOverride = hasParallel ? spawnRequest.input.writerConcurrency : undefined;
@@ -2472,6 +2499,15 @@ export function registerSubagentTool(pi: ExtensionAPI, options: SubagentRuntimeO
           `Roles: ${projectRoles.map((role) => role.name).join(", ")}\nSources:\n${projectRoles.map((role) => role.filePath).join("\n")}\n\nThese trusted repository files control child prompts and tools.`,
         );
         if (!approved) throw new Error("Project-local subagents were not approved");
+      }
+      const legacyRoles = [...new Set(rolesForInputs.filter((role) => role.source === "legacy"))];
+      if (legacyRoles.length) {
+        if (!ctx.hasUI) throw new Error("Legacy persisted subagents require interactive confirmation");
+        const approved = await ctx.ui.confirm(
+          "Resume legacy subagents?",
+          `Roles: ${legacyRoles.map((role) => role.name).join(", ")}\nThese saved roles came from an earlier KillerOS release and their original source is unavailable.`,
+        );
+        if (!approved) throw new Error("Legacy persisted subagents were not approved");
       }
 
       const resolvedModels = rolesForInputs.map((role) => resolveAgentModel(role, ctx, params.model, params.thinking));
