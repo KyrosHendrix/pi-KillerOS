@@ -4,6 +4,22 @@ Shared product language for KillerOS as a workflow layer inside the Pi coding ag
 
 ## Language
 
+**Host-owned dependency resolution**:
+The install root that owns Pi decides which versions Pi loads. A published KillerOS override protects KillerOS's own development tree but cannot govern a consumer's Pi install.
+_Avoid_: universal package override, dependency-owned override
+
+**Supported Pi floor**:
+The deferred security-qualified compatibility floor that KillerOS will declare only after a matched Pi release's published dependency tree meets KillerOS's security baseline and passes compatibility checks. Current releases claim only the peer dependency minimum.
+_Avoid_: current peer minimum, best-effort override, silent compatibility
+
+**Host compatibility guard**:
+A deferred startup check that would compare Pi's public version with the supported Pi floor and stop KillerOS on an older host. It would back the peer dependency rule but would not inspect or repair the host's dependency tree.
+_Avoid_: current protection, undici resolver, host repair, warning-only check
+
+**Consumer-tree proof**:
+A deferred release check that would install the packed KillerOS candidate with its supported Pi host in a clean root that has no KillerOS override, then verify the resolved tree, security audit, and extension load.
+_Avoid_: current release gate, repository-only audit, override-masked test, manual-only check
+
 **Concise guidance**:
 KillerOS’s universal, always-on response policy that reduces cognitive load and makes the next useful action clear without assuming or labeling a user’s neurotype.
 _Avoid_: ADHD mode, terse mode, brevity mode
@@ -91,3 +107,7 @@ _Avoid_: full-prompt snapshot, wording lock, smoke-only assertion
 **v1.5.2**:
 The patch release combining restored bundled-role discovery with hardened action-oriented concise guidance and no additional feature expansion.
 _Avoid_: discovery-only release, concise-only release, feature release
+
+**Test-language parity**:
+The tracked test suite is written in the same language as the source tree (TypeScript), so the public repository presents one code language while the suite stays public and runtime-checked by CI; the npm package never shipped the suite.
+_Avoid_: JavaScript tests, private test suite, mixed-language repository

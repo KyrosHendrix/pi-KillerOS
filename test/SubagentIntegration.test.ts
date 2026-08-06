@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { registerSubagentTool } from "../subagents.ts";
 
-const fixture = fileURLToPath(new URL("./fixtures/fake-pi-child.mjs", import.meta.url));
+const fixture = fileURLToPath(new URL("./fixtures/fake-pi-child.ts", import.meta.url));
 
 function roleFile() {
   return [

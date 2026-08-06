@@ -36,7 +36,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types test/*.test.js"
+    "test": "node --test --experimental-strip-types test/*.test.ts"
   },
   "pi": {
     "extensions": [
