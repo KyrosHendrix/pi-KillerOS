@@ -1,7 +1,7 @@
 import { type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { MAX_NODE_TIMER_MS } from "./subagent-process.ts";
+import { MAX_NODE_TIMER_MS } from "./limits.ts";
 import { CONCISE_SYSTEM_PROMPT } from "./concise.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";

@@ -80,50 +80,6 @@ _Avoid_: hard five-item cap, unranked long list, omitted required detail
 The one concrete step shown at the end only when progress depends on the user’s choice, information, or external action; completed or autonomously continuable work does not manufacture one.
 _Avoid_: optional closer, want-me-to question, artificial next step
 
-**Parent-facing response**:
-Output from the main KillerOS agent, including long-running goal turns, governed by concise guidance; isolated subagent handoffs remain governed by their role prompts.
-_Avoid_: global subagent style, child concise injection
-
-**Parent-defined subagent role**:
-A child role whose name, purpose, and allowed actions the main agent chooses at dispatch time; KillerOS does not select a fixed specialist for it.
-_Avoid_: built-in role, bundled role, automatic specialist
-
-**Custom subagent role**:
-A reusable child definition the user places in an approved dedicated agents folder using the fixed Markdown format; it is optional and discoverable by the main agent.
-_Avoid_: hidden role file, free-form role file, bundled default
-
-**Resumable child thread**:
-A child thread that keeps its selected generic or custom role contract across later attempts; resuming a thread does not add to or replace its allowed actions.
-_Avoid_: one-shot child, role rediscovery, resumed privilege
-
-**Parent authority ceiling**:
-The main agent may narrow a child’s actions but may not grant the child a tool or capability that the main agent does not already hold.
-_Avoid_: child privilege minting, unrestricted child tools, inherited full access
-
-**Delegation owner**:
-The main agent owns child creation, limits, control, and shared-worktree coordination; a child cannot dispatch another child.
-_Avoid_: nested delegation, child-owned orchestration, recursive subagents
-
-**Fixed child web access**:
-Children may use the approved web research service through the parent’s existing authority; a parent-defined role cannot load an arbitrary extension.
-_Avoid_: arbitrary child extension, extension injection, unrestricted web access
-
-**Generic child dispatch**:
-A child dispatch that needs only a task and uses a neutral contract within the parent’s authority; an optional custom role may replace it.
-_Avoid_: built-in specialist, mandatory custom role, hidden default role
-
-**Generic child baseline**:
-A task-only child starts with read-only repository tools and may use parent-authorized web tools; writes and process access require an explicit custom role.
-_Avoid_: inherited write access, implicit writer, task-only shell access
-
-**Operational child safeguards**:
-Role freedom does not remove limits and controls that protect the host, shared worktree, process lifecycle, cancellation, and retained output.
-_Avoid_: unlimited child work, role-based limit bypass, unbounded delegation
-
-**Boundary guidance**:
-Tool guidance may state safety, lifecycle, and handoff rules but must not prescribe named child specialties or task designs.
-_Avoid_: specialist defaults, role steering, empty tool guidance
-
 **Guidance precedence**:
 The conflict order for response shaping: safety and harness constraints, explicit user depth or format, correctness and completeness, then concise defaults.
 _Avoid_: brevity over safety, brevity over correctness, silent conflict resolution
@@ -143,10 +99,6 @@ _Avoid_: universal provider override, reasoning-effort reduction, response polic
 **Behavioral anchor**:
 A stable semantic contract asserted in tests so response-policy wording can evolve without weakening immediate-need framing, continuity, required actions, estimate discipline, diagnostic reset, or precedence.
 _Avoid_: full-prompt snapshot, wording lock, smoke-only assertion
-
-**v1.5.2**:
-The patch release combining restored bundled-role discovery with hardened action-oriented concise guidance and no additional feature expansion.
-_Avoid_: discovery-only release, concise-only release, feature release
 
 **Test-language parity**:
 The tracked test suite is written in the same language as the source tree (TypeScript), so the public repository presents one code language while the suite stays public and runtime-checked by CI; the npm package never shipped the suite.

@@ -6,9 +6,11 @@ export function formatCwd(cwd: string): string {
   if (!home) return cwd;
   const normalizedHome = home.replace(/[\\/]+$/, "");
   const normalizedCwd = cwd.replace(/[\\/]+$/, "");
-  if (normalizedCwd === normalizedHome) return "~";
+  const comparedHome = process.platform === "win32" ? normalizedHome.toLocaleLowerCase() : normalizedHome;
+  const comparedCwd = process.platform === "win32" ? normalizedCwd.toLocaleLowerCase() : normalizedCwd;
+  if (comparedCwd === comparedHome) return "~";
   const separator = normalizedCwd.slice(normalizedHome.length, normalizedHome.length + 1);
-  return normalizedCwd.startsWith(normalizedHome) && (separator === "/" || separator === "\\")
+  return comparedCwd.startsWith(comparedHome) && (separator === "/" || separator === "\\")
     ? `~${normalizedCwd.slice(normalizedHome.length)}`
     : cwd;
 }
@@ -20,6 +22,7 @@ export function padRight(text: string, width: number): string {
 }
 
 export function formatTime(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds)) return "0s";
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
   if (totalSeconds < 60) return `${totalSeconds}s`;
   const minutes = Math.floor(totalSeconds / 60);
@@ -28,6 +31,7 @@ export function formatTime(milliseconds: number): string {
 }
 
 export function formatTokens(value: number): string {
+  if (!Number.isFinite(value)) return "0";
   const amount = Math.max(0, value);
   if (amount < 1_000) return `${Math.round(amount)}`;
   if (amount >= 1_000_000) {

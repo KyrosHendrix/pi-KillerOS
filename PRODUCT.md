@@ -12,7 +12,7 @@ Developers using the Pi coding agent in an interactive terminal, especially thos
 
 ## Product Purpose
 
-KillerOS is a Pi extension that combines a custom terminal UI, isolated subagents, reasoning controls, interactive questions, command aliases, and concise-response guidance. It should help users understand the current session and move into productive work quickly.
+KillerOS is a Pi extension that combines a custom terminal UI, reasoning controls, interactive questions, command aliases, and concise-response guidance. It should help users understand the current session and move into productive work quickly.
 
 ## Positioning
 
@@ -26,11 +26,7 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 
 - Requires Node.js 22.19.0 or later and Pi 0.82.1 or later.
 - Full custom header, editor, footer, and interactive question behavior requires TUI mode.
-- Subagents use named isolated Pi children with parent-scoped case-insensitive names. The main agent may omit a role for a generic read-only child, choose an optional custom role from the approved personal or trusted project folder, or define an inline role. Selected role contracts persist with the child session and are checked against the current parent tool set on resume. Stable child session IDs and directories, default limits of 64 turns, 2,000,000 reported tokens, and 30 minutes remain in force. `wait` reports terminal and pending children without stopping them; `resume` keeps the thread ID, name, session, and directory while increasing the attempt count. Compact child records persist in the parent session through `appendEntry`; active records restore as `orphaned` after a parent restart. Empty final assistant output fails, and write-capable parallel work is serialized in the shared worktree. Each JSONL record has an 8 MiB ceiling, retained telemetry is bounded, arbitrary child extensions and prompt templates stay disabled, and project-local skills load only when the parent project is trusted.
-- Child web research uses the explicitly loaded `pi-web-access` package, which users install alongside KillerOS.
-- Users can choose one child `provider/model` for a dispatch and separate thinking effort per invocation; omitted settings inherit the selected role or active parent, custom role files may set defaults, and KillerOS checks the requested effort against the selected model.
-- KillerOS ships no role files. Personal roles are available by default; trusted project roles require explicit scope and confirmation. Inline roles are available for one dispatch.
-- RPC supports commands, subagents, and concise prompt guidance but disables TUI components.
+- RPC supports commands and concise prompt guidance but disables TUI components.
 - Print and JSON modes support concise prompt guidance but not interactive questions.
 - UI components must remain legible across narrow and wide terminal widths and use the packaged KillerOS theme in TUI mode.
 - Pending, successful, and failed tool calls share one neutral container surface; status remains distinguishable through restrained text and icons.

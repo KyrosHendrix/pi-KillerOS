@@ -6,7 +6,8 @@ import { PassThrough } from "node:stream";
 import path from "node:path";
 import test from "node:test";
 import Killeros, { CONCISE_SYSTEM_PROMPT, executeHook, formatContextProgress, INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "../Killeros.ts";
-import { formatThreadBoard, formatThreadState } from "../subagent-ui.ts";
+import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
+import { resolvePersonalInstructions } from "../killeros/personal-instructions.ts";
 
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -28,63 +29,6 @@ function usage(cost) {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
   };
 }
-
-test("child state presents completion, interruption, and process failure accurately", () => {
-  assert.deepEqual(formatThreadState({ status: "limited", terminationReason: "completed" }), {
-    status: "complete",
-    label: "Complete",
-  });
-  assert.deepEqual(formatThreadState({ status: "limited", terminationReason: "interrupt" }), {
-    status: "cancelled",
-    label: "Stopped",
-    reason: "Interrupted by user.",
-    partialWork: "Stopped before completion. Any saved output is partial work.",
-  });
-  assert.deepEqual(formatThreadState({ status: "limited", terminationReason: "exit_1", errorMessage: "provider unavailable" }), {
-    status: "failed",
-    label: "Failed",
-    reason: "exit_1: provider unavailable",
-    partialWork: "Failed before completion. Any saved output is partial work.",
-  });
-});
-
-test("child board keeps a completed handoff whole when the completion event wins", () => {
-  const board = formatThreadBoard({
-    selectedThreadId: "child-1",
-    threads: [{
-      id: "child-1",
-      agent: "scout",
-      task: "Map auth",
-      status: "limited",
-      terminationReason: "completed",
-      handoff: "Mapped auth.",
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, turns: 1 },
-    }],
-  });
-  assert.equal(board.done[0].state.label, "Complete");
-  assert.equal(board.selected?.handoff.isPartial, false);
-});
-
-test("child board keeps a retrying model error active until process exit", () => {
-  const board = formatThreadBoard({
-    selectedThreadId: "child-1",
-    threads: [{
-      id: "child-1",
-      agent: "reviewer",
-      task: "Review the change",
-      status: "running",
-      terminationReason: "error",
-      errorMessage: "Provider failed",
-      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, turns: 1 },
-    }],
-  });
-
-  assert.equal(board.active.length, 1);
-  assert.equal(board.done.length, 0);
-  assert.equal(board.active[0].state.label, "Running");
-  assert.equal(board.selected?.controls.find((control) => control.id === "interrupt")?.enabled, true);
-  assert.equal(board.selected?.controls.find((control) => control.id === "collect")?.enabled, false);
-});
 
 function createHarness() {
   const commands = new Map();
@@ -379,13 +323,6 @@ test("registers /exit without conflicting with Pi's /quit", async () => {
     shutdown: () => calls.push("shutdown"),
   });
   assert.deepEqual(calls, ["shutdown"]);
-});
-
-test("documents background thread control and active-child cancellation", () => {
-  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-  assert.match(readme, /Spawn returns the generated thread IDs immediately/iu);
-  assert.match(readme, /terminates active children/iu);
-  assert.doesNotMatch(readme, /lets already-running children finish|leave active children running/iu);
 });
 
 test("registers /goal and completes only through the model goal tool", async () => {
@@ -1676,11 +1613,63 @@ test("custom-answer history enforces Unicode character and byte limits", async (
   await afterNewSession.result;
 });
 
+test("display formatters contain non-finite telemetry and honor Windows path casing", () => {
+  for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    assert.equal(formatTime(value), "0s");
+    assert.equal(formatTokens(value), "0");
+  }
+
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "win32" });
+  const previousHome = process.env.HOME;
+  const previousProfile = process.env.USERPROFILE;
+  delete process.env.HOME;
+  process.env.USERPROFILE = "C:\\Users\\Example";
+  try {
+    assert.equal(formatCwd("c:\\users\\example\\repo"), "~\\repo");
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousProfile;
+  }
+});
+
 test("context telemetry uses plain language without a progress bar", () => {
   assert.equal(formatContextProgress(50_000, 1_050_000, theme), "95% left (1M)");
   assert.equal(formatContextProgress(860_000, 1_000_000, theme), "14% left (140k) · /compact");
   assert.equal(formatContextProgress(null, 1_000_000, theme), "—% left (—)");
+  assert.equal(formatContextProgress(Number.NaN, 1_000_000, theme), "—% left (—)");
   assert.doesNotMatch(formatContextProgress(50_000, 1_050_000, theme), /[█░]/u);
+});
+
+test("footer survives unavailable context telemetry", () => {
+  const { handlers } = createHarness();
+  const { captured, ctx, tui } = createTuiContext();
+  ctx.getContextUsage = () => { throw new Error("usage unavailable"); };
+  for (const handler of handlers.get("session_start")) handler({}, ctx);
+
+  const footer = captured.footerFactory(tui, theme, {
+    getGitBranch: () => undefined,
+    onBranchChange: () => () => {},
+  });
+  assert.doesNotThrow(() => footer.render(80));
+  assert.match(footer.render(80).join("\n"), /—% left \(—\)/u);
+  footer.dispose();
+});
+
+test("personal instruction truncation preserves valid UTF-8", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-personal-"));
+  try {
+    writeFileSync(path.join(directory, "AGENTS.local.md"), `${"a".repeat(32_767)}é`, "utf8");
+    const instructions = resolvePersonalInstructions(directory);
+    assert.ok(instructions);
+    assert.doesNotMatch(instructions.content, /�/u);
+    assert.match(instructions.content, /truncated by KillerOS/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("footer includes assistant, tool, compaction, and branch-summary costs", () => {

@@ -85,11 +85,9 @@ jobs:
             const pack = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
             if (!pack || typeof pack !== "object") throw new Error("npm pack returned no package metadata");
             const files = new Set(pack.files.map(({ path }) => path));
-            const required = ["Killeros.ts", "subagents.ts", "README.md", "CHANGELOG.md", "themes/killeros.json"];
+            const required = ["Killeros.ts", "README.md", "CHANGELOG.md", "themes/killeros.json"];
             const missing = required.filter((file) => !files.has(file));
             if (missing.length) throw new Error(`Package is missing: ${missing.join(", ")}`);
-            const bundledRoles = [...files].filter((file) => file.startsWith("agents/"));
-            if (bundledRoles.length) throw new Error(`Package still contains bundled roles: ${bundledRoles.join(", ")}`);
             if (pack.id !== `killeros@${JSON.parse(readFileSync("package.json", "utf8")).version}`) throw new Error(`Unexpected package id: ${pack.id}`);
           '
 

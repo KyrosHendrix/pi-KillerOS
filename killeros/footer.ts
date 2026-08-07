@@ -13,8 +13,8 @@ export function formatCost(usd: number): string {
 }
 
 export function formatContextProgress(tokensUsed: number | null, contextWindow: number, theme: Theme): string {
-  if (tokensUsed === null) return theme.fg("dim", "—% left (—)");
-  const windowSize = contextWindow > 0 ? contextWindow : 128_000;
+  if (tokensUsed === null || !Number.isFinite(tokensUsed)) return theme.fg("dim", "—% left (—)");
+  const windowSize = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 128_000;
   const remaining = Math.max(0, Math.min(windowSize, windowSize - Math.max(0, tokensUsed)));
   const percentLeft = Math.max(0, Math.min(100, Math.round((remaining / windowSize) * 100)));
   const color: ThemeColor = percentLeft < 20 ? "error" : percentLeft <= 50 ? "warning" : "success";
@@ -150,7 +150,12 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
           const level = model?.reasoning === false
             ? theme.fg("thinkingOff", "no reasoning")
             : theme.fg(LEVEL_COLORS[thinkingLevel], thinkingLevel);
-          const usage = ctx.getContextUsage();
+          let usage: ReturnType<ExtensionContext["getContextUsage"]>;
+          try {
+            usage = ctx.getContextUsage();
+          } catch {
+            usage = undefined;
+          }
           const contextWindow = usage?.contextWindow ?? model?.contextWindow ?? 128_000;
           const context = formatContextProgress(usage?.tokens ?? null, contextWindow, theme);
           const branch = footerData.getGitBranch();

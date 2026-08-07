@@ -1,13 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerSubagentTool } from "./killeros/subagents.ts";
-import {
-  createSubagentControlApi,
-  registerAliases,
-  registerSlashAutocomplete,
-  registerSubagentCommand,
-  type SubagentControlApi,
-  type SubagentToolLike,
-} from "./killeros/commands.ts";
+import { registerAliases, registerSlashAutocomplete } from "./killeros/commands.ts";
 import { registerConcisePrompt } from "./killeros/concise.ts";
 import { registerContextCompaction } from "./killeros/context-compaction.ts";
 import { registerFooter } from "./killeros/footer.ts";
@@ -35,22 +27,6 @@ export default function Killeros(pi: ExtensionAPI): void {
   registerGoal(pi, goalRuntime, initRuntime);
   registerPersonalInstructions(pi, initRuntime);
   registerQuestionTool(pi);
-  let subagentTool: SubagentToolLike | undefined;
-  const registrationPi = new Proxy(pi, {
-    get(target, property, receiver) {
-      if (property === "registerTool") {
-        return (tool: Parameters<ExtensionAPI["registerTool"]>[0]) => {
-          if (tool.name === "subagent") subagentTool = tool as unknown as SubagentToolLike;
-          return target.registerTool(tool);
-        };
-      }
-      return Reflect.get(target, property, receiver);
-    },
-  });
-  const subagents = registerSubagentTool(registrationPi);
-  const subagentControl = (subagents as unknown as SubagentControlApi | undefined)
-    ?? (subagentTool ? createSubagentControlApi(subagentTool) : undefined);
-  registerSubagentCommand(pi, subagentControl);
   registerAliases(pi);
   registerSlashAutocomplete(pi);
   registerFooter(pi, goalRuntime);

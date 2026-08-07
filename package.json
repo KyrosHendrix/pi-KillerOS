@@ -1,6 +1,6 @@
 {
   "name": "killeros",
-  "version": "1.5.8",
+  "version": "2.0.0",
   "description": "A production-hardened TUI and workflow extension for the Pi coding agent.",
   "type": "module",
   "keywords": [
@@ -22,10 +22,6 @@
   "files": [
     "Killeros.ts",
     "killeros/*.ts",
-    "subagents.ts",
-    "subagent-lifecycle.ts",
-    "subagent-process.ts",
-    "subagent-ui.ts",
     "themes/killeros.json",
     "README.md",
     "CHANGELOG.md"
@@ -49,7 +45,6 @@
     "@earendil-works/pi-ai": ">=0.82.1",
     "@earendil-works/pi-coding-agent": ">=0.82.1",
     "@earendil-works/pi-tui": ">=0.82.1",
-    "pi-web-access": ">=0.17.1",
     "typebox": ">=1.1.38 <2"
   },
   "devDependencies": {

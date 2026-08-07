@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { reportError } from "./errors.ts";
-import { MAX_NODE_TIMER_MS } from "./subagent-process.ts";
+import { MAX_NODE_TIMER_MS } from "./limits.ts";
 
 type KillerosHookEvent = "tool_call" | "tool_result" | "agent_settled";
 

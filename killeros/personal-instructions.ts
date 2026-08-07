@@ -1,6 +1,7 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { InitRuntime } from "./runtime.ts";
@@ -14,7 +15,8 @@ function readBoundedText(filePath: string, limit = PERSONAL_INSTRUCTIONS_LIMIT):
     descriptor = openSync(filePath, "r");
     const buffer = Buffer.alloc(limit + 1);
     const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
-    const content = buffer.toString("utf8", 0, Math.min(bytesRead, limit));
+    const decoder = new StringDecoder("utf8");
+    const content = decoder.write(buffer.subarray(0, Math.min(bytesRead, limit)));
     if (!content.trim()) return undefined;
     return bytesRead > limit
       ? `${content}\n\n[Personal instructions truncated by KillerOS]`

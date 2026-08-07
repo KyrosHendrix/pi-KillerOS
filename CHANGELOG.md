@@ -2,49 +2,20 @@
 
 All notable changes to KillerOS are documented here.
 
-## [Unreleased]
-
-## [1.5.8] - 2026-08-07
+## [2.0.0] - 2026-08-07
 
 ### Changed
 
-- Removed KillerOS's eight bundled subagent roles. The main agent now chooses each child; omitting `agent` creates a generic read-only child, while optional custom roles come from approved personal or trusted project agent folders or an inline definition.
-- Persisted the selected child role contract for resume and rechecked its tools against the main agent's current authority.
-- Made model and thinking selection inherit the selected role or active parent by default; an explicit `model` value can pin a whole batch to one available model while omitted thinking still inherits.
-- Preserved bounded role contracts for child threads written by KillerOS 1.5.7, so saved read and write roles can resume after the bundled role files are removed.
+- Focused the package, runtime, tests, and documentation on KillerOS's current TUI, repository initialization, long-running goals, reasoning controls, interactive questions, command aliases, and concise-response guidance.
+
+## [1.5.8] - 2026-08-07
 
 ### Fixed
 
-- Treated whitespace-only child output as missing lifecycle output, failed the thread cleanly, and freed the task slot while retaining the raw child result.
-- Removed persistent child-session directories when retained terminal threads aged out after confirmed child exit, while keeping unconfirmed sessions recoverable until exit was confirmed.
 - Bounded question filter input to 4,000 characters and 16,000 UTF-8 bytes, with a clear rejection notice for excess input.
 - Reported goal start, resume, and edit success only after continuation dispatch succeeded, and paused the goal when dispatch failed.
-- Rechecked project trust and approval when resuming a persisted project role.
-- Removed terminal role metadata when closed threads leave bounded retention.
-
-## [1.5.7] - 2026-08-06
-
-### Fixed
-
-- Stopped runaway subagents at 64 turns or 2,000,000 reported tokens by default while preserving Pi's built-in model retries and the 30-minute wall limit.
-- Kept in-flight model retries labeled `Running`, exposed requested stops as terminal at once, and kept failed or limited children out of the **Active** list.
-- Replaced the frozen queued spawn result with a static launch receipt so only the separate live widget claims current state and usage.
-
-## [1.5.6] - 2026-08-05
-
-### Fixed
-
-- Rejected unknown named subagent roles before child launch and returned the available roles instead of falling back to the write-capable `worker`.
-- Kept the real child-boundary test isolated from parent Pi session variables and added direct coverage for inline parallel and chain spawns.
-- Clarified and tested the shared `message` field limits: 20,000 characters for a spawn task alias and 4,000 characters for steering.
 
 ## [1.5.5] - 2026-08-05
-
-### Added
-
-- Added live background subagent progress with queued, running, and completed states plus per-child and batch usage.
-- Added inline subagent roles for single, parallel, and chain spawns, bounded their tools to those active for the parent, and kept them scoped to one non-resumable spawn.
-- Added `message` as a single-spawn task alias and visible fallback to `worker` for unknown named roles.
 
 ### Changed
 
@@ -52,43 +23,25 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
-- Warned when a settled or failed background subagent handoff cannot reach the parent and pointed users to `list` and `collect` for recovery.
 - Overrode vulnerable transitive `brace-expansion` and `undici` versions with patched releases in the development and CI install tree.
 
 ## [1.5.4] - 2026-08-04
 
-### Added
-
-- Added named child sessions with `wait` and `resume`, persisted lifecycle records, real `/subagents` controls, empty-response failure, a 30-minute default wall time, bounded process-exit cleanup, and serialized shared-worktree writers.
-
 ### Fixed
 
 - Added guarded automatic context compaction at 30% remaining, with structured summaries and goal continuation after the compaction is saved.
-- Kept the parent-facing cancellation reason when a steer was already in flight: aborting the parent turn after a steer now reports `abort` on the settled thread and result and no longer triggers a replacement follow-up turn for the cancelled batch.
-- Isolated host update callbacks in child-process and tool telemetry paths so a throwing callback cannot crash the host, strand the result promise, or fail a settled batch.
-- Rejected steering explicitly once 20 messages are pending for a thread instead of silently dropping the oldest steers; task-size overflow is also rejected before mutation, and bounded steering history keeps the earliest messages.
-- `interrupt all` now also stops queued children of the batch, matching `interrupt` on one thread and parent-turn abort, so queued writers cannot run after a stop command.
-- Recreated the subagent thread registry on `session_start`, stopped old children, and fenced old callbacks so embedding hosts that keep the extension instance between sessions can still spawn children without stale follow-ups.
 
 ## [1.5.3] - 2026-08-03
 
 ### Fixed
 
-- Returned spawned thread IDs immediately and delivered completed handoffs as Pi follow-ups, making active `inspect`, `steer`, and `interrupt` actions reachable through normal parent turns.
-- Ignored provider-generated `threadId` values during spawn argument preparation and TUI rendering while retaining strict action validation during execution.
-- Connected Pi's parent cancellation signal to active child processes so Escape stops the subagent, suppresses replacement follow-up turns, and returns control to the terminal.
-- Made `/exit` abort an active run before requesting Pi's graceful shutdown, and made session teardown await bounded background-child settlement.
-- Corrected the README cancellation contract so it matches active-child termination.
+- Made `/exit` abort an active run before requesting Pi's graceful shutdown.
 
 ## [1.5.2] - 2026-08-03
 
 ### Changed
 
 - Hardened always-on concise guidance around low-friction action, visible multi-turn state, evidence-backed outcomes, material ambiguity, diagnostic resets, and explicit safety and correctness precedence.
-
-### Fixed
-
-- Resolved bundled subagent role discovery from the package `agents/` directory; the module-relative path broke when subagent modules moved under `killeros/` in v1.5.0, leaving fresh installs with `Unknown subagent "<role>". Available: none`.
 
 ## [1.5.1] - 2026-08-03
 
@@ -98,8 +51,6 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
-- Replaced the `subagent` tool's top-level union with a provider-compatible object schema, fixing request rejection by Console Go and other providers that require function schemas with `type: "object"`.
-- Kept strict action-specific subagent validation at runtime, including single, parallel, chain, steering, interruption, collection, and closure requests.
 - Scoped native concise settings to supported Responses APIs while leaving completion and unrelated provider payloads unchanged.
 
 ## [1.5.0] - 2026-08-03
@@ -107,98 +58,18 @@ All notable changes to KillerOS are documented here.
 ### Changed
 
 - Split the main extension into feature modules under `killeros/` while keeping `Killeros.ts` as the stable entry point.
-- Moved subagent modules under `killeros/` and kept root re-export files for existing deep imports.
-
-### Fixed
-
-- Hardened the subagent schema and runtime checks with action-specific request shapes.
-- Invalid fields now fail before role discovery, project confirmation, thread creation, or child launch.
-- The TUI no longer shows parallel schedules for malformed subagent requests.
-- Kept valid single, parallel, chain, lifecycle, steering, interruption, collection, and closure behavior unchanged.
 
 ## [1.4.9] - 2026-08-02
 
 ### Changed
 
-- Parallel batches with write-capable roles now use one shared slot by default; `writerConcurrency` above `1` opts into concurrent shared-worktree writes only when path ownership is proven. Reader-only batches reject `writerConcurrency` because it does not apply.
-- Added an 8 MiB ceiling for one child JSONL record, bounded thread retention with inspectable tombstones, and scoped atomic `/init` reads and writes.
-
-## [1.4.7] - 2026-08-01
-
-### Fixed
-
-- Serialized every write-capable task in a parallel batch in input order instead of rejecting batches with multiple writers.
-- Added opt-in `writerConcurrency` scheduling for independent batches while keeping serialization as the safe default and documenting shared-worktree conflict responsibility.
-- Parent tool-call aborts now settle only queued tasks; active children finish naturally, and session directories remain until child exit is confirmed.
-- Settled queued tasks on interrupted parallel batches and documented the shared-worktree execution model.
-- Restricted the `message` parameter to `action: "steer"` and added focused regression coverage.
-
-## [1.4.6] - 2026-08-01
-
-### Fixed
-
-- Made the registered task schema use the same ten-task limit as runtime validation.
-- Kept one isolated Pi session ID and session directory across steering restarts so a child retains its conversation.
-- Bound retained trace, stderr, and returned text, and spooled large JSONL lines to temporary storage without stopping the child or reporting a retention cutoff as `limited`.
-- Kept explicit embedding resource guards and user stops visible as terminal states.
-
-## [1.4.5] - 2026-08-01
-
-### Fixed
-
-- Removed the child-budget extension, its read-tool budget, and the default 250,000-token/$5 quota.
-- Removed default child wall-time, trace, stderr, returned-output, and model-output-length stops; role `timeoutMs` and other child guards are opt-in, while the parser retains a finite JSONL-record ceiling.
-- Removed forced early-report prompt text so roles can finish their assigned work naturally.
-- Treat model stop reason `length` as a completed child process instead of inventing a KillerOS `limited` result.
-- Documented the child lifecycle contract: children complete naturally; explicit user interruptions, configured guards, and real child-process failures remain visible.
-
-## [1.4.3] - 2026-08-01
-
-### Fixed
-
-- Added child-runtime tool budgets for read-only roles, with a soft finalization nudge and hard blocking for read and web tools after 32 calls.
-- Added bounded child report instructions and kept read-tool budgets cumulative across steering restarts.
-- Lowered the default child quota to 250,000 tokens and $5, and exposed child tool-call counts in results.
-
-## [1.4.2] - 2026-08-01
-
-### Added
-
-- Added named child threads with inspectable lifecycle state, Active/Done views, steering, interruption, collection, and closure controls.
-- Added isolated child-process resource guards for wall time, JSONL lines, retained trace, stderr, output, token quota, cost quota, task count, and concurrency.
-
-### Changed
-
-- Replaced routine child turn limits with natural completion plus named resource guards.
-- Preserved partial traces and handoffs when a child fails, stops, or reaches a limit.
+- Scoped atomic `/init` reads and writes.
 
 ## [1.4.1] - 2026-08-01
 
-### Added
-
-- Added per-invocation child model selection and separate thinking-effort controls, with visible `inherit` placeholders in every bundled role.
-- Added focused `debugger`, `documenter`, `security`, and `tester` roles with explicit access boundaries, skill discovery, and web research guidance.
-- Added child web research through the separately installed `pi-web-access` package and exposed search, source-check, fetch, and stored-content tools to every bundled role.
-
-### Fixed
-
-- Made child timeout and forced-termination fallbacks settle even when no other event-loop handles remain.
-- Kept streamed child thinking within the retained trace budget without terminating successful invocations.
-- Preserved model IDs containing colons and validated thinking levels through Pi's model capabilities, including models that do not support `off`.
-- Bounded unterminated JSONL lines while preserving fragmented UTF-8 handling.
-
 ### Changed
 
-- Expanded the bundled role roster while keeping read-only auditors separate from write-capable implementation roles.
 - Hardened CI with Node floor/LTS checks, locked-dependency auditing, dependency review, package-content validation, and CodeQL analysis.
-
-## [1.4.0] - 2026-08-01
-
-### Added
-
-- Pi-native `subagent` tool with isolated JSONL child processes, single/parallel/chain modes, streamed TUI status, aggregate usage, and abort propagation.
-- Bundled Markdown roles for read-only scouting, planning, and review plus one serialized write-capable worker.
-- Strict role, tool, model, trust, precedence, concurrency, turn, timeout, trace, stderr, and output enforcement.
 
 ## [1.3.0] - 2026-07-31
 
