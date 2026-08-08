@@ -31,7 +31,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.1
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.2
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -40,7 +40,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 
 - 52-column Compact startup card with inline version, polished model/provider identity, adjacent `/model`, directory, conditional Git branch, and a shuffled session-stable tip
 - Cohesive dark theme with coral accents and neutral tool-call containers across pending, success, and error states
-- Static coral Spark activity indicator with a shuffled Claude-adjacent verb bank that changes every 2.5 seconds during active work, plus a quiet hidden-thinking label
+- Animated orange 12-frame activity glyph loop at 120 ms per frame, with orange shuffled Claude-adjacent verbs changing every 2.5 seconds, a gray `(esc to interrupt · thinking)` status with bold `esc`, and a quiet hidden-thinking label
 - Framed multiline editor with Shift+Enter support and live command-blue highlighting for recognized slash command prefixes
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - Automatic model-backed context compaction at 40% remaining; active goals continue after the saved summary

@@ -10,6 +10,7 @@ const product = readFileSync(new URL("../PRODUCT.md", import.meta.url), "utf8");
 const design = readFileSync(new URL("../DESIGN.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const concept = readFileSync(new URL("../design/main-Killeros.html", import.meta.url), "utf8");
+const conceptText = concept.replace(/<[^>]+>/gu, "");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
 function repositoryFiles(directory = repositoryRoot): string[] {
@@ -48,7 +49,10 @@ test("browser concept keeps colors and radii in root tokens", () => {
 test("browser concept describes the current KillerOS runtime", () => {
   assert.match(concept, new RegExp(`\\(v${packageJson.version.replaceAll(".", "\\.")}\\)`));
   assert.doesNotMatch(concept, /Plan only|no runtime implementation yet|Planned KillerOS goal flow|Proposed KillerOS init flow/iu);
-  assert.match(concept, /Static Spark/iu);
+  assert.match(concept, /Animated orange glyph loop/iu);
+  assert.match(conceptText, /·✢✱✶✻✽✽✻✶✱✢·/u);
+  assert.match(concept, /120 ms/u);
+  assert.doesNotMatch(concept, /Static Spark/iu);
   assert.match(concept, /2\.5 seconds/u);
   assert.match(concept, /Pause automatic continuation/u);
   assert.match(concept, /Completed goals leave the footer/u);
@@ -70,7 +74,15 @@ test("peer ranges enforce the documented lower bounds", () => {
 });
 
 test("product and design docs match current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.1");
+  assert.equal(packageJson.version, "2.0.2");
+  assert.match(readme, /@v2\.0\.2/u);
+  assert.match(readme, /12-frame/u);
+  assert.match(product, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
+  assert.match(product, /120 ms/u);
+  assert.match(product, /esc to interrupt · thinking/u);
+  assert.match(design, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
+  assert.match(design, /120 ms/u);
+  assert.match(design, /esc to interrupt · thinking/u);
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
   assert.match(readme, /\/goal <objective>/u);
   assert.match(readme, /\/init/u);

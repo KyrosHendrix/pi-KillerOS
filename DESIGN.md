@@ -127,8 +127,9 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Boundaries:** Recognize commands only at the start of a line or after horizontal whitespace. Styling must not alter submitted text, cursor placement, wrapping, or autocomplete.
 
 ### Activity Indicator
-- **Mark:** One static accent-colored `✻` glyph; do not animate size, shape, or color.
-- **Voice:** While an agent run is active, shuffle `Brewing`, `Pondering`, `Tinkering`, `Wrangling`, `Noodling`, and `Cooking` without immediate repeats and change the word every 2.5 seconds.
+- **Mark:** Animate the accent-orange glyph sequence `· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·` at 120 ms per frame; do not use green or a static indicator.
+- **Voice:** While an agent run is active, render the same accent orange on `Brewing`, `Pondering`, `Tinkering`, `Wrangling`, `Noodling`, and `Cooking`; shuffle without immediate repeats and change the word every 2.5 seconds.
+- **Status:** Show the gray `(esc to interrupt · thinking)` status after the orange verb, with only `esc` bold.
 - **Hidden reasoning:** Use the static neutral label `└ Thinking…`.
 
 ### Jump Links

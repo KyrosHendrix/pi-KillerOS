@@ -369,7 +369,16 @@ class PiCodeEditor extends CustomEditor {
   }
 }
 
+const ACTIVITY_FRAMES = [
+  "·", "✢", "✱", "✶", "✻", "✽",
+  "✽", "✻", "✶", "✱", "✢", "·",
+] as const;
+const ACTIVITY_FRAME_INTERVAL_MS = 120;
 const ACTIVITY_WORDS = ["Brewing", "Pondering", "Tinkering", "Wrangling", "Noodling", "Cooking"] as const;
+
+function formatActivityMessage(word: string, theme: Theme): string {
+  return `${theme.fg("accent", `${word}…`)} ${theme.fg("dim", `(${theme.bold("esc")} to interrupt · thinking)`)}`;
+}
 
 export function registerShellUi(pi: ExtensionAPI): void {
   let activeHeader: PiStartupHeader | undefined;
@@ -413,7 +422,10 @@ export function registerShellUi(pi: ExtensionAPI): void {
         return activeHeader;
       });
       clearActivityTimer();
-      ctx.ui.setWorkingIndicator({ frames: [ctx.ui.theme.fg("accent", "✻")] });
+      ctx.ui.setWorkingIndicator({
+        frames: ACTIVITY_FRAMES.map((frame) => ctx.ui.theme.fg("accent", frame)),
+        intervalMs: ACTIVITY_FRAME_INTERVAL_MS,
+      });
       ctx.ui.setHiddenThinkingLabel("└ Thinking…");
       ctx.ui.setEditorComponent((tui, editorTheme, keybindings) =>
         new PiCodeEditor(tui, editorTheme, keybindings, ctx.ui.theme, () => availableCommandNames(pi)));
@@ -425,7 +437,7 @@ export function registerShellUi(pi: ExtensionAPI): void {
   pi.on("agent_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
     clearActivityTimer();
-    const updateWorkingWord = (): void => ctx.ui.setWorkingMessage(`${nextActivityWord()}…`);
+    const updateWorkingWord = (): void => ctx.ui.setWorkingMessage(formatActivityMessage(nextActivityWord(), ctx.ui.theme));
     updateWorkingWord();
     activityTimer = setInterval(updateWorkingWord, 2_500);
     activityTimer.unref?.();

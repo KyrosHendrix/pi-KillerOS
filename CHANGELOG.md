@@ -4,6 +4,13 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-08-08
+
+### Changed
+
+- Replaced the static activity Spark with a 12-frame orange glyph loop at 120 ms per frame.
+- Styled activity verbs orange and added the gray `(esc to interrupt · thinking)` status with bold `esc`.
+
 ## [2.0.1] - 2026-08-08
 
 ### Added

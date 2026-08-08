@@ -2256,23 +2256,57 @@ test("autocomplete omits unsupported argument hints", async () => {
   assert.ok(result.items.some((item) => item.label === "/exit"));
 });
 
-test("activity uses a static Spark and a nonrepeating shuffled verb deck", (t) => {
+test("activity uses an animated orange glyph loop and a nonrepeating shuffled verb deck", (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const { handlers } = createHarness();
   const { captured, ctx } = createTuiContext();
   for (const handler of handlers.get("session_start")) handler({}, ctx);
 
-  assert.deepEqual(captured.workingIndicator, { frames: ["✻"] });
+  assert.deepEqual(captured.workingIndicator, {
+    frames: ["·", "✢", "✱", "✶", "✻", "✽", "✽", "✻", "✶", "✱", "✢", "·"],
+    intervalMs: 120,
+  });
   assert.equal(captured.hiddenThinkingLabel, "└ Thinking…");
   for (const handler of handlers.get("agent_start")) handler({}, ctx);
 
+  const plainMessage = /^(?:Brewing|Pondering|Tinkering|Wrangling|Noodling|Cooking)… \(esc to interrupt · thinking\)$/u;
   for (let index = 0; index < 5; index += 1) t.mock.timers.tick(2_500);
   const firstDeck = captured.workingMessages.slice(-6);
   assert.equal(new Set(firstDeck).size, 6);
-  assert.ok(firstDeck.every((word, index) => index === 0 || word !== firstDeck[index - 1]));
+  assert.ok(firstDeck.every((message, index) => plainMessage.test(message) && (index === 0 || message !== firstDeck[index - 1])));
 
   t.mock.timers.tick(2_500);
   assert.notEqual(captured.workingMessages.at(-1), firstDeck.at(-1));
+});
+
+test("activity styles glyph and verb orange with a gray bold interrupt status", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const styledTheme = {
+    bold: (text) => `<bold>${text}</bold>`,
+    fg: (color, text) => `<${color}>${text}</${color}>`,
+    italic: (text) => text,
+    strikethrough: (text) => text,
+    underline: (text) => text,
+  };
+  const { handlers } = createHarness();
+  const { captured, ctx } = createTuiContext([], styledTheme);
+  for (const handler of handlers.get("session_start")) handler({}, ctx);
+
+  assert.deepEqual(captured.workingIndicator, {
+    frames: [
+      "<accent>·</accent>", "<accent>✢</accent>", "<accent>✱</accent>", "<accent>✶</accent>",
+      "<accent>✻</accent>", "<accent>✽</accent>", "<accent>✽</accent>", "<accent>✻</accent>",
+      "<accent>✶</accent>", "<accent>✱</accent>", "<accent>✢</accent>", "<accent>·</accent>",
+    ],
+    intervalMs: 120,
+  });
+  for (const handler of handlers.get("agent_start")) handler({}, ctx);
+
+  assert.match(
+    captured.workingMessages.at(-1) ?? "",
+    /^<accent>(?:Brewing|Pondering|Tinkering|Wrangling|Noodling|Cooking)…<\/accent> <dim>\(<bold>esc<\/bold> to interrupt · thinking\)<\/dim>$/u,
+  );
+  for (const handler of handlers.get("agent_end")) handler({}, ctx);
 });
 
 test("activity timer stops on agent end and session shutdown", (t) => {
