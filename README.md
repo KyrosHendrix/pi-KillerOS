@@ -40,14 +40,14 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 
 - 52-column Compact startup card with inline version, polished model/provider identity, adjacent `/model`, directory, conditional Git branch, and a shuffled session-stable tip
 - Cohesive dark theme with coral accents and neutral tool-call containers across pending, success, and error states
-- Coral Spark activity indicator with Claude-adjacent verbs that advance between agent runs and a quiet hidden-thinking label
+- Static coral Spark activity indicator with a shuffled Claude-adjacent verb bank that changes every 2.5 seconds during active work, plus a quiet hidden-thinking label
 - Framed multiline editor with Shift+Enter support
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - Automatic model-backed context compaction at 40% remaining; active goals continue after the saved summary
 - `/variants` selector and direct reasoning-level arguments
-- Codex-style `/goal` for durable long-running objectives with pause, resume, edit, clear, automatic continuation, and explicit completion
+- Codex-style `/goal` with an interactive status/action panel, durable objectives, pause, resume, edit, confirmed panel clearing, automatic continuation, and explicit completion
 - Claude Code-style `/init` that scans the repository and generates a concise root `AGENTS.md` without setup questions
-- `question` tool with filtering, proposal previews, keyboard selection, custom answers, history, cancellation, and resize-safe rendering
+- `question` tool with height-bounded option windows, configured Pi keybindings, live option/input progress, proposal previews, custom answers, history, cancellation, and compact expandable transcript rendering
 - Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills
 - `/clear` for a confirmed new session, plus `/exit` for graceful shutdown
 - Concise system-prompt guidance without modifying completed assistant messages
@@ -56,7 +56,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 
 ```text
 /init                     Generate root AGENTS.md from repository evidence
-/goal                     View the current long-running goal
+/goal                     Open current goal status and valid actions
 /goal <objective>         Set an objective and start working
 /goal edit                Edit and reactivate the current goal
 /goal pause               Stop automatic continuation
@@ -78,7 +78,7 @@ Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh
 
 KillerOS activates its packaged `killeros` theme when a TUI session starts. Tool-call backgrounds stay neutral across pending, successful, and failed states; restrained text and icons preserve status visibility.
 
-KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar. When a goal exists, the footer adds its active time or terminal state; at narrow widths, context pressure and goal state take priority.
+KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar. Active, paused, and blocked goals remain visible; completed goals remain in transcript history and `/goal` status rather than the footer. At narrow widths, context pressure and actionable goal state take priority.
 
 KillerOS checks context after each agent turn. At 40% remaining, it starts Pi's model-backed compaction after the current run settles, so the active turn is not aborted. Manual `/compact` uses the same model path and keeps custom focus instructions. If model compaction is unavailable or exhausts its retries, KillerOS uses the disclosed deterministic fallback and warns that repeated compaction can reduce accuracy.
 

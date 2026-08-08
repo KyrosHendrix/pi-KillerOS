@@ -68,7 +68,7 @@ The palette is restrained: achromatic black, white, and gray neutrals carry the 
 ### Secondary
 - **Ready Green:** Positive runtime and context state.
 - **Reasoning Pink:** Reasoning-level state where it must remain distinct from brand accents.
-- **Command Blue:** The explicit `/model` affordance in the startup card; do not use it decoratively.
+- **Command Blue:** The shared `mdLink` role for the explicit `/model` affordance and Markdown links; do not use it decoratively.
 
 ### Neutral
 - **Console Black / Panel / Raised:** Layered terminal backgrounds.
@@ -123,10 +123,9 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Output:** Muted neutral text, with restrained semantic colors reserved for actual diffs and errors.
 
 ### Activity Indicator
-- **Mark:** One text-only `✻` glyph pulses through dim, muted, coral, and muted theme colors at a restrained stepped cadence.
-- **Voice:** Each agent run advances through `Brewing`, `Pondering`, `Tinkering`, `Wrangling`, `Noodling`, and `Cooking`.
+- **Mark:** One static accent-colored `✻` glyph; do not animate size, shape, or color.
+- **Voice:** While an agent run is active, shuffle `Brewing`, `Pondering`, `Tinkering`, `Wrangling`, `Noodling`, and `Cooking` without immediate repeats and change the word every 2.5 seconds.
 - **Hidden reasoning:** Use the static neutral label `└ Thinking…`.
-- **Motion:** Keep animation confined to the mark; words change between runs rather than flickering during one response.
 
 ### Jump Links
 - **Shape:** Square outlined controls with compact padding.
@@ -146,6 +145,7 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Focused:** Preserve model, provider, context, and a shortened path.
 - **Compact:** Preserve model, provider, and context. At emergency widths, preserve context and truncate model identity before overflowing.
 - **Adaptation:** Select the richest tier that fits its actual content rather than relying on fixed terminal breakpoints.
+- **Goals:** Keep active, paused, and blocked goals persistent. Show completed goals in history and `/goal`, not the footer.
 
 ## Do's and Don'ts
 

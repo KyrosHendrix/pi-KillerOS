@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   CustomEditor,
@@ -23,10 +23,7 @@ import { reportError } from "./errors.ts";
 import { formatModel } from "./footer.ts";
 import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
 
-const COMMAND_BLUE_RGB = "120;169;255";
 const COMPACT_HEADER_MAX_WIDTH = 52;
-
-const commandBlue = (text: string): string => `\x1B[38;2;${COMMAND_BLUE_RGB}m${text}\x1B[39m`;
 
 function readPackageVersion(path: string | URL): string | undefined {
   try {
@@ -45,20 +42,27 @@ const STARTUP_TIPS = [
   "Type / to browse every command available in this session.",
 ] as const;
 
-function resolveGitBranch(cwd: string): string | undefined {
-  try {
-    const branch = execFileSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
-      encoding: "utf8",
-      maxBuffer: 64 * 1024,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 500,
-      windowsHide: true,
-    }).trim();
-    if (!branch) return undefined;
-    return branch === "HEAD" ? "detached" : branch;
-  } catch {
-    return undefined;
-  }
+export function resolveGitBranch(cwd: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile(
+      "git",
+      ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+      {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024,
+        timeout: 500,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) {
+          resolve(undefined);
+          return;
+        }
+        const branch = stdout.trim();
+        resolve(branch ? branch === "HEAD" ? "detached" : branch : undefined);
+      },
+    );
+  });
 }
 
 function shuffledTips(): string[] {
@@ -78,14 +82,21 @@ function compactBoxLine(content: string, width: number, theme: Theme): string {
 class PiStartupHeader {
   private readonly pi: ExtensionAPI;
   private readonly ctx: ExtensionContext;
-  private readonly branch: string | undefined;
   private readonly tip: string;
+  private readonly tui: TUI;
+  private branch: string | undefined;
+  private disposed = false;
 
-  constructor(pi: ExtensionAPI, ctx: ExtensionContext, tip: string) {
+  constructor(pi: ExtensionAPI, ctx: ExtensionContext, tip: string, tui: TUI) {
     this.pi = pi;
     this.ctx = ctx;
-    this.branch = resolveGitBranch(ctx.cwd);
     this.tip = tip;
+    this.tui = tui;
+    void resolveGitBranch(ctx.cwd).then((branch) => {
+      if (this.disposed) return;
+      this.branch = branch;
+      this.tui.requestRender();
+    });
   }
 
   private tipLines(width: number, theme: Theme): string[] {
@@ -113,7 +124,7 @@ class PiStartupHeader {
     const repository = this.branch
       ? `${directory} ${theme.fg("dim", `· ${this.branch}`)}`
       : directory;
-    const modelCommand = commandBlue("/model");
+    const modelCommand = theme.fg("mdLink", "/model");
     const agentWidth = Math.max(0, innerWidth - visibleWidth(modelCommand) - 1);
     const agentCommand = `${truncateToWidth(agent, agentWidth, "…")} ${modelCommand}`;
     const border = (left: string, right: string): string => theme.fg("dim", `${left}${"─".repeat(panelWidth - 2)}${right}`);
@@ -131,7 +142,9 @@ class PiStartupHeader {
   }
 
   invalidate(): void {}
-  dispose(): void {}
+  dispose(): void {
+    this.disposed = true;
+  }
 }
 
 const ANSI_REGEX = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
@@ -147,10 +160,12 @@ function isBorderLine(line: string): boolean {
 
 class PiCodeEditor extends CustomEditor {
   private readonly appKeybindings: KeybindingsManager;
+  private readonly runtimeTheme: Theme;
 
-  constructor(tui: TUI, theme: EditorTheme, appKeybindings: KeybindingsManager) {
+  constructor(tui: TUI, theme: EditorTheme, appKeybindings: KeybindingsManager, runtimeTheme: Theme) {
     super(tui, theme, appKeybindings);
     this.appKeybindings = appKeybindings;
+    this.runtimeTheme = runtimeTheme;
   }
 
   override handleInput(data: string): void {
@@ -173,7 +188,7 @@ class PiCodeEditor extends CustomEditor {
     const lines = super.render(innerWidth);
     if (lines.length < 2) return lines.map((line) => truncateToWidth(line, width, ""));
 
-    const gray = (text: string): string => `\x1B[90m${text}\x1B[39m`;
+    const gray = (text: string): string => this.runtimeTheme.fg("dim", text);
     let bottomBorderIndex = -1;
     for (let index = lines.length - 1; index >= 1; index -= 1) {
       if (isBorderLine(lines[index] ?? "")) {
@@ -219,11 +234,33 @@ const ACTIVITY_WORDS = ["Brewing", "Pondering", "Tinkering", "Wrangling", "Noodl
 
 export function registerShellUi(pi: ExtensionAPI): void {
   let activeHeader: PiStartupHeader | undefined;
-  let activityWordIndex = 0;
+  let activityDeck: string[] = [];
+  let lastActivityWord: string | undefined;
+  let activityTimer: ReturnType<typeof setInterval> | undefined;
   let tipDeck: string[] = [];
   const nextStartupTip = (): string => {
     if (tipDeck.length === 0) tipDeck = shuffledTips();
     return tipDeck.pop() ?? STARTUP_TIPS[0];
+  };
+  const refillActivityDeck = (): void => {
+    activityDeck = [...ACTIVITY_WORDS];
+    for (let index = activityDeck.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [activityDeck[index], activityDeck[swapIndex]] = [activityDeck[swapIndex]!, activityDeck[index]!];
+    }
+    if (activityDeck.length > 1 && activityDeck.at(-1) === lastActivityWord) {
+      [activityDeck[0], activityDeck[activityDeck.length - 1]] = [activityDeck.at(-1)!, activityDeck[0]!];
+    }
+  };
+  const nextActivityWord = (): string => {
+    if (activityDeck.length === 0) refillActivityDeck();
+    const word = activityDeck.pop() ?? ACTIVITY_WORDS[0];
+    lastActivityWord = word;
+    return word;
+  };
+  const clearActivityTimer = (): void => {
+    if (activityTimer) clearInterval(activityTimer);
+    activityTimer = undefined;
   };
 
   pi.on("session_start", (_event, ctx) => {
@@ -231,22 +268,16 @@ export function registerShellUi(pi: ExtensionAPI): void {
     try {
       ctx.ui.setTheme("killeros");
       const startupTip = nextStartupTip();
-      ctx.ui.setHeader(() => {
+      ctx.ui.setHeader((tui) => {
         activeHeader?.dispose();
-        activeHeader = new PiStartupHeader(pi, ctx, startupTip);
+        activeHeader = new PiStartupHeader(pi, ctx, startupTip, tui);
         return activeHeader;
       });
-      ctx.ui.setWorkingIndicator({
-        frames: [
-          ctx.ui.theme.fg("dim", "✻"),
-          ctx.ui.theme.fg("muted", "✻"),
-          ctx.ui.theme.fg("accent", "✻"),
-          ctx.ui.theme.fg("muted", "✻"),
-        ],
-        intervalMs: 180,
-      });
+      clearActivityTimer();
+      ctx.ui.setWorkingIndicator({ frames: [ctx.ui.theme.fg("accent", "✻")] });
       ctx.ui.setHiddenThinkingLabel("└ Thinking…");
-      ctx.ui.setEditorComponent((tui, theme, keybindings) => new PiCodeEditor(tui, theme, keybindings));
+      ctx.ui.setEditorComponent((tui, editorTheme, keybindings) =>
+        new PiCodeEditor(tui, editorTheme, keybindings, ctx.ui.theme));
     } catch (error) {
       reportError(ctx, "Killeros UI failed to initialize", error);
     }
@@ -254,17 +285,23 @@ export function registerShellUi(pi: ExtensionAPI): void {
 
   pi.on("agent_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
-    ctx.ui.setWorkingMessage(`${ACTIVITY_WORDS[activityWordIndex]}…`);
-    activityWordIndex = (activityWordIndex + 1) % ACTIVITY_WORDS.length;
+    clearActivityTimer();
+    const updateWorkingWord = (): void => ctx.ui.setWorkingMessage(`${nextActivityWord()}…`);
+    updateWorkingWord();
+    activityTimer = setInterval(updateWorkingWord, 2_500);
+    activityTimer.unref?.();
   });
 
   pi.on("agent_end", (_event, ctx) => {
+    clearActivityTimer();
     if (ctx.mode === "tui") ctx.ui.setWorkingMessage();
   });
 
   pi.on("session_shutdown", () => {
+    clearActivityTimer();
     activeHeader?.dispose();
     activeHeader = undefined;
-    activityWordIndex = 0;
+    activityDeck = [];
+    lastActivityWord = undefined;
   });
 }

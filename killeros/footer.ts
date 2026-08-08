@@ -116,16 +116,34 @@ function formatGoalFooter(state: GoalState | undefined, theme: Theme): string {
   if (state.status === "active") return theme.fg("accent", `✻ goal · ${formatTime(goalElapsedMilliseconds(state))}`);
   if (state.status === "paused") return theme.fg("warning", "Ⅱ goal paused");
   if (state.status === "blocked") return theme.fg("error", "! goal blocked");
-  return theme.fg("success", "✓ goal complete");
+  return "";
 }
 
 export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void {
   let currentModel: ExtensionContext["model"];
   let thinkingLevel: ThinkingLevel = "off";
   let activeTui: TUI | undefined;
+  let cachedSessionCost = 0;
+  let sessionCostDirty = true;
+  const resetSessionCost = (): void => {
+    cachedSessionCost = 0;
+    sessionCostDirty = true;
+  };
+  const invalidateSessionCost = (): void => {
+    sessionCostDirty = true;
+    activeTui?.requestRender();
+  };
+  const getSessionCost = (ctx: ExtensionContext): number => {
+    if (sessionCostDirty) {
+      cachedSessionCost = sumSessionCost(ctx);
+      sessionCostDirty = false;
+    }
+    return cachedSessionCost;
+  };
   goalRuntime.requestRender = () => activeTui?.requestRender();
 
   pi.on("session_start", (_event, ctx) => {
+    resetSessionCost();
     if (ctx.mode !== "tui") return;
     const sessionStart = Date.now();
     currentModel = ctx.model;
@@ -170,7 +188,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
             goal,
             branch ? theme.fg("dim", branch) : "",
             theme.fg("dim", formatTime(Date.now() - sessionStart)),
-            theme.fg("dim", formatCost(sumSessionCost(ctx))),
+            theme.fg("dim", formatCost(getSessionCost(ctx))),
           ], theme);
           const focused = joinFooterParts([signature, context, goal], theme);
 
@@ -207,7 +225,14 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
     thinkingLevel = event.level;
     activeTui?.requestRender();
   });
+  pi.on("turn_end", invalidateSessionCost);
+  pi.on("session_compact", invalidateSessionCost);
+  pi.on("session_tree", () => {
+    resetSessionCost();
+    activeTui?.requestRender();
+  });
   pi.on("session_shutdown", () => {
+    resetSessionCost();
     activeTui = undefined;
     goalRuntime.requestRender = undefined;
   });

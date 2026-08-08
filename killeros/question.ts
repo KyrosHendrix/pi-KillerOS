@@ -1,19 +1,14 @@
-import { type ExtensionAPI, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { keyHint, type ExtensionAPI, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
-  Container,
   decodeKittyPrintable,
   Editor,
-  Key,
   Markdown,
-  matchesKey,
-  SelectList,
-  Text,
   truncateToWidth,
-  visibleWidth,
   wrapTextWithAnsi,
   type EditorTheme,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { BoundedText } from "./bounded-text.ts";
 
 const OptionSchema = Type.Object({
   label: Type.String({ minLength: 1, maxLength: 200, description: "Display label for the option" }),
@@ -90,6 +85,16 @@ function removeLastGrapheme(value: string): string {
   return last ? value.slice(0, last.index) : "";
 }
 
+function oneLine(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+function visibleOptionRange(total: number, selected: number, capacity: number): { start: number; end: number } {
+  const size = Math.max(1, Math.min(total, capacity));
+  const start = Math.max(0, Math.min(selected - Math.floor(size / 2), total - size));
+  return { start, end: Math.min(total, start + size) };
+}
+
 export function registerQuestionTool(pi: ExtensionAPI): void {
   const customInputHistory: string[] = [];
   let customInputHistoryBytes = 0;
@@ -153,11 +158,12 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
       ];
 
       let finishFromAbort: (() => void) | undefined;
-      const resultPromise = ctx.ui.custom<QuestionSelection>((tui, theme, _keybindings, done) => {
+      const resultPromise = ctx.ui.custom<QuestionSelection>((tui, theme, keybindings, done) => {
         let optionIndex = 0;
         let editMode = false;
         let filterQuery = "";
         let cachedWidth: number | undefined;
+        let cachedRows: number | undefined;
         let cachedLines: string[] | undefined;
         let completed = false;
 
@@ -191,6 +197,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
 
         const invalidate = (): void => {
           cachedWidth = undefined;
+          cachedRows = undefined;
           cachedLines = undefined;
           editor.invalidate();
         };
@@ -241,7 +248,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
 
         const handleInput = (data: string): void => {
           if (editMode) {
-            if (matchesKey(data, Key.escape)) {
+            if (keybindings.matches(data, "tui.select.cancel")) {
               editMode = false;
               editor.setText("");
               refresh();
@@ -260,24 +267,35 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
 
           const visibleOptions = filteredOptions();
           if (optionIndex >= visibleOptions.length) optionIndex = Math.max(0, visibleOptions.length - 1);
-          if (matchesKey(data, Key.up)) {
+          const pageSize = Math.max(1, Math.min(5, Math.ceil(Math.max(1, tui.terminal.rows - 5) / 2)));
+          if (keybindings.matches(data, "tui.select.up")) {
             optionIndex = Math.max(0, optionIndex - 1);
             refresh();
             return;
           }
-          if (matchesKey(data, Key.down)) {
+          if (keybindings.matches(data, "tui.select.down")) {
             optionIndex = Math.min(visibleOptions.length - 1, optionIndex + 1);
             refresh();
             return;
           }
-          if (matchesKey(data, Key.enter)) {
+          if (keybindings.matches(data, "tui.select.pageUp")) {
+            optionIndex = Math.max(0, optionIndex - pageSize);
+            refresh();
+            return;
+          }
+          if (keybindings.matches(data, "tui.select.pageDown")) {
+            optionIndex = Math.min(visibleOptions.length - 1, optionIndex + pageSize);
+            refresh();
+            return;
+          }
+          if (keybindings.matches(data, "tui.select.confirm")) {
             const selected = visibleOptions[optionIndex];
             if (!selected) return;
             if (selected.isOther) enterCustomMode();
             else finish({ kind: "selected", answer: selected.label, originalIndex: selected.originalIndex });
             return;
           }
-          if (matchesKey(data, Key.escape)) {
+          if (keybindings.matches(data, "tui.select.cancel")) {
             if (filterQuery) {
               filterQuery = "";
               optionIndex = 0;
@@ -287,7 +305,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
             }
             return;
           }
-          if (matchesKey(data, Key.backspace)) {
+          if (keybindings.matches(data, "tui.editor.deleteCharBackward")) {
             if (filterQuery) {
               filterQuery = removeLastGrapheme(filterQuery);
               optionIndex = 0;
@@ -304,60 +322,94 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
             else finish({ kind: "selected", answer: selected.label, originalIndex: selected.originalIndex });
             return;
           }
-          if (printableInput) {
-            appendFilterInput(printableInput);
-          }
+          if (printableInput) appendFilterInput(printableInput);
         };
 
         const render = (width: number): string[] => {
-          const renderWidth = Math.max(1, width);
-          if (cachedLines && cachedWidth === renderWidth) return cachedLines;
-          const lines: string[] = [];
-          const addWrapped = (text: string): void => {
-            lines.push(...wrapTextWithAnsi(text, renderWidth));
-          };
-          const addWrappedWithPrefix = (prefix: string, text: string): void => {
-            const prefixWidth = visibleWidth(prefix);
-            if (prefixWidth >= renderWidth) {
-              addWrapped(prefix + text);
-              return;
-            }
-            const wrapped = wrapTextWithAnsi(text, renderWidth - prefixWidth);
-            const continuation = " ".repeat(prefixWidth);
-            wrapped.forEach((line, index) => lines.push(`${index === 0 ? prefix : continuation}${line}`));
-          };
-
-          lines.push(theme.fg("accent", "─".repeat(renderWidth)));
-          addWrappedWithPrefix(" ", theme.fg("text", params.question));
-          lines.push("");
-          if (!editMode && filterQuery) {
-            addWrappedWithPrefix(" ", `${theme.fg("muted", "Filter: ")}${theme.fg("accent", filterQuery)}`);
-            lines.push("");
-          }
-
+          if (width <= 0) return [];
+          const renderWidth = width;
+          const rowBudget = Math.max(1, tui.terminal.rows);
+          if (cachedLines && cachedWidth === renderWidth && cachedRows === rowBudget) return cachedLines;
           const visibleOptions = filteredOptions();
           if (optionIndex >= visibleOptions.length) optionIndex = Math.max(0, visibleOptions.length - 1);
-          visibleOptions.forEach((option, index) => {
-            const selected = index === optionIndex;
-            const prefix = selected ? theme.fg("accent", "> ") : "  ";
-            const color: ThemeColor = selected ? "accent" : "text";
-            addWrappedWithPrefix(prefix, theme.fg(color, `${index + 1}. ${option.label}`));
-            if (selected && option.description) {
-              addWrappedWithPrefix("    ", theme.fg("muted", option.description));
-            }
-          });
+          const selected = visibleOptions[optionIndex];
+          const position = `Option ${Math.min(optionIndex + 1, visibleOptions.length)}/${visibleOptions.length}`;
+          const answerCount = inputCharacterCount(editor.getExpandedText()).toLocaleString();
+          const filterCount = inputCharacterCount(filterQuery).toLocaleString();
 
-          const selectedPreview = visibleOptions[optionIndex]?.preview;
-          if (!editMode && selectedPreview) {
-            const footerRows = 3;
-            const previewChromeRows = 2;
-            const availableRows = tui.terminal.rows - lines.length - footerRows;
-            if (availableRows > previewChromeRows) {
-              lines.push("");
-              addWrappedWithPrefix(" ", theme.fg("accent", theme.bold("Proposal preview")));
-              const markdownLines = new Markdown(
-                selectedPreview,
-                1,
+          if (rowBudget <= 2) {
+            const compact = editMode
+              ? [`Answer ${answerCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`, editor.getExpandedText() || "Type an answer"]
+              : [`${selected ? `> ${selected.label}` : "No matching options"} · ${position}`];
+            cachedWidth = renderWidth;
+            cachedRows = rowBudget;
+            cachedLines = compact.slice(0, rowBudget).map((line) => truncateToWidth(line, renderWidth, "…"));
+            return cachedLines;
+          }
+
+          if (rowBudget <= 5) {
+            const compact = [
+              truncateToWidth(params.question.replace(/\s+/gu, " "), renderWidth, "…"),
+              editMode
+                ? `Answer ${answerCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`
+                : `${selected ? `> ${selected.label}` : "No matching options"} · ${position}`,
+              editMode
+                ? editor.getExpandedText() || "Type an answer"
+                : filterQuery
+                  ? `Filter ${filterCount}/${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()}`
+                  : position,
+              editMode
+                ? `${keyHint("tui.input.submit", "submit")} • ${keyHint("tui.select.cancel", "options")}`
+                : `${keyHint("tui.select.confirm", "select")} • ${keyHint("tui.select.cancel", "cancel")}`,
+            ];
+            cachedWidth = renderWidth;
+            cachedRows = rowBudget;
+            cachedLines = compact.slice(0, rowBudget).map((line) => truncateToWidth(line, renderWidth, "…"));
+            return cachedLines;
+          }
+
+          const contentRows = rowBudget - 5;
+          const optionCapacity = Math.max(1, Math.min(5, Math.ceil(contentRows / 2)));
+          const detailCapacity = Math.max(0, contentRows - optionCapacity);
+          const { start, end } = visibleOptionRange(visibleOptions.length, optionIndex, optionCapacity);
+          const hiddenAbove = start > 0 ? `↑ ${start}` : "";
+          const hiddenBelowCount = visibleOptions.length - end;
+          const hiddenBelow = hiddenBelowCount > 0 ? `↓ ${hiddenBelowCount}` : "";
+          const hiddenStatus = [hiddenAbove, hiddenBelow].filter(Boolean).join(" · ");
+          const progress = editMode
+            ? `Answer ${answerCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`
+            : filterQuery
+              ? `Filter ${filterCount}/${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()} · ${position}`
+              : `${position}${hiddenStatus ? ` · ${hiddenStatus}` : ""}`;
+          const hint = editMode
+            ? `${keyHint("tui.input.submit", "submit")} • ${keyHint("tui.select.cancel", "options")}`
+            : `${keyHint("tui.select.up", "up")} • ${keyHint("tui.select.down", "down")} • ${keyHint("tui.select.confirm", "select")} • ${keyHint("tui.select.cancel", filterQuery ? "clear filter" : "cancel")}`;
+          const lines: string[] = [
+            theme.fg("accent", "─".repeat(renderWidth)),
+            theme.fg("text", truncateToWidth(` ${params.question.replace(/\s+/gu, " ")}`, renderWidth, "…")),
+            theme.fg("muted", truncateToWidth(` ${progress}`, renderWidth, "…")),
+          ];
+
+          if (editMode) {
+            const editorLines = editor.render(renderWidth);
+            const draftLines = editorLines.length > 0 ? editorLines : ["Type an answer"];
+            lines.push(...draftLines.slice(-contentRows));
+          } else {
+            for (let index = start; index < end; index += 1) {
+              const option = visibleOptions[index]!;
+              const isSelected = index === optionIndex;
+              const prefix = isSelected ? "> " : "  ";
+              const color: ThemeColor = isSelected ? "accent" : "text";
+              lines.push(theme.fg(color, truncateToWidth(`${prefix}${index + 1}. ${option.label}`, renderWidth, "…")));
+            }
+
+            const detailLines: string[] = [];
+            if (selected?.description) detailLines.push(...wrapTextWithAnsi(theme.fg("muted", selected.description), renderWidth));
+            if (selected?.preview) {
+              detailLines.push(theme.fg("accent", theme.bold("Proposal preview")));
+              detailLines.push(...new Markdown(
+                selected.preview,
+                0,
                 0,
                 {
                   heading: (text) => theme.fg("accent", theme.bold(text)),
@@ -376,35 +428,23 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
                   underline: (text) => theme.underline(text),
                 },
                 { color: (text) => theme.fg("muted", text) },
-              ).render(renderWidth);
-              const maxPreviewRows = Math.min(12, availableRows - previewChromeRows);
-              if (markdownLines.length <= maxPreviewRows) {
-                lines.push(...markdownLines);
-              } else {
-                const visiblePreviewRows = Math.max(0, maxPreviewRows - 1);
-                lines.push(...markdownLines.slice(0, visiblePreviewRows));
-                const hiddenRows = markdownLines.length - visiblePreviewRows;
-                lines.push(theme.fg("dim", ` … ${hiddenRows} more line${hiddenRows === 1 ? "" : "s"}`));
-              }
+              ).render(renderWidth));
+            }
+            if (detailCapacity > 0 && detailLines.length > detailCapacity) {
+              const visibleDetailRows = Math.max(0, detailCapacity - 1);
+              lines.push(...detailLines.slice(0, visibleDetailRows));
+              const hiddenRows = detailLines.length - visibleDetailRows;
+              lines.push(theme.fg("dim", `… ${hiddenRows} more line${hiddenRows === 1 ? "" : "s"}`));
+            } else {
+              lines.push(...detailLines.slice(0, detailCapacity));
             }
           }
 
-          if (editMode) {
-            lines.push("");
-            addWrappedWithPrefix(" ", theme.fg("muted", "Your answer:"));
-            editor.render(Math.max(1, renderWidth - 2)).forEach((line) => lines.push(` ${line}`));
-          }
-
-          lines.push("");
-          const hint = editMode
-            ? `Enter submit • Esc options${customInputHistory.length ? " • ↑↓ history" : ""}`
-            : filterQuery
-              ? "1-9 select • ↑↓ navigate • Enter select • Esc clear filter"
-              : "1-9 select • type to filter • ↑↓ navigate • Enter select • Esc cancel";
-          addWrappedWithPrefix(" ", theme.fg("dim", hint));
+          lines.push(theme.fg("dim", truncateToWidth(` ${hint}`, renderWidth, "…")));
           lines.push(theme.fg("accent", "─".repeat(renderWidth)));
           cachedWidth = renderWidth;
-          cachedLines = lines.map((line) => truncateToWidth(line, renderWidth, ""));
+          cachedRows = rowBudget;
+          cachedLines = lines.slice(0, rowBudget).map((line) => truncateToWidth(line, renderWidth, ""));
           return cachedLines;
         };
 
@@ -457,27 +497,34 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
       };
     },
 
-    renderCall(args, theme) {
-      let text = `${theme.fg("toolTitle", theme.bold("question "))}${theme.fg("muted", args.question)}`;
-      if (args.options.length) {
-        const numbered = [...args.options.map((option) => option.label), "Type a custom answer"]
-          .map((option, index) => `${index + 1}. ${option}`);
-        text += `\n${theme.fg("dim", `  Options: ${numbered.join(", ")}`)}`;
+    renderCall(args, theme, context) {
+      if (!context.expanded) {
+        const summary = `${theme.fg("toolTitle", theme.bold("question "))}${theme.fg("muted", oneLine(args.question))}\n${theme.fg("dim", `  ${args.options.length} option${args.options.length === 1 ? "" : "s"}`)}`;
+        return new BoundedText(summary, 3);
       }
-      return new Text(text, 0, 0);
+
+      const lines = [`${theme.fg("toolTitle", theme.bold("question "))}${theme.fg("muted", args.question)}`];
+      args.options.forEach((option, index) => {
+        lines.push(theme.fg("text", `${index + 1}. ${option.label}`));
+        if (option.description) lines.push(theme.fg("muted", `   ${option.description}`));
+        if (option.preview) lines.push(theme.fg("dim", option.preview));
+      });
+      lines.push(theme.fg("text", `${args.options.length + 1}. Type a custom answer`));
+      return new BoundedText(lines.join("\n"));
     },
 
-    renderResult(result, _options, theme) {
+    renderResult(result, options, theme) {
       const details = result.details;
       if (!details) {
         const first = result.content[0];
-        return new Text(first?.type === "text" ? first.text : "", 0, 0);
+        return new BoundedText(first?.type === "text" ? first.text : "", options.expanded ? undefined : 3);
       }
-      if (details.cancelled || details.answer === null) return new Text(theme.fg("warning", "Cancelled"), 0, 0);
+      if (details.cancelled || details.answer === null) return new BoundedText(theme.fg("warning", "Cancelled"));
       if (details.wasCustom) {
-        return new Text(`${theme.fg("success", "✓ ")}${theme.fg("muted", "(wrote) ")}${theme.fg("accent", details.answer)}`, 0, 0);
+        const text = `${theme.fg("success", "✓ ")}${theme.fg("muted", "(wrote) ")}${theme.fg("accent", details.answer)}`;
+        return new BoundedText(text, options.expanded ? undefined : 3);
       }
-      return new Text(`${theme.fg("success", "✓ ")}${theme.fg("accent", details.answer)}`, 0, 0);
+      return new BoundedText(`${theme.fg("success", "✓ ")}${theme.fg("accent", details.answer)}`);
     },
   });
 }

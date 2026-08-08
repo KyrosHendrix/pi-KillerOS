@@ -4,6 +4,7 @@
   "vars": {
     "coral": "#d77757",
     "coralBright": "#e58b6d",
+    "commandBlue": "#78a9ff",
     "canvas": "#0a0a0a",
     "surface": "#121212",
     "surfaceRaised": "#1a1a1a",
@@ -43,7 +44,7 @@
     "toolOutput": "muted",
 
     "mdHeading": "coralBright",
-    "mdLink": "coralBright",
+    "mdLink": "commandBlue",
     "mdLinkUrl": "dim",
     "mdCode": "coralBright",
     "mdCodeBlock": "text",
@@ -68,8 +69,8 @@
     "syntaxPunctuation": "muted",
 
     "thinkingOff": "dim",
-    "thinkingMinimal": "#78685f",
-    "thinkingLow": "#98705f",
+    "thinkingMinimal": "#927f74",
+    "thinkingLow": "#a27b6a",
     "thinkingMedium": "#b27762",
     "thinkingHigh": "coral",
     "thinkingXhigh": "#d58272",

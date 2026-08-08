@@ -5,11 +5,21 @@ import os from "node:os";
 import { PassThrough } from "node:stream";
 import path from "node:path";
 import test from "node:test";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import {
+  getKeybindings,
+  KeybindingsManager as TuiKeybindingsManager,
+  setKeybindings,
+  TUI_KEYBINDINGS,
+} from "@earendil-works/pi-tui";
 import Killeros, { CONCISE_SYSTEM_PROMPT, executeHook, formatContextProgress, INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "../Killeros.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { resolvePersonalInstructions } from "../killeros/personal-instructions.ts";
+import { resolveGitBranch } from "../killeros/shell-ui.ts";
+import { BoundedText } from "../killeros/bounded-text.ts";
 
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+initTheme("dark", false);
 
 const theme = {
   bold: (text) => text,
@@ -237,6 +247,10 @@ function createTuiContext(entries = []) {
       confirm: async () => true,
       editor: async (_title, prefill) => prefill,
       notify() {},
+      select: async (title, options) => {
+        captured.selection = { title, options };
+        return undefined;
+      },
       setEditorComponent: (factory) => { captured.editorFactory = factory; },
       setFooter: (factory) => { captured.footerFactory = factory; },
       setHeader: (factory) => { captured.headerFactory = factory; },
@@ -257,7 +271,24 @@ function createTuiContext(entries = []) {
   return { captured, ctx, tui };
 }
 
-async function startQuestion(tool, options = [{ label: "Alpha" }], questionText = "Choose", terminalRows = 40) {
+test("BoundedText limits collapsed rows and preserves full expanded text", () => {
+  const source = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
+  const collapsed = new BoundedText(source, 3).render(20);
+  assert.equal(collapsed.length, 3);
+  assert.match(collapsed.at(-1) ?? "", /…/u);
+
+  const expanded = new BoundedText(source).render(20);
+  assert.equal(expanded.length, 20);
+  assert.match(expanded.at(-1) ?? "", /line 20/u);
+});
+
+async function startQuestion(
+  tool,
+  options = [{ label: "Alpha" }],
+  questionText = "Choose",
+  terminalRows = 40,
+  keybindings = getKeybindings(),
+) {
   let component;
   let finish;
   const notifications = [];
@@ -267,7 +298,7 @@ async function startQuestion(tool, options = [{ label: "Alpha" }], questionText 
     ui: {
       custom: (factory) => new Promise((resolve) => {
         finish = resolve;
-        component = factory(tui, theme, {}, resolve);
+        component = factory(tui, theme, keybindings, resolve);
       }),
       notify: (message, level) => notifications.push({ message, level }),
     },
@@ -281,7 +312,7 @@ async function startQuestion(tool, options = [{ label: "Alpha" }], questionText 
   );
   assert.ok(component);
   assert.ok(finish);
-  return { component, finish, result, notifications };
+  return { component, finish, result, notifications, tui };
 }
 
 test("uses one neutral background for every tool state", () => {
@@ -301,6 +332,35 @@ test("uses achromatic neutrals without changing the coral accent", () => {
     assert.equal(red, green, `${name} must not have a color cast`);
     assert.equal(green, blue, `${name} must not have a color cast`);
   }
+});
+
+function relativeLuminance(hex) {
+  const channels = [1, 3, 5]
+    .map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255)
+    .map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(foreground, background) {
+  const values = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a);
+  return (values[0] + 0.05) / (values[1] + 0.05);
+}
+
+test("reasoning text meets normal-text contrast on KillerOS surfaces", () => {
+  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8"));
+  for (const role of ["thinkingMinimal", "thinkingLow"]) {
+    const foreground = killerosTheme.colors[role].startsWith("#")
+      ? killerosTheme.colors[role]
+      : killerosTheme.vars[killerosTheme.colors[role]];
+    for (const background of [killerosTheme.vars.surface, killerosTheme.vars.surfaceRaised]) {
+      assert.ok(contrastRatio(foreground, background) >= 4.5, `${role} must reach 4.5:1`);
+    }
+  }
+});
+
+test("shell UI uses theme roles instead of raw ANSI colors", () => {
+  const source = readFileSync(new URL("../killeros/shell-ui.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /38;2;|\\x1B\[90m|COMMAND_BLUE_RGB/u);
 });
 
 test("registers /exit without conflicting with Pi's /quit", async () => {
@@ -366,9 +426,81 @@ test("registers /goal and completes only through the model goal tool", async () 
   await emitSequentially(handlers.get("agent_settled"), {}, ctx);
   assert.equal(sentMessages.length, 1, "completed goals must not continue");
 
+  ctx.mode = "rpc";
   await commands.get("goal").handler("", ctx);
   assert.match(notifications.at(-1).message, /Goal complete/u);
   assert.match(notifications.at(-1).message, /npm test and npm run check passed/u);
+});
+
+test("bare /goal opens a context-valid action panel in TUI mode", async () => {
+  const { appendedEntries, commands } = createHarness();
+  const { captured, ctx } = createTuiContext();
+  await commands.get("goal").handler("Ship the release", ctx);
+  ctx.ui.select = async (title, options) => {
+    captured.goalPanel = { title, options };
+    return "Pause automatic continuation";
+  };
+
+  await commands.get("goal").handler("", ctx);
+  assert.match(captured.goalPanel.title, /Goal active/u);
+  assert.match(captured.goalPanel.title, /Ship the release/u);
+  assert.deepEqual(captured.goalPanel.options, [
+    "Pause automatic continuation",
+    "Edit objective",
+    "Clear goal",
+  ]);
+  assert.equal(appendedEntries.at(-1).data.state.status, "paused");
+});
+
+test("goal panel confirms clear and leaves direct goal commands compatible", async () => {
+  const { appendedEntries, commands } = createHarness();
+  const { ctx } = createTuiContext();
+  await commands.get("goal").handler("Keep this goal", ctx);
+  ctx.ui.select = async () => "Clear goal";
+  ctx.ui.confirm = async () => false;
+  await commands.get("goal").handler("", ctx);
+  assert.notEqual(appendedEntries.at(-1).data.state, null);
+
+  ctx.ui.confirm = async () => true;
+  await commands.get("goal").handler("", ctx);
+  assert.equal(appendedEntries.at(-1).data.state, null);
+
+  await commands.get("goal").handler("Direct clear", ctx);
+  await commands.get("goal").handler("clear", ctx);
+  assert.equal(appendedEntries.at(-1).data.state, null);
+});
+
+test("goal panel actions match paused, blocked, and complete states", async () => {
+  const expected = {
+    paused: ["Resume automatic continuation", "Edit objective", "Clear goal"],
+    blocked: ["Resume automatic continuation", "Edit objective", "Clear goal"],
+    complete: ["Edit objective", "Clear goal"],
+  };
+  for (const [status, options] of Object.entries(expected)) {
+    const now = Date.now();
+    const entries = [{
+      type: "custom",
+      customType: "killeros-goal",
+      data: { version: 1, event: status, state: {
+        version: 1,
+        revision: 1,
+        objective: `${status} objective`,
+        status,
+        createdAt: now,
+        updatedAt: now,
+        activeMilliseconds: 0,
+        turns: 3,
+        blockedAuditStartTurn: 0,
+        baselineTokens: 0,
+        result: status === "complete" ? "verified" : undefined,
+      } },
+    }];
+    const { commands, handlers } = createHarness();
+    const { captured, ctx } = createTuiContext(entries);
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await commands.get("goal").handler("", ctx);
+    assert.deepEqual(captured.selection.options, options, status);
+  }
 });
 
 test("/goal continues one turn at a time and pause stops future turns", async () => {
@@ -604,6 +736,7 @@ test("/goal restores only the current branch and resumes active saved work", asy
 
   const notifications = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  ctx.mode = "rpc";
   await commands.get("goal").handler("", ctx);
   assert.match(notifications.at(-1).message, /Goal active/u);
   assert.match(notifications.at(-1).message, /Finish the saved task/u);
@@ -756,10 +889,63 @@ test("/goal edit resumes after invalid input and pauses after persistence failur
   api.appendEntry = () => { throw new Error("session write failed"); };
   await commands.get("goal").handler("edit", ctx);
   assert.equal(sentMessages.length, 1, "an unsaved continuation must not start");
+  ctx.mode = "rpc";
   await commands.get("goal").handler("", ctx);
   assert.match(notifications.at(-1).message, /Goal paused/u);
   assert.match(notifications.at(-1).message, /session write failed/u);
   assert.equal(appendedEntries.at(-1).data.state.objective, "Keep the original objective");
+});
+
+test("completed goals leave the footer but remain available through /goal", async () => {
+  const { commands, handlers, tools } = createHarness();
+  const { captured, ctx, tui } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  for (const handler of handlers.get("session_start")) await handler({}, ctx);
+  await commands.get("goal").handler("Finish cleanly", ctx);
+  await emitGoalStart(handlers, ctx);
+  await tools.get("killeros_goal_update").execute(
+    "complete",
+    { status: "complete", evidence: "All checks passed" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+
+  const footer = captured.footerFactory(tui, theme, {
+    getGitBranch: () => "main",
+    onBranchChange: () => () => {},
+  });
+  assert.doesNotMatch(footer.render(120).join("\n"), /goal complete/u);
+  ctx.mode = "rpc";
+  await commands.get("goal").handler("", ctx);
+  assert.match(notifications.at(-1).message, /Goal complete/u);
+  assert.match(notifications.at(-1).message, /All checks passed/u);
+  footer.dispose();
+});
+
+test("goal transcript rows are compact until expanded", () => {
+  const { entryRenderers, tools } = createHarness();
+  const objective = "Objective ".repeat(400);
+  const entry = { data: { version: 1, event: "set", state: {
+    version: 1,
+    revision: 1,
+    objective,
+    status: "active",
+    createdAt: 1,
+    updatedAt: 1,
+    activeMilliseconds: 0,
+    turns: 0,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+  } } };
+  assert.ok(entryRenderers.get("killeros-goal")(entry, { expanded: false }, theme).render(40).length <= 3);
+  assert.match(entryRenderers.get("killeros-goal")(entry, { expanded: true }, theme).render(40).join("\n"), /Objective Objective/u);
+
+  const result = { content: [], details: { status: "complete", evidence: "E".repeat(2_000) } };
+  assert.ok(tools.get("killeros_goal_update").renderResult(result, { expanded: false }, theme).render(40).length <= 3);
+  const expandedEvidence = tools.get("killeros_goal_update").renderResult(result, { expanded: true }, theme).render(40).join("\n");
+  assert.equal((expandedEvidence.match(/E/gu) ?? []).length, 2_000);
 });
 
 test("goal state appears in wide and compact footer cutdowns", async () => {
@@ -1491,28 +1677,177 @@ test("/init reloads only after existing agent-settled hooks complete", async () 
   }
 });
 
+test("question shows option, filter, and answer progress", async () => {
+  const { tools } = createHarness();
+  const question = await startQuestion(tools.get("question"), [{ label: "Alpha" }], "Choose", 8);
+  assert.match(question.component.render(40).join("\n"), /Option 1\/2/u);
+  question.component.handleInput("abc");
+  assert.match(question.component.render(40).join("\n"), /Filter 3\/4,000/u);
+  question.component.handleInput("\x1B");
+  question.component.handleInput("2");
+  question.component.handleInput("draft");
+  assert.match(question.component.render(40).join("\n"), /Answer 5\/4,000/u);
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
+test("question transcript is three rows collapsed and complete when expanded", () => {
+  const { tools } = createHarness();
+  const tool = tools.get("question");
+  const args = {
+    question: "Q".repeat(1_000),
+    options: Array.from({ length: 9 }, (_, index) => ({
+      label: `Option ${index + 1} ${"L".repeat(180)}`,
+      description: `Description ${index + 1}`,
+      preview: `# Preview ${index + 1}`,
+    })),
+  };
+  const collapsed = tool.renderCall(args, theme, { expanded: false }).render(40);
+  assert.ok(collapsed.length <= 3);
+
+  const expanded = tool.renderCall(args, theme, { expanded: true }).render(40).join("\n");
+  assert.match(expanded, /Option 9/u);
+  assert.match(expanded, /Description 9/u);
+  assert.match(expanded, /Preview 9/u);
+  assert.ok(expanded.length > collapsed.join("\n").length);
+
+  const answer = "A".repeat(4_000);
+  const result = {
+    content: [{ type: "text", text: `User wrote: ${answer}` }],
+    details: { question: "Choose", options: ["Alpha"], answer, wasCustom: true },
+  };
+  assert.ok(tool.renderResult(result, { expanded: false }, theme).render(40).length <= 3);
+  assert.equal((tool.renderResult(result, { expanded: true }, theme).render(40).join("\n").match(/A/gu) ?? []).length, 4_000);
+});
+
+test("question follows remapped selector bindings exactly", async () => {
+  const previous = getKeybindings();
+  const remapped = new TuiKeybindingsManager(TUI_KEYBINDINGS, {
+    "tui.select.down": "ctrl+n",
+    "tui.select.up": "ctrl+p",
+    "tui.select.confirm": "ctrl+y",
+    "tui.select.cancel": "ctrl+g",
+  });
+  setKeybindings(remapped);
+  try {
+    const { tools } = createHarness();
+    const question = await startQuestion(
+      tools.get("question"),
+      [{ label: "Alpha" }, { label: "Beta" }],
+      "Choose",
+      8,
+      remapped,
+    );
+    question.component.handleInput("\x1B[B");
+    assert.match(question.component.render(80).join("\n"), /> 1\. Alpha/u);
+    question.component.handleInput("\x0E");
+    assert.match(question.component.render(80).join("\n"), /> 2\. Beta/u);
+    assert.match(question.component.render(80).join("\n"), /ctrl\+p.*ctrl\+n/u);
+    question.component.handleInput("\x19");
+    assert.match((await question.result).content[0].text, /Beta/u);
+  } finally {
+    setKeybindings(previous);
+  }
+});
+
+test("question renders nothing when no terminal width is available", async () => {
+  const { tools } = createHarness();
+  const question = await startQuestion(tools.get("question"), undefined, "Choose", 3);
+  assert.deepEqual(question.component.render(0), []);
+  assert.deepEqual(question.component.render(-1), []);
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
+test("question rendering never exceeds terminal height for valid maximum content", async () => {
+  const { tools } = createHarness();
+  const options = Array.from({ length: 9 }, (_, index) => ({
+    label: `Option ${index + 1} ${"L".repeat(190)}`,
+    description: "D".repeat(500),
+    preview: Array.from({ length: 100 }, () => "- preview content").join("\n"),
+  }));
+
+  for (const rows of [1, 2, 3, 5, 6, 12]) {
+    for (const width of [20, 40, 80]) {
+      const question = await startQuestion(tools.get("question"), options, `Question ${"Q".repeat(990)}`, rows);
+      const rendered = question.component.render(width);
+      assert.ok(rendered.length <= rows, `${width} columns rendered ${rendered.length}/${rows} rows`);
+      if (rows >= 3) assert.match(rendered.join("\n"), /Question/u);
+      assert.match(rendered.join("\n"), /Option 1/u);
+      question.finish({ kind: "cancelled" });
+      await question.result;
+    }
+  }
+});
+
+test("question invalidates cached rows when terminal height changes at the same width", async () => {
+  const { tools } = createHarness();
+  const question = await startQuestion(
+    tools.get("question"),
+    Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1}` })),
+    "Choose one",
+    12,
+  );
+  assert.ok(question.component.render(40).length <= 12);
+  question.tui.terminal.rows = 3;
+  const resized = question.component.render(40);
+  assert.ok(resized.length <= 3);
+  assert.match(resized.join("\n"), /Choose one/u);
+  assert.match(resized.join("\n"), /Choice 1/u);
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
+test("question keeps the selected option visible while its window moves", async () => {
+  const { tools } = createHarness();
+  const question = await startQuestion(
+    tools.get("question"),
+    Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1}` })),
+    "Choose one",
+    7,
+  );
+  for (let index = 0; index < 8; index += 1) question.component.handleInput("\x1B[B");
+  const rendered = question.component.render(30).join("\n");
+  assert.match(rendered, /Choice 9/u);
+  assert.match(rendered, /Option 9\/10/u);
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
+test("maximum filter text stays on one bounded status row", async () => {
+  const { tools } = createHarness();
+  const question = await startQuestion(tools.get("question"), undefined, "Choose", 8);
+  question.component.handleInput(`\x1B[200~${"Z".repeat(4_000)}\x1B[201~`);
+  const rendered = question.component.render(20);
+  assert.ok(rendered.length <= 8);
+  assert.match(rendered.join("\n"), /Filter 4,000\/4,000/u);
+  assert.ok(rendered.join("\n").length < 500);
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
 test("question filtering decodes Kitty input, paste, and grapheme backspace", async () => {
   const { tools } = createHarness();
   const question = await startQuestion(tools.get("question"));
 
   question.component.handleInput("\x1B[97u");
-  assert.match(question.component.render(80).join("\n"), /Filter: a/);
+  assert.match(question.component.render(80).join("\n"), /Filter 1\/4,000/u);
 
   question.component.handleInput("\x1B");
   question.component.handleInput("\x1B[200~a\nb\tc\x1B[201~");
-  assert.match(question.component.render(80).join("\n"), /Filter: ab {4}c/);
+  assert.match(question.component.render(80).join("\n"), /Filter 7\/4,000/u);
 
   question.component.handleInput("\x1B");
   question.component.handleInput("\x1B[200~👨‍👩‍👧‍👦\x1B[201~");
-  assert.match(question.component.render(80).join("\n"), /Filter: 👨‍👩‍👧‍👦/);
+  assert.match(question.component.render(80).join("\n"), /Filter 7\/4,000/u);
   question.component.handleInput("\x7F");
-  assert.doesNotMatch(question.component.render(80).join("\n"), /Filter:/);
+  assert.doesNotMatch(question.component.render(80).join("\n"), /Filter /u);
 
   question.component.handleInput("\x1B[155u");
-  assert.doesNotMatch(question.component.render(80).join("\n"), /Filter:/);
+  assert.doesNotMatch(question.component.render(80).join("\n"), /Filter /u);
 
   question.component.handleInput("\x1B[200~1\x1B[201~");
-  assert.match(question.component.render(80).join("\n"), /Filter: 1/);
+  assert.match(question.component.render(80).join("\n"), /Filter 1\/4,000/u);
 
   question.finish({ kind: "cancelled" });
   await question.result;
@@ -1533,22 +1868,22 @@ test("question filter bounds character and byte input", async () => {
   const boundary = "Z".repeat(4_000);
   question.component.handleInput(`\x1B[200~${boundary}\x1B[201~`);
   const boundaryRender = question.component.render(80).join("\n");
-  assert.equal((boundaryRender.match(/Z/gu) ?? []).length, 4_000);
-  assert.ok(boundaryRender.length < 20_000);
+  assert.match(boundaryRender, /Filter 4,000\/4,000/u);
+  assert.ok(boundaryRender.length < 500);
 
   question.component.handleInput("\x1B[200~Z\x1B[201~");
   assert.match(question.notifications.at(-1).message, /4,000 characters/u);
-  assert.equal((question.component.render(80).join("\n").match(/Z/gu) ?? []).length, 4_000);
+  assert.match(question.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
   question.finish({ kind: "cancelled" });
   await question.result;
 
   const unicode = await startQuestion(tools.get("question"));
   const emojiBoundary = "😀".repeat(4_000);
   unicode.component.handleInput(`\x1B[200~${emojiBoundary}\x1B[201~`);
-  assert.equal((unicode.component.render(80).join("\n").match(/😀/gu) ?? []).length, 4_000);
+  assert.match(unicode.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
   unicode.component.handleInput("\x1B[200~😀\x1B[201~");
   assert.match(unicode.notifications.at(-1).message, /4,000 characters|16,000 bytes/u);
-  assert.equal((unicode.component.render(80).join("\n").match(/😀/gu) ?? []).length, 4_000);
+  assert.match(unicode.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
   unicode.finish({ kind: "cancelled" });
   await unicode.result;
 });
@@ -1670,6 +2005,45 @@ test("personal instruction truncation preserves valid UTF-8", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("footer scans session cost once until session content changes", async () => {
+  const { handlers } = createHarness();
+  const entries = [{ type: "message", message: { role: "assistant", usage: usage(1) } }];
+  const { captured, ctx, tui } = createTuiContext(entries);
+  let entryReads = 0;
+  ctx.sessionManager.getEntries = () => {
+    entryReads += 1;
+    return entries;
+  };
+  for (const handler of handlers.get("session_start")) await handler({}, ctx);
+  const footer = captured.footerFactory(tui, theme, {
+    getGitBranch: () => undefined,
+    onBranchChange: () => () => {},
+  });
+
+  footer.render(120);
+  footer.render(120);
+  footer.render(120);
+  assert.equal(entryReads, 1);
+
+  entries.push({ type: "message", message: { role: "toolResult", usage: usage(2) } });
+  for (const handler of handlers.get("turn_end") ?? []) {
+    await handler({ turnIndex: 0, message: {}, toolResults: [] }, ctx);
+  }
+  assert.match(footer.render(120).join("\n"), /\$3\.00/u);
+  assert.equal(entryReads, 2);
+
+  for (const handler of handlers.get("session_compact") ?? []) {
+    await handler({ compactionEntry: { details: {} } }, ctx);
+  }
+  footer.render(120);
+  assert.equal(entryReads, 3);
+
+  for (const handler of handlers.get("session_tree") ?? []) await handler({}, ctx);
+  footer.render(120);
+  assert.equal(entryReads, 4);
+  footer.dispose();
 });
 
 test("footer includes assistant, tool, compaction, and branch-summary costs", () => {
@@ -1802,32 +2176,71 @@ test("autocomplete omits unsupported argument hints", async () => {
   assert.ok(result.items.some((item) => item.label === "/exit"));
 });
 
-test("activity treatment uses the Spark and cycles Claude-adjacent words", () => {
+test("activity uses a static Spark and a nonrepeating shuffled verb deck", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
   const { handlers } = createHarness();
   const { captured, ctx } = createTuiContext();
   for (const handler of handlers.get("session_start")) handler({}, ctx);
 
-  assert.deepEqual(captured.workingIndicator, {
-    frames: ["✻", "✻", "✻", "✻"],
-    intervalMs: 180,
-  });
+  assert.deepEqual(captured.workingIndicator, { frames: ["✻"] });
   assert.equal(captured.hiddenThinkingLabel, "└ Thinking…");
+  for (const handler of handlers.get("agent_start")) handler({}, ctx);
 
-  for (let index = 0; index < 7; index += 1) {
-    for (const handler of handlers.get("agent_start")) handler({}, ctx);
-  }
-  assert.deepEqual(captured.workingMessages, [
-    "Brewing…",
-    "Pondering…",
-    "Tinkering…",
-    "Wrangling…",
-    "Noodling…",
-    "Cooking…",
-    "Brewing…",
-  ]);
+  for (let index = 0; index < 5; index += 1) t.mock.timers.tick(2_500);
+  const firstDeck = captured.workingMessages.slice(-6);
+  assert.equal(new Set(firstDeck).size, 6);
+  assert.ok(firstDeck.every((word, index) => index === 0 || word !== firstDeck[index - 1]));
 
+  t.mock.timers.tick(2_500);
+  assert.notEqual(captured.workingMessages.at(-1), firstDeck.at(-1));
+});
+
+test("activity timer stops on agent end and session shutdown", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { handlers } = createHarness();
+  const { captured, ctx } = createTuiContext();
+  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of handlers.get("agent_start")) handler({}, ctx);
   for (const handler of handlers.get("agent_end")) handler({}, ctx);
-  assert.equal(captured.workingMessages.at(-1), undefined);
+  const countAfterEnd = captured.workingMessages.length;
+  t.mock.timers.tick(10_000);
+  assert.equal(captured.workingMessages.length, countAfterEnd);
+
+  for (const handler of handlers.get("agent_start")) handler({}, ctx);
+  for (const handler of handlers.get("agent_start")) handler({}, ctx);
+  const countBeforeReplacementTick = captured.workingMessages.length;
+  t.mock.timers.tick(2_500);
+  assert.equal(captured.workingMessages.length, countBeforeReplacementTick + 1);
+
+  for (const handler of handlers.get("session_shutdown")) handler({}, ctx);
+  const countAfterShutdown = captured.workingMessages.length;
+  t.mock.timers.tick(10_000);
+  assert.equal(captured.workingMessages.length, countAfterShutdown);
+});
+
+test("Git branch resolution is asynchronous and bounded", async () => {
+  const pending = resolveGitBranch(process.cwd());
+  assert.ok(pending instanceof Promise);
+  const branch = await pending;
+  assert.ok(branch === undefined || branch === "detached" || branch.length > 0);
+});
+
+test("disposed startup headers ignore late Git results", async () => {
+  const { handlers } = createHarness();
+  const { captured, ctx } = createTuiContext();
+  let renders = 0;
+  const tui = { requestRender: () => { renders += 1; }, terminal: { rows: 40 } };
+  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  const header = captured.headerFactory(tui);
+  header.render(80);
+  for (const handler of handlers.get("session_shutdown")) handler({}, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(renders, 0);
+});
+
+test("shell startup contains no synchronous child process call", () => {
+  const source = readFileSync(new URL("../killeros/shell-ui.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /execFileSync/u);
 });
 
 test("header renders the compact KillerOS card", () => {
@@ -1837,7 +2250,9 @@ test("header renders the compact KillerOS card", () => {
     bold: (text) => `\x1B[1m${text}\x1B[22m`,
     fg: (color, text) => color === "text"
       ? `\x1B[37m${text}\x1B[39m`
-      : color === "dim" ? `\x1B[90m${text}\x1B[39m` : text,
+      : color === "dim"
+        ? `\x1B[90m${text}\x1B[39m`
+        : color === "mdLink" ? `\x1B[34m${text}\x1B[39m` : text,
   };
   for (const handler of handlers.get("session_start")) handler({}, ctx);
   assert.equal(captured.themeName, "killeros");
@@ -1856,7 +2271,7 @@ test("header renders the compact KillerOS card", () => {
   assert.match(wide[7].trim(), /^Tip: /);
   assert.match(rendered[1], /\x1B\[90m›\x1B\[39m \x1B\[37m\x1B\[1mKillerOS\x1B\[22m\x1B\[39m/u);
   assert.match(rendered[3], /\x1B\[37m\x1B\[1mTest model\x1B\[22m\x1B\[39m \x1B\[90mTest\x1B\[39m/u);
-  assert.ok(rendered.some((line) => line.includes("\x1B[38;2;120;169;255m/model")));
+  assert.ok(rendered.some((line) => line.includes("\x1B[34m/model\x1B[39m")));
   assert.doesNotMatch(wide.join("\n"), /READY|MCP adapter|Web access/);
   assert.doesNotMatch(wide.join("\n"), /KILLEROS/);
   assert.ok(wide.every((line) => [...line].length === 52));

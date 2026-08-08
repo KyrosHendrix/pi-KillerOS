@@ -9,6 +9,7 @@ const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const product = readFileSync(new URL("../PRODUCT.md", import.meta.url), "utf8");
 const design = readFileSync(new URL("../DESIGN.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
+const concept = readFileSync(new URL("../design/main-Killeros.html", import.meta.url), "utf8");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
 function repositoryFiles(directory = repositoryRoot): string[] {
@@ -35,6 +36,28 @@ test("repository contains no retired feature references", () => {
     return retiredTerms.some((term) => content.includes(term));
   });
   assert.deepEqual(matches, []);
+});
+
+test("browser concept keeps colors and radii in root tokens", () => {
+  const css = concept.match(/<style>([\s\S]*?)<\/style>/u)?.[1] ?? "";
+  const withoutRoot = css.replace(/:root\s*\{[\s\S]*?\}/u, "");
+  assert.doesNotMatch(withoutRoot, /:\s*(?:#[0-9a-f]{3,8}\b|rgba?\([^)]*\))/iu);
+  assert.doesNotMatch(withoutRoot, /border-radius\s*:\s*(?!var\()/iu);
+});
+
+test("browser concept describes the current KillerOS runtime", () => {
+  assert.match(concept, new RegExp(`\\(v${packageJson.version.replaceAll(".", "\\.")}\\)`));
+  assert.doesNotMatch(concept, /Plan only|no runtime implementation yet|Planned KillerOS goal flow|Proposed KillerOS init flow/iu);
+  assert.match(concept, /Static Spark/iu);
+  assert.match(concept, /2\.5 seconds/u);
+  assert.match(concept, /Pause automatic continuation/u);
+  assert.match(concept, /Completed goals leave the footer/u);
+});
+
+test("browser concept preserves visible keyboard focus", () => {
+  const css = concept.match(/<style>([\s\S]*?)<\/style>/u)?.[1] ?? "";
+  assert.doesNotMatch(css, /:focus-visible[^\{]*\{[^}]*outline\s*:\s*(?:0|none)/giu);
+  assert.match(css, /:focus-visible[^\{]*\{[^}]*outline\s*:\s*2px solid var\(--coral\)/giu);
 });
 
 test("peer ranges enforce the documented lower bounds", () => {

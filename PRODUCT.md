@@ -29,8 +29,11 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 - RPC supports commands and concise prompt guidance but disables TUI components.
 - Print and JSON modes support concise prompt guidance but not interactive questions.
 - UI components must remain legible across narrow and wide terminal widths and use the packaged KillerOS theme in TUI mode.
+- Interactive question components must never render more rows than the active terminal height; tiny terminals degrade to a compact usable view.
+- Question and selector navigation must follow Pi’s effective keybindings and display the same bindings in help text.
 - Pending, successful, and failed tool calls share one neutral container surface; status remains distinguishable through restrained text and icons.
-- Active responses use a coral Spark indicator and cycle through a bounded bank of Claude-adjacent verbs; hidden reasoning uses the static `└ Thinking…` label.
+- Active responses use one static coral Spark and a shuffled Claude-adjacent verb deck that changes every 2.5 seconds without immediate repeats; hidden reasoning uses the static `└ Thinking…` label.
+- Persistent footer state is reserved for active or actionable work; completed goals remain in history and goal status instead of occupying the footer.
 - The startup surface is a compact KillerOS card showing the active model, reasoning level, directory, and repository branch when available; context telemetry remains in the footer.
 
 ## Brand Commitments

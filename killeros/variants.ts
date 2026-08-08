@@ -1,4 +1,4 @@
-import { DynamicBorder, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, keyHint, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Container, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -119,7 +119,11 @@ export function registerVariants(pi: ExtensionAPI): void {
         selectList.onCancel = () => done(null);
         container.addChild(selectList);
         container.addChild(new Text("", 0, 0));
-        container.addChild(new Text(theme.fg("dim", "↑↓ navigate • Enter select • Esc cancel"), 1, 0));
+        container.addChild(new Text(
+          theme.fg("dim", `${keyHint("tui.select.up", "up")} • ${keyHint("tui.select.down", "down")} • ${keyHint("tui.select.confirm", "select")} • ${keyHint("tui.select.cancel", "cancel")}`),
+          1,
+          0,
+        ));
         container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
         return {
           render: (width) => container.render(width).map((line) => truncateToWidth(line, width, "")),

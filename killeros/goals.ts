@@ -1,7 +1,8 @@
-import { type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { MAX_NODE_TIMER_MS } from "./limits.ts";
+import { BoundedText } from "./bounded-text.ts";
 import { CONCISE_SYSTEM_PROMPT } from "./concise.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
@@ -175,6 +176,18 @@ function goalStatusLabel(status: GoalStatus): string {
   return `${status.charAt(0).toLocaleUpperCase()}${status.slice(1)}`;
 }
 
+function goalPanelActions(status: GoalStatus): Array<{ label: string; control: "pause" | "resume" | "edit" | "clear" }> {
+  const terminal = [
+    { label: "Edit objective", control: "edit" as const },
+    { label: "Clear goal", control: "clear" as const },
+  ];
+  if (status === "active") return [{ label: "Pause automatic continuation", control: "pause" }, ...terminal];
+  if (status === "paused" || status === "blocked") {
+    return [{ label: "Resume automatic continuation", control: "resume" }, ...terminal];
+  }
+  return terminal;
+}
+
 function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
   const usedTokens = Math.max(0, sumGoalTokens(ctx) - state.baselineTokens);
   const lines = [
@@ -293,7 +306,7 @@ export function registerGoal(
   runtime: GoalRuntime,
   initState: InitRuntime,
 ): void {
-  pi.registerEntryRenderer<GoalEntryData>(GOAL_ENTRY_TYPE, (entry, _options, theme) => {
+  pi.registerEntryRenderer<GoalEntryData>(GOAL_ENTRY_TYPE, (entry, options, theme) => {
     const data = entry.data;
     if (!data || data.version !== GOAL_VERSION || data.event === "turn" || data.event === "checkpoint") return undefined;
     if (data.event === "clear" || data.state === null) return new Text(theme.fg("dim", "Goal cleared"), 0, 0);
@@ -301,7 +314,11 @@ export function registerGoal(
     if (!state) return undefined;
     const icon = state.status === "active" ? "✻" : state.status === "paused" ? "Ⅱ" : state.status === "blocked" ? "!" : "✓";
     const color: ThemeColor = state.status === "active" ? "accent" : state.status === "paused" ? "warning" : state.status === "blocked" ? "error" : "success";
-    return new Text(`${theme.fg(color, `${icon} Goal ${state.status}`)}${theme.fg("dim", ` · ${state.objective}`)}`, 0, 0);
+    const status = theme.fg(color, `${icon} Goal ${state.status}`);
+    if (!options.expanded) return new BoundedText(`${status}${theme.fg("dim", ` · ${state.objective}`)}`, 3);
+    const lines = [status, theme.fg("dim", state.objective)];
+    if (state.result) lines.push(theme.fg("muted", state.result));
+    return new BoundedText(lines.join("\n"));
   });
 
   pi.registerTool<typeof GoalUpdateParams, GoalUpdateDetails>({
@@ -329,11 +346,11 @@ export function registerGoal(
     renderCall(args, theme) {
       return new Text(`${theme.fg("toolTitle", theme.bold("goal "))}${theme.fg("muted", args.status)}`, 0, 0);
     },
-    renderResult(result, _options, theme) {
+    renderResult(result, options, theme) {
       const details = result.details;
-      return new Text(details
-        ? `${theme.fg(details.status === "complete" ? "success" : "warning", details.status === "complete" ? "✓ Complete" : "! Blocked")}${theme.fg("dim", ` · ${details.evidence}`)}`
-        : theme.fg("dim", "Goal updated"), 0, 0);
+      if (!details) return new BoundedText(theme.fg("dim", "Goal updated"));
+      const text = `${theme.fg(details.status === "complete" ? "success" : "warning", details.status === "complete" ? "✓ Complete" : "! Blocked")}${theme.fg("dim", ` · ${details.evidence}`)}`;
+      return new BoundedText(text, options.expanded ? undefined : 3);
     },
   });
 
@@ -428,22 +445,7 @@ export function registerGoal(
     runtime.lastError = finalAssistant?.errorMessage;
   });
 
-  pi.registerCommand("goal", {
-    description: "Set or view the goal for a long-running task",
-    getArgumentCompletions: (prefix) => {
-      const normalized = prefix.trimStart().toLocaleLowerCase();
-      if (normalized.includes(" ")) return null;
-      const actions = [
-        { value: "clear", description: "Remove the current goal" },
-        { value: "edit", description: "Edit and reactivate the current goal" },
-        { value: "pause", description: "Stop automatic continuation" },
-        { value: "resume", description: "Resume automatic continuation" },
-      ];
-      return actions
-        .filter((action) => action.value.startsWith(normalized))
-        .map((action) => ({ ...action, label: action.value }));
-    },
-    handler: async (args, ctx) => {
+  const handleGoalCommand = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
       if (ctx.mode === "print" || ctx.mode === "json") {
         ctx.ui.notify("/goal requires TUI or RPC mode", "error");
         return;
@@ -461,7 +463,16 @@ export function registerGoal(
           ctx.ui.notify("No goal is set. Use /goal <objective> to start a long-running task.", "info");
           return;
         }
-        ctx.ui.notify(goalStatusSummary(runtime.state, ctx), "info");
+        if (ctx.mode !== "tui") {
+          ctx.ui.notify(goalStatusSummary(runtime.state, ctx), "info");
+          return;
+        }
+        const actions = goalPanelActions(runtime.state.status);
+        const selected = await ctx.ui.select(goalStatusSummary(runtime.state, ctx), actions.map((action) => action.label));
+        const action = actions.find((candidate) => candidate.label === selected);
+        if (!action) return;
+        if (action.control === "clear" && !await ctx.ui.confirm("Clear goal?", runtime.state.objective)) return;
+        await handleGoalCommand(action.control, ctx);
         return;
       }
 
@@ -684,7 +695,24 @@ export function registerGoal(
         reportError(ctx, "Goal could not be started", error);
         scheduleGoalContinuation(pi, runtime, initState, ctx);
       }
+  };
+
+  pi.registerCommand("goal", {
+    description: "Set or view the goal for a long-running task",
+    getArgumentCompletions: (prefix) => {
+      const normalized = prefix.trimStart().toLocaleLowerCase();
+      if (normalized.includes(" ")) return null;
+      const actions = [
+        { value: "clear", description: "Remove the current goal" },
+        { value: "edit", description: "Edit and reactivate the current goal" },
+        { value: "pause", description: "Stop automatic continuation" },
+        { value: "resume", description: "Resume automatic continuation" },
+      ];
+      return actions
+        .filter((action) => action.value.startsWith(normalized))
+        .map((action) => ({ ...action, label: action.value }));
     },
+    handler: handleGoalCommand,
   });
 }
 
