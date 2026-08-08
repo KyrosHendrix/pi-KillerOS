@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
+  CURSOR_MARKER,
   Text,
   truncateToWidth,
   visibleWidth,
@@ -18,6 +19,7 @@ import {
   type EditorTheme,
   type TUI,
 } from "@earendil-works/pi-tui";
+import { availableCommandNames } from "./commands.ts";
 import { formatCwd, padRight } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { formatModel } from "./footer.ts";
@@ -148,6 +150,113 @@ class PiStartupHeader {
 }
 
 const ANSI_REGEX = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+const ANSI_SEQUENCE_AT_START = /^\x1b\[[0-?]*[ -/]*[@-~]/u;
+const COMMAND_TOKEN_PATTERN = /(^|[ \t])(\/[A-Za-z0-9:_-]*)/gu;
+
+function controlSequenceAt(text: string, index: number): string | undefined {
+  if (text.startsWith(CURSOR_MARKER, index)) return CURSOR_MARKER;
+  return text.slice(index).match(ANSI_SEQUENCE_AT_START)?.[0];
+}
+
+interface CommandToken {
+  text: string;
+  start: number;
+  end: number;
+  valid: boolean;
+}
+
+interface EditorVisualLine {
+  logicalLine: number;
+  startCol: number;
+  length: number;
+}
+
+function commandTokens(text: string, normalizedNames: readonly string[]): CommandToken[] {
+  return [...text.matchAll(COMMAND_TOKEN_PATTERN)].map((match) => {
+    const token = match[2] ?? "";
+    const prefix = token.slice(1).toLocaleLowerCase();
+    const start = (match.index ?? 0) + (match[1]?.length ?? 0);
+    return {
+      text: token,
+      start,
+      end: start + token.length,
+      valid: normalizedNames.some((name) => name.startsWith(prefix)),
+    };
+  });
+}
+
+function highlightTextRanges(
+  text: string,
+  ranges: Array<{ start: number; end: number }>,
+  color: (value: string) => string,
+): string {
+  if (ranges.length === 0) return text;
+
+  let output = "";
+  let buffer = "";
+  let bufferHighlighted: boolean | undefined;
+  let plainIndex = 0;
+  const flush = (): void => {
+    if (!buffer) return;
+    output += bufferHighlighted ? color(buffer) : buffer;
+    buffer = "";
+  };
+
+  for (let index = 0; index < text.length;) {
+    const control = controlSequenceAt(text, index);
+    if (control) {
+      flush();
+      output += control;
+      index += control.length;
+      continue;
+    }
+
+    const highlighted = ranges.some((range) => plainIndex >= range.start && plainIndex < range.end);
+    if (bufferHighlighted !== highlighted) {
+      flush();
+      bufferHighlighted = highlighted;
+    }
+    buffer += text[index];
+    plainIndex += 1;
+    index += 1;
+  }
+  flush();
+  return output;
+}
+
+function highlightEditorLines(
+  lines: string[],
+  sourceLines: string[],
+  visualLines: EditorVisualLine[],
+  scrollOffset: number,
+  commandNames: ReadonlySet<string>,
+  color: (value: string) => string,
+): { lines: string[]; bottomBorderIndex: number } {
+  let bottomBorderIndex = -1;
+  for (let index = lines.length - 1; index >= 1; index -= 1) {
+    if (isBorderLine(lines[index] ?? "")) {
+      bottomBorderIndex = index;
+      break;
+    }
+  }
+  if (bottomBorderIndex < 0) bottomBorderIndex = lines.length - 1;
+
+  const normalizedNames = [...commandNames].map((name) => name.toLocaleLowerCase());
+  for (let index = 1; index < bottomBorderIndex; index += 1) {
+    const visualLine = visualLines[scrollOffset + index - 1];
+    if (!visualLine) continue;
+    const visibleStart = visualLine.startCol;
+    const visibleEnd = visibleStart + visualLine.length;
+    const ranges = commandTokens(sourceLines[visualLine.logicalLine] ?? "", normalizedNames)
+      .filter((token) => token.valid && token.start < visibleEnd && token.end > visibleStart)
+      .map((token) => ({
+        start: Math.max(token.start, visibleStart) - visibleStart,
+        end: Math.min(token.end, visibleEnd) - visibleStart,
+      }));
+    lines[index] = highlightTextRanges(lines[index] ?? "", ranges, color);
+  }
+  return { lines, bottomBorderIndex };
+}
 
 function stripAnsi(text: string): string {
   return text.replace(ANSI_REGEX, "").trim();
@@ -158,14 +267,27 @@ function isBorderLine(line: string): boolean {
   return /^[─━═]+$/.test(unstyled) || /^───\s*[↓↑]/.test(unstyled) || /^─{3,}/.test(unstyled);
 }
 
+function isScrolledTopBorder(line: string): boolean {
+  const unstyled = stripAnsi(line);
+  return unstyled.includes("↑") || unstyled.includes(".");
+}
+
 class PiCodeEditor extends CustomEditor {
   private readonly appKeybindings: KeybindingsManager;
   private readonly runtimeTheme: Theme;
+  private readonly getCommandNames: () => ReadonlySet<string>;
 
-  constructor(tui: TUI, theme: EditorTheme, appKeybindings: KeybindingsManager, runtimeTheme: Theme) {
+  constructor(
+    tui: TUI,
+    theme: EditorTheme,
+    appKeybindings: KeybindingsManager,
+    runtimeTheme: Theme,
+    getCommandNames: () => ReadonlySet<string>,
+  ) {
     super(tui, theme, appKeybindings);
     this.appKeybindings = appKeybindings;
     this.runtimeTheme = runtimeTheme;
+    this.getCommandNames = getCommandNames;
   }
 
   override handleInput(data: string): void {
@@ -182,25 +304,42 @@ class PiCodeEditor extends CustomEditor {
     super.handleInput(data);
   }
 
+  private renderWithCommandHighlighting(
+    width: number,
+    color: (value: string) => string,
+  ): { lines: string[]; bottomBorderIndex: number } {
+    const lines = super.render(width);
+    const internals = this as unknown as {
+      lastWidth: number;
+      scrollOffset: number;
+      buildVisualLineMap: (layoutWidth: number) => EditorVisualLine[];
+    };
+    return highlightEditorLines(
+      lines,
+      this.getLines(),
+      internals.buildVisualLineMap(internals.lastWidth),
+      internals.scrollOffset,
+      this.getCommandNames(),
+      color,
+    );
+  }
+
   override render(width: number): string[] {
-    if (width < 4) return super.render(width);
+    if (width <= 0) return [];
+    const colorCommand = (value: string): string => this.runtimeTheme.fg("mdLink", value);
+    if (width < 4) {
+      return this.renderWithCommandHighlighting(width, colorCommand)
+        .lines.map((line) => truncateToWidth(line, width, ""));
+    }
     const innerWidth = width - 2;
-    const lines = super.render(innerWidth);
+    const highlighted = this.renderWithCommandHighlighting(innerWidth, colorCommand);
+    const { lines, bottomBorderIndex } = highlighted;
     if (lines.length < 2) return lines.map((line) => truncateToWidth(line, width, ""));
 
     const gray = (text: string): string => this.runtimeTheme.fg("dim", text);
-    let bottomBorderIndex = -1;
-    for (let index = lines.length - 1; index >= 1; index -= 1) {
-      if (isBorderLine(lines[index] ?? "")) {
-        bottomBorderIndex = index;
-        break;
-      }
-    }
-    if (bottomBorderIndex < 0) bottomBorderIndex = lines.length - 1;
-
     const framed: string[] = [];
     const top = stripAnsi(lines[0] ?? "");
-    const isScrolledHeader = top.includes("↑");
+    const isScrolledHeader = isScrolledTopBorder(lines[0] ?? "");
     if (isScrolledHeader) {
       const count = top.match(/↑\s*(\d+)/)?.[1] ?? "";
       const indicator = `${gray("─── ↑ ")}${count}${gray(" more ")}${gray("─".repeat(Math.max(0, width - 12 - count.length)))}`;
@@ -277,7 +416,7 @@ export function registerShellUi(pi: ExtensionAPI): void {
       ctx.ui.setWorkingIndicator({ frames: [ctx.ui.theme.fg("accent", "✻")] });
       ctx.ui.setHiddenThinkingLabel("└ Thinking…");
       ctx.ui.setEditorComponent((tui, editorTheme, keybindings) =>
-        new PiCodeEditor(tui, editorTheme, keybindings, ctx.ui.theme));
+        new PiCodeEditor(tui, editorTheme, keybindings, ctx.ui.theme, () => availableCommandNames(pi)));
     } catch (error) {
       reportError(ctx, "Killeros UI failed to initialize", error);
     }

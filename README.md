@@ -31,7 +31,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.0
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.1
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -41,14 +41,14 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - 52-column Compact startup card with inline version, polished model/provider identity, adjacent `/model`, directory, conditional Git branch, and a shuffled session-stable tip
 - Cohesive dark theme with coral accents and neutral tool-call containers across pending, success, and error states
 - Static coral Spark activity indicator with a shuffled Claude-adjacent verb bank that changes every 2.5 seconds during active work, plus a quiet hidden-thinking label
-- Framed multiline editor with Shift+Enter support
+- Framed multiline editor with Shift+Enter support and live command-blue highlighting for recognized slash command prefixes
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - Automatic model-backed context compaction at 40% remaining; active goals continue after the saved summary
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` with an interactive status/action panel, durable objectives, pause, resume, edit, confirmed panel clearing, automatic continuation, and explicit completion
 - Claude Code-style `/init` that scans the repository and generates a concise root `AGENTS.md` without setup questions
 - `question` tool with height-bounded option windows, configured Pi keybindings, live option/input progress, proposal previews, custom answers, history, cancellation, and compact expandable transcript rendering
-- Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills
+- Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills; paths, URLs, and invalid commands remain plain text
 - `/clear` for a confirmed new session, plus `/exit` for graceful shutdown
 - Concise system-prompt guidance without modifying completed assistant messages
 

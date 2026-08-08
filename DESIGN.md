@@ -68,7 +68,7 @@ The palette is restrained: achromatic black, white, and gray neutrals carry the 
 ### Secondary
 - **Ready Green:** Positive runtime and context state.
 - **Reasoning Pink:** Reasoning-level state where it must remain distinct from brand accents.
-- **Command Blue:** The shared `mdLink` role for the explicit `/model` affordance and Markdown links; do not use it decoratively.
+- **Command Blue:** The shared `mdLink` role for recognized slash command tokens in the prompt editor, the explicit `/model` affordance, and Markdown links; do not use it decoratively.
 
 ### Neutral
 - **Console Black / Panel / Raised:** Layered terminal backgrounds.
@@ -121,6 +121,10 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Title:** Coral Bright.
 - **Status:** Muted sage, rust, or amber text and icons only where status must remain explicit.
 - **Output:** Muted neutral text, with restrained semantic colors reserved for actual diffs and errors.
+
+### Prompt Editor
+- **Command feedback:** Color recognized slash command tokens and valid prefixes in Command Blue while the user types. Keep arguments, paths, URLs, invalid commands, and sent transcript text in their normal roles.
+- **Boundaries:** Recognize commands only at the start of a line or after horizontal whitespace. Styling must not alter submitted text, cursor placement, wrapping, or autocomplete.
 
 ### Activity Indicator
 - **Mark:** One static accent-colored `✻` glyph; do not animate size, shape, or color.

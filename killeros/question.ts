@@ -392,8 +392,8 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
 
           if (editMode) {
             const editorLines = editor.render(renderWidth);
-            const draftLines = editorLines.length > 0 ? editorLines : ["Type an answer"];
-            lines.push(...draftLines.slice(-contentRows));
+            const draftLines = editorLines.length > 2 ? editorLines.slice(1, -1) : editorLines;
+            lines.push(...(draftLines.length > 0 ? draftLines : ["Type an answer"]).slice(-contentRows));
           } else {
             for (let index = start; index < end; index += 1) {
               const option = visibleOptions[index]!;

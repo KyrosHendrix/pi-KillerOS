@@ -54,6 +54,13 @@ const BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
   { name: "quit", description: "Quit Pi" },
 ];
 
+export function availableCommandNames(pi: ExtensionAPI): ReadonlySet<string> {
+  return new Set([
+    ...BUILTIN_COMMANDS.map((command) => command.name),
+    ...pi.getCommands().map((command) => command.name),
+  ]);
+}
+
 const COMMAND_SYNTAX_HINTS: Readonly<Record<string, string>> = {
   goal: "/goal [objective|clear|edit|pause|resume]",
   variants: "/variants [level]",

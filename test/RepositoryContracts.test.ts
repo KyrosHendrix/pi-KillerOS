@@ -70,13 +70,15 @@ test("peer ranges enforce the documented lower bounds", () => {
 });
 
 test("product and design docs match current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.0");
+  assert.equal(packageJson.version, "2.0.1");
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
   assert.match(readme, /\/goal <objective>/u);
   assert.match(readme, /\/init/u);
   assert.match(product, /custom terminal UI/u);
+  assert.match(product, /recognized slash commands and valid command prefixes use Command Blue/u);
   assert.doesNotMatch(product, /context remaining, and loaded package capabilities/u);
   assert.match(design, /dynamic|package version|v<package version>/iu);
+  assert.match(design, /valid prefixes in Command Blue while the user types/u);
   assert.doesNotMatch(design, /\(v1\.2\.0\)/u);
   assert.match(changelog, /Scoped atomic `\/init` reads and writes/u);
 });

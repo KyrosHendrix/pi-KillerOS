@@ -11,6 +11,7 @@ import {
   KeybindingsManager as TuiKeybindingsManager,
   setKeybindings,
   TUI_KEYBINDINGS,
+  visibleWidth,
 } from "@earendil-works/pi-tui";
 import Killeros, { CONCISE_SYSTEM_PROMPT, executeHook, formatContextProgress, INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "../Killeros.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
@@ -220,7 +221,7 @@ function createFileSymlinkOrSkip(t, target, linkPath) {
   }
 }
 
-function createTuiContext(entries = []) {
+function createTuiContext(entries = [], uiTheme = theme) {
   const captured = {};
   const tui = { requestRender() {}, terminal: { rows: 40 } };
   const ctx = {
@@ -264,7 +265,7 @@ function createTuiContext(entries = []) {
         captured.workingMessages ??= [];
         captured.workingMessages.push(message);
       },
-      theme,
+      theme: uiTheme,
     },
     waitForIdle: async () => {},
   };
@@ -1759,6 +1760,16 @@ test("question renders nothing when no terminal width is available", async () =>
   await question.result;
 });
 
+test("question keeps a custom draft visible at the six-row layout boundary", async () => {
+  const { tools } = createHarness();
+  const question = await startQuestion(tools.get("question"), undefined, "Choose", 6);
+  question.component.handleInput("2");
+  question.component.handleInput("visible draft");
+  assert.match(question.component.render(40).join("\n"), /visible draft/u);
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
 test("question rendering never exceeds terminal height for valid maximum content", async () => {
   const { tools } = createHarness();
   const options = Array.from({ length: 9 }, (_, index) => ({
@@ -2154,6 +2165,75 @@ test("footer uses model metadata and formats unknown provider names", () => {
   const deepSeek = footer.render(120)[0].replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   assert.match(deepSeek, /DeepSeek V4 Flash DeepSeek/u);
   footer.dispose();
+});
+
+test("editor highlights recognized slash command prefixes without coloring paths or typos", async () => {
+  const { commands, handlers } = createHarness();
+  commands.set("skill:reviewing-and-fixing-code", { description: "Review code" });
+  const commandTheme = {
+    ...theme,
+    fg: (color, text) => color === "mdLink" ? `\x1B[34m${text}\x1B[39m` : text,
+  };
+  const { captured, ctx, tui } = createTuiContext([], commandTheme);
+  for (const handler of handlers.get("session_start")) await handler({}, ctx);
+  const editorTheme = {
+    borderColor: (text) => text,
+    selectList: {
+      selectedPrefix: (text) => text,
+      selectedText: (text) => text,
+      description: (text) => text,
+      scrollInfo: (text) => text,
+      noMatch: (text) => text,
+    },
+  };
+  const editor = captured.editorFactory(tui, editorTheme, getKeybindings());
+
+  editor.setText("use /skill:rev then /model; keep C:/src and https://host plus /made-up plain");
+  const rendered = editor.render(120).join("\n");
+  assert.match(rendered, /\x1B\[34m\/skill:rev\x1B\[39m/u);
+  assert.match(rendered, /\x1B\[34m\/model\x1B\[39m/u);
+  assert.doesNotMatch(rendered, /\x1B\[34m(?:\/src|\/\/host|\/made-up)/u);
+
+  commands.set("late-command", { description: "Registered after editor creation" });
+  editor.setText("/late");
+  assert.match(editor.render(40).join("\n"), /\x1B\[34m\/late\x1B\[39m/u);
+
+  const wrappedCommand = "/skill:reviewing-and-fixing-code";
+  editor.setText(wrappedCommand);
+  const wrapped = editor.render(12).join("\n");
+  const blueText = [...wrapped.matchAll(/\x1B\[34m([^\x1B]*)\x1B\[39m/gu)]
+    .map((match) => match[1])
+    .join("");
+  assert.equal(blueText, wrappedCommand);
+
+  editor.setText("/skill:reviewing-and-fixing-typo");
+  assert.doesNotMatch(editor.render(12).join("\n"), /\x1B\[34m/u);
+  assert.deepEqual(editor.render(0), []);
+
+  tui.terminal.rows = 5;
+  editor.setText(wrappedCommand);
+  for (const width of [1, 2, 3]) {
+    const narrow = editor.render(width);
+    assert.ok(narrow.every((line) => visibleWidth(line) <= width));
+    assert.match(narrow.join("\n"), /\x1B\[34m/u);
+  }
+  const scrolled = editor.render(8).join("\n");
+  const scrolledBlueText = [...scrolled.matchAll(/\x1B\[34m([^\x1B]*)\x1B\[39m/gu)]
+    .map((match) => match[1])
+    .join("");
+  assert.ok(scrolledBlueText.length > 0);
+  assert.ok(wrappedCommand.endsWith(scrolledBlueText));
+
+  editor.setText(`/model\nAAAAAodel ${"Z".repeat(20)}`);
+  const ordinaryScrolledText = editor.render(8).join("\n");
+  assert.match(ordinaryScrolledText, /odel/u);
+  assert.doesNotMatch(ordinaryScrolledText, /\x1B\[34model/u);
+
+  editor.setText("/late");
+  editor.focused = true;
+  editor.handleInput("\x1B[D");
+  assert.match(editor.render(40).join("\n"), /\x1B_pi:c\x07/u);
+  assert.ok((editor.render(40).join("\n").match(/\x1B\[34m/gu) ?? []).length >= 2);
 });
 
 test("autocomplete omits unsupported argument hints", async () => {

@@ -4,16 +4,19 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-08
+
 ### Added
 
 - Added a height-bounded question viewport with configured Pi controls, progress labels, and compact expandable history.
 - Added an interactive `/goal` status and actions panel in TUI mode.
+- Added live command-blue highlighting for recognized slash command prefixes in the prompt editor.
 
 ### Changed
 
 - Made reasoning colors contrast-safe, moved commands and links to the themed command-blue role, and changed activity to a static Spark with shuffled 2.5-second verb updates.
 - Reserved footer goal status for active, paused, and blocked work; completed goals remain in history and `/goal` status.
-- Made startup Git lookup asynchronous, cached footer session cost between content changes, and aligned the browser visual reference with v2.0.0 runtime behavior.
+- Made startup Git lookup asynchronous, cached footer session cost between content changes, and aligned the browser visual reference with v2.0.1 runtime behavior.
 
 ## [2.0.0] - 2026-08-07
 
