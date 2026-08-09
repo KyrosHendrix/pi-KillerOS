@@ -86,6 +86,18 @@ test("product and design docs match current runtime contracts", () => {
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
   assert.match(readme, /\/goal <objective>/u);
   assert.match(readme, /\/init/u);
+  assert.match(readme, /\/notification/u);
+  assert.match(readme, /off by default/iu);
+  assert.match(readme, /global user preference/iu);
+  assert.match(readme, /audible bell/iu);
+  assert.match(readme, /Nerd Font/iu);
+  assert.match(readme, /\/goal is active/iu);
+  assert.match(product, /settled request/iu);
+  assert.match(product, /completion sound/iu);
+  assert.match(design, /π - <cwd> 󰂚/u);
+  assert.match(design, /U\+F009A/u);
+  assert.match(design, /\/goal is active \(10s\)/u);
+  assert.match(changelog, /completion sound/iu);
   assert.match(product, /custom terminal UI/u);
   assert.match(product, /recognized slash commands and valid command prefixes use Command Blue/u);
   assert.doesNotMatch(product, /context remaining, and loaded package capabilities/u);

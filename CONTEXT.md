@@ -88,6 +88,14 @@ _Avoid_: brevity over safety, brevity over correctness, silent conflict resoluti
 After three consecutive turns leave the same issue broken, stop speculative edits, identify the likely invalid assumption from observed evidence, and ask one diagnostic question.
 _Avoid_: debug spiral, fourth speculative fix, repeated still-broken loop
 
+**Settled request**:
+A user request whose response, tools, retries, automatic compaction, and queued follow-ups have all finished, leaving Pi idle. Completion notifications occur once at this boundary rather than after each agent run or tool turn.
+_Avoid_: finished task, agent end, turn completion, tool completion
+
+**Completion sound**:
+The optional standard terminal bell sent once after a settled request that finishes normally or with an error; a manually aborted request does not ring. It is a global user preference, off by default, and advertised through the rotating startup tips. A simple Nerd Font line-bell glyph appears at the end of the terminal tab title only while this preference is enabled; it is not part of KillerOS’s startup card and is not clickable.
+_Avoid_: notification sound, alert tone, startup-header bell, header button, emoji bell
+
 **Response policy**:
 The self-contained, medium-length system guidance that teaches KillerOS’s cognitive-load model, contextual response shape, continuity behavior, exceptions, and pre-send check without copying external examples.
 _Avoid_: concise rules list, full skill copy, one-line style hint

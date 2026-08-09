@@ -6,6 +6,10 @@ import { registerFooter } from "./killeros/footer.ts";
 import { registerGoal, registerGoalSettlement } from "./killeros/goals.ts";
 import { registerLifecycleHooks } from "./killeros/hooks.ts";
 import { registerInitCommand, registerInitSettlement } from "./killeros/init.ts";
+import {
+  registerCompletionNotifications,
+  type CompletionNotificationDependencies,
+} from "./killeros/notifications.ts";
 import { registerPersonalInstructions } from "./killeros/personal-instructions.ts";
 import { registerQuestionTool } from "./killeros/question.ts";
 import { createCompactionRuntime, createGoalRuntime, createInitRuntime } from "./killeros/runtime.ts";
@@ -18,7 +22,11 @@ export { formatCost, formatContextProgress } from "./killeros/footer.ts";
 export { executeHook } from "./killeros/hooks.ts";
 export { INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "./killeros/init.ts";
 
-export default function Killeros(pi: ExtensionAPI): void {
+export interface KillerosOptions {
+  completionNotifications?: CompletionNotificationDependencies;
+}
+
+export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}): void {
   const initRuntime = createInitRuntime();
   const goalRuntime = createGoalRuntime();
   const compactionRuntime = createCompactionRuntime();
@@ -36,4 +44,5 @@ export default function Killeros(pi: ExtensionAPI): void {
   registerContextCompaction(pi, compactionRuntime, goalRuntime);
   registerGoalSettlement(pi, goalRuntime, initRuntime, compactionRuntime);
   registerInitSettlement(pi, initRuntime);
+  registerCompletionNotifications(pi, options.completionNotifications);
 }

@@ -111,9 +111,26 @@ function renderFooterRow(left: string, right: string, width: number): string {
   return ` ${clippedLeft}${gap}${clippedRight} `;
 }
 
+function formatGoalElapsed(milliseconds: number): string {
+  const totalSeconds = Number.isFinite(milliseconds) ? Math.max(0, Math.floor(milliseconds / 1_000)) : 0;
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m ${seconds.toString().padStart(2, "0")}s`;
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes.toString().padStart(2, "0")}m ${seconds.toString().padStart(2, "0")}s`;
+}
+
+function formatActiveGoalFooter(state: GoalState | undefined, theme: Theme): string {
+  if (state?.status !== "active") return "";
+  return theme.fg("warning", `/goal is active (${formatGoalElapsed(goalElapsedMilliseconds(state))})`);
+}
+
 function formatGoalFooter(state: GoalState | undefined, theme: Theme): string {
   if (!state) return "";
-  if (state.status === "active") return theme.fg("accent", `✻ goal · ${formatTime(goalElapsedMilliseconds(state))}`);
   if (state.status === "paused") return theme.fg("warning", "Ⅱ goal paused");
   if (state.status === "blocked") return theme.fg("error", "! goal blocked");
   return "";
@@ -180,6 +197,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
           const signature = formatModel(model, theme);
           const fullDirectory = theme.fg("dim", cwd);
           const focusedDirectory = theme.fg("dim", compactDirectory(cwd));
+          const activeGoal = formatActiveGoalFooter(goalRuntime.state, theme);
           const goal = formatGoalFooter(goalRuntime.state, theme);
           const rich = joinFooterParts([
             signature,
@@ -191,6 +209,19 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
             theme.fg("dim", formatCost(getSessionCost(ctx))),
           ], theme);
           const focused = joinFooterParts([signature, context, goal], theme);
+
+          if (activeGoal) {
+            if (footerRowFits(rich, activeGoal, width)) {
+              return [renderFooterRow(rich, activeGoal, width)];
+            }
+            if (footerRowFits(focused, activeGoal, width)) {
+              return [renderFooterRow(focused, activeGoal, width)];
+            }
+            if (footerRowFits(context, activeGoal, width)) {
+              return [renderFooterRow(context, activeGoal, width)];
+            }
+            return [renderFooterRow("", activeGoal, width)];
+          }
 
           if (footerRowFits(rich, fullDirectory, width)) {
             return [renderFooterRow(rich, fullDirectory, width)];

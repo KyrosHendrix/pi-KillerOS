@@ -36,6 +36,7 @@ function createHarness() {
       source: "extension",
       sourceInfo: command.sourceInfo ?? sourceInfo,
     })),
+    getSessionName: () => undefined,
     getThinkingLevel: () => "high",
     on: (event, handler) => {
       const eventHandlers = handlers.get(event) ?? [];
@@ -52,7 +53,12 @@ function createHarness() {
     setActiveTools: (names) => activeTools.splice(0, activeTools.length, ...names),
   };
 
-  Killeros(api);
+  Killeros(api, {
+    completionNotifications: {
+      store: { load: () => false, save: () => {} },
+      ring: () => {},
+    },
+  });
   activeTools.push(...tools.keys());
   return { api, activeTools, appendedEntries, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
 }
@@ -101,6 +107,7 @@ function createContext({
       setEditorComponent: (factory) => { captured.editorFactory = factory; },
       setFooter: (factory) => { captured.footerFactory = factory; },
       setHeader: (factory) => { captured.headerFactory = factory; },
+      setTitle: (title) => { captured.title = title; },
       setTheme: (name) => {
         captured.themeName = name;
         return { success: true };

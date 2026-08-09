@@ -4,6 +4,11 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added an opt-in global completion sound with `/notification` and an enabled-state Nerd Font bell in the terminal tab title.
+- Moved active goal status to the footer's right side in warning yellow, replacing the path with `/goal is active (...)` and exact seconds.
+
 ## [2.0.2] - 2026-08-08
 
 ### Changed

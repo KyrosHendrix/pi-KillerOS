@@ -44,6 +44,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Framed multiline editor with Shift+Enter support and live command-blue highlighting for recognized slash command prefixes
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - Automatic model-backed context compaction at 40% remaining; active goals continue after the saved summary
+- Optional completion sounds after successful or failed settled requests, excluding manual aborts
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` with an interactive status/action panel, durable objectives, pause, resume, edit, confirmed panel clearing, automatic continuation, and explicit completion
 - Claude Code-style `/init` that scans the repository and generates a concise root `AGENTS.md` without setup questions
@@ -64,6 +65,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 /goal clear               Remove the current goal
 /variants                 Open the reasoning-level selector
 /variants high            Set a reasoning level directly
+/notification             Configure the completion sound
 /clear                    Start a new session after confirmation
 /exit                     Quit Pi gracefully
 ```
@@ -78,7 +80,9 @@ Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh
 
 KillerOS activates its packaged `killeros` theme when a TUI session starts. Tool-call backgrounds stay neutral across pending, successful, and failed states; restrained text and icons preserve status visibility.
 
-KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar. Active, paused, and blocked goals remain visible; completed goals remain in transcript history and `/goal` status rather than the footer. At narrow widths, context pressure and actionable goal state take priority.
+The completion sound is a global user preference stored in Pi's agent directory and is off by default. Run `/notification` in TUI mode to enable or disable it; enabling does not play a preview. Enabled TUI tabs append `󰂚`, which requires a Nerd Font in the terminal tab UI. An unsupported font may show a box without affecting sound. KillerOS uses the terminal's audible bell and cannot produce sound when the terminal disables it.
+
+KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar. An active goal replaces the right-side path with warning-yellow `/goal is active (...)` and keeps exact seconds in minute and hour formats. Paused and blocked goals retain their existing placement; completed goals remain in transcript history and `/goal` status rather than the footer. At narrow widths, context pressure and actionable goal state take priority.
 
 KillerOS checks context after each agent turn. At 40% remaining, it starts Pi's model-backed compaction after the current run settles, so the active turn is not aborted. Manual `/compact` uses the same model path and keeps custom focus instructions. If model compaction is unavailable or exhausts its retries, KillerOS uses the disclosed deterministic fallback and warns that repeated compaction can reduce accuracy.
 
@@ -90,9 +94,9 @@ Lifecycle hooks are loaded from `.pi/killeros-hooks.json` at session start. Supp
 
 | Mode | Behavior |
 |---|---|
-| TUI | All features are available |
-| RPC | Goal set/view/pause/resume/clear and concise prompt guidance work; TUI components, `/goal edit`, and `/init` are disabled |
-| Print/JSON | Concise prompt guidance works; interactive questions, `/goal`, and `/init` fail explicitly |
+| TUI | All features are available, including the completion sound and tab-title indicator |
+| RPC | Goal set/view/pause/resume/clear and concise prompt guidance work; TUI components, `/goal edit`, `/init`, completion sounds, and the title indicator are disabled |
+| Print/JSON | Concise prompt guidance works; interactive questions, `/goal`, and `/init` fail explicitly; completion sounds and the title indicator are disabled |
 
 ## Validation
 

@@ -70,6 +70,7 @@ function createHarness() {
         baseDir: process.cwd(),
       },
     })),
+    getSessionName: () => undefined,
     getThinkingLevel: () => "high",
     on: (event, handler) => {
       const eventHandlers = handlers.get(event) ?? [];
@@ -85,7 +86,12 @@ function createHarness() {
     getActiveTools: () => [...activeTools],
     setActiveTools: (names) => activeTools.splice(0, activeTools.length, ...names),
   };
-  Killeros(api);
+  Killeros(api, {
+    completionNotifications: {
+      store: { load: () => false, save: () => {} },
+      ring: () => {},
+    },
+  });
   activeTools.push(...tools.keys());
   return { api, activeTools, appendedEntries, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
 }
@@ -255,6 +261,10 @@ function createTuiContext(entries = [], uiTheme = theme) {
       setEditorComponent: (factory) => { captured.editorFactory = factory; },
       setFooter: (factory) => { captured.footerFactory = factory; },
       setHeader: (factory) => { captured.headerFactory = factory; },
+      setTitle: (title) => {
+        captured.titles ??= [];
+        captured.titles.push(title);
+      },
       setTheme: (name) => {
         captured.themeName = name;
         return { success: true };
@@ -949,20 +959,39 @@ test("goal transcript rows are compact until expanded", () => {
   assert.equal((expandedEvidence.match(/E/gu) ?? []).length, 2_000);
 });
 
-test("goal state appears in wide and compact footer cutdowns", async () => {
-  const { commands, handlers } = createHarness();
+test("active goal replaces the footer path with an exact yellow timer", async () => {
+  const { appendedEntries, commands, handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
   for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
   await commands.get("goal").handler("Keep working", ctx);
-
-  const footer = captured.footerFactory(tui, theme, {
+  const state = appendedEntries.at(-1).data.state;
+  const yellowTheme = {
+    ...theme,
+    fg: (color, text) => color === "warning" ? `\x1B[33m${text}\x1B[39m` : text,
+  };
+  const footer = captured.footerFactory(tui, yellowTheme, {
     getGitBranch: () => "main",
     onBranchChange: () => () => {},
   });
-  assert.match(footer.render(160)[0], /✻ goal · \d+s/u);
-  assert.match(footer.render(40)[0], /goal/u);
+  const stripAnsi = (line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
+
+  state.activeStartedAt = Date.now();
+  state.activeMilliseconds = 10_000;
+  const seconds = footer.render(160)[0];
+  assert.match(seconds, /\x1B\[33m\/goal is active \(10s\)\x1B\[39m/u);
+  assert.ok(stripAnsi(seconds).trimEnd().endsWith("/goal is active (10s)"));
+  assert.doesNotMatch(stripAnsi(seconds), /✻ goal|pi-KillerOS/u);
+
+  state.activeStartedAt = Date.now();
+  state.activeMilliseconds = 125_000;
+  assert.ok(stripAnsi(footer.render(40)[0]).trimEnd().endsWith("/goal is active (2m 05s)"));
+
+  state.activeStartedAt = Date.now();
+  state.activeMilliseconds = 3_725_000;
+  assert.ok(stripAnsi(footer.render(40)[0]).trimEnd().endsWith("/goal is active (1h 02m 05s)"));
+
   for (let width = 1; width <= 180; width += 1) {
-    const line = footer.render(width)[0].replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
+    const line = stripAnsi(footer.render(width)[0]);
     assert.equal([...line].length, width, `goal footer width mismatch at ${width}`);
   }
   footer.dispose();
@@ -2306,7 +2335,7 @@ test("activity styles glyph and verb orange with a gray bold interrupt status", 
     captured.workingMessages.at(-1) ?? "",
     /^<accent>(?:Brewing|Pondering|Tinkering|Wrangling|Noodling|Cooking)…<\/accent> <dim>\(<bold>esc<\/bold> to interrupt · thinking\)<\/dim>$/u,
   );
-  for (const handler of handlers.get("agent_end")) handler({}, ctx);
+  for (const handler of handlers.get("agent_end")) handler({ messages: [] }, ctx);
 });
 
 test("activity timer stops on agent end and session shutdown", (t) => {
@@ -2315,7 +2344,7 @@ test("activity timer stops on agent end and session shutdown", (t) => {
   const { captured, ctx } = createTuiContext();
   for (const handler of handlers.get("session_start")) handler({}, ctx);
   for (const handler of handlers.get("agent_start")) handler({}, ctx);
-  for (const handler of handlers.get("agent_end")) handler({}, ctx);
+  for (const handler of handlers.get("agent_end")) handler({ messages: [] }, ctx);
   const countAfterEnd = captured.workingMessages.length;
   t.mock.timers.tick(10_000);
   assert.equal(captured.workingMessages.length, countAfterEnd);
@@ -2408,7 +2437,7 @@ test("startup tips stay fixed within a session and cycle before repeating", () =
   const tips = [];
   const strip = (line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "").trim();
 
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     const { captured, ctx, tui } = createTuiContext();
     sessionStart({}, ctx);
     const first = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
@@ -2418,5 +2447,5 @@ test("startup tips stay fixed within a session and cycle before repeating", () =
     sessionShutdown();
   }
 
-  assert.equal(new Set(tips).size, 3);
+  assert.equal(new Set(tips).size, 4);
 });

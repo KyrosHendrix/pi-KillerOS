@@ -143,14 +143,19 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Tips:** Shuffle a factual tip bank, choose once per startup, and keep that tip fixed for the session. Exhaust the shuffled bank before repeating.
 - **Adaptation:** The card stops growing at 52 columns, truncates the model signature while preserving `/model`, truncates directory and branch together, wraps the external tip, and falls back to the wordmark below 28 columns.
 
+### Terminal Tab Completion Indicator
+- **Enabled:** Unnamed sessions render `π - <cwd> 󰂚`; named sessions render `π - <session name> - <cwd> 󰂚`.
+- **Disabled:** Omit the suffix and preserve Pi's canonical terminal title.
+- **Glyph:** Use Nerd Font `U+F009A`. It is not an emoji, is cosmetic and non-clickable, and must not affect sound delivery when the terminal tab font cannot render it.
+
 ### Status Footer
 - **Style:** One compact line of real state. The human-readable model name leads in Console Ink; its provider follows in Dim Slate without a separator.
 - **Context:** Show direct telemetry such as `82% left (1M)`. At critical pressure, append `/compact`; never use a progress bar.
-- **Wide:** Show model, provider, reasoning, context, branch, elapsed time, session cost, and the full path.
+- **Wide:** Show model, provider, reasoning, context, branch, elapsed time, session cost, and the full path unless an active goal replaces the path.
 - **Focused:** Preserve model, provider, context, and a shortened path.
 - **Compact:** Preserve model, provider, and context. At emergency widths, preserve context and truncate model identity before overflowing.
 - **Adaptation:** Select the richest tier that fits its actual content rather than relying on fixed terminal breakpoints.
-- **Goals:** Keep active, paused, and blocked goals persistent. Show completed goals in history and `/goal`, not the footer.
+- **Goals:** Render an active goal on the right in Warning Amber as `/goal is active (10s)`, `/goal is active (2m 05s)`, or `/goal is active (1h 02m 05s)`; remove lower-priority left telemetry before clipping it. Keep paused and blocked goals persistent in their existing placement. Show completed goals in history and `/goal`, not the footer.
 
 ## Do's and Don'ts
 

@@ -34,7 +34,8 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 - Question and selector navigation must follow Pi’s effective keybindings and display the same bindings in help text.
 - Pending, successful, and failed tool calls share one neutral container surface; status remains distinguishable through restrained text and icons.
 - Active responses use the orange 12-frame glyph loop `· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·` at 120 ms per frame, orange shuffled Claude-adjacent verbs that change every 2.5 seconds without immediate repeats, and the gray `(esc to interrupt · thinking)` status with bold `esc`; hidden reasoning uses the static `└ Thinking…` label.
-- Persistent footer state is reserved for active or actionable work; completed goals remain in history and goal status instead of occupying the footer.
+- Persistent footer state is reserved for active or actionable work; an active goal replaces the path on the right with warning-yellow status and exact seconds, while completed goals remain in history and goal status.
+- An opt-in completion sound uses the terminal bell once after a successful or failed settled request; manual aborts remain silent, and the global setting is off by default.
 - The startup surface is a compact KillerOS card showing the active model, reasoning level, directory, and repository branch when available; context telemetry remains in the footer.
 
 ## Brand Commitments

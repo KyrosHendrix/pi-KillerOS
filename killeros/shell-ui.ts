@@ -42,6 +42,7 @@ const STARTUP_TIPS = [
   "Press Shift+Enter to insert a line break without sending.",
   "Run /variants to tune the model's reasoning depth.",
   "Type / to browse every command available in this session.",
+  "Run /notification to enable a terminal bell when work settles.",
 ] as const;
 
 export function resolveGitBranch(cwd: string): Promise<string | undefined> {
