@@ -53,8 +53,13 @@ function applyConciseModelSettings(payload: unknown, api: unknown, modelId: unkn
   return updated;
 }
 
-export function isConcisedEnabled(): boolean {
+export function isConciseEnabled(): boolean {
   return true;
+}
+
+/** @deprecated Use isConciseEnabled instead. */
+export function isConcisedEnabled(): boolean {
+  return isConciseEnabled();
 }
 
 export function registerConcisePrompt(pi: ExtensionAPI): void {

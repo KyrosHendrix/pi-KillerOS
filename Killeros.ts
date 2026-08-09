@@ -15,7 +15,7 @@ import { createGoalRuntime, createInitRuntime } from "./killeros/runtime.ts";
 import { registerShellUi } from "./killeros/shell-ui.ts";
 import { registerVariants } from "./killeros/variants.ts";
 
-export { CONCISE_SYSTEM_PROMPT, isConcisedEnabled } from "./killeros/concise.ts";
+export { CONCISE_SYSTEM_PROMPT, isConciseEnabled, isConcisedEnabled } from "./killeros/concise.ts";
 export { contextPercentRemaining, formatCost, formatContextProgress } from "./killeros/footer.ts";
 export { executeHook } from "./killeros/hooks.ts";
 export { INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "./killeros/init.ts";

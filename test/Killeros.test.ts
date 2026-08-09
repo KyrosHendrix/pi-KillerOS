@@ -13,7 +13,7 @@ import {
   TUI_KEYBINDINGS,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import Killeros, { CONCISE_SYSTEM_PROMPT, executeHook, formatContextProgress, INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "../Killeros.ts";
+import Killeros, { CONCISE_SYSTEM_PROMPT, executeHook, formatContextProgress, INIT_WORKFLOW_PROMPT, isConciseEnabled, isConcisedEnabled, writeInitAgentsFile } from "../Killeros.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { resolvePersonalInstructions } from "../killeros/personal-instructions.ts";
 import { resolveGitBranch } from "../killeros/shell-ui.ts";
@@ -116,16 +116,23 @@ test("concise guidance encodes action-oriented behavioral anchors", () => {
   assert.match(CONCISE_SYSTEM_PROMPT, /concrete human execution estimate only when requested or supported by evidence/u);
   assert.match(CONCISE_SYSTEM_PROMPT, /After three consecutive turns leave the same issue broken/u);
   assert.match(CONCISE_SYSTEM_PROMPT, /Safety and harness constraints come first/u);
+  assert.match(CONCISE_SYSTEM_PROMPT, /explicit depth or format request, then correctness and completeness/u);
+  assert.match(CONCISE_SYSTEM_PROMPT, /Explain fully when asked/u);
   assert.match(CONCISE_SYSTEM_PROMPT, /ending is either the verified outcome or one action the user must take/u);
 });
 
-test("applies the fixed concise preset to Responses API payloads", async () => {
+test("exports the corrected concise state helper with a compatibility alias", () => {
+  assert.equal(isConciseEnabled(), true);
+  assert.equal(isConcisedEnabled(), isConciseEnabled());
+});
+
+test("applies concise defaults to Responses API payloads without existing settings", async () => {
   const { handlers } = createHarness();
   const payload = {
     model: "gpt-5.6",
     input: [],
-    text: { format: { type: "text" }, verbosity: "high" },
-    reasoning: { effort: "high", summary: "detailed" },
+    text: { format: { type: "text" } },
+    reasoning: { effort: "high" },
   };
 
   const [result] = await emitSequentially(handlers.get("before_provider_request"), { payload }, {
@@ -133,6 +140,25 @@ test("applies the fixed concise preset to Responses API payloads", async () => {
   });
 
   assert.deepEqual(result, {
+    ...payload,
+    text: { format: { type: "text" }, verbosity: "low" },
+    reasoning: { effort: "high", summary: "concise" },
+  });
+});
+
+test("enforces the fixed concise preset over explicit Responses API settings", async () => {
+  const { handlers } = createHarness();
+  const handler = handlers.get("before_provider_request")[0];
+  const payload = {
+    model: "gpt-5.6",
+    input: [],
+    text: { format: { type: "text" }, verbosity: "high" },
+    reasoning: { effort: "high", summary: "detailed" },
+  };
+
+  assert.deepEqual(await handler({ payload }, {
+    model: { api: "openai-codex-responses", id: "gpt-5.6" },
+  }), {
     ...payload,
     text: { format: { type: "text" }, verbosity: "low" },
     reasoning: { effort: "high", summary: "concise" },
@@ -414,7 +440,7 @@ test("registers /goal and completes only through the model goal tool", async () 
   assert.match(sentMessages[0].message.content, /first concrete next step/u);
   assert.match(sentMessages[0].message.content, /checking the current repository state/u);
   assert.doesNotMatch(sentMessages[0].message.content, /hidden handoff|stored progress copy/u);
-  assert.match(sentMessages[0].message.content, /Action-oriented response guidance/u);
+  assert.doesNotMatch(sentMessages[0].message.content, /Action-oriented response guidance/u);
   assert.deepEqual(sentMessages[0].options, { triggerTurn: true, deliverAs: "followUp" });
   assert.equal(appendedEntries.at(-1).customType, "killeros-goal");
   assert.equal(appendedEntries.at(-1).data.state.status, "active");
@@ -427,6 +453,7 @@ test("registers /goal and completes only through the model goal tool", async () 
   assert.match(systemPrompt, /Active KillerOS goal/u);
   assert.match(systemPrompt, /Ship only after every release check passes/u);
   assert.match(systemPrompt, /killeros_goal_update/u);
+  assert.equal(systemPrompt.match(/# Action-oriented response guidance/gu)?.length, 1);
 
   const update = await tools.get("killeros_goal_update").execute(
     "goal-complete",

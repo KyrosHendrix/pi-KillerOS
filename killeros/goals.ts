@@ -3,7 +3,6 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { MAX_NODE_TIMER_MS } from "./limits.ts";
 import { BoundedText } from "./bounded-text.ts";
-import { CONCISE_SYSTEM_PROMPT } from "./concise.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
@@ -355,7 +354,6 @@ function goalContinuationMessage(state: GoalState, ctx: ExtensionContext): strin
       sections.push(`<personal_instructions source=${JSON.stringify(personal.source)}>\n${personal.content}\n</personal_instructions>`);
     }
   }
-  sections.push(CONCISE_SYSTEM_PROMPT);
   return sections.join("\n\n");
 }
 
