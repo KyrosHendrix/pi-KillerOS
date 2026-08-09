@@ -71,8 +71,8 @@ test("CI checks the locked Pi floor and latest matched Pi packages", () => {
 });
 
 test("product and design docs match current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.3");
-  assert.match(readme, /@v2\.0\.3/u);
+  assert.equal(packageJson.version, "2.0.4");
+  assert.match(readme, /@v2\.0\.4/u);
   assert.match(readme, /12-frame/u);
   assert.match(product, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
   assert.match(product, /120 ms/u);
@@ -96,10 +96,12 @@ test("product and design docs match current runtime contracts", () => {
   assert.match(design, /\/goal is active \(10s\)/u);
   assert.match(changelog, /completion sound/iu);
   assert.match(product, /custom terminal UI/u);
-  assert.match(product, /recognized slash commands and valid command prefixes use Command Blue/u);
+  assert.match(product, /typed prompt text uses the normal editor color/u);
+  assert.match(product, /custom editor factory from another extension unchanged/u);
   assert.doesNotMatch(product, /context remaining, and loaded package capabilities/u);
   assert.match(design, /dynamic|package version|v<package version>/iu);
-  assert.match(design, /valid prefixes in Command Blue while the user types/u);
+  assert.match(design, /typed prompt text in its normal role/u);
+  assert.match(design, /Do not replace an editor factory owned by another extension/u);
   assert.doesNotMatch(design, /\(v1\.2\.0\)/u);
   assert.match(changelog, /Scoped atomic `\/init` reads and writes/u);
 });

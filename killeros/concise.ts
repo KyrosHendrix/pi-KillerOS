@@ -41,14 +41,13 @@ function applyConciseModelSettings(payload: unknown, api: unknown, modelId: unkn
   const supportsVerbosity = api === "openai-codex-responses"
     || api === "openai-responses" && typeof modelId === "string" && /^gpt-5(?:[.-]|$)/u.test(modelId);
   let updated = payload;
-  if (supportsVerbosity) {
-    updated = {
-      ...updated,
-      text: { ...(isRecord(payload.text) ? payload.text : {}), verbosity: "low" },
-    };
+  const text = isRecord(payload.text) ? payload.text : undefined;
+  if (supportsVerbosity && !Object.hasOwn(text ?? {}, "verbosity")) {
+    updated = { ...updated, text: { ...(text ?? {}), verbosity: "low" } };
   }
-  if (supportsSummary && isRecord(payload.reasoning)) {
-    updated = { ...updated, reasoning: { ...payload.reasoning, summary: "concise" } };
+  const reasoning = isRecord(payload.reasoning) ? payload.reasoning : undefined;
+  if (supportsSummary && reasoning && !Object.hasOwn(reasoning, "summary")) {
+    updated = { ...updated, reasoning: { ...reasoning, summary: "concise" } };
   }
   return updated;
 }

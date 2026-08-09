@@ -1,11 +1,21 @@
+import type { InitEvidenceIndex } from "./init-evidence.ts";
+import type { InitTargetBaseline } from "./init-target.ts";
+
+export type InitOutcome =
+  | { kind: "pending" }
+  | { kind: "written" }
+  | { kind: "policy-conflict"; reason: string }
+  | { kind: "no-outcome" };
+
 export interface InitRuntime {
   active: boolean;
   targetPath?: string;
-  writeAttempted: boolean;
-  writeSucceeded: boolean;
   projectRoot?: string;
   activeTools?: string[];
-  settle?: (writeSucceeded: boolean) => void;
+  evidence?: InitEvidenceIndex;
+  baseline?: InitTargetBaseline;
+  outcome: InitOutcome;
+  settle?: (outcome: InitOutcome) => void;
 }
 
 export type GoalStatus = "active" | "paused" | "blocked" | "complete";
@@ -39,7 +49,7 @@ export interface GoalRuntime {
 }
 
 export function createInitRuntime(): InitRuntime {
-  return { active: false, writeAttempted: false, writeSucceeded: false };
+  return { active: false, outcome: { kind: "pending" } };
 }
 
 export function createGoalRuntime(): GoalRuntime {
@@ -55,8 +65,10 @@ export function createGoalRuntime(): GoalRuntime {
 export function resetInitRuntime(state: InitRuntime): void {
   state.active = false;
   state.targetPath = undefined;
-  state.writeAttempted = false;
-  state.writeSucceeded = false;
   state.projectRoot = undefined;
   state.activeTools = undefined;
+  state.evidence = undefined;
+  state.baseline = undefined;
+  state.outcome = { kind: "pending" };
+  state.settle = undefined;
 }

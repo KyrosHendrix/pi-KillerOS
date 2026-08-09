@@ -68,7 +68,7 @@ The palette is restrained: achromatic black, white, and gray neutrals carry the 
 ### Secondary
 - **Ready Green:** Positive runtime and context state.
 - **Reasoning Pink:** Reasoning-level state where it must remain distinct from brand accents.
-- **Command Blue:** The shared `mdLink` role for recognized slash command tokens in the prompt editor, the explicit `/model` affordance, and Markdown links; do not use it decoratively.
+- **Command Blue:** The shared `mdLink` role for the explicit `/model` affordance and Markdown links; do not use it decoratively. Prompt input uses the normal editor text color.
 
 ### Neutral
 - **Console Black / Panel / Raised:** Layered terminal backgrounds.
@@ -123,8 +123,8 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Output:** Muted neutral text, with restrained semantic colors reserved for actual diffs and errors.
 
 ### Prompt Editor
-- **Command feedback:** Color recognized slash command tokens and valid prefixes in Command Blue while the user types. Keep arguments, paths, URLs, invalid commands, and sent transcript text in their normal roles.
-- **Boundaries:** Recognize commands only at the start of a line or after horizontal whitespace. Styling must not alter submitted text, cursor placement, wrapping, or autocomplete.
+- **Command feedback:** Keep typed prompt text in its normal role and use autocomplete to identify valid slash commands. Do not replace an editor factory owned by another extension.
+- **Boundaries:** Trigger slash autocomplete only at the start of a line or after horizontal whitespace. Completion must not alter unrelated text, cursor placement, or wrapping.
 
 ### Activity Indicator
 - **Mark:** Animate the accent-orange glyph sequence `· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·` at 120 ms per frame; do not use green or a static indicator.

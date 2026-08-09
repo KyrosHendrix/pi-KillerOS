@@ -8,8 +8,9 @@ async function confirmNewSession(ctx: ExtensionCommandContext): Promise<boolean>
 
 export function registerAliases(pi: ExtensionAPI): void {
   const startNewSession = async (_args: string, ctx: ExtensionCommandContext): Promise<void> => {
-    await ctx.waitForIdle();
     if (!await confirmNewSession(ctx)) return;
+    if (!ctx.isIdle()) ctx.abort();
+    await ctx.waitForIdle();
     await ctx.newSession();
   };
   pi.registerCommand("clear", { description: "Start a new session after confirmation", handler: startNewSession });
@@ -53,13 +54,6 @@ const BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
   { name: "reload", description: "Reload extensions and resources" },
   { name: "quit", description: "Quit Pi" },
 ];
-
-export function availableCommandNames(pi: ExtensionAPI): ReadonlySet<string> {
-  return new Set([
-    ...BUILTIN_COMMANDS.map((command) => command.name),
-    ...pi.getCommands().map((command) => command.name),
-  ]);
-}
 
 const COMMAND_SYNTAX_HINTS: Readonly<Record<string, string>> = {
   goal: "/goal [objective|clear|edit|pause|resume]",

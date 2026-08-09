@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { PassThrough } from "node:stream";
 import path from "node:path";
@@ -13,7 +14,21 @@ import {
   TUI_KEYBINDINGS,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import Killeros, { CONCISE_SYSTEM_PROMPT, executeHook, formatContextProgress, INIT_WORKFLOW_PROMPT, isConciseEnabled, isConcisedEnabled, writeInitAgentsFile } from "../Killeros.ts";
+import Killeros, {
+  CONCISE_SYSTEM_PROMPT,
+  buildInitEvidence,
+  captureInitTargetBaseline,
+  executeHook,
+  formatContextProgress,
+  INIT_WORKFLOW_PROMPT,
+  installInitAgentsFile,
+  isConciseEnabled,
+  isConcisedEnabled,
+  listInitEvidence,
+  readInitEvidence,
+  validateGeneratedGuidance,
+  writeInitAgentsFile,
+} from "../Killeros.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { resolvePersonalInstructions } from "../killeros/personal-instructions.ts";
 import { resolveGitBranch } from "../killeros/shell-ui.ts";
@@ -146,7 +161,7 @@ test("applies concise defaults to Responses API payloads without existing settin
   });
 });
 
-test("enforces the fixed concise preset over explicit Responses API settings", async () => {
+test("preserves explicit Responses API detail settings", async () => {
   const { handlers } = createHarness();
   const handler = handlers.get("before_provider_request")[0];
   const payload = {
@@ -156,13 +171,9 @@ test("enforces the fixed concise preset over explicit Responses API settings", a
     reasoning: { effort: "high", summary: "detailed" },
   };
 
-  assert.deepEqual(await handler({ payload }, {
+  assert.strictEqual(await handler({ payload }, {
     model: { api: "openai-codex-responses", id: "gpt-5.6" },
-  }), {
-    ...payload,
-    text: { format: { type: "text" }, verbosity: "low" },
-    reasoning: { effort: "high", summary: "concise" },
-  });
+  }), payload);
 });
 
 test("keeps concise provider settings scoped to compatible payload fields", async () => {
@@ -196,7 +207,22 @@ async function emitSequentially(handlers, event, ctx) {
   return results;
 }
 
-async function emitSuccessfulInitWrite(handlers, tools, ctx, content = "# AGENTS.md\n", toolCallId = "init-write") {
+const validGeneratedGuidance = `# AGENTS.md
+
+## 1. Think Before Coding
+Check facts before changing code.
+
+## 2. Simplicity First
+Use the smallest complete change.
+
+## 3. Surgical Changes
+Touch only files required by the task.
+
+## 4. Goal-Driven Execution
+Define and run exact verification.
+`;
+
+async function emitSuccessfulInitWrite(handlers, tools, ctx, content = validGeneratedGuidance, toolCallId = "init-write") {
   const input = { content };
   const callResults = await emitSequentially(handlers.get("tool_call"), {
     toolCallId,
@@ -284,7 +310,11 @@ function createTuiContext(entries = [], uiTheme = theme) {
         captured.selection = { title, options };
         return undefined;
       },
-      setEditorComponent: (factory) => { captured.editorFactory = factory; },
+      getEditorComponent: () => captured.currentEditorFactory,
+      setEditorComponent: (factory) => {
+        captured.editorFactory = factory;
+        captured.currentEditorFactory = factory;
+      },
       setFooter: (factory) => { captured.footerFactory = factory; },
       setHeader: (factory) => { captured.headerFactory = factory; },
       setTitle: (title) => {
@@ -420,6 +450,37 @@ test("registers /exit without conflicting with Pi's /quit", async () => {
     shutdown: () => calls.push("shutdown"),
   });
   assert.deepEqual(calls, ["shutdown"]);
+});
+
+test("/clear confirms before aborting and waits before creating a session", async () => {
+  const { commands } = createHarness();
+  const calls = [];
+  let releaseIdle;
+  const idle = new Promise((resolve) => { releaseIdle = resolve; });
+  const run = commands.get("clear").handler("", {
+    hasUI: true,
+    isIdle: () => false,
+    abort: () => calls.push("abort"),
+    waitForIdle: async () => { calls.push("wait"); await idle; },
+    newSession: async () => { calls.push("new"); return { cancelled: false }; },
+    ui: { confirm: async () => { calls.push("confirm"); return true; } },
+  });
+  await waitFor(() => calls.includes("wait"));
+  assert.deepEqual(calls, ["confirm", "abort", "wait"]);
+  releaseIdle();
+  await run;
+  assert.deepEqual(calls, ["confirm", "abort", "wait", "new"]);
+
+  calls.length = 0;
+  await commands.get("clear").handler("", {
+    hasUI: true,
+    isIdle: () => false,
+    abort: () => calls.push("abort"),
+    waitForIdle: async () => calls.push("wait"),
+    newSession: async () => calls.push("new"),
+    ui: { confirm: async () => false },
+  });
+  assert.deepEqual(calls, []);
 });
 
 test("registers /goal and completes only through the model goal tool", async () => {
@@ -1055,10 +1116,13 @@ test("registers /init as a native command and runs the hidden generation workflo
     assert.equal(sentMessages[0].message.display, false);
     assert.ok(sentMessages[0].message.content.startsWith(INIT_WORKFLOW_PROMPT));
     assert.match(sentMessages[0].message.content, /Initial repository snapshot/u);
+    assert.match(sentMessages[0].message.content, /Existing root AGENTS\.md \(protected policy/u);
     assert.match(INIT_WORKFLOW_PROMPT, /## Analyze[\s\S]*## Synthesize[\s\S]*## Generate/u);
     assert.match(INIT_WORKFLOW_PROMPT, /ask no questions/u);
-    assert.match(INIT_WORKFLOW_PROMPT, /killeros_init_write.*exactly once/u);
-    assert.doesNotMatch(INIT_WORKFLOW_PROMPT, /preserve|targeted edit|init_survey|\.agents\/skills|killeros-hooks\.json/iu);
+    assert.match(INIT_WORKFLOW_PROMPT, /preserve every compatible existing rule/iu);
+    assert.match(INIT_WORKFLOW_PROMPT, /killeros_init_conflict/u);
+    assert.match(INIT_WORKFLOW_PROMPT, /at most 2 repository-specific lines per section/u);
+    assert.doesNotMatch(INIT_WORKFLOW_PROMPT, /C:\\Users|writing-great-guidelines\/SKILL\.md/u);
 
     await commands.get("init").handler("", ctx);
     assert.equal(sentMessages.length, 1);
@@ -1097,7 +1161,7 @@ test("/init reports failure instead of reloading when the model does not write",
 
     assert.equal(reloadCalls, 0);
     assert.deepEqual(notifications.at(-1), {
-      message: "/init did not generate AGENTS.md: the model completed without a successful write",
+      message: "/init did not generate AGENTS.md: the model completed without a write or policy-conflict outcome",
       level: "error",
     });
   } finally {
@@ -1105,7 +1169,41 @@ test("/init reports failure instead of reloading when the model does not write",
   }
 });
 
-test("/init replaces an existing AGENTS.md once and blocks every other mutation", async () => {
+test("/init reports a structured policy conflict without writing or reloading", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-conflict-"));
+  try {
+    const target = path.join(directory, "AGENTS.md");
+    writeFileSync(target, "# AGENTS.md\n\nProtected policy.\n");
+    const { commands, handlers, sentMessages, tools } = createHarness();
+    const notifications = [];
+    let reloadCalls = 0;
+    const ctx = {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => { reloadCalls += 1; },
+      ui: { notify: (message, level) => notifications.push({ message, level }) },
+      waitForIdle: async () => {},
+    };
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+    const reason = "Protected release policy conflicts with repository evidence.";
+    await tools.get("killeros_init_conflict").execute("conflict", { reason });
+    await assert.rejects(
+      tools.get("killeros_init_write").execute("write-after-conflict", { content: validGeneratedGuidance }),
+      /exactly one write or policy-conflict/u,
+    );
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
+    assert.equal(readFileSync(target, "utf8"), "# AGENTS.md\n\nProtected policy.\n");
+    assert.equal(reloadCalls, 0);
+    assert.deepEqual(notifications.at(-1), { message: `/init left AGENTS.md unchanged: ${reason}`, level: "warning" });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init preserves compatible protected policy and blocks every other mutation", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-existing-"));
   try {
     writeFileSync(path.join(directory, "AGENTS.md"), "# AGENTS.md\n\nPreserve this workflow.\n");
@@ -1124,40 +1222,42 @@ test("/init replaces an existing AGENTS.md once and blocks every other mutation"
 
     const readOnly = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "inspect-source",
-      toolName: "read",
+      toolName: "killeros_init_read",
       input: { path: "src-index.ts" },
     }, ctx);
     assert.equal(readOnly.some((result) => result?.block), false);
+    assert.match((await tools.get("killeros_init_read").execute("inspect-source", { path: "src-index.ts" })).content[0].text, /value = 1/u);
 
+    const generated = validGeneratedGuidance.replace("Check facts before changing code.", "Check facts before changing code.\nPreserve this workflow.");
     const replacement = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "replace-existing",
       toolName: "killeros_init_write",
-      input: { content: "# AGENTS.md\n\nGenerated.\n" },
+      input: { content: generated },
     }, ctx);
     assert.equal(replacement.some((result) => result?.block), false);
-    await tools.get("killeros_init_write").execute("replace-existing", { content: "# AGENTS.md\n\nGenerated.\n" }, new AbortController().signal, () => {}, ctx);
-    assert.equal(readFileSync(path.join(directory, "AGENTS.md"), "utf8"), "# AGENTS.md\n\nGenerated.\n");
+    await tools.get("killeros_init_write").execute("replace-existing", { content: generated }, new AbortController().signal, () => {}, ctx);
+    assert.equal(readFileSync(path.join(directory, "AGENTS.md"), "utf8"), generated);
 
     const secondWrite = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "replace-again",
       toolName: "killeros_init_write",
       input: { content: "replacement" },
     }, ctx);
-    assert.match(secondWrite.find((result) => result?.block)?.reason, /scoped read tools|exactly once/u);
+    assert.match(secondWrite.find((result) => result?.block)?.reason, /exactly one write or policy-conflict/u);
 
     const editTarget = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "edit-existing",
       toolName: "edit",
       input: { path: "AGENTS.md", edits: [{ oldText: "Generated", newText: "Changed" }] },
     }, ctx);
-    assert.match(editTarget.find((result) => result?.block)?.reason, /may not modify any other file/u);
+    assert.match(editTarget.find((result) => result?.block)?.reason, /bounded evidence and terminal tools/u);
 
     const otherFile = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "write-other",
       toolName: "write",
       input: { path: "README.md", content: "replacement" },
     }, ctx);
-    assert.match(otherFile.find((result) => result?.block)?.reason, /may not modify any other file/u);
+    assert.match(otherFile.find((result) => result?.block)?.reason, /bounded evidence and terminal tools/u);
 
     await emitSequentially(handlers.get("agent_settled"), {}, ctx);
     await initRun;
@@ -1174,7 +1274,7 @@ test("/init preserves the existing AGENTS.md when atomic replacement fails", asy
     const renameError = Object.assign(new Error("replacement blocked"), { code: "EPERM" });
 
     await assert.rejects(
-      writeInitAgentsFile(target, "replacement guidance\n", async () => { throw renameError; }),
+      writeInitAgentsFile(target, validGeneratedGuidance, async () => { throw renameError; }),
       /replacement blocked/u,
     );
     assert.equal(readFileSync(target, "utf8"), "original guidance\n");
@@ -1184,38 +1284,90 @@ test("/init preserves the existing AGENTS.md when atomic replacement fails", asy
   }
 });
 
-test("/init blocks a linked AGENTS.md target", async (t) => {
+test("/init aborts instead of overwriting an in-place concurrent edit", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-concurrent-"));
+  try {
+    const target = path.join(directory, "AGENTS.md");
+    writeFileSync(target, "# AGENTS.md\n\nOriginal.\n");
+    const baseline = await captureInitTargetBaseline(target);
+    writeFileSync(target, "# AGENTS.md\n\nConcurrent user edit.\n");
+    await assert.rejects(
+      installInitAgentsFile(target, validGeneratedGuidance, baseline),
+      /changed while \/init was generating/u,
+    );
+    assert.equal(readFileSync(target, "utf8"), "# AGENTS.md\n\nConcurrent user edit.\n");
+    assert.deepEqual(readdirSync(directory), ["AGENTS.md"]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init does not report failure after committed candidate cleanup fails", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-cleanup-"));
+  try {
+    const target = path.join(directory, "AGENTS.md");
+    writeFileSync(target, "# AGENTS.md\n\nOriginal.\n");
+    const baseline = await captureInitTargetBaseline(target);
+    let unlinkCalls = 0;
+    const { unlink } = await import("node:fs/promises");
+    await installInitAgentsFile(target, validGeneratedGuidance, baseline, {
+      unlinkFile: async (filePath) => {
+        unlinkCalls += 1;
+        if (unlinkCalls === 2) throw new Error("candidate cleanup failed");
+        await unlink(filePath);
+      },
+    });
+    assert.equal(readFileSync(target, "utf8"), validGeneratedGuidance);
+    assert.deepEqual(readdirSync(directory), ["AGENTS.md"]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init detects a writer that replaces the linked candidate before commit", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-linked-race-"));
+  try {
+    const target = path.join(directory, "AGENTS.md");
+    const baseline = await captureInitTargetBaseline(target);
+    const { link, unlink, writeFile } = await import("node:fs/promises");
+    await assert.rejects(
+      installInitAgentsFile(target, validGeneratedGuidance, baseline, {
+        linkFile: async (candidatePath, installedPath) => {
+          await link(candidatePath, installedPath);
+          await unlink(installedPath);
+          await writeFile(installedPath, "# AGENTS.md\n\nNewer external file.\n");
+        },
+      }),
+      /changed while \/init was generating/u,
+    );
+    assert.equal(readFileSync(target, "utf8"), "# AGENTS.md\n\nNewer external file.\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init validates generated guidance deterministically", () => {
+  assert.equal(validateGeneratedGuidance(validGeneratedGuidance), undefined);
+  for (const invalid of [
+    validGeneratedGuidance.replace("# AGENTS.md", "# Instructions"),
+    `# AGENTS.md extra\n\n${validGeneratedGuidance}`,
+    validGeneratedGuidance.replace("## 2. Simplicity First", "## Simplicity"),
+    `${validGeneratedGuidance}\n[FILL IN command]`,
+    `${validGeneratedGuidance}\n[exact command]`,
+    `${validGeneratedGuidance}\n[confirmed command]`,
+    "x".repeat(128 * 1024 + 1),
+  ]) {
+    assert.equal(typeof validateGeneratedGuidance(invalid), "string");
+  }
+});
+
+test("/init blocks a linked AGENTS.md target before a model turn", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-linked-target-"));
   try {
     writeFileSync(path.join(directory, "shared.md"), "shared instructions\n");
     if (!createFileSymlinkOrSkip(t, "shared.md", path.join(directory, "AGENTS.md"))) return;
-
-    const { commands, handlers, sentMessages, tools } = createHarness();
-    const ctx = {
-      cwd: directory,
-      isProjectTrusted: () => true,
-      mode: "tui",
-      reload: async () => {},
-      ui: { notify() {} },
-      waitForIdle: async () => {},
-    };
-    const initRun = commands.get("init").handler("", ctx);
-    await waitFor(() => sentMessages.length === 1);
-
-    const writeAttempt = await emitSequentially(handlers.get("tool_call"), {
-      toolCallId: "linked-agents",
-      toolName: "killeros_init_write",
-      input: { content: "replacement" },
-    }, ctx);
-    assert.equal(writeAttempt.some((result) => result?.block), false);
-    await assert.rejects(
-      tools.get("killeros_init_write").execute("linked-agents", { content: "replacement" }, new AbortController().signal, () => {}, ctx),
-      /regular, non-linked file/u,
-    );
+    await assert.rejects(captureInitTargetBaseline(path.join(directory, "AGENTS.md")), /regular, non-linked file/u);
     assert.equal(readFileSync(path.join(directory, "shared.md"), "utf8"), "shared instructions\n");
-
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
-    await initRun;
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1249,8 +1401,8 @@ test("/init rejects a target swapped after tool-call validation", async () => {
     }, ctx);
     assert.equal(callResults.some((result) => result?.block), false);
     await assert.rejects(
-      tools.get("killeros_init_write").execute("swap-target", { content: "replacement" }, new AbortController().signal, () => {}, ctx),
-      /regular, non-linked file/u,
+      tools.get("killeros_init_write").execute("swap-target", { content: validGeneratedGuidance }, new AbortController().signal, () => {}, ctx),
+      /changed while \/init was generating|regular, non-linked file/u,
     );
     assert.equal(readFileSync(shared, "utf8"), "shared guidance\n");
     await emitSequentially(handlers.get("agent_settled"), {}, ctx);
@@ -1260,51 +1412,18 @@ test("/init rejects a target swapped after tool-call validation", async () => {
   }
 });
 
-test("/init retries its single AGENTS.md write only after a failed write", async () => {
+test("/init preserves a target created after an absent baseline", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-new-"));
   try {
-    mkdirSync(path.join(directory, "AGENTS.md"));
-    const { commands, handlers, sentMessages, tools } = createHarness();
-    const ctx = {
-      cwd: directory,
-      isProjectTrusted: () => true,
-      mode: "tui",
-      reload: async () => {},
-      ui: { notify() {} },
-      waitForIdle: async () => {},
-    };
-    const initRun = commands.get("init").handler("", ctx);
-    await waitFor(() => sentMessages.length === 1);
-
-    const firstWrite = await emitSequentially(handlers.get("tool_call"), {
-      toolCallId: "create-agents",
-      toolName: "killeros_init_write",
-      input: { content: "# AGENTS.md" },
-    }, ctx);
-    assert.equal(firstWrite.some((result) => result?.block), false);
+    const target = path.join(directory, "AGENTS.md");
+    const baseline = await captureInitTargetBaseline(target);
+    writeFileSync(target, "# AGENTS.md\n\nConcurrent creator.\n");
     await assert.rejects(
-      tools.get("killeros_init_write").execute("create-agents", { content: "# AGENTS.md" }, new AbortController().signal, () => {}, ctx),
-      /regular, non-linked file/u,
+      installInitAgentsFile(target, validGeneratedGuidance, baseline),
+      /changed while \/init was generating/u,
     );
-    rmSync(path.join(directory, "AGENTS.md"), { recursive: true, force: true });
-
-    const retryWrite = await emitSequentially(handlers.get("tool_call"), {
-      toolCallId: "retry-agents",
-      toolName: "killeros_init_write",
-      input: { content: "# AGENTS.md" },
-    }, ctx);
-    assert.equal(retryWrite.some((result) => result?.block), false);
-    await tools.get("killeros_init_write").execute("retry-agents", { content: "# AGENTS.md" }, new AbortController().signal, () => {}, ctx);
-
-    const thirdWrite = await emitSequentially(handlers.get("tool_call"), {
-      toolCallId: "third-agents",
-      toolName: "killeros_init_write",
-      input: { content: "replacement" },
-    }, ctx);
-    assert.equal(thirdWrite.find((result) => result?.block)?.block, true);
-
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
-    await initRun;
+    assert.equal(readFileSync(target, "utf8"), "# AGENTS.md\n\nConcurrent creator.\n");
+    assert.deepEqual(readdirSync(directory), ["AGENTS.md"]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1375,10 +1494,12 @@ test("/init attaches a bounded project snapshot without reading existing guidanc
     });
     await waitFor(() => sentMessages.length === 1);
     const marker = "## Initial repository snapshot (untrusted data)\n";
-    const snapshot = JSON.parse(sentMessages[0].message.content.split(marker)[1]);
+    const encodedSnapshot = sentMessages[0].message.content.split(marker)[1].split("\n\n## Existing root AGENTS.md")[0];
+    const snapshot = JSON.parse(encodedSnapshot);
     assert.match(snapshot, /src\/core\/index\.ts/u);
     assert.match(snapshot, /node --test/u);
     assert.doesNotMatch(snapshot, /Preserve releases|PRIVATE-CONTEXT|PRIVATE-MEMORY|DEPENDENCY-CONTENT|PRIVATE-SKILL|PRIVATE-HOOK|MEMORY\.md|killeros-hooks/u);
+    assert.match(sentMessages[0].message.content, /Preserve releases/u);
     assert.ok(snapshot.length <= 40 * 1024);
     assert.ok(Date.now() - startedAt < 6_000);
 
@@ -1414,66 +1535,42 @@ test("/init snapshot does not follow linked manifest files", async (t) => {
   }
 });
 
-test("/init scopes reads to safe project files and freezes checked inputs", async () => {
+test("/init evidence excludes secrets, ignored files, links, and paths outside the frozen map", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-read-scope-"));
-  const outsideSecret = path.join(os.tmpdir(), `killeros-init-outside-${process.pid}-${Date.now()}.txt`);
   try {
-    mkdirSync(path.join(directory, ".agents", "skills"), { recursive: true });
-    mkdirSync(path.join(directory, "@.."), { recursive: true });
+    execFileSync("git", ["init"], { cwd: directory, stdio: "ignore", windowsHide: true });
+    writeFileSync(path.join(directory, ".gitignore"), ".env.local\nignored.ts\n");
     writeFileSync(path.join(directory, "allowed.ts"), "export const allowed = true;\n");
-    writeFileSync(path.join(directory, "outside.md"), "outside guidance\n");
-    writeFileSync(path.join(directory, "@..", "nested.md"), "nested in the @.. directory\n");
-    writeFileSync(path.join(directory, "AGENTS.md"), "existing guidance\n");
-    writeFileSync(outsideSecret, "OUTSIDE SECRET\n");
-    let hasSymlink = false;
+    for (const name of [".env", ".env.local", ".npmrc", ".pypirc", ".netrc", "id_rsa", "id_ed25519", "credentials.json", "service-account-prod.json", "private.pem", "private.key", "private.p12", "private.pfx", "private.jks", "private.keystore", "AGENTS.md", "CLAUDE.md", "ignored.ts"]) {
+      writeFileSync(path.join(directory, name), "SECRET\n");
+    }
+    let linked = false;
     try {
-      symlinkSync(path.join(directory, "outside.md"), path.join(directory, "linked.md"), "file");
-      hasSymlink = true;
+      symlinkSync("allowed.ts", path.join(directory, "linked.ts"), "file");
+      linked = true;
     } catch (error) {
       if (!["EACCES", "EPERM", "UNKNOWN"].includes(error.code)) throw error;
     }
-    let hasHardLink = false;
+    writeFileSync(path.join(directory, "hard-link-source.ts"), "linked\n");
     try {
-      linkSync(path.join(directory, "outside.md"), path.join(directory, "hard-linked.md"));
-      hasHardLink = true;
+      linkSync(path.join(directory, "hard-link-source.ts"), path.join(directory, "hard-linked.ts"));
     } catch (error) {
       if (!["EACCES", "EPERM", "UNKNOWN"].includes(error.code)) throw error;
     }
 
-    const { commands, handlers, sentMessages } = createHarness();
-    const { ctx } = createTuiContext();
-    ctx.cwd = directory;
-    ctx.ui.notify = () => {};
-    const initRun = commands.get("init").handler("", ctx);
-    await waitFor(() => sentMessages.length === 1);
-
-    const read = async (toolName, value) => emitSequentially(handlers.get("tool_call"), {
-      toolCallId: `${toolName}-${value}`,
-      toolName,
-      input: { path: value },
-    }, ctx);
-    assert.equal((await read("read", "allowed.ts")).some((result) => result?.block), false);
-    assert.equal((await read("read", "@allowed.ts")).some((result) => result?.block), false);
-    const blockedPaths = ["AGENTS.md", "agents.md", "AGENTS.local.md", "CLAUDE.md", ".agents/skills/secret.md", "../outside.md", path.join(directory, "outside.md"), "@../nested.md", `@../${path.basename(outsideSecret)}`, "@AGENTS.md", "@.git/config", "~/killeros-init-any.txt"];
-    if (hasSymlink) blockedPaths.push("linked.md");
-    if (hasHardLink) blockedPaths.push("hard-linked.md");
-    for (const value of blockedPaths) {
-      const results = await read("read", value);
-      assert.equal(results.some((result) => result?.block), true, value);
+    const { index } = await buildInitEvidence(directory);
+    assert.match(index.snapshot, /allowed\.ts/u);
+    assert.doesNotMatch(index.snapshot, /\.env|\.npmrc|private\.pem|ignored\.ts|CLAUDE\.md/u);
+    assert.match(await readInitEvidence(index, "allowed.ts"), /allowed = true/u);
+    assert.deepEqual(listInitEvidence(index), [...listInitEvidence(index)].sort());
+    for (const unavailable of [".env", ".env.local", ".npmrc", "private.pem", "ignored.ts", "AGENTS.md", "../outside", path.resolve(directory, "allowed.ts"), "~/secret", "file:///secret", "missing.ts", "hard-linked.ts", ...(linked ? ["linked.ts"] : [])]) {
+      await assert.rejects(readInitEvidence(index, unavailable), /not available to \/init|rejects/u, unavailable);
     }
-    const blockedFind = await read("find", ".");
-    assert.equal(blockedFind.some((result) => result?.block), true);
 
-    handlers.get("tool_call").push((event) => {
-      if (event.toolName === "read") event.input.path = "../outside.md";
-    });
-    await assert.rejects(read("read", "allowed.ts"), /read-only property|Cannot assign/u);
-
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
-    await initRun;
+    writeFileSync(path.join(directory, "created-after-map.ts"), "late\n");
+    await assert.rejects(readInitEvidence(index, "created-after-map.ts"), /not available to \/init/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
-    rmSync(outsideSecret, { force: true });
   }
 });
 
@@ -1493,7 +1590,12 @@ test("/init tool scoping never exposes killeros_init_write outside /init", async
 
     const initRun = commands.get("init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
-    assert.deepEqual(activeTools, ["read", "ls", "killeros_init_write"]);
+    assert.deepEqual(activeTools, [
+      "killeros_init_read",
+      "killeros_init_list",
+      "killeros_init_write",
+      "killeros_init_conflict",
+    ]);
 
     await emitSequentially(handlers.get("agent_settled"), {}, ctx);
     await initRun;
@@ -1501,6 +1603,28 @@ test("/init tool scoping never exposes killeros_init_write outside /init", async
 
     for (const handler of handlers.get("session_start")) await handler({ reason: "new" }, ctx);
     assert.deepEqual(activeTools, fullSet);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init tool middleware does not freeze or redefine shared event input", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-middleware-"));
+  try {
+    writeFileSync(path.join(directory, "safe.ts"), "safe\n");
+    const { commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+    const input = { path: "safe.ts" };
+    const event = { toolCallId: "mutable", toolName: "killeros_init_read", input };
+    await emitSequentially(handlers.get("tool_call"), event, ctx);
+    assert.equal(Object.isFrozen(input), false);
+    input.path = "changed-by-another-extension.ts";
+    assert.equal(event.input.path, "changed-by-another-extension.ts");
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await initRun;
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1664,6 +1788,50 @@ test("never-closing hooks report unconfirmed exit after bounded cleanup", async 
   assert.equal(result.timedOut, true);
   assert.equal(result.exitUnconfirmed, true);
   assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("aborting a running hook terminates it and reports cancellation", async () => {
+  class NeverClosingChild extends EventEmitter {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    pid = undefined;
+    signals = [];
+    kill(signal) { this.signals.push(signal); return true; }
+  }
+  const controller = new AbortController();
+  const child = new NeverClosingChild();
+  const resultPromise = executeHook("ignored", process.cwd(), {}, 30_000, () => child, controller.signal);
+  controller.abort();
+  const result = await resultPromise;
+  assert.equal(result.cancelled, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.code, 130);
+  assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
+
+  let spawned = false;
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  const preResult = await executeHook("ignored", process.cwd(), {}, 30_000, () => { spawned = true; }, alreadyAborted.signal);
+  assert.equal(spawned, false);
+  assert.equal(preResult.cancelled, true);
+  assert.equal(preResult.code, 130);
+
+  const racingChild = new NeverClosingChild();
+  racingChild.kill = function(signal) {
+    this.signals.push(signal);
+    queueMicrotask(() => this.emit("close", null));
+    return true;
+  };
+  let abortedReads = 0;
+  const racingSignal = {
+    get aborted() { abortedReads += 1; return abortedReads > 1; },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const racingResult = await executeHook("ignored", process.cwd(), {}, 30_000, () => racingChild, racingSignal);
+  assert.equal(racingResult.cancelled, true);
+  assert.equal(racingResult.timedOut, false);
+  assert.deepEqual(racingChild.signals, ["SIGTERM"]);
 });
 
 test("timed-out hooks terminate the process tree or report bounded uncertainty", async () => {
@@ -2228,14 +2396,13 @@ test("footer uses model metadata and formats unknown provider names", () => {
   footer.dispose();
 });
 
-test("editor highlights recognized slash command prefixes without coloring paths or typos", async () => {
-  const { commands, handlers } = createHarness();
-  commands.set("skill:reviewing-and-fixing-code", { description: "Review code" });
-  const commandTheme = {
-    ...theme,
-    fg: (color, text) => color === "mdLink" ? `\x1B[34m${text}\x1B[39m` : text,
-  };
-  const { captured, ctx, tui } = createTuiContext([], commandTheme);
+test("editor implementation uses public APIs, preserves framing, and supports Shift+Enter", async () => {
+  const source = readFileSync(new URL("../killeros/shell-ui.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /buildVisualLineMap|scrollOffset|lastWidth|as unknown as/u);
+  assert.doesNotMatch(source, /COMMAND_TOKEN_PATTERN|highlightEditorLines/u);
+
+  const { handlers } = createHarness();
+  const { captured, ctx, tui } = createTuiContext();
   for (const handler of handlers.get("session_start")) await handler({}, ctx);
   const editorTheme = {
     borderColor: (text) => text,
@@ -2248,53 +2415,26 @@ test("editor highlights recognized slash command prefixes without coloring paths
     },
   };
   const editor = captured.editorFactory(tui, editorTheme, getKeybindings());
-
-  editor.setText("use /skill:rev then /model; keep C:/src and https://host plus /made-up plain");
-  const rendered = editor.render(120).join("\n");
-  assert.match(rendered, /\x1B\[34m\/skill:rev\x1B\[39m/u);
-  assert.match(rendered, /\x1B\[34m\/model\x1B\[39m/u);
-  assert.doesNotMatch(rendered, /\x1B\[34m(?:\/src|\/\/host|\/made-up)/u);
-
-  commands.set("late-command", { description: "Registered after editor creation" });
-  editor.setText("/late");
-  assert.match(editor.render(40).join("\n"), /\x1B\[34m\/late\x1B\[39m/u);
-
-  const wrappedCommand = "/skill:reviewing-and-fixing-code";
-  editor.setText(wrappedCommand);
-  const wrapped = editor.render(12).join("\n");
-  const blueText = [...wrapped.matchAll(/\x1B\[34m([^\x1B]*)\x1B\[39m/gu)]
-    .map((match) => match[1])
-    .join("");
-  assert.equal(blueText, wrappedCommand);
-
-  editor.setText("/skill:reviewing-and-fixing-typo");
-  assert.doesNotMatch(editor.render(12).join("\n"), /\x1B\[34m/u);
+  editor.setText("/model");
+  assert.doesNotMatch(editor.render(40).join("\n"), /\x1B\[34m/u);
   assert.deepEqual(editor.render(0), []);
-
-  tui.terminal.rows = 5;
-  editor.setText(wrappedCommand);
-  for (const width of [1, 2, 3]) {
-    const narrow = editor.render(width);
-    assert.ok(narrow.every((line) => visibleWidth(line) <= width));
-    assert.match(narrow.join("\n"), /\x1B\[34m/u);
+  for (let width = 1; width <= 180; width += 1) {
+    assert.ok(editor.render(width).every((line) => visibleWidth(line) <= width), `editor width ${width}`);
   }
-  const scrolled = editor.render(8).join("\n");
-  const scrolledBlueText = [...scrolled.matchAll(/\x1B\[34m([^\x1B]*)\x1B\[39m/gu)]
-    .map((match) => match[1])
-    .join("");
-  assert.ok(scrolledBlueText.length > 0);
-  assert.ok(wrappedCommand.endsWith(scrolledBlueText));
+  editor.setText("first");
+  editor.handleInput("\x1B[13;2u");
+  editor.handleInput("second");
+  assert.equal(editor.getText(), "first\nsecond");
+});
 
-  editor.setText(`/model\nAAAAAodel ${"Z".repeat(20)}`);
-  const ordinaryScrolledText = editor.render(8).join("\n");
-  assert.match(ordinaryScrolledText, /odel/u);
-  assert.doesNotMatch(ordinaryScrolledText, /\x1B\[34model/u);
-
-  editor.setText("/late");
-  editor.focused = true;
-  editor.handleInput("\x1B[D");
-  assert.match(editor.render(40).join("\n"), /\x1B_pi:c\x07/u);
-  assert.ok((editor.render(40).join("\n").match(/\x1B\[34m/gu) ?? []).length >= 2);
+test("shell UI preserves an existing custom editor factory", async () => {
+  const { handlers } = createHarness();
+  const { captured, ctx } = createTuiContext();
+  const existingFactory = () => ({ render: () => [], handleInput() {}, getText: () => "", setText() {} });
+  captured.currentEditorFactory = existingFactory;
+  for (const handler of handlers.get("session_start")) await handler({}, ctx);
+  assert.equal(captured.editorFactory, undefined);
+  assert.equal(captured.currentEditorFactory, existingFactory);
 });
 
 test("autocomplete omits unsupported argument hints", async () => {

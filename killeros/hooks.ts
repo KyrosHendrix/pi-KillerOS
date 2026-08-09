@@ -22,6 +22,7 @@ interface HookExecutionResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  cancelled: boolean;
   exitUnconfirmed: boolean;
 }
 
@@ -109,7 +110,17 @@ function terminateHookProcess(child: ReturnType<typeof spawn>, force: boolean): 
   }
 }
 
-export function executeHook(command: string, cwd: string, environment: Record<string, string>, timeoutMs = 30_000, spawnProcess: typeof spawn = spawn): Promise<HookExecutionResult> {
+export function executeHook(
+  command: string,
+  cwd: string,
+  environment: Record<string, string>,
+  timeoutMs = 30_000,
+  spawnProcess: typeof spawn = spawn,
+  signal?: AbortSignal,
+): Promise<HookExecutionResult> {
+  if (signal?.aborted) {
+    return Promise.resolve({ code: 130, stdout: "", stderr: "", timedOut: false, cancelled: true, exitUnconfirmed: false });
+  }
   return new Promise((resolve) => {
     const child = spawnProcess(command, {
       cwd,
@@ -122,36 +133,48 @@ export function executeHook(command: string, cwd: string, environment: Record<st
     let stdout = "";
     let stderr = "";
     let completed = false;
-    let timedOut = false;
-    let exitUnconfirmed = false;
+    let termination: "timeout" | "cancelled" | undefined;
     let timer: NodeJS.Timeout | undefined;
     let forceTimer: NodeJS.Timeout | undefined;
     let settleTimer: NodeJS.Timeout | undefined;
-    const finish = (code: number, unconfirmed = false): void => {
+    const finish = (code: number, exitUnconfirmed = false): void => {
       if (completed) return;
       completed = true;
-      exitUnconfirmed = unconfirmed;
       if (timer) clearTimeout(timer);
       if (forceTimer) clearTimeout(forceTimer);
       if (settleTimer) clearTimeout(settleTimer);
-      resolve({ code, stdout, stderr, timedOut, exitUnconfirmed });
+      signal?.removeEventListener("abort", abort);
+      resolve({
+        code,
+        stdout,
+        stderr,
+        timedOut: termination === "timeout",
+        cancelled: termination === "cancelled",
+        exitUnconfirmed,
+      });
     };
-    child.stdout.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
-    child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
-    child.on("error", (error) => {
-      stderr = appendBounded(stderr, error.message);
-      finish(timedOut ? 124 : 1);
-    });
-    child.once("close", (code) => finish(timedOut ? 124 : code ?? 1));
-    timer = setTimeout(() => {
-      timedOut = true;
+    const terminationCode = (): number => termination === "cancelled" ? 130 : 124;
+    const beginTermination = (reason: "timeout" | "cancelled"): void => {
+      if (completed || termination) return;
+      termination = reason;
       terminateHookProcess(child, false);
       forceTimer = setTimeout(() => {
         if (completed) return;
         terminateHookProcess(child, true);
-        settleTimer = setTimeout(() => finish(124, true), 1_000);
+        settleTimer = setTimeout(() => finish(terminationCode(), true), 1_000);
       }, 1_000);
-    }, Math.max(1_000, Math.min(timeoutMs, 300_000)));
+    };
+    const abort = (): void => beginTermination("cancelled");
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) beginTermination("cancelled");
+    child.stdout.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
+    child.on("error", (error) => {
+      stderr = appendBounded(stderr, error.message);
+      finish(termination ? terminationCode() : 1);
+    });
+    child.once("close", (code) => finish(termination ? terminationCode() : code ?? 1));
+    timer = setTimeout(() => beginTermination("timeout"), Math.max(1_000, Math.min(timeoutMs, 300_000)));
   });
 }
 
@@ -180,7 +203,10 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
         ctx.cwd,
         hookEnvironment("tool_call", event.toolName, event.input),
         hook.timeoutMs,
+        spawn,
+        ctx.signal,
       );
+      if (result.cancelled) return { block: true, reason: "Hook cancelled because the parent request was aborted" };
       if (result.code !== 0) {
         const reason = hookFailureMessage(hook, result);
         ctx.ui.notify(reason, "error");
@@ -200,7 +226,10 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
           isError: event.isError,
         }),
         hook.timeoutMs,
+        spawn,
+        ctx.signal,
       );
+      if (result.cancelled) break;
       if (result.code !== 0) ctx.ui.notify(hookFailureMessage(hook, result), "error");
     }
   });
@@ -212,7 +241,10 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
         ctx.cwd,
         hookEnvironment("agent_settled"),
         hook.timeoutMs,
+        spawn,
+        ctx.signal,
       );
+      if (result.cancelled) break;
       if (result.code !== 0) ctx.ui.notify(hookFailureMessage(hook, result), "error");
     }
   });

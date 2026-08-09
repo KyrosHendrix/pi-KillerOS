@@ -4,6 +4,23 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.4] - 2026-08-10
+
+### Changed
+
+- Rebuilt `/init` around a packaged four-section guideline-synthesis workflow that preserves compatible root policy without requiring an external skill.
+- Removed live blue slash-command coloring while retaining slash autocomplete, the framed multiline editor, and Shift+Enter.
+
+### Fixed
+
+- Prevented `/init` from reading Git-ignored files, known secrets, private keys, linked or non-regular files, other guidance, dependencies, and files outside its frozen evidence map.
+- Protected root `AGENTS.md` from concurrent replacement and reported incompatible policy conflicts without writing.
+- Made `/clear` confirm before aborting active work, wait for settlement, and then start the new session.
+- Preserved explicit Responses API verbosity and reasoning-summary settings while applying concise defaults only to absent fields.
+- Cancelled lifecycle hook process trees with bounded cleanup when Pi aborts the parent request.
+- Kept `/init` middleware from freezing shared tool input and preserved custom editors installed by other extensions.
+- Removed private Pi editor-state access in favor of public rendering contracts.
+
 ## [2.0.3] - 2026-08-09
 
 ### Added

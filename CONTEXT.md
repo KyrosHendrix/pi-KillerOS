@@ -20,6 +20,10 @@ _Avoid_: compaction preemption, unconditional abort resume, timer-based resume
 Pi’s settled boundary, reached only after retries, compaction, and queued follow-ups finish. KillerOS starts the next active goal turn there instead of mirroring Pi’s internal compaction state.
 _Avoid_: compaction hold, threshold gate, in-flight mirror
 
+**Goal-aware clear**:
+The confirmed `/clear` transition that aborts an in-flight goal turn, lets the old session record that goal as paused, and starts a new session only after settlement. It never waits behind a newly scheduled goal continuation or leaves the old goal active.
+_Avoid_: idle-first clear, active-goal carryover, manual-pause prerequisite
+
 **Host compaction recovery**:
 Pi’s own retry path after threshold compaction fails. KillerOS keeps the goal active; Pi retries compaction on later work, while an unrecovered overflow becomes an agent error that pauses the goal through normal goal failure handling.
 _Avoid_: KillerOS compaction retry, threshold-failure watchdog, inferred failure pause
@@ -51,6 +55,26 @@ _Avoid_: current protection, undici resolver, host repair, warning-only check
 **Consumer-tree proof**:
 A deferred release check that would install the packed KillerOS candidate with its supported Pi host in a clean root that has no KillerOS override, then verify the resolved tree, security audit, and extension load.
 _Avoid_: current release gate, repository-only audit, override-masked test, manual-only check
+
+**Init evidence boundary**:
+The frozen project-file map that limits automatic `/init` reads to regular, non-linked repository files while excluding Git-ignored files when Git is available, known secret names, private-key formats, other guidance, dependencies, and unsafe file types. The protected root guidance baseline is the only guidance exception; dedicated `/init` read and list tools enforce this boundary when they execute, and files outside the bounded map remain unavailable even when they are inside the project root.
+_Avoid_: project-root access, shared tool-input freeze, unrestricted repository scan
+
+**Init guideline synthesis**:
+KillerOS’s packaged adaptation of the `writing-great-guidelines` evidence priorities, four behavioral sections, repository-specific limits, and verification rules. It remains part of the automatic `/init` workflow instead of depending on a separately installed skill.
+_Avoid_: runtime skill invocation, verbatim skill copy, external skill dependency
+
+**Protected guidance baseline**:
+The existing root `AGENTS.md` that `/init` treats as policy to preserve rather than repository evidence to imitate. KillerOS writes only when compatible rules can be reconciled; an incompatible policy leaves the file unchanged and returns a structured conflict reason for human reconciliation.
+_Avoid_: stale evidence, replacement source, disposable guidance
+
+**Guidance policy conflict**:
+A concrete contradiction between the protected guidance baseline and the adapted four-section guideline policy that the model cannot preserve in one coherent file. The `/init` workflow reports the conflicting rules through a structured outcome and performs no write.
+_Avoid_: generic no-write failure, silent omission, automatic conflict choice
+
+**Guidance write conflict**:
+Any change to root `AGENTS.md` after `/init` captures its protected baseline and before the generated update is installed. KillerOS aborts the write, preserves the exact newer file, discards the generated candidate, and requires a rerun.
+_Avoid_: last writer wins, automatic re-merge, backup-and-replace
 
 **Concise guidance**:
 KillerOS’s universal, always-on response policy that reduces cognitive load and makes the next useful action clear without assuming or labeling a user’s neurotype.
@@ -124,6 +148,14 @@ _Avoid_: debug spiral, fourth speculative fix, repeated still-broken loop
 A user request whose response, tools, retries, automatic compaction, and queued follow-ups have all finished, leaving Pi idle. Completion notifications occur once at this boundary rather than after each agent run or tool turn.
 _Avoid_: finished task, agent end, turn completion, tool completion
 
+**Hook cancellation**:
+The bounded process-tree cleanup that starts when the user aborts Pi during a lifecycle hook. KillerOS requests graceful termination, force-kills after the cleanup window, and reports cancellation separately from hook failure.
+_Avoid_: timeout-only hook, detached hook, abort failure
+
+**Public editor boundary**:
+KillerOS customizes Pi’s prompt input only through public TUI contracts. Slash-command autocomplete remains, but typed command text uses the normal editor color because Pi exposes no public visual-line API for safe command coloring; when another extension already owns a custom prompt input, KillerOS leaves it unchanged and skips only its editor-specific design and key behavior.
+_Avoid_: private editor adapter, editor replacement on conflict, pinned editor internals
+
 **Completion sound**:
 The optional standard terminal bell sent once after a settled request that finishes normally or with an error; a manually aborted request does not ring. It is a global user preference, off by default, and advertised through the rotating startup tips. A simple Nerd Font line-bell glyph appears at the end of the terminal tab title only while this preference is enabled; it is not part of KillerOS’s startup card and is not clickable.
 _Avoid_: notification sound, alert tone, startup-header bell, header button, emoji bell
@@ -133,8 +165,8 @@ The self-contained, medium-length system guidance that teaches KillerOS’s cogn
 _Avoid_: concise rules list, full skill copy, one-line style hint
 
 **Native concise settings**:
-Supported Responses API controls that request low text verbosity and concise reasoning summaries; they complement response policy and remain limited to verified provider/model combinations.
-_Avoid_: universal provider override, reasoning-effort reduction, response policy replacement
+Supported Responses API defaults that request low text verbosity and concise reasoning summaries only when those fields are absent. Explicit provider settings remain unchanged; the defaults complement response policy and stay limited to verified provider/model combinations.
+_Avoid_: forced provider override, reasoning-effort reduction, response policy replacement
 
 **Behavioral anchor**:
 A stable semantic contract asserted in tests so response-policy wording can evolve without weakening immediate-need framing, continuity, required actions, estimate discipline, diagnostic reset, or precedence.

@@ -18,7 +18,9 @@ import { registerVariants } from "./killeros/variants.ts";
 export { CONCISE_SYSTEM_PROMPT, isConciseEnabled, isConcisedEnabled } from "./killeros/concise.ts";
 export { contextPercentRemaining, formatCost, formatContextProgress } from "./killeros/footer.ts";
 export { executeHook } from "./killeros/hooks.ts";
-export { INIT_WORKFLOW_PROMPT, writeInitAgentsFile } from "./killeros/init.ts";
+export { INIT_WORKFLOW_PROMPT } from "./killeros/init.ts";
+export { buildInitEvidence, listInitEvidence, readInitEvidence } from "./killeros/init-evidence.ts";
+export { captureInitTargetBaseline, installInitAgentsFile, validateGeneratedGuidance, writeInitAgentsFile } from "./killeros/init-target.ts";
 
 export interface KillerosOptions {
   completionNotifications?: CompletionNotificationDependencies;
