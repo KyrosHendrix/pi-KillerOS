@@ -12,6 +12,20 @@ export function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
+export function contextPercentRemaining(ctx: ExtensionContext): number | null {
+  let usage: ReturnType<ExtensionContext["getContextUsage"]>;
+  try {
+    usage = ctx.getContextUsage();
+  } catch {
+    return null;
+  }
+  if (!usage || !Number.isFinite(usage.contextWindow) || usage.contextWindow <= 0) return null;
+  if (usage.tokens === null || !Number.isFinite(usage.tokens)) return null;
+
+  const percentRemaining = ((usage.contextWindow - Math.max(0, usage.tokens)) / usage.contextWindow) * 100;
+  return Math.round(Math.max(0, Math.min(100, percentRemaining)));
+}
+
 export function formatContextProgress(tokensUsed: number | null, contextWindow: number, theme: Theme): string {
   if (tokensUsed === null || !Number.isFinite(tokensUsed)) return theme.fg("dim", "—% left (—)");
   const windowSize = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 128_000;

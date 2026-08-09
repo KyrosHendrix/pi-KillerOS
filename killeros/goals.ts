@@ -7,7 +7,7 @@ import { CONCISE_SYSTEM_PROMPT } from "./concise.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
-import type { CompactionRuntime, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import type { GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
 const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
@@ -19,6 +19,16 @@ interface GoalEntryData {
   version: 1;
   event: GoalEntryEvent;
   state: GoalState | null;
+}
+
+interface GoalTransitionOptions {
+  resetBlockedAudit?: boolean;
+  resumeAfterManualCompaction?: true;
+}
+
+interface RestoredGoalState {
+  state?: GoalState;
+  recoveryProven: boolean;
 }
 
 const GoalUpdateParams = Type.Object({
@@ -61,7 +71,9 @@ function parseGoalState(value: unknown): GoalState | undefined {
       && (!Number.isInteger(candidate.blockedAuditStartTurn) || candidate.blockedAuditStartTurn < 0 || candidate.blockedAuditStartTurn > candidate.turns!)
     || !finiteNonNegative(candidate.baselineTokens)
     || candidate.activeStartedAt !== undefined && !finiteNonNegative(candidate.activeStartedAt)
-    || candidate.result !== undefined && typeof candidate.result !== "string") {
+    || candidate.result !== undefined && typeof candidate.result !== "string"
+    || candidate.resumeAfterManualCompaction !== undefined && candidate.resumeAfterManualCompaction !== true
+    || candidate.resumeAfterManualCompaction === true && candidate.status !== "paused") {
     return undefined;
   }
   return {
@@ -77,6 +89,7 @@ function parseGoalState(value: unknown): GoalState | undefined {
     blockedAuditStartTurn: candidate.blockedAuditStartTurn ?? 0,
     baselineTokens: candidate.baselineTokens,
     result: candidate.result,
+    resumeAfterManualCompaction: candidate.resumeAfterManualCompaction,
   };
 }
 
@@ -88,21 +101,26 @@ function goalBranchEntries(ctx: ExtensionContext): ReturnType<ExtensionContext["
   }
 }
 
-function restoreGoalState(ctx: ExtensionContext): GoalState | undefined {
+function restoreGoalState(ctx: ExtensionContext): RestoredGoalState {
   const entries = goalBranchEntries(ctx);
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry?.type !== "custom" || entry.customType !== GOAL_ENTRY_TYPE) continue;
     const data = entry.data as Partial<GoalEntryData> | undefined;
-    if (!data || data.version !== GOAL_VERSION) return undefined;
-    if (data.state === null) return undefined;
+    if (!data || data.version !== GOAL_VERSION || data.state === null) {
+      return { state: undefined, recoveryProven: false };
+    }
     const restored = parseGoalState(data.state);
-    if (!restored) return undefined;
-    return restored.status === "active"
+    if (!restored) return { state: undefined, recoveryProven: false };
+    const state = restored.status === "active"
       ? { ...restored, activeStartedAt: Date.now() }
       : { ...restored, activeStartedAt: undefined };
+    const recoveryProven = state.status === "paused"
+      && state.resumeAfterManualCompaction === true
+      && entries.slice(index + 1).some((candidate) => candidate.type === "compaction");
+    return { state, recoveryProven };
   }
-  return undefined;
+  return { state: undefined, recoveryProven: false };
 }
 
 export function goalElapsedMilliseconds(state: GoalState, now = Date.now()): number {
@@ -152,7 +170,7 @@ function transitionGoal(
   event: GoalEntryEvent,
   status: GoalStatus,
   result?: string,
-  resetBlockedAudit = false,
+  options: GoalTransitionOptions = {},
 ): GoalState {
   const current = runtime.state;
   if (!current) throw new Error("No goal is set");
@@ -164,8 +182,9 @@ function transitionGoal(
     status,
     updatedAt: now,
     activeStartedAt: status === "active" ? now : undefined,
-    blockedAuditStartTurn: resetBlockedAudit ? stopped.turns : stopped.blockedAuditStartTurn,
+    blockedAuditStartTurn: options.resetBlockedAudit ? stopped.turns : stopped.blockedAuditStartTurn,
     result,
+    resumeAfterManualCompaction: options.resumeAfterManualCompaction,
   };
   persistGoalState(pi, runtime, event, next);
   if (status !== "active") runtime.continuationScheduled = false;
@@ -209,12 +228,67 @@ export function pauseGoalAfterFailure(
   try {
     transitionGoal(pi, runtime, "error", "paused", reason);
   } catch {
-    runtime.state = runtime.state ? { ...stopGoalClock(runtime.state, Date.now()), status: "paused", result: reason } : undefined;
+    runtime.state = runtime.state ? {
+      ...stopGoalClock(runtime.state, Date.now()),
+      status: "paused",
+      result: reason,
+      resumeAfterManualCompaction: undefined,
+    } : undefined;
     runtime.persistenceRetryNeeded = true;
     runtime.continuationScheduled = false;
     runtime.requestRender?.();
   }
   ctx.ui.notify(`Goal paused: ${reason}\n${recoveryInstruction}`, "error");
+}
+
+function pauseGoalForPossibleManualCompaction(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  ctx: ExtensionContext,
+  reason: string,
+): void {
+  if (runtime.state?.status !== "active") return;
+  try {
+    transitionGoal(pi, runtime, "error", "paused", reason, {
+      resumeAfterManualCompaction: true,
+    });
+  } catch {
+    runtime.state = runtime.state ? {
+      ...stopGoalClock(runtime.state, Date.now()),
+      status: "paused",
+      result: reason,
+      resumeAfterManualCompaction: true,
+    } : undefined;
+    runtime.persistenceRetryNeeded = true;
+    runtime.continuationScheduled = false;
+    runtime.requestRender?.();
+  }
+  ctx.ui.notify(
+    "Goal paused because the turn was aborted. If /compact is running, KillerOS will resume after Pi saves the summary. Run /goal pause to keep it paused.",
+    "warning",
+  );
+}
+
+function recoverGoalAfterManualCompaction(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  initState: InitRuntime,
+  ctx: ExtensionContext,
+): boolean {
+  if (runtime.state?.status !== "paused"
+    || runtime.state.resumeAfterManualCompaction !== true
+    || initState.active) return false;
+  try {
+    transitionGoal(pi, runtime, "resume", "active", undefined, { resetBlockedAudit: true });
+  } catch (error) {
+    runtime.persistenceRetryNeeded = true;
+    reportError(ctx, "Manual compaction succeeded, but the goal could not be resumed", error);
+    return false;
+  }
+  runtime.continuationScheduled = false;
+  ctx.ui.notify("Manual compaction complete. Goal resumed.", "info");
+  setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+  return true;
 }
 
 function scheduleGoalContinuation(
@@ -259,6 +333,8 @@ function goalInstructions(state: GoalState, heading: string): string {
     "Objective:",
     state.objective,
     "",
+    "Treat the exact objective above from /goal as authoritative; a compaction summary may describe it but does not replace it.",
+    "If the current context contains a compaction summary, take its first concrete next step after checking the current repository state.",
     "Continue making concrete progress toward this unchanged objective. Re-check repository state and prior results instead of repeating work.",
     "Do not stop merely because one response is complete: KillerOS will start another goal turn while the goal remains active.",
     "Before declaring completion, audit every part of the objective and verify the relevant results. Then call killeros_goal_update with status complete and concise evidence.",
@@ -354,37 +430,26 @@ export function registerGoal(
     },
   });
 
-  pi.on("session_start", (_event, ctx) => {
-    runtime.state = restoreGoalState(ctx);
+  const restoreGoal = (ctx: ExtensionContext): void => {
+    const restored = restoreGoalState(ctx);
+    runtime.state = restored.state;
     runtime.continuationScheduled = false;
     runtime.continuationHeld = false;
-    runtime.continuationHeldForCompaction = false;
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
     runtime.persistenceRetryNeeded = false;
     runtime.lastStopReason = undefined;
     runtime.lastError = undefined;
     runtime.requestRender?.();
-    if (runtime.state?.status === "active") {
+    if (restored.recoveryProven) {
+      recoverGoalAfterManualCompaction(pi, runtime, initState, ctx);
+    } else if (runtime.state?.status === "active") {
       setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
     }
-  });
+  };
 
-  pi.on("session_tree", (_event, ctx) => {
-    runtime.state = restoreGoalState(ctx);
-    runtime.continuationScheduled = false;
-    runtime.continuationHeld = false;
-    runtime.continuationHeldForCompaction = false;
-    runtime.goalTurnInFlight = false;
-    runtime.agentEndObserved = false;
-    runtime.persistenceRetryNeeded = false;
-    runtime.lastStopReason = undefined;
-    runtime.lastError = undefined;
-    runtime.requestRender?.();
-    if (runtime.state?.status === "active") {
-      setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
-    }
-  });
+  pi.on("session_start", (_event, ctx) => restoreGoal(ctx));
+  pi.on("session_tree", (_event, ctx) => restoreGoal(ctx));
 
   pi.on("session_shutdown", (_event, ctx) => {
     if (runtime.state?.status === "active") {
@@ -403,7 +468,6 @@ export function registerGoal(
     runtime.state = undefined;
     runtime.continuationScheduled = false;
     runtime.continuationHeld = false;
-    runtime.continuationHeldForCompaction = false;
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
     runtime.persistenceRetryNeeded = false;
@@ -423,6 +487,7 @@ export function registerGoal(
       turns: current.turns + 1,
       updatedAt: now,
       activeStartedAt: current.activeStartedAt ?? now,
+      resumeAfterManualCompaction: undefined,
     };
     try {
       persistGoalState(pi, runtime, "turn", next);
@@ -507,7 +572,7 @@ export function registerGoal(
           return;
         }
         if (runtime.state.status === "paused") {
-          if (!runtime.persistenceRetryNeeded) {
+          if (!runtime.persistenceRetryNeeded && runtime.state.resumeAfterManualCompaction !== true) {
             ctx.ui.notify("Goal is already paused", "info");
             return;
           }
@@ -516,11 +581,16 @@ export function registerGoal(
             ...runtime.state,
             revision: runtime.state.revision + 1,
             updatedAt: now,
+            resumeAfterManualCompaction: undefined,
           };
           try {
             persistGoalState(pi, runtime, "pause", checkpoint);
-            ctx.ui.notify("Goal pause saved", "info");
+            ctx.ui.notify("Goal pause saved. Goal remains paused. Automatic compaction recovery is off.", "info");
           } catch (error) {
+            runtime.state = checkpoint;
+            runtime.persistenceRetryNeeded = true;
+            runtime.continuationScheduled = false;
+            runtime.requestRender?.();
             reportError(ctx, "Goal pause still could not be saved", error);
           }
           return;
@@ -562,7 +632,7 @@ export function registerGoal(
           return;
         }
         try {
-          transitionGoal(pi, runtime, "resume", "active", undefined, true);
+          transitionGoal(pi, runtime, "resume", "active", undefined, { resetBlockedAudit: true });
           runtime.continuationScheduled = false;
           if (scheduleGoalContinuation(pi, runtime, initState, ctx)) ctx.ui.notify("Goal resumed", "info");
         } catch (error) {
@@ -620,6 +690,7 @@ export function registerGoal(
           activeStartedAt: now,
           blockedAuditStartTurn: current.turns,
           result: undefined,
+          resumeAfterManualCompaction: undefined,
         };
         try {
           persistGoalState(pi, runtime, "edit", next);
@@ -720,7 +791,6 @@ export function registerGoalSettlement(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   initState: InitRuntime,
-  compactionRuntime?: CompactionRuntime,
 ): void {
   pi.on("agent_settled", (_event, ctx) => {
     const wasGoalTurn = runtime.goalTurnInFlight;
@@ -739,17 +809,18 @@ export function registerGoalSettlement(
       pauseGoalAfterFailure(pi, runtime, ctx, "the goal turn ended without an agent result");
       return;
     }
-    if (runtime.lastStopReason === "error" || runtime.lastStopReason === "aborted") {
-      const reason = runtime.lastError || (runtime.lastStopReason === "aborted" ? "the agent turn was aborted" : "the agent turn failed");
+    if (runtime.lastStopReason === "aborted") {
+      const reason = runtime.lastError || "the agent turn was aborted";
+      runtime.lastStopReason = undefined;
+      runtime.lastError = undefined;
+      pauseGoalForPossibleManualCompaction(pi, runtime, ctx, reason);
+      return;
+    }
+    if (runtime.lastStopReason === "error") {
+      const reason = runtime.lastError || "the agent turn failed";
       runtime.lastStopReason = undefined;
       runtime.lastError = undefined;
       pauseGoalAfterFailure(pi, runtime, ctx, reason);
-      return;
-    }
-    if (compactionRuntime?.compactionInFlight) {
-      runtime.continuationHeld = true;
-      runtime.continuationHeldForCompaction = true;
-      runtime.requestRender?.();
       return;
     }
     runtime.lastStopReason = undefined;
@@ -757,16 +828,8 @@ export function registerGoalSettlement(
     scheduleGoalContinuation(pi, runtime, initState, ctx);
   });
 
-  if (compactionRuntime) {
-    pi.on("session_compact", (_event, ctx) => {
-      if (!runtime.continuationHeldForCompaction) return;
-      runtime.continuationHeldForCompaction = false;
-      if (!runtime.continuationHeld || runtime.state?.status !== "active" || initState.active) {
-        runtime.continuationHeld = false;
-        return;
-      }
-      runtime.continuationHeld = false;
-      setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
-    });
-  }
+  pi.on("session_compact", (event, ctx) => {
+    if (event.reason !== "manual") return;
+    recoverGoalAfterManualCompaction(pi, runtime, initState, ctx);
+  });
 }

@@ -31,7 +31,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.2
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.3
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -43,7 +43,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Animated orange 12-frame activity glyph loop at 120 ms per frame, with orange shuffled Claude-adjacent verbs changing every 2.5 seconds, a gray `(esc to interrupt · thinking)` status with bold `esc`, and a quiet hidden-thinking label
 - Framed multiline editor with Shift+Enter support and live command-blue highlighting for recognized slash command prefixes
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
-- Automatic model-backed context compaction at 40% remaining; active goals continue after the saved summary
+- Pi-owned context compaction with active goals continuing from Pi's settled boundary after manual, threshold, and overflow compaction
 - Optional completion sounds after successful or failed settled requests, excluding manual aborts
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` with an interactive status/action panel, durable objectives, pause, resume, edit, confirmed panel clearing, automatic continuation, and explicit completion
@@ -84,7 +84,9 @@ The completion sound is a global user preference stored in Pi's agent directory 
 
 KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar. An active goal replaces the right-side path with warning-yellow `/goal is active (...)` and keeps exact seconds in minute and hour formats. Paused and blocked goals retain their existing placement; completed goals remain in transcript history and `/goal` status rather than the footer. At narrow widths, context pressure and actionable goal state take priority.
 
-KillerOS checks context after each agent turn. At 40% remaining, it starts Pi's model-backed compaction after the current run settles, so the active turn is not aborted. Manual `/compact` uses the same model path and keeps custom focus instructions. If model compaction is unavailable or exhausts its retries, KillerOS uses the disclosed deterministic fallback and warns that repeated compaction can reduce accuracy.
+Pi decides when compaction runs and Pi writes the summary, applies manual focus instructions, tracks files, retries summarization, and handles overflow recovery. KillerOS does not add a second threshold or replace Pi's summary. Active `/goal` work continues from Pi's settled boundary, after Pi finishes retries, compaction, and queued work.
+
+Manual `/compact` aborts the current goal turn before summarization, so KillerOS records an honest temporary pause for that exact goal revision. After Pi saves the manual summary, KillerOS resumes that revision automatically. A failed or cancelled manual compaction stays paused; run `/goal pause` during the pause to cancel automatic recovery.
 
 For trusted projects, KillerOS loads `AGENTS.local.md` after Pi's shared repository context. A one-line `@path` or `@~/path` file imports personal guidance from another location.
 

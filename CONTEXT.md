@@ -4,6 +4,38 @@ Shared product language for KillerOS as a workflow layer inside the Pi coding ag
 
 ## Language
 
+**Goal truth**:
+The durable `/goal` objective and status on the active session branch. It is the only authoritative long-running goal state across turns, compaction, reload, and branch navigation.
+_Avoid_: compaction-owned goal, handoff goal copy, summary as source of truth
+
+**Compaction projection**:
+A disposable view that Pi’s default compaction summarizer writes from transcript evidence to carry current progress, important decisions, blockers or unresolved issues, and the exact next action across compaction. It may quote Goal truth but never becomes authoritative goal state.
+_Avoid_: goal checkpoint, handoff ledger, second goal state
+
+**Manual compaction recovery**:
+The fail-closed transition recorded in `/goal` entries that makes a Pi-forced goal-turn abort eligible for reactivation only when active-branch order proves a successful later compaction for that exact paused Goal truth revision with no intervening goal transition. KillerOS reports the temporary pause and successful resume; a failed or cancelled compaction leaves the goal paused, reload can finish a proven recovery, and an explicit `/goal pause` clears recovery eligibility.
+_Avoid_: compaction preemption, unconditional abort resume, timer-based resume
+
+**Goal continuation gate**:
+Pi’s settled boundary, reached only after retries, compaction, and queued follow-ups finish. KillerOS starts the next active goal turn there instead of mirroring Pi’s internal compaction state.
+_Avoid_: compaction hold, threshold gate, in-flight mirror
+
+**Host compaction recovery**:
+Pi’s own retry path after threshold compaction fails. KillerOS keeps the goal active; Pi retries compaction on later work, while an unrecovered overflow becomes an agent error that pauses the goal through normal goal failure handling.
+_Avoid_: KillerOS compaction retry, threshold-failure watchdog, inferred failure pause
+
+**Fail-closed compaction**:
+The rule that Pi always writes the compaction projection and KillerOS never substitutes a deterministic or model-backed fallback. If Pi cannot summarize, the failed compaction does not replace context and recovery follows the compaction reason.
+_Avoid_: deterministic fallback, KillerOS summary retry, emergency handoff
+
+**Pi lifecycle compatibility**:
+KillerOS integration through Pi’s public goal, session, and compaction lifecycle contracts without version-specific branches. Compatibility checks cover the supported minimum and the latest matched Pi package set so Pi can keep evolving without redesigning KillerOS ownership.
+_Avoid_: latest-only integration, pinned-host architecture, version switch
+
+**Projection resume rule**:
+The goal-turn instruction to restore the exact objective from Goal truth, then continue from the compaction projection’s first concrete next step after checking current repository state. It adds no handoff message or stored progress copy.
+_Avoid_: restart from objective, hidden resume message, unverified next step
+
 **Host-owned dependency resolution**:
 The install root that owns Pi decides which versions Pi loads. A published KillerOS override protects KillerOS's own development tree but cannot govern a consumer's Pi install.
 _Avoid_: universal package override, dependency-owned override

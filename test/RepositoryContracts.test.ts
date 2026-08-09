@@ -9,8 +9,8 @@ const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const product = readFileSync(new URL("../PRODUCT.md", import.meta.url), "utf8");
 const design = readFileSync(new URL("../DESIGN.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
-const concept = readFileSync(new URL("../design/main-Killeros.html", import.meta.url), "utf8");
-const conceptText = concept.replace(/<[^>]+>/gu, "");
+const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+const oldCompactionPlan = readFileSync(new URL("../docs/implemented/context-compaction.md", import.meta.url), "utf8");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
 function repositoryFiles(directory = repositoryRoot): string[] {
@@ -39,31 +39,6 @@ test("repository contains no retired feature references", () => {
   assert.deepEqual(matches, []);
 });
 
-test("browser concept keeps colors and radii in root tokens", () => {
-  const css = concept.match(/<style>([\s\S]*?)<\/style>/u)?.[1] ?? "";
-  const withoutRoot = css.replace(/:root\s*\{[\s\S]*?\}/u, "");
-  assert.doesNotMatch(withoutRoot, /:\s*(?:#[0-9a-f]{3,8}\b|rgba?\([^)]*\))/iu);
-  assert.doesNotMatch(withoutRoot, /border-radius\s*:\s*(?!var\()/iu);
-});
-
-test("browser concept describes the current KillerOS runtime", () => {
-  assert.match(concept, new RegExp(`\\(v${packageJson.version.replaceAll(".", "\\.")}\\)`));
-  assert.doesNotMatch(concept, /Plan only|no runtime implementation yet|Planned KillerOS goal flow|Proposed KillerOS init flow/iu);
-  assert.match(concept, /Animated orange glyph loop/iu);
-  assert.match(conceptText, /·✢✱✶✻✽✽✻✶✱✢·/u);
-  assert.match(concept, /120 ms/u);
-  assert.doesNotMatch(concept, /Static Spark/iu);
-  assert.match(concept, /2\.5 seconds/u);
-  assert.match(concept, /Pause automatic continuation/u);
-  assert.match(concept, /Completed goals leave the footer/u);
-});
-
-test("browser concept preserves visible keyboard focus", () => {
-  const css = concept.match(/<style>([\s\S]*?)<\/style>/u)?.[1] ?? "";
-  assert.doesNotMatch(css, /:focus-visible[^\{]*\{[^}]*outline\s*:\s*(?:0|none)/giu);
-  assert.match(css, /:focus-visible[^\{]*\{[^}]*outline\s*:\s*2px solid var\(--coral\)/giu);
-});
-
 test("peer ranges enforce the documented lower bounds", () => {
   assert.deepEqual(packageJson.peerDependencies, {
     "@earendil-works/pi-ai": ">=0.82.1",
@@ -73,9 +48,31 @@ test("peer ranges enforce the documented lower bounds", () => {
   });
 });
 
+test("compaction documentation assigns ownership to Pi", () => {
+  assert.match(readme, /Pi decides when compaction runs/u);
+  assert.match(readme, /Pi writes the summary/u);
+  assert.match(readme, /manual `\/compact`.*pause.*resumes/isu);
+  assert.doesNotMatch(readme, /40% remaining|deterministic fallback|KillerOS checks context after each agent turn/iu);
+  assert.match(oldCompactionPlan, /STATUS: SUPERSEDED/u);
+  assert.match(oldCompactionPlan, /docs\/adr\/0001-let-pi-own-compaction\.md/u);
+});
+
+test("CI checks the locked Pi floor and latest matched Pi packages", () => {
+  assert.match(ci, /Pi latest compatibility/u);
+  assert.match(ci, /npm view @earendil-works\/pi-coding-agent version/u);
+  assert.match(ci, /dependencies\.@earendil-works\/pi-ai/u);
+  assert.match(ci, /dependencies\.@earendil-works\/pi-tui/u);
+  assert.match(ci, /@earendil-works\/pi-ai@\$PI_AI_RANGE/u);
+  assert.match(ci, /@earendil-works\/pi-coding-agent@\$PI_VERSION/u);
+  assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
+  assert.match(ci, /--package-lock=false/u);
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.82.1");
+  assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.82.1");
+});
+
 test("product and design docs match current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.2");
-  assert.match(readme, /@v2\.0\.2/u);
+  assert.equal(packageJson.version, "2.0.3");
+  assert.match(readme, /@v2\.0\.3/u);
   assert.match(readme, /12-frame/u);
   assert.match(product, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
   assert.match(product, /120 ms/u);

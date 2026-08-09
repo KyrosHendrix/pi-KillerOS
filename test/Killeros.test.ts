@@ -410,6 +410,10 @@ test("registers /goal and completes only through the model goal tool", async () 
   assert.equal(sentMessages[0].message.customType, "killeros-goal-continuation");
   assert.match(sentMessages[0].message.content, /Ship only after every release check passes/u);
   assert.match(sentMessages[0].message.content, /killeros_goal_update/u);
+  assert.match(sentMessages[0].message.content, /exact objective above from \/goal/u);
+  assert.match(sentMessages[0].message.content, /first concrete next step/u);
+  assert.match(sentMessages[0].message.content, /checking the current repository state/u);
+  assert.doesNotMatch(sentMessages[0].message.content, /hidden handoff|stored progress copy/u);
   assert.match(sentMessages[0].message.content, /Action-oriented response guidance/u);
   assert.deepEqual(sentMessages[0].options, { triggerTurn: true, deliverAs: "followUp" });
   assert.equal(appendedEntries.at(-1).customType, "killeros-goal");
@@ -2109,6 +2113,7 @@ test("footer cuts down by priority while preserving model and context", () => {
   const { handlers } = createHarness();
   const entries = [{ type: "message", message: { role: "assistant", usage: usage(10) } }];
   const { captured, ctx, tui } = createTuiContext(entries);
+  ctx.cwd = path.join(path.parse(process.cwd()).root, "work", "pi-KillerOS");
   ctx.model = {
     id: "gpt-5.6-sol",
     name: "GPT-5.6 Sol",
@@ -2127,13 +2132,13 @@ test("footer cuts down by priority while preserving model and context", () => {
   const wide = footer.render(160)[0];
   assert.match(wide, /GPT-5\.6 Sol OpenAI · high · 95% left \(1M\) · main · \d+s · \$10\.00/u);
   const normalizedHome = (process.env.HOME || process.env.USERPROFILE || os.homedir()).replace(/[\\/]+$/u, "");
-  const normalizedCwd = process.cwd().replace(/[\\/]+$/u, "");
+  const normalizedCwd = ctx.cwd.replace(/[\\/]+$/u, "");
   const separator = normalizedCwd.slice(normalizedHome.length, normalizedHome.length + 1);
   const displayedCwd = normalizedCwd === normalizedHome
     ? "~"
     : normalizedCwd.startsWith(normalizedHome) && /^[\\/]/u.test(separator)
       ? `~${normalizedCwd.slice(normalizedHome.length)}`
-      : process.cwd();
+      : ctx.cwd;
   assert.ok(wide.includes(displayedCwd));
 
   const focused = footer.render(72)[0];
@@ -2389,6 +2394,7 @@ test("shell startup contains no synchronous child process call", () => {
 test("header renders the compact KillerOS card", () => {
   const { handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
+  ctx.cwd = path.join(path.parse(process.cwd()).root, "work", "pi-KillerOS");
   ctx.ui.theme = {
     bold: (text) => `\x1B[1m${text}\x1B[22m`,
     fg: (color, text) => color === "text"

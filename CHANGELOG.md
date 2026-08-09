@@ -4,10 +4,21 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-08-09
+
 ### Added
 
 - Added an opt-in global completion sound with `/notification` and an enabled-state Nerd Font bell in the terminal tab title.
 - Moved active goal status to the footer's right side in warning yellow, replacing the path with `/goal is active (...)` and exact seconds.
+
+### Changed
+
+- Returned compaction timing, summary generation, manual instructions, retries, file tracking, and overflow recovery to Pi's public lifecycle.
+- Continued active goals only after Pi reaches its settled boundary and preserved `/goal` as the sole durable objective and status owner.
+
+### Fixed
+
+- Added fail-closed, revision-bound recovery after successful manual compaction, including reload and branch navigation recovery without reviving stale or explicitly paused goals.
 
 ## [2.0.2] - 2026-08-08
 
