@@ -19,6 +19,7 @@ All notable changes to KillerOS are documented here.
 ### Fixed
 
 - Added fail-closed, revision-bound recovery after successful manual compaction, including reload and branch navigation recovery without reviving stale or explicitly paused goals.
+- Rendered question help from the effective selector keybindings across supported Pi versions.
 
 ## [2.0.2] - 2026-08-08
 

@@ -1,4 +1,4 @@
-import { keyHint, type ExtensionAPI, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   decodeKittyPrintable,
   Editor,
@@ -173,6 +173,21 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
           done(selection);
         };
         finishFromAbort = () => finish({ kind: "aborted" });
+
+        const keyHint = (
+          keybinding: Parameters<typeof keybindings.getKeys>[0],
+          description: string,
+        ): string => {
+          const keyText = keybindings.getKeys(keybinding)
+            .join("/")
+            .split("/")
+            .map((key) => key
+              .split("+")
+              .map((part) => process.platform === "darwin" && part.toLocaleLowerCase() === "alt" ? "option" : part)
+              .join("+"))
+            .join("/");
+          return theme.fg("dim", keyText) + theme.fg("muted", ` ${description}`);
+        };
 
         const editorTheme: EditorTheme = {
           borderColor: (text) => theme.fg("accent", text),
