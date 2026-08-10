@@ -95,6 +95,14 @@ function visibleOptionRange(total: number, selected: number, capacity: number): 
   return { start, end: Math.min(total, start + size) };
 }
 
+function boundedQuestionLines(question: string, width: number, rowLimit: number): string[] {
+  const wrapped = wrapTextWithAnsi(question.replace(/\s+/gu, " ").trim(), width);
+  if (wrapped.length <= rowLimit) return wrapped;
+  const visible = wrapped.slice(0, rowLimit);
+  visible[rowLimit - 1] = truncateToWidth(visible[rowLimit - 1]!, width, "…");
+  return visible;
+}
+
 export function registerQuestionTool(pi: ExtensionAPI): void {
   const customInputHistory: string[] = [];
   let customInputHistoryBytes = 0;
@@ -364,7 +372,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
 
           if (rowBudget <= 5) {
             const compact = [
-              truncateToWidth(params.question.replace(/\s+/gu, " "), renderWidth, "…"),
+              ...boundedQuestionLines(params.question, renderWidth, Math.max(1, rowBudget - 3)),
               editMode
                 ? `Answer ${answerCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`
                 : `${selected ? `> ${selected.label}` : "No matching options"} · ${position}`,
@@ -383,7 +391,8 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
             return cachedLines;
           }
 
-          const contentRows = rowBudget - 5;
+          const questionLines = boundedQuestionLines(params.question, renderWidth, Math.max(1, rowBudget - 5));
+          const contentRows = rowBudget - questionLines.length - 4;
           const optionCapacity = Math.max(1, Math.min(5, Math.ceil(contentRows / 2)));
           const detailCapacity = Math.max(0, contentRows - optionCapacity);
           const { start, end } = visibleOptionRange(visibleOptions.length, optionIndex, optionCapacity);
@@ -401,7 +410,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
             : `${keyHint("tui.select.up", "up")} • ${keyHint("tui.select.down", "down")} • ${keyHint("tui.select.confirm", "select")} • ${keyHint("tui.select.cancel", filterQuery ? "clear filter" : "cancel")}`;
           const lines: string[] = [
             theme.fg("accent", "─".repeat(renderWidth)),
-            theme.fg("text", truncateToWidth(` ${params.question.replace(/\s+/gu, " ")}`, renderWidth, "…")),
+            ...questionLines.map((line) => theme.fg("text", line)),
             theme.fg("muted", truncateToWidth(` ${progress}`, renderWidth, "…")),
           ];
 

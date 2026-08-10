@@ -2341,6 +2341,21 @@ test("question keeps a custom draft visible at the six-row layout boundary", asy
   await question.result;
 });
 
+test("question wraps its full prompt when terminal width narrows", async () => {
+  const { tools } = createHarness();
+  const prompt = "Which deployment strategy should we use for this application now that the terminal is narrower than full screen?";
+  const question = await startQuestion(tools.get("question"), undefined, prompt, 12);
+
+  assert.match(question.component.render(80).join("\n"), /narrower than full screen\?/u);
+  const narrowed = question.component.render(40);
+  assert.match(narrowed.join("\n"), /narrower than full screen\?/u);
+  assert.ok(narrowed.length <= 12);
+  assert.ok(narrowed.every((line) => visibleWidth(line) <= 40));
+
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
 test("question rendering never exceeds terminal height for valid maximum content", async () => {
   const { tools } = createHarness();
   const options = Array.from({ length: 9 }, (_, index) => ({
