@@ -75,6 +75,13 @@ function shuffledTips(): string[] {
   return tips;
 }
 
+let tipDeck: string[] = [];
+
+function nextStartupTip(): string {
+  if (tipDeck.length === 0) tipDeck = shuffledTips();
+  return tipDeck.pop() ?? STARTUP_TIPS[0];
+}
+
 function compactBoxLine(content: string, width: number, theme: Theme): string {
   if (width < 4) return truncateToWidth(content, width, "");
   return `${theme.fg("dim", "│")} ${padRight(content, width - 4)} ${theme.fg("dim", "│")}`;
@@ -258,11 +265,6 @@ export function registerShellUi(pi: ExtensionAPI): void {
   let activityDeck: string[] = [];
   let lastActivityWord: string | undefined;
   let activityTimer: ReturnType<typeof setInterval> | undefined;
-  let tipDeck: string[] = [];
-  const nextStartupTip = (): string => {
-    if (tipDeck.length === 0) tipDeck = shuffledTips();
-    return tipDeck.pop() ?? STARTUP_TIPS[0];
-  };
   const refillActivityDeck = (): void => {
     activityDeck = [...ACTIVITY_WORDS];
     for (let index = activityDeck.length - 1; index > 0; index -= 1) {

@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Kept the startup-tip shuffle deck across session rebinds so every tip appears before the bank repeats.
 - Rejected matchers on `agent_settled` lifecycle hooks instead of silently bypassing their tool-name guard.
 - Made the goal update status schema compatible with Google models while preserving strict completion and blocking values.
 - Kept multiline custom-answer drafts within tiny terminal row limits by rendering a clipped single-line preview.

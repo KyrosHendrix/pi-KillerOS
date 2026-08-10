@@ -3095,21 +3095,29 @@ test("header renders the compact KillerOS card", () => {
   header.dispose();
 });
 
-test("startup tips stay fixed within a session and cycle before repeating", () => {
-  const { handlers } = createHarness();
-  const sessionStart = handlers.get("session_start")[0];
-  const sessionShutdown = handlers.get("session_shutdown")[0];
+test("startup tips stay fixed within a session and cycle across fresh registrations", async () => {
+  const originalRandom = Math.random;
   const tips = [];
   const strip = (line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "").trim();
+  const shellUiUrl = new URL("../killeros/shell-ui.ts", import.meta.url);
+  shellUiUrl.searchParams.set("startup-tip-test", String(Date.now()));
+  const { registerShellUi } = await import(shellUiUrl.href);
+  Math.random = () => 0;
 
-  for (let index = 0; index < 4; index += 1) {
-    const { captured, ctx, tui } = createTuiContext();
-    sessionStart({}, ctx);
-    const first = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
-    const second = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
-    assert.equal(first, second);
-    tips.push(first);
-    sessionShutdown();
+  try {
+    for (let index = 0; index < 4; index += 1) {
+      const { api, handlers } = createHarness();
+      registerShellUi(api);
+      const { captured, ctx, tui } = createTuiContext();
+      handlers.get("session_start").at(-1)({}, ctx);
+      const first = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
+      const second = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
+      assert.equal(first, second);
+      tips.push(first);
+      handlers.get("session_shutdown").at(-1)({}, ctx);
+    }
+  } finally {
+    Math.random = originalRandom;
   }
 
   assert.equal(new Set(tips).size, 4);
