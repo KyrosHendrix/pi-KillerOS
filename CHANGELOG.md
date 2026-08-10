@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Wrapped long interactive questions to the current terminal width while keeping the question UI within the terminal height.
 - Made `/goal pause` and `/goal clear` save terminal state before immediately stopping active goal work.
 - Kept failed goal edits and replacements visible and fail-closed without restarting a stale objective.
 - Required one durable blocker key on three consecutive goal turns before a goal can be marked blocked.

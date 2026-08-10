@@ -65,6 +65,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - Follow the repository's folder and file rules for every change.
 - Put new specs and plans in `docs/spec`.
 - When a spec or plan is implemented, add `STATUS: DONE` and move it to `docs/implemented`.
+- Add a concise `CHANGELOG.md` entry only for a bug fix, update, feature, or other notable change that has been implemented in the repository.
+- Do not add changelog entries for brainstorms, ideas, proposals, specs, plans, or other unimplemented work. Add the entry only in the later change that implements the work.
 - Do not commit or push changes unless explicitly requested.
 
 ---
