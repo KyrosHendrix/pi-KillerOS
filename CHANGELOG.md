@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Rejected matchers on `agent_settled` lifecycle hooks instead of silently bypassing their tool-name guard.
 - Made the goal update status schema compatible with Google models while preserving strict completion and blocking values.
 - Kept multiline custom-answer drafts within tiny terminal row limits by rendering a clipped single-line preview.
 - Preserved existing spaces and tabs after the cursor when applying slash-command autocomplete.

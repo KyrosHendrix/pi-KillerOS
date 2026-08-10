@@ -44,6 +44,10 @@ function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
       const candidates = parsed.hooks?.[event];
       if (!Array.isArray(candidates)) continue;
       hooks[event] = candidates.filter((hook, index) => {
+        if (event === "agent_settled" && hook?.matcher !== undefined) {
+          ctx.ui.notify(`Ignored ${event} hook ${index + 1}: matchers are only valid for tool events`, "warning");
+          return false;
+        }
         const valid = hook
           && typeof hook.command === "string"
           && hook.command.trim().length > 0

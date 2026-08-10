@@ -94,7 +94,7 @@ Manual `/compact` aborts the current goal turn before summarization, so KillerOS
 
 For trusted projects, KillerOS loads `AGENTS.local.md` after Pi's shared repository context. A one-line `@path` or `@~/path` file imports personal guidance from another location.
 
-Lifecycle hooks are loaded from `.pi/killeros-hooks.json` at session start. Supported event keys are `tool_call`, `tool_result`, and `agent_settled`; matchers are JavaScript regular expressions over Pi tool names. Hook commands run from the repository root with `KILLEROS_EVENT`, `KILLEROS_TOOL`, and `KILLEROS_PAYLOAD` environment variables. Failed `tool_call` hooks block the tool, while later-event failures notify the user. Aborting the parent request stops the hook process tree with bounded graceful and forced cleanup without reporting cancellation as a hook failure.
+Lifecycle hooks are loaded from `.pi/killeros-hooks.json` at session start. Supported event keys are `tool_call`, `tool_result`, and `agent_settled`. Optional matchers are JavaScript regular expressions over Pi tool names, so they are valid only for `tool_call` and `tool_result`; KillerOS rejects an `agent_settled` hook that defines a matcher. Hook commands run from the repository root with `KILLEROS_EVENT`, `KILLEROS_TOOL`, and `KILLEROS_PAYLOAD` environment variables. Failed `tool_call` hooks block the tool, while later-event failures notify the user. Aborting the parent request stops the hook process tree with bounded graceful and forced cleanup without reporting cancellation as a hook failure.
 
 ## Behavior by mode
 

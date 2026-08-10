@@ -2134,6 +2134,35 @@ test("does not load lifecycle hooks for untrusted projects", async () => {
   }
 });
 
+test("rejects agent_settled matchers without executing their commands", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-settled-matcher-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const marker = path.join(directory, "marker.txt");
+    const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('marker.txt','ran')"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { agent_settled: [{ matcher: "^bash$", command }] },
+    }));
+
+    const { handlers } = createHarness();
+    const notifications = [];
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+
+    assert.equal(existsSync(marker), false);
+    assert.deepEqual(notifications, [{
+      message: "Ignored agent_settled hook 1: matchers are only valid for tool events",
+      level: "warning",
+    }]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("project tool_call hooks can deterministically block a tool", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-"));
   try {
