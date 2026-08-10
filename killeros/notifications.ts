@@ -65,7 +65,7 @@ export function formatNotificationTitle(
   sessionName: string | undefined,
   enabled: boolean,
 ): string {
-  const directory = basename(cwd);
+  const directory = basename(cwd) || cwd;
   const base = sessionName ? `π - ${sessionName} - ${directory}` : `π - ${directory}`;
   return enabled ? `${base} ${COMPLETION_BELL_GLYPH}` : base;
 }

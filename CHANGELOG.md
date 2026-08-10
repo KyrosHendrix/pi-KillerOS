@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Preserved complete UTF-8 characters in truncated `/init` evidence and chunked lifecycle-hook output, and kept filesystem-root paths visible in notification titles.
 - Kept the startup-tip shuffle deck across session rebinds so every tip appears before the bank repeats.
 - Rejected matchers on `agent_settled` lifecycle hooks instead of silently bypassing their tool-name guard.
 - Made the goal update status schema compatible with Google models while preserving strict completion and blocking values.

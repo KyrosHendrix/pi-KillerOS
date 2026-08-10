@@ -1877,6 +1877,7 @@ test("/init attaches a bounded project snapshot without reading existing guidanc
 test("/init snapshot does not follow linked manifest files", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-linked-manifest-"));
   try {
+    execFileSync("git", ["init"], { cwd: directory, stdio: "ignore", windowsHide: true });
     writeFileSync(path.join(directory, "private-manifest.txt"), "PRIVATE-LINKED-CONTENT\n");
     if (!createFileSymlinkOrSkip(t, "private-manifest.txt", path.join(directory, "package.json"))) return;
 
@@ -1894,6 +1895,24 @@ test("/init snapshot does not follow linked manifest files", async (t) => {
 
     await emitSequentially(handlers.get("agent_settled"), {}, {});
     await initRun;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init truncation preserves complete UTF-8 characters", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-utf8-"));
+  try {
+    execFileSync("git", ["init"], { cwd: directory, stdio: "ignore", windowsHide: true });
+    mkdirSync(path.join(directory, "src"));
+    writeFileSync(path.join(directory, "README.md"), `${"a".repeat(8_191)}😀`, "utf8");
+    writeFileSync(path.join(directory, "src", "large.ts"), `${"b".repeat(32_767)}😀`, "utf8");
+
+    const { index } = await buildInitEvidence(directory);
+
+    assert.doesNotMatch(index.snapshot, /�/u);
+    assert.doesNotMatch(await readInitEvidence(index, "src/large.ts"), /�/u);
+    assert.ok(Buffer.byteLength(index.snapshot, "utf8") <= 40 * 1024);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -2192,6 +2211,23 @@ test("project tool_call hooks can deterministically block a tool", async () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("hook output preserves UTF-8 characters split across stream chunks", async () => {
+  class ChunkedHook extends EventEmitter {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    pid = 123;
+    kill() { return true; }
+  }
+  const child = new ChunkedHook();
+  const resultPromise = executeHook("ignored", process.cwd(), {}, 1_000, () => child);
+  child.stdout.write(Buffer.from([0xf0, 0x9f]));
+  child.stdout.write(Buffer.from([0x98, 0x80]));
+  child.emit("close", 0);
+
+  const result = await resultPromise;
+  assert.equal(result.stdout, "😀");
 });
 
 test("never-closing hooks report unconfirmed exit after bounded cleanup", async () => {

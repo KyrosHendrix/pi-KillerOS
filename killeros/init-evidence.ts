@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 export const INIT_READ_TOOL = "killeros_init_read";
 export const INIT_LIST_TOOL = "killeros_init_list";
@@ -157,11 +158,15 @@ async function gitIgnoredPaths(projectRoot: string, candidates: readonly string[
   });
 }
 
+function decodeCompleteUtf8(bytes: Buffer): string {
+  return new StringDecoder("utf8").write(bytes);
+}
+
 function appendWithinLimit(current: string, section: string, limit: number): string {
   const remaining = limit - Buffer.byteLength(current, "utf8");
   if (remaining <= 0) return current;
   const bytes = Buffer.from(section, "utf8");
-  return current + bytes.subarray(0, remaining).toString("utf8");
+  return current + decodeCompleteUtf8(bytes.subarray(0, remaining));
 }
 
 async function validateAndRead(projectRoot: string, absolutePath: string, limit: number): Promise<{ content: string; truncated: boolean }> {
@@ -188,7 +193,7 @@ async function validateAndRead(projectRoot: string, absolutePath: string, limit:
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     const data = buffer.subarray(0, Math.min(bytesRead, limit));
     if (data.includes(0)) throw new Error("/init rejects binary files");
-    return { content: data.toString("utf8"), truncated: bytesRead > limit };
+    return { content: decodeCompleteUtf8(data), truncated: bytesRead > limit };
   } finally {
     await handle.close();
   }

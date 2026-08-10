@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { reportError } from "./errors.ts";
 import { MAX_NODE_TIMER_MS } from "./limits.ts";
@@ -84,9 +85,19 @@ function matchesHook(hook: KillerosHook, value: string): boolean {
   }
 }
 
-function appendBounded(current: string, chunk: Buffer | string): string {
-  if (current.length >= HOOK_OUTPUT_LIMIT) return current;
-  return (current + chunk.toString()).slice(0, HOOK_OUTPUT_LIMIT);
+interface HookOutputBuffer {
+  bytes: number;
+  decoder: StringDecoder;
+  text: string;
+}
+
+function appendBounded(output: HookOutputBuffer, chunk: Buffer | string): void {
+  const remaining = HOOK_OUTPUT_LIMIT - output.bytes;
+  if (remaining <= 0) return;
+  const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+  const captured = bytes.subarray(0, remaining);
+  output.bytes += captured.length;
+  output.text += output.decoder.write(captured);
 }
 
 function terminateHookProcess(child: ReturnType<typeof spawn>, force: boolean): void {
@@ -134,8 +145,8 @@ export function executeHook(
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
-    let stdout = "";
-    let stderr = "";
+    const stdout: HookOutputBuffer = { bytes: 0, decoder: new StringDecoder("utf8"), text: "" };
+    const stderr: HookOutputBuffer = { bytes: 0, decoder: new StringDecoder("utf8"), text: "" };
     let completed = false;
     let termination: "timeout" | "cancelled" | undefined;
     let timer: NodeJS.Timeout | undefined;
@@ -150,8 +161,8 @@ export function executeHook(
       signal?.removeEventListener("abort", abort);
       resolve({
         code,
-        stdout,
-        stderr,
+        stdout: stdout.text,
+        stderr: stderr.text,
         timedOut: termination === "timeout",
         cancelled: termination === "cancelled",
         exitUnconfirmed,
@@ -171,10 +182,10 @@ export function executeHook(
     const abort = (): void => beginTermination("cancelled");
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) beginTermination("cancelled");
-    child.stdout.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
-    child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
+    child.stdout.on("data", (chunk) => appendBounded(stdout, chunk));
+    child.stderr.on("data", (chunk) => appendBounded(stderr, chunk));
     child.on("error", (error) => {
-      stderr = appendBounded(stderr, error.message);
+      appendBounded(stderr, error.message);
       finish(termination ? terminationCode() : 1);
     });
     child.once("close", (code) => finish(termination ? terminationCode() : code ?? 1));

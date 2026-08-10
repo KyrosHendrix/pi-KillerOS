@@ -83,6 +83,7 @@ test("notification preference creates a missing nested directory", (t) => {
 
 test("notification title follows Pi title shape and enabled suffix", () => {
   assert.equal(COMPLETION_BELL_GLYPH.codePointAt(0), 0xF009A);
+  assert.equal(formatNotificationTitle("/", undefined, false), "π - /");
   assert.equal(formatNotificationTitle("/work/pi-KillerOS", undefined, false), "π - pi-KillerOS");
   assert.equal(formatNotificationTitle("/work/pi-KillerOS", undefined, true), `π - pi-KillerOS ${COMPLETION_BELL_GLYPH}`);
   assert.equal(
