@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Made the goal update status schema compatible with Google models while preserving strict completion and blocking values.
 - Kept multiline custom-answer drafts within tiny terminal row limits by rendering a clipped single-line preview.
 - Preserved existing spaces and tabs after the cursor when applying slash-command autocomplete.
 - Made `/init` abort safely when Git ignore inspection fails or returns untrusted output, preventing ignored files from entering model evidence.

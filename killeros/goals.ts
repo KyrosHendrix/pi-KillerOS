@@ -1,3 +1,4 @@
+import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -32,7 +33,7 @@ interface RestoredGoalState {
 }
 
 const GoalUpdateParams = Type.Object({
-  status: Type.Union([Type.Literal("complete"), Type.Literal("blocked")], {
+  status: StringEnum(["complete", "blocked"] as const, {
     description: "Mark the active goal complete or blocked",
   }),
   evidence: Type.String({

@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import path from "node:path";
 import test from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { Check } from "typebox/value";
 import {
   getKeybindings,
   KeybindingsManager as TuiKeybindingsManager,
@@ -120,6 +121,23 @@ test("all KillerOS tools expose provider-compatible object schemas", () => {
     assert.equal(typeof schema.properties, "object", `${tool.name} must declare object properties`);
     assert.equal(schema.anyOf, undefined, `${tool.name} must not use a top-level anyOf`);
     assert.equal(schema.oneOf, undefined, `${tool.name} must not use a top-level oneOf`);
+  }
+});
+
+test("goal updates use a Google-compatible status enum", () => {
+  const tool = createHarness().tools.get("killeros_goal_update");
+  const schema = JSON.parse(JSON.stringify(tool.parameters));
+
+  assert.deepEqual(schema.properties.status, {
+    type: "string",
+    enum: ["complete", "blocked"],
+    description: "Mark the active goal complete or blocked",
+  });
+  for (const status of ["complete", "blocked"]) {
+    assert.equal(Check(tool.parameters, { status, evidence: "verified" }), true, status);
+  }
+  for (const status of ["active", "paused", "Complete", "", null, 0]) {
+    assert.equal(Check(tool.parameters, { status, evidence: "verified" }), false, String(status));
   }
 });
 
