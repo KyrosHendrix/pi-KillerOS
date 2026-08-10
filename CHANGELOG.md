@@ -4,6 +4,12 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Made `/goal pause` and `/goal clear` save terminal state before immediately stopping active goal work.
+- Kept failed goal edits and replacements visible and fail-closed without restarting a stale objective.
+- Required one durable blocker key on three consecutive goal turns before a goal can be marked blocked.
+
 ## [2.0.4] - 2026-08-10
 
 ### Changed

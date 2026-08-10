@@ -20,6 +20,14 @@ _Avoid_: compaction preemption, unconditional abort resume, timer-based resume
 Pi’s settled boundary, reached only after retries, compaction, and queued follow-ups finish. KillerOS starts the next active goal turn there instead of mirroring Pi’s internal compaction state.
 _Avoid_: compaction hold, threshold gate, in-flight mirror
 
+**Goal stop boundary**:
+The `/goal pause` or `/goal clear` transition that first saves non-active Goal truth, then aborts and awaits only a known KillerOS goal run. A later settlement cannot reactivate that goal, and unrelated host work is not aborted when no goal run is scheduled or in flight.
+_Avoid_: abort-first goal stop, settlement-based pause, unrelated-run abort
+
+**Blocker audit streak**:
+A durable record of one canonical blocker key on distinct consecutive goal turns. Duplicate reports in one turn do not advance it; a changed key or skipped turn restarts it, and only the third consecutive report marks Goal truth blocked.
+_Avoid_: elapsed-turn blocker, prose-matched blocker, cumulative blocker count
+
 **Goal-aware clear**:
 The confirmed `/clear` transition that aborts an in-flight goal turn, lets the old session record that goal as paused, and starts a new session only after settlement. It never waits behind a newly scheduled goal continuation or leaves the old goal active.
 _Avoid_: idle-first clear, active-goal carryover, manual-pause prerequisite

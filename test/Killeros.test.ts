@@ -283,6 +283,7 @@ function createTuiContext(entries = [], uiTheme = theme) {
   const captured = {};
   const tui = { requestRender() {}, terminal: { rows: 40 } };
   const ctx = {
+    abort() {},
     cwd: process.cwd(),
     getContextUsage: () => ({ tokens: 1_000, contextWindow: 128_000 }),
     hasPendingMessages: () => false,
@@ -558,15 +559,19 @@ test("bare /goal opens a context-valid action panel in TUI mode", async () => {
 test("goal panel confirms clear and leaves direct goal commands compatible", async () => {
   const { appendedEntries, commands } = createHarness();
   const { ctx } = createTuiContext();
+  let abortCalls = 0;
+  ctx.abort = () => { abortCalls += 1; };
   await commands.get("goal").handler("Keep this goal", ctx);
   ctx.ui.select = async () => "Clear goal";
   ctx.ui.confirm = async () => false;
   await commands.get("goal").handler("", ctx);
   assert.notEqual(appendedEntries.at(-1).data.state, null);
+  assert.equal(abortCalls, 0);
 
   ctx.ui.confirm = async () => true;
   await commands.get("goal").handler("", ctx);
   assert.equal(appendedEntries.at(-1).data.state, null);
+  assert.equal(abortCalls, 1);
 
   await commands.get("goal").handler("Direct clear", ctx);
   await commands.get("goal").handler("clear", ctx);
@@ -685,6 +690,20 @@ test("/goal reports start, resume, and edit success after dispatch", async () =>
   await commands.get("goal").handler("edit", ctx);
   assert.match(notifications.at(-1).message, /Goal updated and active/u);
   assert.equal(sentMessages.length, 3);
+});
+
+test("/goal waits for an unrelated active run to settle before dispatch", async () => {
+  const { commands, handlers, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  let idle = false;
+  ctx.isIdle = () => idle;
+
+  await commands.get("goal").handler("Start after unrelated work", ctx);
+  assert.equal(sentMessages.length, 0);
+  idle = true;
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].message.content, /Start after unrelated work/u);
 });
 
 test("/goal does not claim success when a pending message defers dispatch", async () => {
@@ -845,8 +864,8 @@ test("/goal restores only the current branch and resumes active saved work", asy
   assert.match(notifications.at(-1).message, /Finish the saved task/u);
 });
 
-test("/goal validates objectives, reserves control words, and gates blocked status", async () => {
-  const { appendedEntries, commands, handlers, tools } = createHarness();
+test("/goal validates objectives, reserves control words, and requires blocker audits during goal turns", async () => {
+  const { commands, handlers, tools } = createHarness();
   const { ctx } = createTuiContext();
   const notifications = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
@@ -859,43 +878,132 @@ test("/goal validates objectives, reserves control words, and gates blocked stat
   await commands.get("goal").handler("Resolve the blocker", ctx);
   await assert.rejects(
     tools.get("killeros_goal_update").execute(
-      "goal-blocked",
-      { status: "blocked", evidence: "Credentials are unavailable" },
+      "goal-blocked-outside-turn",
+      { status: "blocked", blockerKey: "missing-credential", evidence: "Credentials are unavailable" },
       new AbortController().signal,
       () => {},
       ctx,
     ),
-    /three goal turns/u,
+    /during an active KillerOS goal turn/u,
   );
 
-  for (let turn = 0; turn < 3; turn += 1) {
-    await emitGoalStart(handlers, ctx);
-    await emitSequentially(handlers.get("agent_end"), {
-      messages: [{ role: "assistant", stopReason: "stop" }],
-    }, ctx);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await emitGoalStart(handlers, ctx);
+  for (const blockerKey of [undefined, "", "UPPERCASE", "contains whitespace", `x${"y".repeat(120)}`]) {
+    await assert.rejects(
+      tools.get("killeros_goal_update").execute(
+        `invalid-${blockerKey}`,
+        { status: "blocked", blockerKey, evidence: "Still blocked" },
+        new AbortController().signal,
+        () => {},
+        ctx,
+      ),
+      /stable lowercase blockerKey/u,
+    );
   }
-  assert.equal(appendedEntries.at(-1).data.state.turns, 3);
-  await tools.get("killeros_goal_update").execute(
-    "goal-blocked-after-audit",
-    { status: "blocked", evidence: "The same missing credential blocked three consecutive attempts" },
+});
+
+test("a goal blocks only after the same blocker is recorded on three consecutive turns", async () => {
+  const { appendedEntries, commands, handlers, tools } = createHarness();
+  const { ctx } = createTuiContext();
+  const blocked = (id, blockerKey = "missing-credential") => tools.get("killeros_goal_update").execute(
+    id,
+    { status: "blocked", blockerKey, evidence: `Evidence for ${blockerKey}` },
     new AbortController().signal,
     () => {},
     ctx,
   );
-  assert.equal(appendedEntries.at(-1).data.state.status, "blocked");
+  const finishTurn = async () => {
+    await emitSequentially(handlers.get("agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  };
 
-  await commands.get("goal").handler("resume", ctx);
-  await assert.rejects(
-    tools.get("killeros_goal_update").execute(
-      "goal-blocked-too-soon-after-resume",
-      { status: "blocked", evidence: "The blocker appeared again" },
+  await commands.get("goal").handler("Resolve one stable blocker", ctx);
+  await emitGoalStart(handlers, ctx);
+  const first = await blocked("first");
+  assert.equal(first.details.status, "blocker-audit");
+  assert.equal(first.details.streak, 1);
+  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+
+  const duplicate = await blocked("duplicate");
+  assert.equal(duplicate.details.streak, 1, "duplicate calls in one turn must not advance the streak");
+  await finishTurn();
+
+  await emitGoalStart(handlers, ctx);
+  const second = await blocked("second");
+  assert.equal(second.details.streak, 2);
+  await finishTurn();
+
+  await emitGoalStart(handlers, ctx);
+  const third = await blocked("third");
+  assert.equal(third.details.status, "blocked");
+  assert.equal(third.details.streak, 3);
+  assert.equal(appendedEntries.at(-1).data.state.status, "blocked");
+  assert.deepEqual(appendedEntries.at(-1).data.state.blockerAudit, {
+    key: "missing-credential",
+    streak: 3,
+    lastTurn: 3,
+  });
+});
+
+test("resume, edit, and completion clear blocker audit progress", async () => {
+  for (const transition of ["resume", "edit", "complete"]) {
+    const { appendedEntries, commands, handlers, tools } = createHarness();
+    const { ctx } = createTuiContext();
+    await commands.get("goal").handler(`Reset audit on ${transition}`, ctx);
+    await emitGoalStart(handlers, ctx);
+    await tools.get("killeros_goal_update").execute(
+      `audit-before-${transition}`,
+      { status: "blocked", blockerKey: "stable-blocker", evidence: "First attempt" },
       new AbortController().signal,
       () => {},
       ctx,
-    ),
-    /current audit/u,
+    );
+    if (transition === "resume") {
+      await commands.get("goal").handler("pause", ctx);
+      await commands.get("goal").handler("resume", ctx);
+    } else if (transition === "edit") {
+      ctx.ui.editor = async () => "Edited objective";
+      await commands.get("goal").handler("edit", ctx);
+    } else {
+      await tools.get("killeros_goal_update").execute(
+        "complete-after-audit",
+        { status: "complete", evidence: "Verified complete" },
+        new AbortController().signal,
+        () => {},
+        ctx,
+      );
+    }
+    assert.equal(appendedEntries.at(-1).data.state.blockerAudit, undefined, transition);
+  }
+});
+
+test("changed and skipped blocker turns reset the blocker streak", async () => {
+  const { appendedEntries, commands, handlers, tools } = createHarness();
+  const { ctx } = createTuiContext();
+  const blocked = (blockerKey) => tools.get("killeros_goal_update").execute(
+    blockerKey,
+    { status: "blocked", blockerKey, evidence: "Repeated evidence" },
+    new AbortController().signal,
+    () => {},
+    ctx,
   );
+  const finishTurn = async () => {
+    await emitSequentially(handlers.get("agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  };
+
+  await commands.get("goal").handler("Audit blocker resets", ctx);
+  await emitGoalStart(handlers, ctx);
+  await blocked("first-blocker");
+  await finishTurn();
+  await emitGoalStart(handlers, ctx);
+  assert.equal((await blocked("changed-blocker")).details.streak, 1);
+  await finishTurn();
+  await emitGoalStart(handlers, ctx);
+  await finishTurn();
+  await emitGoalStart(handlers, ctx);
+  assert.equal((await blocked("changed-blocker")).details.streak, 1);
+  assert.equal(appendedEntries.at(-1).data.state.status, "active");
 });
 
 test("/goal fails closed when the current branch cannot be read", async () => {
@@ -997,6 +1105,241 @@ test("/goal edit resumes after invalid input and pauses after persistence failur
   assert.match(notifications.at(-1).message, /Goal paused/u);
   assert.match(notifications.at(-1).message, /session write failed/u);
   assert.equal(appendedEntries.at(-1).data.state.objective, "Keep the original objective");
+});
+
+test("/goal pause and clear persist terminal state before stopping an active goal run", async () => {
+  for (const mode of ["tui", "rpc"]) {
+    for (const control of ["pause", "clear"]) {
+      const { api, commands, handlers, sentMessages } = createHarness();
+      const { ctx } = createTuiContext();
+      ctx.mode = mode;
+      const calls = [];
+      const appendEntry = api.appendEntry;
+      api.appendEntry = (customType, data) => {
+        appendEntry(customType, data);
+        if (data.event === control) calls.push(`persist:${data.state?.status ?? "clear"}`);
+      };
+      ctx.abort = () => calls.push("abort");
+      ctx.waitForIdle = async () => calls.push("waitForIdle");
+      ctx.ui.notify = () => calls.push("notify");
+
+      await commands.get("goal").handler(`Immediately ${control} active work`, ctx);
+      calls.length = 0;
+      await emitGoalStart(handlers, ctx);
+      await commands.get("goal").handler(control, ctx);
+
+      assert.deepEqual(calls, [`persist:${control === "pause" ? "paused" : "clear"}`, "abort", "waitForIdle", "notify"], `${mode} ${control}`);
+      await emitSequentially(handlers.get("agent_end"), { messages: [{ role: "assistant", stopReason: "aborted" }] }, ctx);
+      await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+      assert.equal(sentMessages.length, 1, `${mode} ${control} must not continue after explicit cancellation`);
+    }
+  }
+});
+
+test("/goal pause stops a scheduled continuation before its goal turn starts", async () => {
+  const { commands, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  const calls = [];
+  ctx.abort = () => calls.push("abort");
+  ctx.waitForIdle = async () => calls.push("waitForIdle");
+  await commands.get("goal").handler("Pause scheduled work", ctx);
+  assert.equal(sentMessages.length, 1);
+  calls.length = 0;
+  await commands.get("goal").handler("pause", ctx);
+  assert.deepEqual(calls, ["abort", "waitForIdle"]);
+});
+
+test("/goal does not abort unrelated work when clearing an inactive goal", async () => {
+  const now = Date.now();
+  for (const status of ["paused", "blocked", "complete"]) {
+    const state = {
+      version: 1,
+      revision: 3,
+      objective: `${status} objective`,
+      status,
+      createdAt: now,
+      updatedAt: now,
+      activeMilliseconds: 0,
+      turns: 3,
+      blockedAuditStartTurn: 0,
+      baselineTokens: 0,
+    };
+    const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: status, state } }];
+    const { commands, handlers } = createHarness();
+    const { ctx } = createTuiContext(entries);
+    let abortCalls = 0;
+    ctx.abort = () => { abortCalls += 1; };
+    await emitSequentially(handlers.get("session_start"), { reason: "resume" }, ctx);
+    await commands.get("goal").handler("clear", ctx);
+    assert.equal(abortCalls, 0, status);
+  }
+});
+
+test("saved goal cancellation remains terminal when host stopping fails", async () => {
+  for (const control of ["pause", "clear"]) {
+    const { appendedEntries, commands, handlers } = createHarness();
+    const { ctx } = createTuiContext();
+    const notifications = [];
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    await commands.get("goal").handler(`Persist ${control} before abort`, ctx);
+    await emitGoalStart(handlers, ctx);
+    ctx.abort = () => { throw new Error("abort unavailable"); };
+    await commands.get("goal").handler(control, ctx);
+    const state = appendedEntries.at(-1).data.state;
+    assert.equal(control === "pause" ? state.status : state, control === "pause" ? "paused" : null);
+    assert.match(notifications.at(-1).message, /could not be confirmed stopped/u);
+    assert.match(notifications.at(-1).message, /abort unavailable/u);
+  }
+});
+
+test("valid blocker audits restore and malformed audits fail closed", async () => {
+  const now = Date.now();
+  const activeState = {
+    version: 1,
+    revision: 4,
+    objective: "Restore the blocker audit",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    activeMilliseconds: 0,
+    turns: 2,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+  };
+  const restore = async (blockerAudit) => {
+    const entries = [{
+      type: "custom",
+      customType: "killeros-goal",
+      data: { version: 1, event: "blocker-audit", state: { ...activeState, blockerAudit } },
+    }];
+    const harness = createHarness();
+    const { ctx } = createTuiContext(entries);
+    await emitSequentially(harness.handlers.get("session_start"), { reason: "resume" }, ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+    return { ...harness, ctx };
+  };
+
+  const valid = await restore({ key: "missing-credential", streak: 2, lastTurn: 2 });
+  assert.equal(valid.sentMessages.length, 1);
+  await emitGoalStart(valid.handlers, valid.ctx);
+  await valid.tools.get("killeros_goal_update").execute(
+    "restored-third-attempt",
+    { status: "blocked", blockerKey: "missing-credential", evidence: "Still unavailable" },
+    new AbortController().signal,
+    () => {},
+    valid.ctx,
+  );
+  assert.equal(valid.appendedEntries.at(-1).data.state.status, "blocked");
+
+  const malformed = [
+    { key: "", streak: 1, lastTurn: 1 },
+    { key: "UPPERCASE", streak: 1, lastTurn: 1 },
+    { key: "valid", streak: 0, lastTurn: 1 },
+    { key: "valid", streak: 4, lastTurn: 1 },
+    { key: "valid", streak: 1.5, lastTurn: 1 },
+    { key: "valid", streak: 1, lastTurn: -1 },
+    { key: "valid", streak: 1, lastTurn: 0 },
+    { key: "valid", streak: 1, lastTurn: 3 },
+  ];
+  for (const audit of malformed) {
+    const restored = await restore(audit);
+    assert.equal(restored.sentMessages.length, 0, JSON.stringify(audit));
+  }
+});
+
+test("/goal edit reports persistence failure for every goal status", async () => {
+  const now = Date.now();
+  for (const status of ["active", "paused", "blocked", "complete"]) {
+    const state = {
+      version: 1,
+      revision: 3,
+      objective: "Original objective",
+      status,
+      createdAt: now,
+      updatedAt: now,
+      activeMilliseconds: 0,
+      activeStartedAt: status === "active" ? now : undefined,
+      turns: 3,
+      blockedAuditStartTurn: 0,
+      baselineTokens: 0,
+    };
+    const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: status, state } }];
+    const { api, commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext(entries);
+    const notifications = [];
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    ctx.ui.editor = async () => "Edited objective";
+    await emitSequentially(handlers.get("session_start"), { reason: "resume" }, ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+    const sentBeforeEdit = sentMessages.length;
+    api.appendEntry = () => { throw new Error(`write failed from ${status}`); };
+    await commands.get("goal").handler("edit", ctx);
+    assert.match(notifications.at(-1).message, new RegExp(`write failed from ${status}`, "u"));
+    assert.equal(sentMessages.length, sentBeforeEdit, status);
+    ctx.mode = "rpc";
+    await commands.get("goal").handler("", ctx);
+    assert.match(notifications.at(-1).message, /Original objective/u);
+    assert.match(notifications.at(-1).message, new RegExp(`Goal ${status === "active" ? "paused" : status}`, "u"));
+  }
+});
+
+test("failed goal replacement pauses the old active goal and dispatches neither objective", async () => {
+  const { api, commands, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await commands.get("goal").handler("Old objective", ctx);
+  api.appendEntry = () => { throw new Error("replacement write failed"); };
+  await commands.get("goal").handler("New objective", ctx);
+  assert.equal(sentMessages.length, 1);
+  assert.match(notifications.at(-1).message, /Goal could not be replaced: replacement write failed/u);
+  ctx.mode = "rpc";
+  await commands.get("goal").handler("", ctx);
+  assert.match(notifications.at(-1).message, /Goal paused/u);
+  assert.match(notifications.at(-1).message, /Old objective/u);
+});
+
+test("failed replacement preserves paused and blocked goals", async () => {
+  const now = Date.now();
+  for (const status of ["paused", "blocked"]) {
+    const state = {
+      version: 1,
+      revision: 3,
+      objective: `Original ${status} objective`,
+      status,
+      createdAt: now,
+      updatedAt: now,
+      activeMilliseconds: 0,
+      turns: 3,
+      blockedAuditStartTurn: 0,
+      baselineTokens: 0,
+    };
+    const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: status, state } }];
+    const { api, commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext(entries);
+    const notifications = [];
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    await emitSequentially(handlers.get("session_start"), { reason: "resume" }, ctx);
+    api.appendEntry = () => { throw new Error(`${status} replacement failed`); };
+    await commands.get("goal").handler("Replacement objective", ctx);
+    assert.equal(sentMessages.length, 0);
+    assert.match(notifications.at(-1).message, new RegExp(`${status} replacement failed`, "u"));
+    ctx.mode = "rpc";
+    await commands.get("goal").handler("", ctx);
+    assert.match(notifications.at(-1).message, new RegExp(`Goal ${status}`, "u"));
+    assert.match(notifications.at(-1).message, new RegExp(`Original ${status} objective`, "u"));
+  }
+});
+
+test("first goal write failure reports the error and dispatches nothing", async () => {
+  const { api, commands, sentMessages } = createHarness();
+  const { ctx } = createTuiContext();
+  const notifications = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  api.appendEntry = () => { throw new Error("first write failed"); };
+  await commands.get("goal").handler("New objective", ctx);
+  assert.equal(sentMessages.length, 0);
+  assert.match(notifications.at(-1).message, /Goal could not be started: first write failed/u);
 });
 
 test("completed goals leave the footer but remain available through /goal", async () => {

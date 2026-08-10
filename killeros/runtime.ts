@@ -20,6 +20,12 @@ export interface InitRuntime {
 
 export type GoalStatus = "active" | "paused" | "blocked" | "complete";
 
+export interface GoalBlockerAudit {
+  key: string;
+  streak: number;
+  lastTurn: number;
+}
+
 export interface GoalState {
   version: 1;
   revision: number;
@@ -34,6 +40,7 @@ export interface GoalState {
   baselineTokens: number;
   result?: string;
   resumeAfterManualCompaction?: true;
+  blockerAudit?: GoalBlockerAudit;
 }
 
 export interface GoalRuntime {

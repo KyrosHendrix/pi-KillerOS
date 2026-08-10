@@ -346,6 +346,27 @@ test("explicit /goal pause clears pending manual recovery", async () => {
   assert.equal(harness.sentMessages.length, 1);
 });
 
+test("explicit pause cancellation cannot become manual-compaction recovery", async () => {
+  const harness = createHarness();
+  const { ctx } = createContext();
+  let abortCalls = 0;
+  ctx.abort = () => { abortCalls += 1; };
+  await startGoalTurn(harness, ctx, "Stay paused after explicit cancellation");
+  await harness.commands.get("goal").handler("pause", ctx);
+  assert.equal(abortCalls, 1);
+
+  await emitSequentially(harness.handlers.get("agent_end"), {
+    type: "agent_end", messages: [{ role: "assistant", stopReason: "aborted" }],
+  }, ctx);
+  await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
+  await emitSequentially(harness.handlers.get("session_compact"), compactEvent("manual"), ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.appendedEntries.at(-1).data.state.status, "paused");
+  assert.equal(harness.appendedEntries.at(-1).data.state.resumeAfterManualCompaction, undefined);
+  assert.equal(harness.sentMessages.length, 1);
+});
+
 test("editing a marked paused goal clears recovery before reactivation", async () => {
   const harness = createHarness();
   const { ctx } = createContext();

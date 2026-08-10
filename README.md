@@ -46,7 +46,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Pi-owned context compaction with active goals continuing from Pi's settled boundary after manual, threshold, and overflow compaction
 - Optional completion sounds after successful or failed settled requests, excluding manual aborts
 - `/variants` selector and direct reasoning-level arguments
-- Codex-style `/goal` with an interactive status/action panel, durable objectives, pause, resume, edit, confirmed panel clearing, automatic continuation, and explicit completion
+- Codex-style `/goal` with an interactive status/action panel, durable objectives, immediate pause and clear cancellation, automatic continuation, explicit completion, and durable blocker audits
 - Automatic `/init` guideline synthesis with a frozen safe evidence map, protected existing policy, and the four packaged behavioral sections adapted from `writing-great-guidelines`
 - `question` tool with height-bounded option windows, configured Pi keybindings, live option/input progress, proposal previews, custom answers, history, cancellation, and compact expandable transcript rendering
 - Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills; paths, URLs, and invalid commands remain plain text
@@ -60,9 +60,9 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 /goal                     Open current goal status and valid actions
 /goal <objective>         Set an objective and start working
 /goal edit                Edit and reactivate the current goal
-/goal pause               Stop automatic continuation
+/goal pause               Stop the current goal turn and automatic continuation
 /goal resume              Resume automatic continuation
-/goal clear               Remove the current goal
+/goal clear               Stop current goal work and remove the goal
 /variants                 Open the reasoning-level selector
 /variants high            Set a reasoning level directly
 /notification             Configure the completion sound
@@ -70,7 +70,9 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 /exit                     Quit Pi gracefully
 ```
 
-`/goal` requires a saved session in TUI or RPC mode. Goal state is stored in versioned session entries on the active branch and restored after reload, resume, fork, or tree navigation. Active goals inject their unchanged objective every turn and continue one settled turn at a time. The model must use KillerOS’s private goal tool to mark verified completion or a blocker repeated across at least three goal turns; final prose alone does not end the loop. Aborted turns, provider failures, and continuation failures pause safely. Replacing unfinished work requires confirmation, and `/goal edit` requires TUI mode.
+`/goal` requires a saved session in TUI or RPC mode. Goal state is stored in versioned session entries on the active branch and restored after reload, resume, fork, or tree navigation. Active goals inject their unchanged objective every turn and continue one settled turn at a time. The model must use KillerOS’s private goal tool to mark verified completion. Blocking requires one stable lowercase blocker key recorded on three consecutive goal turns; a changed key, skipped turn, resume, or edit resets the streak. Final prose alone does not end the loop.
+
+`/goal pause` and `/goal clear` save paused or cleared state before aborting current goal work, so settlement cannot restart it. Aborted turns, provider failures, and continuation failures otherwise pause safely. Failed edit and replacement writes dispatch no edited objective; an active prior objective pauses fail-closed, while inactive durable state remains unchanged. Replacing unfinished work requires confirmation, and `/goal edit` requires TUI mode.
 
 `/init` freezes a safe project-file map and exposes only dedicated read and list operations while it generates root `AGENTS.md`. Git-ignored files, known secret paths, private-key formats, other guidance, dependencies, links, non-regular files, and files outside that map are unavailable. Existing root `AGENTS.md` is separate protected policy: compatible rules are preserved, a real policy conflict leaves it unchanged with a reason, and any concurrent target change aborts installation without replacing the newer file.
 

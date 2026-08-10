@@ -6,14 +6,14 @@ import { BoundedText } from "./bounded-text.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
-import type { GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import type { GoalBlockerAudit, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
 const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
 const GOAL_OBJECTIVE_LIMIT = 4_000;
 const GOAL_VERSION = 1;
 
-type GoalEntryEvent = "set" | "replace" | "edit" | "turn" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint";
+type GoalEntryEvent = "set" | "replace" | "edit" | "turn" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
 interface GoalEntryData {
   version: 1;
   event: GoalEntryEvent;
@@ -23,6 +23,7 @@ interface GoalEntryData {
 interface GoalTransitionOptions {
   resetBlockedAudit?: boolean;
   resumeAfterManualCompaction?: true;
+  blockerAudit?: GoalBlockerAudit;
 }
 
 interface RestoredGoalState {
@@ -39,11 +40,19 @@ const GoalUpdateParams = Type.Object({
     maxLength: 2_000,
     description: "Concise evidence that the objective is complete, or the repeated blocker and attempted workarounds",
   }),
+  blockerKey: Type.Optional(Type.String({
+    minLength: 1,
+    maxLength: 120,
+    pattern: "^[a-z0-9][a-z0-9._-]{0,119}$",
+    description: "Stable lowercase key identifying the repeated blocker",
+  })),
 });
 
 interface GoalUpdateDetails {
-  status: "complete" | "blocked";
+  status: "complete" | "blocked" | "blocker-audit";
   evidence: string;
+  blockerKey?: string;
+  streak?: number;
 }
 
 function isGoalStatus(value: unknown): value is GoalStatus {
@@ -52,6 +61,17 @@ function isGoalStatus(value: unknown): value is GoalStatus {
 
 function finiteNonNegative(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): value is GoalBlockerAudit {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<GoalBlockerAudit>;
+  if (typeof candidate.key !== "string"
+    || !/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(candidate.key)
+    || !Number.isInteger(candidate.streak) || (candidate.streak ?? 0) < 1 || (candidate.streak ?? 0) > 3
+    || !Number.isInteger(candidate.lastTurn) || (candidate.lastTurn ?? 0) < 1 || (candidate.lastTurn ?? 0) > turns) return false;
+  if (status === "complete") return false;
+  return status === "blocked" ? candidate.streak === 3 : candidate.streak! < 3;
 }
 
 function parseGoalState(value: unknown): GoalState | undefined {
@@ -71,6 +91,7 @@ function parseGoalState(value: unknown): GoalState | undefined {
     || !finiteNonNegative(candidate.baselineTokens)
     || candidate.activeStartedAt !== undefined && !finiteNonNegative(candidate.activeStartedAt)
     || candidate.result !== undefined && typeof candidate.result !== "string"
+    || candidate.blockerAudit !== undefined && !isGoalBlockerAudit(candidate.blockerAudit, candidate.turns!, candidate.status)
     || candidate.resumeAfterManualCompaction !== undefined && candidate.resumeAfterManualCompaction !== true
     || candidate.resumeAfterManualCompaction === true && candidate.status !== "paused") {
     return undefined;
@@ -89,6 +110,7 @@ function parseGoalState(value: unknown): GoalState | undefined {
     baselineTokens: candidate.baselineTokens,
     result: candidate.result,
     resumeAfterManualCompaction: candidate.resumeAfterManualCompaction,
+    blockerAudit: candidate.blockerAudit,
   };
 }
 
@@ -182,12 +204,31 @@ function transitionGoal(
     updatedAt: now,
     activeStartedAt: status === "active" ? now : undefined,
     blockedAuditStartTurn: options.resetBlockedAudit ? stopped.turns : stopped.blockedAuditStartTurn,
+    blockerAudit: options.resetBlockedAudit ? undefined : options.blockerAudit ?? stopped.blockerAudit,
     result,
     resumeAfterManualCompaction: options.resumeAfterManualCompaction,
   };
   persistGoalState(pi, runtime, event, next);
   if (status !== "active") runtime.continuationScheduled = false;
   return next;
+}
+
+function clearGoalExecutionFlags(runtime: GoalRuntime): void {
+  runtime.continuationScheduled = false;
+  runtime.goalTurnInFlight = false;
+  runtime.agentEndObserved = false;
+  runtime.lastStopReason = undefined;
+  runtime.lastError = undefined;
+}
+
+async function stopGoalRun(runtime: GoalRuntime, ctx: ExtensionCommandContext, shouldStop: boolean): Promise<void> {
+  if (!shouldStop) return;
+  try {
+    ctx.abort();
+    await ctx.waitForIdle();
+  } finally {
+    clearGoalExecutionFlags(runtime);
+  }
 }
 
 function goalStatusLabel(status: GoalStatus): string {
@@ -222,6 +263,7 @@ export function pauseGoalAfterFailure(
   ctx: ExtensionContext,
   reason: string,
   recoveryInstruction = "Run /goal resume after resolving the problem.",
+  notify = true,
 ): void {
   if (runtime.state?.status !== "active") return;
   try {
@@ -237,7 +279,7 @@ export function pauseGoalAfterFailure(
     runtime.continuationScheduled = false;
     runtime.requestRender?.();
   }
-  ctx.ui.notify(`Goal paused: ${reason}\n${recoveryInstruction}`, "error");
+  if (notify) ctx.ui.notify(`Goal paused: ${reason}\n${recoveryInstruction}`, "error");
 }
 
 function pauseGoalForPossibleManualCompaction(
@@ -303,6 +345,7 @@ function scheduleGoalContinuation(
     || runtime.continuationHeld
     || runtime.goalTurnInFlight
     || initState.active
+    || !ctx.isIdle()
     || ctx.hasPendingMessages()) return false;
   const current = runtime.state;
   runtime.continuationScheduled = true;
@@ -337,7 +380,7 @@ function goalInstructions(state: GoalState, heading: string): string {
     "Continue making concrete progress toward this unchanged objective. Re-check repository state and prior results instead of repeating work.",
     "Do not stop merely because one response is complete: KillerOS will start another goal turn while the goal remains active.",
     "Before declaring completion, audit every part of the objective and verify the relevant results. Then call killeros_goal_update with status complete and concise evidence.",
-    "Call killeros_goal_update with status blocked only when the same external impasse has prevented progress for three consecutive goal turns; name the blocker and attempted workarounds.",
+    "Call killeros_goal_update with status blocked and the same lowercase blockerKey on each turn where one external impasse persists; attempts one and two record the audit, and attempt three marks the goal blocked.",
     "Never use the goal tool to pause, resume, edit, replace, or clear the objective. Those transitions belong to the user.",
   ].join("\n");
 }
@@ -398,7 +441,7 @@ export function registerGoal(
   pi.registerTool<typeof GoalUpdateParams, GoalUpdateDetails>({
     name: "killeros_goal_update",
     label: "Goal update",
-    description: "Mark the active KillerOS long-running goal complete after verification, or blocked after the same impasse persists for three consecutive goal turns.",
+    description: "Mark the active KillerOS long-running goal complete after verification, or record the same blocker key on three consecutive goal turns before blocking it.",
     parameters: GoalUpdateParams,
     executionMode: "sequential",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -408,13 +451,40 @@ export function registerGoal(
       if (!state || state.status !== "active") throw new Error("There is no active KillerOS goal to update");
       const evidence = params.evidence.trim();
       if (!evidence) throw new Error("Goal evidence must not be empty");
-      if (params.status === "blocked" && state.turns - state.blockedAuditStartTurn < 3) {
-        throw new Error("A goal cannot be marked blocked before three goal turns in the current audit; keep working and audit the same blocker again");
+      if (params.status === "complete") {
+        transitionGoal(pi, runtime, "complete", "complete", evidence, { resetBlockedAudit: true });
+        return {
+          content: [{ type: "text", text: `Goal marked complete: ${evidence}` }],
+          details: { status: "complete", evidence },
+        };
       }
-      transitionGoal(pi, runtime, params.status, params.status, evidence);
+      if (!runtime.goalTurnInFlight) throw new Error("A blocker audit can only be recorded during an active KillerOS goal turn");
+      const blockerKey = params.blockerKey;
+      if (!blockerKey || !/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(blockerKey)) {
+        throw new Error("A blocked goal update requires a stable lowercase blockerKey");
+      }
+      const previous = state.blockerAudit;
+      const sameTurn = previous?.key === blockerKey && previous.lastTurn === state.turns;
+      const consecutive = previous?.key === blockerKey && previous.lastTurn === state.turns - 1;
+      const streak = sameTurn ? previous.streak : consecutive ? previous.streak + 1 : 1;
+      const blockerAudit = { key: blockerKey, streak, lastTurn: state.turns };
+      if (streak < 3) {
+        const next: GoalState = {
+          ...state,
+          revision: state.revision + 1,
+          updatedAt: Date.now(),
+          blockerAudit,
+        };
+        persistGoalState(pi, runtime, "blocker-audit", next);
+        return {
+          content: [{ type: "text", text: `Blocker audit ${streak}/3 recorded; the goal remains active: ${evidence}` }],
+          details: { status: "blocker-audit", evidence, blockerKey, streak },
+        };
+      }
+      transitionGoal(pi, runtime, "blocked", "blocked", evidence, { blockerAudit });
       return {
-        content: [{ type: "text", text: `Goal marked ${params.status}: ${evidence}` }],
-        details: { status: params.status, evidence },
+        content: [{ type: "text", text: `Goal marked blocked: ${evidence}` }],
+        details: { status: "blocked", evidence, blockerKey, streak },
       };
     },
     renderCall(args, theme) {
@@ -423,7 +493,8 @@ export function registerGoal(
     renderResult(result, options, theme) {
       const details = result.details;
       if (!details) return new BoundedText(theme.fg("dim", "Goal updated"));
-      const text = `${theme.fg(details.status === "complete" ? "success" : "warning", details.status === "complete" ? "✓ Complete" : "! Blocked")}${theme.fg("dim", ` · ${details.evidence}`)}`;
+      const label = details.status === "complete" ? "✓ Complete" : details.status === "blocked" ? "! Blocked" : `! Blocker audit ${details.streak}/3`;
+      const text = `${theme.fg(details.status === "complete" ? "success" : "warning", label)}${theme.fg("dim", ` · ${details.evidence}`)}`;
       return new BoundedText(text, options.expanded ? undefined : 3);
     },
   });
@@ -544,10 +615,11 @@ export function registerGoal(
           ctx.ui.notify("No goal is set", "info");
           return;
         }
+        const shouldStopGoalRun = runtime.goalTurnInFlight || runtime.continuationScheduled;
+        let saved = false;
         try {
           persistGoalState(pi, runtime, "clear", undefined);
-          runtime.continuationScheduled = false;
-          ctx.ui.notify("Goal cleared", "info");
+          saved = true;
         } catch (error) {
           if (runtime.state?.status === "active") {
             pauseGoalAfterFailure(
@@ -556,10 +628,23 @@ export function registerGoal(
               ctx,
               `the requested clear could not be saved: ${error instanceof Error ? error.message : String(error)}`,
               "Automatic continuation is stopped. Retry /goal clear to remove the goal.",
+              false,
             );
           } else {
             reportError(ctx, "Goal could not be cleared", error);
+            return;
           }
+        }
+        try {
+          await stopGoalRun(runtime, ctx, shouldStopGoalRun);
+        } catch (error) {
+          reportError(ctx, saved ? "Goal cleared, but the active goal turn could not be confirmed stopped" : "Goal paused, but the active goal turn could not be confirmed stopped", error);
+          return;
+        }
+        if (saved) {
+          ctx.ui.notify("Goal cleared", "info");
+        } else {
+          ctx.ui.notify("Goal paused: the requested clear could not be saved\nAutomatic continuation is stopped. Retry /goal clear to remove the goal.", "error");
         }
         return;
       }
@@ -597,17 +682,33 @@ export function registerGoal(
           ctx.ui.notify(`Goal is ${runtime.state.status}; only an active goal can be paused`, "warning");
           return;
         }
+        const shouldStopGoalRun = runtime.goalTurnInFlight || runtime.continuationScheduled;
+        let saved = false;
+        let failureReason: string | undefined;
         try {
           transitionGoal(pi, runtime, "pause", "paused");
-          ctx.ui.notify("Goal paused. Run /goal resume to continue.", "info");
+          saved = true;
         } catch (error) {
+          failureReason = `the requested pause could not be saved: ${error instanceof Error ? error.message : String(error)}`;
           pauseGoalAfterFailure(
             pi,
             runtime,
             ctx,
-            `the requested pause could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+            failureReason,
             "Automatic continuation is stopped. If session storage is still unavailable, retry /goal pause after it recovers.",
+            false,
           );
+        }
+        try {
+          await stopGoalRun(runtime, ctx, shouldStopGoalRun);
+        } catch (error) {
+          reportError(ctx, "Goal paused, but the active goal turn could not be confirmed stopped", error);
+          return;
+        }
+        if (saved) {
+          ctx.ui.notify("Goal paused. Run /goal resume to continue.", "info");
+        } else {
+          ctx.ui.notify(`Goal paused: ${failureReason}\nAutomatic continuation is stopped. If session storage is still unavailable, retry /goal pause after it recovers.`, "error");
         }
         return;
       }
@@ -687,6 +788,7 @@ export function registerGoal(
           updatedAt: now,
           activeStartedAt: now,
           blockedAuditStartTurn: current.turns,
+          blockerAudit: undefined,
           result: undefined,
           resumeAfterManualCompaction: undefined,
         };
@@ -695,13 +797,17 @@ export function registerGoal(
           runtime.continuationScheduled = false;
           if (scheduleGoalContinuation(pi, runtime, initState, ctx)) ctx.ui.notify("Goal updated and active", "info");
         } catch (error) {
-          pauseGoalAfterFailure(
-            pi,
-            runtime,
-            ctx,
-            `Goal could not be edited: ${error instanceof Error ? error.message : String(error)}`,
-            "Automatic continuation is stopped. Retry /goal edit after session storage recovers.",
-          );
+          if (runtime.state?.status === "active") {
+            pauseGoalAfterFailure(
+              pi,
+              runtime,
+              ctx,
+              `Goal could not be edited: ${error instanceof Error ? error.message : String(error)}`,
+              "Automatic continuation is stopped. Retry /goal edit after session storage recovers.",
+            );
+          } else {
+            reportError(ctx, "Goal could not be edited", error);
+          }
         }
         return;
       }
@@ -761,8 +867,19 @@ export function registerGoal(
           ctx.ui.notify("Goal active. KillerOS will continue until completion, a repeated blocker, or pause.", "info");
         }
       } catch (error) {
-        reportError(ctx, "Goal could not be started", error);
-        scheduleGoalContinuation(pi, runtime, initState, ctx);
+        if (!unfinished) {
+          reportError(ctx, "Goal could not be started", error);
+        } else if (runtime.state?.status === "active") {
+          pauseGoalAfterFailure(
+            pi,
+            runtime,
+            ctx,
+            `Goal could not be replaced: ${error instanceof Error ? error.message : String(error)}`,
+            "Automatic continuation is stopped. Retry replacement after session storage recovers.",
+          );
+        } else {
+          reportError(ctx, "Goal could not be replaced", error);
+        }
       }
   };
 
@@ -800,6 +917,8 @@ export function registerGoalSettlement(
     if (!wasGoalTurn || runtime.state?.status !== "active" || initState.active) {
       if (continuationWasScheduled && runtime.state?.status === "active" && !initState.active) {
         pauseGoalAfterFailure(pi, runtime, ctx, "the goal continuation ended before an agent turn started");
+      } else if (runtime.state?.status === "active" && !initState.active) {
+        scheduleGoalContinuation(pi, runtime, initState, ctx);
       }
       return;
     }
