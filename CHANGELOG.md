@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Added shuffled session-stable suggestions to the empty three-line prompt editor.
+
 ### Fixed
 
 - Preserved complete UTF-8 characters in truncated `/init` evidence and chunked lifecycle-hook output, and kept filesystem-root paths visible in notification titles.

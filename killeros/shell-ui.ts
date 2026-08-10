@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
+  CURSOR_MARKER,
   Text,
   truncateToWidth,
   visibleWidth,
@@ -43,6 +44,13 @@ const STARTUP_TIPS = [
   "Run /notification to enable a terminal bell when work settles.",
 ] as const;
 
+const EDITOR_SUGGESTIONS = [
+  'Try "how does <filepath> work?"',
+  'Try "find edge cases in <filepath>"',
+  'Try "simplify <filepath> without changing behavior"',
+  'Try "write tests for <filepath>"',
+] as const;
+
 export function resolveGitBranch(cwd: string): Promise<string | undefined> {
   return new Promise((resolve) => {
     execFile(
@@ -66,20 +74,26 @@ export function resolveGitBranch(cwd: string): Promise<string | undefined> {
   });
 }
 
-function shuffledTips(): string[] {
-  const tips = [...STARTUP_TIPS];
-  for (let index = tips.length - 1; index > 0; index -= 1) {
+function shuffledDeck(values: readonly string[]): string[] {
+  const deck = [...values];
+  for (let index = deck.length - 1; index > 0; index -= 1) {
     const swapIndex = Math.floor(Math.random() * (index + 1));
-    [tips[index], tips[swapIndex]] = [tips[swapIndex]!, tips[index]!];
+    [deck[index], deck[swapIndex]] = [deck[swapIndex]!, deck[index]!];
   }
-  return tips;
+  return deck;
 }
 
 let tipDeck: string[] = [];
+let editorSuggestionDeck: string[] = [];
 
 function nextStartupTip(): string {
-  if (tipDeck.length === 0) tipDeck = shuffledTips();
+  if (tipDeck.length === 0) tipDeck = shuffledDeck(STARTUP_TIPS);
   return tipDeck.pop() ?? STARTUP_TIPS[0];
+}
+
+function nextEditorSuggestion(): string {
+  if (editorSuggestionDeck.length === 0) editorSuggestionDeck = shuffledDeck(EDITOR_SUGGESTIONS);
+  return editorSuggestionDeck.pop() ?? EDITOR_SUGGESTIONS[0];
 }
 
 function compactBoxLine(content: string, width: number, theme: Theme): string {
@@ -174,16 +188,19 @@ function isScrolledTopBorder(line: string): boolean {
 class PiCodeEditor extends CustomEditor {
   private readonly appKeybindings: KeybindingsManager;
   private readonly runtimeTheme: Theme;
+  private readonly suggestion: string;
 
   constructor(
     tui: TUI,
     theme: EditorTheme,
     appKeybindings: KeybindingsManager,
     runtimeTheme: Theme,
+    suggestion: string,
   ) {
     super(tui, theme, appKeybindings);
     this.appKeybindings = appKeybindings;
     this.runtimeTheme = runtimeTheme;
+    this.suggestion = suggestion;
   }
 
   override handleInput(data: string): void {
@@ -227,8 +244,16 @@ class PiCodeEditor extends CustomEditor {
     }
 
     for (let index = 1; index < bottomBorderIndex; index += 1) {
-      const prefix = index === 1 && !isScrolledHeader ? gray("❯ ") : "  ";
-      framed.push(`${prefix}${padRight(lines[index] ?? "", innerWidth)}`);
+      const isPromptLine = index === 1 && !isScrolledHeader;
+      const prefix = isPromptLine ? gray("❯\u00A0") : "  ";
+      let content = lines[index] ?? "";
+      if (isPromptLine && this.getText() === "") {
+        const first = this.suggestion.slice(0, 1);
+        const rest = this.suggestion.slice(1);
+        const cursorMarker = this.focused ? CURSOR_MARKER : "";
+        content = `${cursorMarker}\x1B[7m${gray(first)}\x1B[27m${gray(rest)}`;
+      }
+      framed.push(`${prefix}${padRight(content, innerWidth)}`);
     }
 
     const bottom = stripAnsi(lines[bottomBorderIndex] ?? "");
@@ -304,8 +329,9 @@ export function registerShellUi(pi: ExtensionAPI): void {
       ctx.ui.setHiddenThinkingLabel("└ Thinking…");
       const existingEditorFactory = ctx.ui.getEditorComponent?.();
       if (!existingEditorFactory || existingEditorFactory === killerosEditorFactory) {
+        const editorSuggestion = nextEditorSuggestion();
         killerosEditorFactory = (tui, editorTheme, keybindings) =>
-          new PiCodeEditor(tui, editorTheme, keybindings, ctx.ui.theme);
+          new PiCodeEditor(tui, editorTheme, keybindings, ctx.ui.theme, editorSuggestion);
         ctx.ui.setEditorComponent(killerosEditorFactory);
       }
     } catch (error) {

@@ -2911,8 +2911,26 @@ test("editor implementation uses public APIs, preserves framing, and supports Sh
     },
   };
   const editor = captured.editorFactory(tui, editorTheme, getKeybindings());
+  const emptyRender = editor.render(40);
+  const emptyLines = emptyRender.map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
+  const emptyPrompt = emptyLines[1] ?? "";
+  assert.equal(emptyLines.length, 3);
+  assert.equal(emptyLines[0], "─".repeat(40));
+  assert.match(emptyPrompt, /^❯\u00A0Try "/u);
+  assert.equal(visibleWidth(emptyPrompt), 40);
+  assert.equal(emptyLines[2], "─".repeat(40));
+  for (let width = 4; width <= 180; width += 1) {
+    const lines = editor.render(width);
+    assert.equal(lines.length, 3, `empty editor rows at width ${width}`);
+    assert.ok(lines.every((line) => visibleWidth(line) === width), `empty editor width ${width}`);
+  }
+
   editor.setText("/model");
-  assert.doesNotMatch(editor.render(40).join("\n"), /\x1B\[34m/u);
+  const rendered = editor.render(40);
+  const promptLine = rendered[1]?.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "") ?? "";
+  assert.equal(promptLine.slice(0, 8), "❯\u00A0/model");
+  assert.doesNotMatch(rendered.join("\n"), /Try "/u);
+  assert.doesNotMatch(rendered.join("\n"), /\x1B\[34m/u);
   assert.deepEqual(editor.render(0), []);
   for (let width = 1; width <= 180; width += 1) {
     assert.ok(editor.render(width).every((line) => visibleWidth(line) <= width), `editor width ${width}`);
@@ -3131,8 +3149,9 @@ test("header renders the compact KillerOS card", () => {
   header.dispose();
 });
 
-test("startup tips stay fixed within a session and cycle across fresh registrations", async () => {
+test("startup tips and editor suggestions stay fixed per session and exhaust their shuffled decks", async () => {
   const originalRandom = Math.random;
+  const suggestions = [];
   const tips = [];
   const strip = (line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "").trim();
   const shellUiUrl = new URL("../killeros/shell-ui.ts", import.meta.url);
@@ -3150,6 +3169,24 @@ test("startup tips stay fixed within a session and cycle across fresh registrati
       const second = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
       assert.equal(first, second);
       tips.push(first);
+
+      const editorTheme = {
+        borderColor: (text) => text,
+        selectList: {
+          selectedPrefix: (text) => text,
+          selectedText: (text) => text,
+          description: (text) => text,
+          scrollInfo: (text) => text,
+          noMatch: (text) => text,
+        },
+      };
+      const firstEditor = captured.editorFactory(tui, editorTheme, getKeybindings());
+      const secondEditor = captured.editorFactory(tui, editorTheme, getKeybindings());
+      const firstSuggestion = strip(firstEditor.render(76)[1] ?? "");
+      const secondSuggestion = strip(secondEditor.render(76)[1] ?? "");
+      assert.equal(firstSuggestion, secondSuggestion);
+      assert.match(firstSuggestion, /^❯\u00A0Try "/u);
+      suggestions.push(firstSuggestion);
       handlers.get("session_shutdown").at(-1)({}, ctx);
     }
   } finally {
@@ -3157,4 +3194,5 @@ test("startup tips stay fixed within a session and cycle across fresh registrati
   }
 
   assert.equal(new Set(tips).size, 4);
+  assert.equal(new Set(suggestions).size, 4);
 });

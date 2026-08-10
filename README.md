@@ -41,7 +41,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - 52-column Compact startup card with inline version, polished model/provider identity, adjacent `/model`, directory, conditional Git branch, and a shuffled session-stable tip
 - Cohesive dark theme with coral accents and neutral tool-call containers across pending, success, and error states
 - Animated orange 12-frame activity glyph loop at 120 ms per frame, with orange shuffled Claude-adjacent verbs changing every 2.5 seconds, a gray `(esc to interrupt · thinking)` status with bold `esc`, and a quiet hidden-thinking label
-- Framed multiline editor with Shift+Enter support and slash-command autocomplete; KillerOS preserves an editor factory configured by another extension
+- Full-width framed multiline editor with a shuffled session-stable empty-state suggestion, Shift+Enter support, and slash-command autocomplete; KillerOS preserves an editor factory configured by another extension
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - Pi-owned context compaction with active goals continuing from Pi's settled boundary after manual, threshold, and overflow compaction
 - Optional completion sounds after successful or failed settled requests, excluding manual aborts

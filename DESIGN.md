@@ -123,6 +123,8 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Output:** Muted neutral text, with restrained semantic colors reserved for actual diffs and errors.
 
 ### Prompt Editor
+- **Frame:** Use full-width `─` rules above and below the input, with a dim `❯` leading the first input row.
+- **Suggestion:** While the editor is empty, show one dim `Try "…"` suggestion from a shuffled deck. Keep it fixed for the session and remove it as soon as the user enters text.
 - **Command feedback:** Keep typed prompt text in its normal role and use autocomplete to identify valid slash commands. Do not replace an editor factory owned by another extension.
 - **Boundaries:** Trigger slash autocomplete only at the start of a line or after horizontal whitespace. Completion must not alter unrelated text, cursor placement, or wrapping.
 

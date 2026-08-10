@@ -29,7 +29,7 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 - RPC supports commands and concise prompt guidance but disables TUI components.
 - Print and JSON modes support concise prompt guidance but not interactive questions.
 - UI components must remain legible across narrow and wide terminal widths and use the packaged KillerOS theme in TUI mode.
-- Slash-command autocomplete remains available, while typed prompt text uses the normal editor color. KillerOS leaves a custom editor factory from another extension unchanged.
+- The empty prompt editor shows one shuffled session-stable `Try "…"` suggestion inside full-width rules; it disappears when the user types. Slash-command autocomplete remains available, typed prompt text uses the normal editor color, and KillerOS leaves a custom editor factory from another extension unchanged.
 - Interactive question components must never render more rows than the active terminal height; tiny terminals degrade to a compact usable view.
 - Question and selector navigation must follow Pi’s effective keybindings and display the same bindings in help text.
 - Pending, successful, and failed tool calls share one neutral container surface; status remains distinguishable through restrained text and icons.
