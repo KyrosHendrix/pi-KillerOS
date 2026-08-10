@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Made `/init` abort safely when Git ignore inspection fails or returns untrusted output, preventing ignored files from entering model evidence.
 - Wrapped long interactive questions to the current terminal width while keeping the question UI within the terminal height.
 - Made `/goal pause` and `/goal clear` save terminal state before immediately stopping active goal work.
 - Kept failed goal edits and replacements visible and fail-closed without restarting a stale objective.

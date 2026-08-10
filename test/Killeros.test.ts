@@ -1549,6 +1549,7 @@ test("/init reports a structured policy conflict without writing or reloading", 
 test("/init preserves compatible protected policy and blocks every other mutation", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-existing-"));
   try {
+    execFileSync("git", ["init"], { cwd: directory, stdio: "ignore", windowsHide: true });
     writeFileSync(path.join(directory, "AGENTS.md"), "# AGENTS.md\n\nPreserve this workflow.\n");
     writeFileSync(path.join(directory, "src-index.ts"), "export const value = 1;\n");
     const { commands, handlers, sentMessages, tools } = createHarness();
@@ -1719,6 +1720,7 @@ test("/init blocks a linked AGENTS.md target before a model turn", async (t) => 
 test("/init rejects a target swapped after tool-call validation", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-swap-target-"));
   try {
+    execFileSync("git", ["init"], { cwd: directory, stdio: "ignore", windowsHide: true });
     const target = path.join(directory, "AGENTS.md");
     const shared = path.join(directory, "shared.md");
     writeFileSync(target, "old guidance\n");
@@ -1812,6 +1814,7 @@ test("/init refuses untrusted projects before scanning or starting the model", a
 test("/init attaches a bounded project snapshot without reading existing guidance", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-survey-"));
   try {
+    execFileSync("git", ["init"], { cwd: directory, stdio: "ignore", windowsHide: true });
     mkdirSync(path.join(directory, "node_modules"));
     mkdirSync(path.join(directory, ".agents", "skills", "private"), { recursive: true });
     mkdirSync(path.join(directory, ".pi"));
@@ -1917,9 +1920,39 @@ test("/init evidence excludes secrets, ignored files, links, and paths outside t
   }
 });
 
+test("/init fails closed without exposing a custom ignored file when Git is unavailable", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-no-git-"));
+  try {
+    writeFileSync(path.join(directory, ".gitignore"), "private-notes.txt\n");
+    writeFileSync(path.join(directory, "private-notes.txt"), "PRIVATE NOTES MUST NOT ENTER EVIDENCE\n");
+    execFileSync(process.execPath, [
+      "--input-type=module",
+      "--experimental-strip-types",
+      "--eval",
+      `
+        import { buildInitEvidence } from "./killeros/init-evidence.ts";
+        try {
+          await buildInitEvidence(process.env.KILLEROS_TEST_DIRECTORY);
+          throw new Error("/init unexpectedly built an evidence index");
+        } catch (error) {
+          if (!String(error.message).includes("Git ignore inspection failed")) throw error;
+        }
+      `,
+    ], {
+      cwd: path.resolve("."),
+      env: { ...process.env, KILLEROS_TEST_DIRECTORY: directory, PATH: "" },
+      stdio: "pipe",
+      windowsHide: true,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("/init tool scoping never exposes killeros_init_write outside /init", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-tool-scope-"));
   try {
+    execFileSync("git", ["init"], { cwd: directory, stdio: "ignore", windowsHide: true });
     writeFileSync(path.join(directory, "README.md"), "# Probe\n");
     const { commands, handlers, sentMessages, activeTools } = createHarness();
     const { ctx } = createTuiContext();
@@ -1954,6 +1987,7 @@ test("/init tool scoping never exposes killeros_init_write outside /init", async
 test("/init tool middleware does not freeze or redefine shared event input", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-middleware-"));
   try {
+    execFileSync("git", ["init"], { cwd: directory, stdio: "ignore", windowsHide: true });
     writeFileSync(path.join(directory, "safe.ts"), "safe\n");
     const { commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();

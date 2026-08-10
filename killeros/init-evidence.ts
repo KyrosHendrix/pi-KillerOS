@@ -91,7 +91,7 @@ async function collectCandidates(projectRoot: string): Promise<string[]> {
 
 async function gitIgnoredPaths(projectRoot: string, candidates: readonly string[]): Promise<ReadonlySet<string>> {
   if (!candidates.length) return new Set();
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let settled = false;
     let stdout = Buffer.alloc(0);
     const child = spawn("git", ["-C", projectRoot, "check-ignore", "--stdin", "-z"], {
@@ -99,7 +99,13 @@ async function gitIgnoredPaths(projectRoot: string, candidates: readonly string[
       stdio: ["pipe", "pipe", "ignore"],
       windowsHide: true,
     });
-    const finish = (value: ReadonlySet<string>): void => {
+    const fail = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error("Git ignore inspection failed; /init did not build repository evidence"));
+    };
+    const succeed = (value: ReadonlySet<string>): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -107,21 +113,46 @@ async function gitIgnoredPaths(projectRoot: string, candidates: readonly string[
     };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      finish(new Set());
+      fail();
     }, 2_000);
     child.stdout.on("data", (chunk: Buffer) => {
-      if (stdout.length <= 256 * 1024) stdout = Buffer.concat([stdout, chunk]);
+      if (stdout.length + chunk.length > 256 * 1024) {
+        child.kill("SIGKILL");
+        fail();
+        return;
+      }
+      stdout = Buffer.concat([stdout, chunk]);
     });
-    child.once("error", () => finish(new Set()));
+    child.once("error", fail);
+    child.stdin.once("error", () => {
+      child.kill("SIGKILL");
+      fail();
+    });
     child.once("close", (code) => {
-      if (code === 1) return finish(new Set());
-      if (code !== 0 || stdout.length > 256 * 1024 || stdout.at(-1) !== 0) return finish(new Set());
+      if (code === 1) {
+        if (stdout.length) fail();
+        else succeed(new Set());
+        return;
+      }
+      if (code !== 0 || !stdout.length || stdout.at(-1) !== 0) {
+        fail();
+        return;
+      }
+      let values: string[];
+      try {
+        values = new TextDecoder("utf-8", { fatal: true }).decode(stdout.subarray(0, -1)).split("\0");
+      } catch {
+        fail();
+        return;
+      }
       const candidateSet = new Set(candidates.map(evidenceKey));
-      const values = stdout.subarray(0, -1).toString("utf8").split("\0");
-      if (values.some((value) => !value || !candidateSet.has(evidenceKey(value)))) return finish(new Set());
-      finish(new Set(values.map(evidenceKey)));
+      const ignored = new Set(values.map(evidenceKey));
+      if (values.some((value) => !value || !candidateSet.has(evidenceKey(value))) || ignored.size !== values.length) {
+        fail();
+        return;
+      }
+      succeed(ignored);
     });
-    child.stdin.on("error", () => {});
     child.stdin.end(`${candidates.join("\0")}\0`);
   });
 }
