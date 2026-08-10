@@ -72,8 +72,8 @@ test("CI checks the locked Pi floor and latest matched Pi packages", () => {
 });
 
 test("product and design docs match current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.4");
-  assert.match(readme, /@v2\.0\.4/u);
+  assert.equal(packageJson.version, "2.0.5");
+  assert.match(readme, /@v2\.0\.5/u);
   assert.match(readme, /12-frame/u);
   assert.match(product, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
   assert.match(product, /120 ms/u);

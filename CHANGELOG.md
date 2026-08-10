@@ -4,7 +4,9 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
-### Changed
+## [2.0.5] - 2026-08-11
+
+### Added
 
 - Added shuffled session-stable suggestions to the empty three-line prompt editor.
 
