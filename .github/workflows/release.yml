@@ -1,24 +1,40 @@
 name: Release
 
 on:
+  # Normal path: a new version on main is released only after the full CI workflow passes.
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
+  # Recovery path: a manually pushed version tag can recreate a missing release.
   push:
     tags:
       - 'v*'
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Create GitHub Release
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Release creation needs the contents scope; the default token is read-only.
     permissions:
       contents: write
 
     steps:
-      - name: Check out source
+      - name: Check out verified source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 1
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Set up Node.js
@@ -26,36 +42,81 @@ jobs:
         with:
           node-version: '22.19.0'
 
-      - name: Extract changelog section
-        id: notes
+      - name: Validate release metadata
+        id: metadata
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_TAG: ${{ github.ref_name }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          if node scripts/release-notes.ts CHANGELOG.md "$VERSION" > /tmp/release-notes.md; then
-            echo "notes=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
-          else
-            echo "notes=" >> "$GITHUB_OUTPUT"
-            echo "::warning::CHANGELOG.md has no section for ${VERSION}; release notes will be generated from commits"
+          set -euo pipefail
+
+          SHA="${VERIFIED_SHA:-$GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "$SHA"
+
+          VERSION=$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+            const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+            if (packageJson.version !== packageLock.version || packageJson.version !== packageLock.packages?.[""]?.version) {
+              throw new Error("package.json and package-lock.json versions do not match");
+            }
+            if (!/^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$/.test(packageJson.version)) {
+              throw new Error(`Unsupported release version: ${packageJson.version}`);
+            }
+            process.stdout.write(packageJson.version);
+          ')
+          TAG="v${VERSION}"
+
+          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            PREVIOUS_VERSION=$(git show HEAD^:package.json | node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              process.stdout.write(JSON.parse(readFileSync(0, "utf8")).version);
+            ')
+            if [[ "$PREVIOUS_VERSION" == "$VERSION" ]]; then
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "Package version is unchanged; no release is needed."
+              exit 0
+            fi
+          elif [[ "$PUSHED_TAG" != "$TAG" ]]; then
+            echo "Pushed tag ${PUSHED_TAG} does not match package version ${TAG}." >&2
+            exit 1
           fi
 
+          node scripts/release-notes.ts CHANGELOG.md "$VERSION" > /tmp/release-notes.md
+          test -s /tmp/release-notes.md
+
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Create release
+        if: steps.metadata.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          NOTES_PATH: ${{ steps.notes.outputs.notes }}
-          TAG: ${{ github.ref_name }}
-          VERSION: ${{ steps.notes.outputs.version }}
+          SHA: ${{ steps.metadata.outputs.sha }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          VERSION: ${{ steps.metadata.outputs.version }}
         run: |
+          set -euo pipefail
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists; skipping."
             exit 0
           fi
-          ARGS=()
+
+          if git ls-remote --exit-code --refs origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            git fetch --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
+            TAG_SHA=$(git rev-list -n 1 "$TAG")
+            if [[ "$TAG_SHA" != "$SHA" ]]; then
+              echo "Existing tag ${TAG} points to ${TAG_SHA}, not verified commit ${SHA}." >&2
+              exit 1
+            fi
+          fi
+
+          ARGS=(--target "$SHA" --notes-file /tmp/release-notes.md)
           if [[ "$VERSION" == *-* ]]; then
             ARGS+=(--prerelease)
-          fi
-          if [[ -n "$NOTES_PATH" ]]; then
-            ARGS+=(--notes-file "$NOTES_PATH")
-          else
-            ARGS+=(--generate-notes)
           fi
           gh release create "$TAG" --title "$TAG" "${ARGS[@]}"

@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Automated GitHub releases after successful `main` CI version bumps, with package, lockfile, changelog, tag, and verified-commit checks plus a manual tag recovery path.
+
 ## [2.0.5] - 2026-08-11
 
 ### Added

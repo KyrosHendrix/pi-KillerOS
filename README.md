@@ -120,16 +120,16 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 ## Publish
 
-The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog.
+To create a GitHub release, update the version in `package.json` and `package-lock.json`, add the matching `CHANGELOG.md` section, and push the release commit to `main`. After the full CI workflow passes, the release workflow creates the matching tag and GitHub release from that verified commit.
 
-For a release, publish after the validation checks pass:
+Do not manually tag a normal release. If automation must recover a missing GitHub release, push the matching version tag; the same workflow validates the tag against the package and changelog before creating the release.
+
+The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog. GitHub release automation does not publish to npm. Publish there separately after validation:
 
 ```bash
 npm login
 npm publish
 ```
-
-For later releases, choose `patch`, `minor`, or `major` with `npm version`, then publish and push the version commit and tag.
 
 ## Security
 

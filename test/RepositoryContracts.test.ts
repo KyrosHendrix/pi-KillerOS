@@ -11,6 +11,7 @@ const design = readFileSync(new URL("../DESIGN.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const context = readFileSync(new URL("../CONTEXT.md", import.meta.url), "utf8");
 const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 const oldCompactionPlan = readFileSync(new URL("../docs/implemented/context-compaction.md", import.meta.url), "utf8");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
@@ -69,6 +70,20 @@ test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.match(ci, /--package-lock=false/u);
   assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.82.1");
   assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.82.1");
+});
+
+test("GitHub releases require a green CI version bump and consistent metadata", () => {
+  assert.match(release, /workflow_run:/u);
+  assert.match(release, /workflows:\s*\n\s*- CI/u);
+  assert.match(release, /github\.event\.workflow_run\.conclusion == 'success'/u);
+  assert.match(release, /github\.event\.workflow_run\.head_sha/u);
+  assert.match(release, /PREVIOUS_VERSION.*VERSION/su);
+  assert.match(release, /packageJson\.version !== packageLock\.version/u);
+  assert.match(release, /scripts\/release-notes\.ts CHANGELOG\.md/u);
+  assert.match(release, /Existing tag.*verified commit/u);
+  assert.match(release, /push:\s*\n\s*tags:/u);
+  assert.match(readme, /After the full CI workflow passes.*matching tag and GitHub release/su);
+  assert.match(readme, /manual tag recovery path|recover a missing GitHub release/iu);
 });
 
 test("product and design docs match current runtime contracts", () => {
