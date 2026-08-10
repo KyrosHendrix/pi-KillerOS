@@ -89,6 +89,10 @@ function oneLine(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
+function boundedRenderLine(value: string, width: number, suffix: string): string {
+  return truncateToWidth(value.replace(/\r\n|\r|\n/gu, " "), width, suffix);
+}
+
 function visibleOptionRange(total: number, selected: number, capacity: number): { start: number; end: number } {
   const size = Math.max(1, Math.min(total, capacity));
   const start = Math.max(0, Math.min(selected - Math.floor(size / 2), total - size));
@@ -357,16 +361,18 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
           if (optionIndex >= visibleOptions.length) optionIndex = Math.max(0, visibleOptions.length - 1);
           const selected = visibleOptions[optionIndex];
           const position = `Option ${Math.min(optionIndex + 1, visibleOptions.length)}/${visibleOptions.length}`;
-          const answerCount = inputCharacterCount(editor.getExpandedText()).toLocaleString();
+          const expandedAnswer = editor.getExpandedText();
+          const answerCount = inputCharacterCount(expandedAnswer).toLocaleString();
           const filterCount = inputCharacterCount(filterQuery).toLocaleString();
+          const compactDraft = expandedAnswer.replace(/\r\n|\r|\n/gu, " ↵ ") || "Type an answer";
 
           if (rowBudget <= 2) {
             const compact = editMode
-              ? [`Answer ${answerCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`, editor.getExpandedText() || "Type an answer"]
+              ? [`Answer ${answerCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`, compactDraft]
               : [`${selected ? `> ${selected.label}` : "No matching options"} · ${position}`];
             cachedWidth = renderWidth;
             cachedRows = rowBudget;
-            cachedLines = compact.slice(0, rowBudget).map((line) => truncateToWidth(line, renderWidth, "…"));
+            cachedLines = compact.slice(0, rowBudget).map((line) => boundedRenderLine(line, renderWidth, "…"));
             return cachedLines;
           }
 
@@ -377,7 +383,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
                 ? `Answer ${answerCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`
                 : `${selected ? `> ${selected.label}` : "No matching options"} · ${position}`,
               editMode
-                ? editor.getExpandedText() || "Type an answer"
+                ? compactDraft
                 : filterQuery
                   ? `Filter ${filterCount}/${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()}`
                   : position,
@@ -387,7 +393,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
             ];
             cachedWidth = renderWidth;
             cachedRows = rowBudget;
-            cachedLines = compact.slice(0, rowBudget).map((line) => truncateToWidth(line, renderWidth, "…"));
+            cachedLines = compact.slice(0, rowBudget).map((line) => boundedRenderLine(line, renderWidth, "…"));
             return cachedLines;
           }
 
@@ -468,7 +474,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
           lines.push(theme.fg("accent", "─".repeat(renderWidth)));
           cachedWidth = renderWidth;
           cachedRows = rowBudget;
-          cachedLines = lines.slice(0, rowBudget).map((line) => truncateToWidth(line, renderWidth, ""));
+          cachedLines = lines.slice(0, rowBudget).map((line) => boundedRenderLine(line, renderWidth, ""));
           return cachedLines;
         };
 

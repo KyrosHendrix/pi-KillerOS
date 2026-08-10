@@ -2411,6 +2411,27 @@ test("question rendering never exceeds terminal height for valid maximum content
   }
 });
 
+test("multiline custom answers stay within tiny terminal row and width limits", async () => {
+  const { tools } = createHarness();
+  const question = await startQuestion(tools.get("question"), undefined, "Choose", 3);
+  question.component.handleInput("2");
+  question.component.handleInput("first 😀界");
+  question.component.handleInput("\x1B[13;2u");
+  question.component.handleInput("second line that clips");
+
+  for (const rows of [1, 2, 3]) {
+    question.tui.terminal.rows = rows;
+    const rendered = question.component.render(18);
+    assert.ok(rendered.length <= rows, `rendered ${rendered.length}/${rows} rows`);
+    assert.ok(rendered.every((line) => !/[\r\n]/u.test(line)), `height ${rows} returned an embedded line break`);
+    assert.ok(rendered.every((line) => visibleWidth(line) <= 18), `height ${rows} exceeded the terminal width`);
+    if (rows >= 2) assert.match(rendered.join("\n"), /first/u);
+  }
+
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
 test("question invalidates cached rows when terminal height changes at the same width", async () => {
   const { tools } = createHarness();
   const question = await startQuestion(
