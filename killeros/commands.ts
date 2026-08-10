@@ -150,12 +150,11 @@ export function registerSlashAutocomplete(pi: ExtensionAPI): void {
         usage.set(tagged.killerosCommand, (usage.get(tagged.killerosCommand) ?? 0) + 1);
         const line = lines[cursorLine] ?? "";
         const beforeCursor = line.slice(0, cursorCol);
-        let afterCursor = line.slice(cursorCol);
+        const afterCursor = line.slice(cursorCol);
         const match = beforeCursor.match(/(?:^|[ \t])\/([^\s/]*)$/);
         if (!match || match.index === undefined) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
         const slashIndex = match.index + (match[0].startsWith("/") ? 0 : 1);
         const newBefore = beforeCursor.slice(0, slashIndex) + item.value;
-        if (item.value.endsWith(" ") && afterCursor.startsWith(" ")) afterCursor = afterCursor.trimStart();
         const nextLines = [...lines];
         nextLines[cursorLine] = newBefore + afterCursor;
         return { lines: nextLines, cursorLine, cursorCol: newBefore.length };

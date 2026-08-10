@@ -2849,6 +2849,38 @@ test("autocomplete omits unsupported argument hints", async () => {
   assert.ok(result.items.some((item) => item.label === "/exit"));
 });
 
+test("autocomplete preserves text and horizontal whitespace after the cursor", async () => {
+  const { handlers } = createHarness();
+  const { captured, ctx } = createTuiContext();
+  for (const handler of handlers.get("session_start")) handler({}, ctx);
+
+  const current = {
+    applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+    getSuggestions: async () => ({ prefix: "/", items: [] }),
+    shouldTriggerFileCompletion: () => true,
+  };
+  const provider = captured.autocompleteFactory(current);
+  const cases = [
+    { line: "/go", cursorCol: 3, expected: "/goal " },
+    { line: "/gokeep", cursorCol: 3, expected: "/goal keep" },
+    { line: "/go keep", cursorCol: 3, expected: "/goal  keep" },
+    { line: "prefix /go   keep", cursorCol: 10, expected: "prefix /goal    keep" },
+    { line: "prefix\t/go\t \tkeep", cursorCol: 10, expected: "prefix\t/goal \t \tkeep" },
+  ];
+
+  for (const testCase of cases) {
+    const suggestions = await provider.getSuggestions([testCase.line], 0, testCase.cursorCol, {});
+    const goal = suggestions.items.find((candidate) => candidate.label === "/goal");
+    assert.ok(goal, `missing /goal for ${JSON.stringify(testCase.line)}`);
+    const completed = provider.applyCompletion([testCase.line], 0, testCase.cursorCol, goal, suggestions.prefix);
+    assert.deepEqual(completed, {
+      lines: [testCase.expected],
+      cursorLine: 0,
+      cursorCol: testCase.line.startsWith("prefix") ? 13 : 6,
+    });
+  }
+});
+
 test("activity uses an animated orange glyph loop and a nonrepeating shuffled verb deck", (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const { handlers } = createHarness();

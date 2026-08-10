@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Preserved existing spaces and tabs after the cursor when applying slash-command autocomplete.
 - Made `/init` abort safely when Git ignore inspection fails or returns untrusted output, preventing ignored files from entering model evidence.
 - Wrapped long interactive questions to the current terminal width while keeping the question UI within the terminal height.
 - Made `/goal pause` and `/goal clear` save terminal state before immediately stopping active goal work.
