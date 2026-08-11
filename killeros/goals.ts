@@ -333,6 +333,34 @@ function recoverGoalAfterManualCompaction(
   return true;
 }
 
+function beginGoalTurn(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  ctx: ExtensionContext,
+  current: GoalState,
+): GoalState | undefined {
+  const now = Date.now();
+  const next: GoalState = {
+    ...current,
+    revision: current.revision + 1,
+    turns: current.turns + 1,
+    updatedAt: now,
+    activeStartedAt: current.activeStartedAt ?? now,
+    resumeAfterManualCompaction: undefined,
+  };
+  try {
+    persistGoalState(pi, runtime, "turn", next);
+  } catch (error) {
+    pauseGoalAfterFailure(pi, runtime, ctx, `turn state could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+  runtime.goalTurnInFlight = true;
+  runtime.agentEndObserved = false;
+  runtime.lastStopReason = undefined;
+  runtime.lastError = undefined;
+  return next;
+}
+
 function scheduleGoalContinuation(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -348,16 +376,13 @@ function scheduleGoalContinuation(
     || initState.active
     || !ctx.isIdle()
     || ctx.hasPendingMessages()) return false;
-  const current = runtime.state;
   runtime.continuationScheduled = true;
-  runtime.goalTurnInFlight = false;
-  runtime.agentEndObserved = false;
-  runtime.lastStopReason = undefined;
-  runtime.lastError = undefined;
+  const next = beginGoalTurn(pi, runtime, ctx, runtime.state);
+  if (!next) return false;
   try {
     pi.sendMessage({
       customType: GOAL_CONTINUATION_TYPE,
-      content: goalContinuationMessage(current, ctx),
+      content: goalContinuationMessage(next, ctx),
       display: false,
     }, { triggerTurn: true, deliverAs: "followUp" });
     return true;
@@ -550,25 +575,8 @@ export function registerGoal(
     const current = runtime.state;
     if (!isGoalModeSupported(ctx) || !isSavedSession(ctx) || !current || current.status !== "active" || initState.active) return;
     if (runtime.goalTurnInFlight) return { systemPrompt: `${event.systemPrompt}\n\n${goalSystemPrompt(current)}` };
-    const now = Date.now();
-    const next: GoalState = {
-      ...current,
-      revision: current.revision + 1,
-      turns: current.turns + 1,
-      updatedAt: now,
-      activeStartedAt: current.activeStartedAt ?? now,
-      resumeAfterManualCompaction: undefined,
-    };
-    try {
-      persistGoalState(pi, runtime, "turn", next);
-    } catch (error) {
-      pauseGoalAfterFailure(pi, runtime, ctx, `turn state could not be saved: ${error instanceof Error ? error.message : String(error)}`);
-      return;
-    }
-    runtime.goalTurnInFlight = true;
-    runtime.agentEndObserved = false;
-    runtime.lastStopReason = undefined;
-    runtime.lastError = undefined;
+    const next = beginGoalTurn(pi, runtime, ctx, current);
+    if (!next) return;
     return { systemPrompt: `${event.systemPrompt}\n\n${goalSystemPrompt(next)}` };
   });
 

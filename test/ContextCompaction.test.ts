@@ -423,8 +423,10 @@ test("reload finishes recovery when active-branch order proves compaction succes
   await emitSequentially(harness.handlers.get("session_start"), { type: "session_start", reason: "resume" }, ctx);
   await new Promise((resolve) => setImmediate(resolve));
 
+  assert.deepEqual(harness.appendedEntries.slice(-2).map((entry) => entry.data.event), ["resume", "turn"]);
   assert.equal(harness.appendedEntries.at(-1).data.state.status, "active");
-  assert.equal(harness.appendedEntries.at(-1).data.state.revision, 5);
+  assert.equal(harness.appendedEntries.at(-1).data.state.revision, 6);
+  assert.equal(harness.appendedEntries.at(-1).data.state.turns, 3);
   assert.equal(harness.sentMessages.length, 1);
 });
 

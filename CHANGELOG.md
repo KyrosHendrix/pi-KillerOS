@@ -8,6 +8,10 @@ All notable changes to KillerOS are documented here.
 
 - Automated GitHub releases after successful `main` CI version bumps, with package, lockfile, changelog, tag, and verified-commit checks plus a manual tag recovery path.
 
+### Fixed
+
+- Entered automatic `/goal` continuations into durable goal-turn state before dispatch so turn numbers advance and blocker audits work on Pi custom-message turns.
+
 ## [2.0.5] - 2026-08-11
 
 ### Added

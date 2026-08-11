@@ -629,6 +629,48 @@ test("goal panel actions match paused, blocked, and complete states", async () =
   }
 });
 
+test("/goal custom-message continuations enter goal turns without before_agent_start", async () => {
+  const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness();
+  const { ctx } = createTuiContext();
+
+  await commands.get("goal").handler("Audit the host continuation lifecycle", ctx);
+
+  assert.match(sentMessages[0].message.content, /Status: active · Turn: 1/u);
+  assert.equal(appendedEntries.filter((entry) => entry.data.event === "turn").at(-1).data.state.turns, 1);
+  const first = await tools.get("killeros_goal_update").execute(
+    "first-host-turn",
+    { status: "blocked", blockerKey: "host-lifecycle", evidence: "The same external blocker remains" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  const duplicate = await tools.get("killeros_goal_update").execute(
+    "duplicate-host-turn",
+    { status: "blocked", blockerKey: "host-lifecycle", evidence: "Duplicate audit in the same turn" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  assert.equal(first.details.streak, 1);
+  assert.equal(duplicate.details.streak, 1);
+
+  await emitSequentially(handlers.get("agent_end"), {
+    messages: [{ role: "assistant", stopReason: "stop" }],
+  }, ctx);
+  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+
+  assert.match(sentMessages[1].message.content, /Status: active · Turn: 2/u);
+  assert.equal(appendedEntries.filter((entry) => entry.data.event === "turn").at(-1).data.state.turns, 2);
+  const second = await tools.get("killeros_goal_update").execute(
+    "second-host-turn",
+    { status: "blocked", blockerKey: "host-lifecycle", evidence: "The blocker remains on the next turn" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  assert.equal(second.details.streak, 2);
+});
+
 test("/goal continues one turn at a time and pause stops future turns", async () => {
   const { commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
@@ -651,20 +693,20 @@ test("/goal continues one turn at a time and pause stops future turns", async ()
   assert.equal(sentMessages.length, 2, "a paused goal must not enqueue another continuation");
 });
 
-test("/goal pauses when a scheduled continuation fails before the agent starts", async () => {
+test("/goal pauses when a dispatched continuation settles without an agent result", async () => {
   const { appendedEntries, commands, handlers } = createHarness();
   const { ctx } = createTuiContext();
   await commands.get("goal").handler("Start reliably", ctx);
   await emitSequentially(handlers.get("agent_settled"), {}, ctx);
   const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
   assert.equal(lastGoalEntry.data.state.status, "paused");
-  assert.match(lastGoalEntry.data.state.result, /before an agent turn started/u);
-  assert.equal(lastGoalEntry.data.state.turns, 0);
+  assert.match(lastGoalEntry.data.state.result, /without an agent result/u);
+  assert.equal(lastGoalEntry.data.state.turns, 1);
 });
 
 test("/goal does not report start, resume, or edit success after dispatch failure", async () => {
   for (const control of ["start", "resume", "edit"]) {
-    const { api, appendedEntries, commands, sentMessages } = createHarness();
+    const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();
     const notifications = [];
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
@@ -679,6 +721,12 @@ test("/goal does not report start, resume, or edit success after dispatch failur
         await commands.get("goal").handler("pause", ctx);
         await commands.get("goal").handler("resume", ctx);
       } else {
+        ctx.waitForIdle = async () => {
+          await emitSequentially(handlers.get("agent_end"), {
+            messages: [{ role: "assistant", stopReason: "stop" }],
+          }, ctx);
+          await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+        };
         ctx.ui.editor = async () => "Edited objective";
         await commands.get("goal").handler("edit", ctx);
       }
@@ -694,7 +742,7 @@ test("/goal does not report start, resume, or edit success after dispatch failur
 });
 
 test("/goal reports start, resume, and edit success after dispatch", async () => {
-  const { commands, sentMessages } = createHarness();
+  const { commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
   const notifications = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
@@ -704,6 +752,12 @@ test("/goal reports start, resume, and edit success after dispatch", async () =>
   await commands.get("goal").handler("pause", ctx);
   await commands.get("goal").handler("resume", ctx);
   assert.match(notifications.at(-1).message, /Goal resumed/u);
+  ctx.waitForIdle = async () => {
+    await emitSequentially(handlers.get("agent_end"), {
+      messages: [{ role: "assistant", stopReason: "stop" }],
+    }, ctx);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  };
   ctx.ui.editor = async () => "Edited objective";
   await commands.get("goal").handler("edit", ctx);
   assert.match(notifications.at(-1).message, /Goal updated and active/u);
@@ -893,6 +947,7 @@ test("/goal validates objectives, reserves control words, and requires blocker a
   await commands.get("goal").handler("CLEAR", ctx);
   assert.match(notifications.at(-1).message, /No goal is set/u);
 
+  ctx.hasPendingMessages = () => true;
   await commands.get("goal").handler("Resolve the blocker", ctx);
   await assert.rejects(
     tools.get("killeros_goal_update").execute(
@@ -905,6 +960,7 @@ test("/goal validates objectives, reserves control words, and requires blocker a
     /during an active KillerOS goal turn/u,
   );
 
+  ctx.hasPendingMessages = () => false;
   await emitGoalStart(handlers, ctx);
   for (const blockerKey of [undefined, "", "UPPERCASE", "contains whitespace", `x${"y".repeat(120)}`]) {
     await assert.rejects(
