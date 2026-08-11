@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added optional multi-select to the `question` tool with bounded checked options, one additive custom answer, a dedicated multi-word filter editor, and compact expandable results while preserving single-select defaults.
+
 ### Changed
 
 - Automated GitHub releases after successful `main` CI version bumps, with package, lockfile, changelog, tag, and verified-commit checks plus a manual tag recovery path.

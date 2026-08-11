@@ -127,6 +127,14 @@ test("product and design docs match current runtime contracts", () => {
   assert.match(changelog, /Scoped atomic `\/init` reads and writes/u);
   assert.match(changelog, /save terminal state before immediately stopping active goal work/u);
   assert.match(changelog, /one durable blocker key on three consecutive goal turns/u);
+  assert.match(readme, /`mode: "multiple"`/u);
+  assert.match(readme, /Space.*toggle.*`\/`.*filter.*Enter.*submit/isu);
+  assert.match(readme, /single-select remains the default/iu);
+  assert.match(product, /multi-select.*opt-in/iu);
+  assert.match(product, /dedicated `\/` filter editor/iu);
+  assert.match(design, /### Question Selector/u);
+  assert.match(design, /\[ \].*\[x\]/isu);
+  assert.match(changelog, /optional multi-select.*question/iu);
   assert.match(context, /\*\*Goal stop boundary\*\*/u);
   assert.match(context, /first saves non-active Goal truth, then aborts/u);
   assert.match(context, /\*\*Blocker audit streak\*\*/u);

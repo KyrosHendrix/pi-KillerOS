@@ -32,6 +32,8 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 - The empty prompt editor shows one shuffled session-stable `Try "…"` suggestion inside full-width rules; it disappears when the user types. Slash-command autocomplete remains available, typed prompt text uses the normal editor color, and KillerOS leaves a custom editor factory from another extension unchanged.
 - Interactive question components must never render more rows than the active terminal height; tiny terminals degrade to a compact usable view.
 - Question and selector navigation must follow Pi’s effective keybindings and display the same bindings in help text.
+- The `question` tool remains single-select by default. Multi-select is opt-in and bounded, with one additive custom answer.
+- Multi-select uses Space for checked state, Enter for submission, and a dedicated `/` filter editor so typed filters can contain spaces; filtering never clears checked answers.
 - Pending, successful, and failed tool calls share one neutral container surface; status remains distinguishable through restrained text and icons.
 - Active responses use the orange 12-frame glyph loop `· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·` at 120 ms per frame, orange shuffled Claude-adjacent verbs that change every 2.5 seconds without immediate repeats, and the gray `(esc to interrupt · thinking)` status with bold `esc`; hidden reasoning uses the static `└ Thinking…` label.
 - Persistent footer state is reserved for active or actionable work; an active goal replaces the path on the right with warning-yellow status and exact seconds, while completed goals remain in history and goal status.

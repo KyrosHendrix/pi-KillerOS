@@ -48,7 +48,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` with an interactive status/action panel, durable objectives, immediate pause and clear cancellation, automatic continuation, explicit completion, and durable blocker audits
 - Automatic `/init` guideline synthesis with a frozen safe evidence map, protected existing policy, and the four packaged behavioral sections adapted from `writing-great-guidelines`
-- `question` tool with height-bounded option windows, configured Pi keybindings, live option/input progress, proposal previews, custom answers, history, cancellation, and compact expandable transcript rendering
+- `question` tool with single-select and opt-in bounded multi-select, height-bounded option windows, configured Pi keybindings, live option/input progress, proposal previews, custom answers, history, cancellation, and compact expandable transcript rendering
 - Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills; paths, URLs, and invalid commands remain plain text
 - Goal-aware `/clear` that confirms, aborts active work, waits for settlement, and starts a new session, plus `/exit` for graceful shutdown
 - Concise system-prompt guidance and supported native concise defaults that preserve explicit provider settings
@@ -77,6 +77,12 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 `/init` freezes a safe project-file map and exposes only dedicated read and list operations while it generates root `AGENTS.md`. Git-ignored files, known secret paths, private-key formats, other guidance, dependencies, links, non-regular files, and files outside that map are unavailable. Existing root `AGENTS.md` is separate protected policy: compatible rules are preserved, a real policy conflict leaves it unchanged with a reason, and any concurrent target change aborts installation without replacing the newer file.
 
 The generated file uses the four behavioral sections adapted from `writing-great-guidelines`; no external skill installation is required. `/init` asks no setup questions, starts no second model process, writes no other file, and reloads Pi resources only after a successful write.
+
+### Interactive questions
+
+Single-select remains the default. An agent opts into multi-select with `mode: "multiple"` and may set `minSelections` and `maxSelections`; the custom answer counts as one selection.
+
+In multi-select, use Space or a visible number to toggle an option, `/` to filter, and Enter to submit. The filter accepts spaces; Enter applies it and Escape returns to the choices. Checked options remain selected when the filter changes. Select **Type a custom answer** with Enter to add or edit one custom item alongside checked options.
 
 Supported reasoning levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. KillerOS limits choices to levels supported by the current model.
 

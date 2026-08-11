@@ -124,6 +124,39 @@ test("all KillerOS tools expose provider-compatible object schemas", () => {
   }
 });
 
+test("question exposes a Google-compatible optional selection mode", () => {
+  const tool = createHarness().tools.get("question");
+  const schema = JSON.parse(JSON.stringify(tool.parameters));
+
+  assert.deepEqual(schema.properties.mode, {
+    type: "string",
+    enum: ["single", "multiple"],
+    description: "Choose one answer or multiple answers; defaults to single",
+  });
+  assert.equal(Check(tool.parameters, { question: "Choose", options: [{ label: "Alpha" }] }), true);
+  assert.equal(Check(tool.parameters, {
+    question: "Choose", options: [{ label: "Alpha" }], mode: "multiple", minSelections: 1, maxSelections: 2,
+  }), true);
+  assert.equal(Check(tool.parameters, { question: "Choose", options: [{ label: "Alpha" }], mode: "ranked" }), false);
+});
+
+test("question rejects invalid or single-select selection bounds before opening the UI", async () => {
+  const tool = createHarness().tools.get("question");
+  const ctx = { mode: "tui", ui: { custom: () => { throw new Error("UI must not open for invalid bounds"); }, notify: () => {} } };
+  const execute = (extra) => tool.execute(
+    "question-bounds",
+    { question: "Choose", options: [{ label: "Alpha" }], ...extra },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+
+  await assert.rejects(execute({ minSelections: 1 }), /require mode.*multiple/iu);
+  await assert.rejects(execute({ mode: "single", maxSelections: 1 }), /require mode.*multiple/iu);
+  await assert.rejects(execute({ mode: "multiple", minSelections: 2, maxSelections: 1 }), /minimum.*maximum/iu);
+  await assert.rejects(execute({ mode: "multiple", maxSelections: 3 }), /at most 2 selections/iu);
+});
+
 test("goal updates use a Google-compatible status enum", () => {
   const tool = createHarness().tools.get("killeros_goal_update");
   const schema = JSON.parse(JSON.stringify(tool.parameters));
@@ -374,6 +407,7 @@ async function startQuestion(
   questionText = "Choose",
   terminalRows = 40,
   keybindings = getKeybindings(),
+  extraParams = {},
 ) {
   let component;
   let finish;
@@ -391,7 +425,7 @@ async function startQuestion(
   };
   const result = tool.execute(
     "question-test",
-    { question: questionText, options },
+    { question: questionText, options, ...extraParams },
     new AbortController().signal,
     () => {},
     ctx,
@@ -2420,6 +2454,194 @@ test("/init reloads only after existing agent-settled hooks complete", async () 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("question keeps single-select as the unchanged default", async () => {
+  const question = await startQuestion(createHarness().tools.get("question"), [{ label: "Alpha" }, { label: "Beta" }]);
+  question.component.handleInput("\x1B[B");
+  question.component.handleInput("\r");
+  assert.deepEqual((await question.result).details, {
+    question: "Choose", options: ["Alpha", "Beta"], answer: "Beta", selectedIndex: 2, wasCustom: false,
+  });
+});
+
+test("multi-select toggles choices and returns original option order", async () => {
+  const question = await startQuestion(
+    createHarness().tools.get("question"),
+    [{ label: "Alpha" }, { label: "Beta" }, { label: "Gamma" }],
+    "Choose all", 10, getKeybindings(), { mode: "multiple", minSelections: 2, maxSelections: 3 },
+  );
+  question.component.handleInput("\x1B[B");
+  question.component.handleInput(" ");
+  question.component.handleInput("\x1B[A");
+  question.component.handleInput(" ");
+  question.component.handleInput("\r");
+  const result = await question.result;
+  assert.equal(result.content[0].text, "User selected multiple answers:\n- Alpha\n- Beta");
+  assert.deepEqual(result.details, {
+    question: "Choose all", options: ["Alpha", "Beta", "Gamma"], mode: "multiple", answers: ["Alpha", "Beta"], selectedIndices: [1, 2],
+  });
+});
+
+test("multi-select toggles with digits and supports one editable custom answer", async () => {
+  const question = await startQuestion(
+    createHarness().tools.get("question"), [{ label: "Alpha" }, { label: "Beta" }],
+    "Choose all", 10, getKeybindings(), { mode: "multiple", maxSelections: 3 },
+  );
+  question.component.handleInput("2");
+  question.component.handleInput("3");
+  question.component.handleInput("Different choice");
+  question.component.handleInput("\r");
+  question.component.handleInput("3");
+  question.component.handleInput("\x01");
+  question.component.handleInput("Edited ");
+  question.component.handleInput("\r");
+  question.component.handleInput("\r");
+  const result = await question.result;
+  assert.deepEqual(result.details.answers, ["Beta", "Edited Different choice"]);
+  assert.deepEqual(result.details.selectedIndices, [2]);
+  assert.equal(result.details.customAnswer, "Edited Different choice");
+});
+
+test("multi-select enforces bounds without replacing choices", async () => {
+  const question = await startQuestion(
+    createHarness().tools.get("question"), [{ label: "Alpha" }, { label: "Beta" }],
+    "Choose all", 10, getKeybindings(), { mode: "multiple", minSelections: 1, maxSelections: 1 },
+  );
+  question.component.handleInput("\r");
+  assert.match(question.notifications.at(-1).message, /Select at least 1/u);
+  question.component.handleInput(" ");
+  question.component.handleInput("\x1B[B");
+  question.component.handleInput(" ");
+  assert.match(question.notifications.at(-1).message, /Select at most 1/u);
+  question.component.handleInput("\r");
+  assert.deepEqual((await question.result).details.answers, ["Alpha"]);
+});
+
+test("multi-select custom controls preserve selections and drafts", async () => {
+  const question = await startQuestion(
+    createHarness().tools.get("question"), [{ label: "Alpha" }],
+    "Choose all", 10, getKeybindings(), { mode: "multiple", maxSelections: 1 },
+  );
+  question.component.handleInput(" ");
+  question.component.handleInput("2");
+  question.component.handleInput("blocked draft");
+  question.component.handleInput("\r");
+  assert.match(question.notifications.at(-1).message, /Select at most 1/u);
+  assert.match(question.component.render(60).join("\n"), /blocked draft/u);
+  question.component.handleInput("\x1B");
+  question.component.handleInput("\x1B[A");
+  question.component.handleInput(" ");
+  question.component.handleInput("\x1B[B");
+  question.component.handleInput(" ");
+  assert.equal(question.notifications.length, 1);
+  question.component.handleInput("\r");
+  question.component.handleInput("custom");
+  question.component.handleInput("\r");
+  question.component.handleInput(" ");
+  question.component.handleInput("\x1B");
+  assert.deepEqual((await question.result).details.answers, []);
+});
+
+test("multi-select cancellation returns empty arrays", async () => {
+  const question = await startQuestion(
+    createHarness().tools.get("question"), [{ label: "Alpha" }],
+    "Choose all", 10, getKeybindings(), { mode: "multiple" },
+  );
+  question.component.handleInput("\x1B");
+  assert.deepEqual((await question.result).details, {
+    question: "Choose all", options: ["Alpha"], mode: "multiple", answers: [], selectedIndices: [], cancelled: true,
+  });
+});
+
+test("multi-select uses slash filter mode, accepts spaces, and keeps hidden checks", async () => {
+  const question = await startQuestion(
+    createHarness().tools.get("question"), [{ label: "Alpha one" }, { label: "Beta two" }],
+    "Choose all", 10, getKeybindings(), { mode: "multiple", minSelections: 2 },
+  );
+  question.component.handleInput(" ");
+  question.component.handleInput("ignored");
+  assert.doesNotMatch(question.component.render(60).join("\n"), /Filter 7/u);
+  question.component.handleInput("/");
+  question.component.handleInput("Beta two");
+  assert.match(question.component.render(60).join("\n"), /Filter 8\/4,000/u);
+  question.component.handleInput("\r");
+  const applied = question.component.render(60).join("\n");
+  assert.match(applied, /Beta two/u);
+  assert.doesNotMatch(applied, /Alpha one/u);
+  question.component.handleInput(" ");
+  question.component.handleInput("\r");
+  assert.deepEqual((await question.result).details.answers, ["Alpha one", "Beta two"]);
+});
+
+test("multi-select filter edits can be discarded, cleared, pasted, and bounded", async () => {
+  const question = await startQuestion(
+    createHarness().tools.get("question"), [{ label: "Alpha" }, { label: "Beta two" }],
+    "Choose all", 10, getKeybindings(), { mode: "multiple" },
+  );
+  question.component.handleInput("/");
+  question.component.handleInput("Alpha");
+  question.component.handleInput("\r");
+  question.component.handleInput("/");
+  question.component.handleInput("Beta");
+  question.component.handleInput("\x1B");
+  assert.match(question.component.render(60).join("\n"), /Alpha/u);
+  assert.doesNotMatch(question.component.render(60).join("\n"), /Beta two/u);
+  question.component.handleInput("/");
+  assert.match(question.component.render(60).join("\n"), /Alpha/u);
+  question.component.handleInput("\x01");
+  question.component.handleInput("\x0B");
+  question.component.handleInput("\x1B[200~Beta two\x1B[201~");
+  question.component.handleInput("\r");
+  assert.match(question.component.render(60).join("\n"), /Beta two/u);
+  question.component.handleInput("\x1B");
+  assert.match(question.component.render(60).join("\n"), /Alpha/u);
+  question.component.handleInput("/");
+  question.component.handleInput(`\x1B[200~${"😀".repeat(4_001)}\x1B[201~`);
+  assert.match(question.notifications.at(-1).message, /4,000 characters.*16,000 bytes/u);
+  question.component.handleInput("\x1B");
+  question.component.handleInput("\x1B");
+  await question.result;
+});
+
+test("multi-select renders checked state, controls, and bounded compact layouts", async () => {
+  const question = await startQuestion(
+    createHarness().tools.get("question"),
+    Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1} ${"L".repeat(180)}` })),
+    `Choose ${"Q".repeat(990)}`, 12, getKeybindings(), { mode: "multiple", minSelections: 1, maxSelections: 10 },
+  );
+  assert.match(question.component.render(80).join("\n"), /\[ \].*Choice 1/u);
+  assert.match(question.component.render(80).join("\n"), /Selected 0.*1–10/u);
+  assert.match(question.component.render(80).join("\n"), /space.*toggle.*\/.*filter.*enter.*submit/iu);
+  question.component.handleInput(" ");
+  assert.match(question.component.render(80).join("\n"), /\[x\].*Choice 1/iu);
+  question.tui.terminal.rows = 1;
+  assert.match(question.component.render(10).join("\n"), /Selected 1/u);
+  for (const rows of [1, 2, 3, 5, 6, 12]) {
+    question.tui.terminal.rows = rows;
+    const rendered = question.component.render(20);
+    assert.ok(rendered.length <= rows);
+    assert.ok(rendered.every((line) => visibleWidth(line) <= 20));
+    assert.match(rendered.join("\n"), /Choice 1|Selected 1/u);
+  }
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
+test("multi-select transcript shows range, exact overflow, and every expanded answer", () => {
+  const tool = createHarness().tools.get("question");
+  const args = { question: "Choose all", options: [{ label: "Alpha" }, { label: "Beta" }], mode: "multiple", minSelections: 1, maxSelections: 2 };
+  assert.match(tool.renderCall(args, theme, { expanded: false }).render(40).join("\n"), /multi-select.*choose 1–2/isu);
+  assert.match(tool.renderCall(args, theme, { expanded: true }).render(40).join("\n"), /\[ \].*Alpha/isu);
+  const result = {
+    content: [{ type: "text", text: "User selected multiple answers" }],
+    details: { question: "Choose all", options: ["Alpha", "Beta", "Gamma", "Delta"], mode: "multiple", answers: ["Alpha", "Beta", "Gamma", "Delta"], selectedIndices: [1, 2, 3, 4] },
+  };
+  const collapsed = tool.renderResult(result, { expanded: false }, theme).render(24).join("\n");
+  assert.match(collapsed, /Alpha/u);
+  assert.match(collapsed, /\+[1-3] more/u);
+  const expanded = tool.renderResult(result, { expanded: true }, theme).render(24).join("\n");
+  for (const answer of result.details.answers) assert.match(expanded, new RegExp(answer, "u"));
 });
 
 test("question shows option, filter, and answer progress", async () => {

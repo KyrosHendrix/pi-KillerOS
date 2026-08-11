@@ -128,6 +128,15 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Command feedback:** Keep typed prompt text in its normal role and use autocomplete to identify valid slash commands. Do not replace an editor factory owned by another extension.
 - **Boundaries:** Trigger slash autocomplete only at the start of a line or after horizontal whitespace. Completion must not alter unrelated text, cursor placement, or wrapping.
 
+### Question Selector
+- **Single-select:** Preserve type-to-filter, configured Pi navigation and confirmation, custom answers, previews, and current result rendering.
+- **Multi-select:** Use `[ ]` and `[x]` plus text so checked state never depends on color. Keep the focus pointer separate from checked state.
+- **Controls:** Show Space as toggle, `/` as filter, and the effective Pi confirmation key as submit. The custom row uses confirmation to add or edit and Space to remove.
+- **Status:** Keep `Selected N` and the required range visible before lower-priority preview detail. Reject excess choices without replacing existing checks.
+- **Filtering:** Render filter editing as a distinct input state. Applied filters may hide checked options but never clear them.
+- **Transcript:** Compact results show selected names followed by an exact `+N more` overflow; expanded results show every answer in original option order with custom text last.
+- **Adaptation:** At tiny heights preserve the focused choice or selected count, then controls; never exceed terminal width or height.
+
 ### Activity Indicator
 - **Mark:** Animate the accent-orange glyph sequence `· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·` at 120 ms per frame; do not use green or a static indicator.
 - **Voice:** While an agent run is active, render the same accent orange on `Brewing`, `Pondering`, `Tinkering`, `Wrangling`, `Noodling`, and `Cooking`; shuffle without immediate repeats and change the word every 2.5 seconds.
