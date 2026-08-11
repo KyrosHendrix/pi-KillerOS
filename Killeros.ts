@@ -14,6 +14,7 @@ import { registerQuestionTool } from "./killeros/question.ts";
 import { createGoalRuntime, createInitRuntime } from "./killeros/runtime.ts";
 import { registerShellUi } from "./killeros/shell-ui.ts";
 import { registerVariants } from "./killeros/variants.ts";
+import { registerWorkedFor } from "./killeros/worked-for.ts";
 
 export { CONCISE_SYSTEM_PROMPT, isConciseEnabled, isConcisedEnabled } from "./killeros/concise.ts";
 export { contextPercentRemaining, formatCost, formatContextProgress } from "./killeros/footer.ts";
@@ -43,4 +44,5 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerGoalSettlement(pi, goalRuntime, initRuntime);
   registerInitSettlement(pi, initRuntime);
   registerCompletionNotifications(pi, options.completionNotifications);
+  registerWorkedFor(pi);
 }

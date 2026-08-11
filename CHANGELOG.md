@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Added
 
+- Added a durable `✻ Worked for …` transcript line below each settled TUI response, including stopped and failed runs.
 - Added optional multi-select to the `question` tool with bounded checked options, one additive custom answer, a dedicated multi-word filter editor, and compact expandable results while preserving single-select defaults.
 
 ### Changed
