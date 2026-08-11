@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.6] - 2026-08-11
+
 ### Added
 
 - Added a durable `✻ Worked for …` transcript line below each settled TUI response, including stopped and failed runs.
