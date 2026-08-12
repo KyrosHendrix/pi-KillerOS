@@ -26,6 +26,11 @@ export interface GoalBlockerAudit {
   lastTurn: number;
 }
 
+export interface GoalFileVerification {
+  kind: "file";
+  path: string;
+}
+
 export interface GoalState {
   version: 1;
   revision: number;
@@ -41,6 +46,7 @@ export interface GoalState {
   result?: string;
   resumeAfterManualCompaction?: true;
   blockerAudit?: GoalBlockerAudit;
+  verification?: GoalFileVerification;
 }
 
 export interface GoalRuntime {

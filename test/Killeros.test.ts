@@ -135,26 +135,94 @@ test("question exposes a Google-compatible optional selection mode", () => {
   });
   assert.equal(Check(tool.parameters, { question: "Choose", options: [{ label: "Alpha" }] }), true);
   assert.equal(Check(tool.parameters, {
+    question: "Choose", options: [{ label: "Alpha" }], mode: "single", minSelections: 1, maxSelections: 1,
+  }), true);
+  assert.equal(Check(tool.parameters, {
     question: "Choose", options: [{ label: "Alpha" }], mode: "multiple", minSelections: 1, maxSelections: 2,
   }), true);
   assert.equal(Check(tool.parameters, { question: "Choose", options: [{ label: "Alpha" }], mode: "ranked" }), false);
 });
 
-test("question rejects invalid or single-select selection bounds before opening the UI", async () => {
+test("question accepts omitted or explicit 1/1 single-select bounds before rendering and execution", async () => {
+  const tool = createHarness().tools.get("question");
+  const acceptedBounds = [
+    {},
+    { mode: "single" },
+    { minSelections: 1, maxSelections: 1 },
+    { mode: "single", minSelections: 1, maxSelections: 1 },
+  ];
+  let opened = 0;
+  const ctx = {
+    mode: "tui",
+    ui: {
+      custom: () => {
+        opened += 1;
+        return Promise.resolve({ kind: "cancelled" });
+      },
+      notify: () => {},
+    },
+  };
+
+  for (const extra of acceptedBounds) {
+    const params = { question: "Choose", options: [{ label: "Alpha" }], ...extra };
+    const rendered = tool.renderCall(params, theme, { expanded: false }).render(80).join("\n");
+    assert.doesNotMatch(rendered, /multi-select|\[ \]/iu);
+    const result = await tool.execute("question-bounds", params, new AbortController().signal, () => {}, ctx);
+    assert.equal("mode" in result.details, false);
+  }
+  assert.equal(opened, acceptedBounds.length);
+});
+
+test("question rejects every other single-select bound before rendering and execution", async () => {
+  const tool = createHarness().tools.get("question");
+  const invalidBounds = [
+    { minSelections: 1 },
+    { maxSelections: 1 },
+    { minSelections: 1, maxSelections: 2 },
+    { mode: "single", minSelections: 2, maxSelections: 2 },
+  ];
+  let opened = false;
+  const ctx = {
+    mode: "tui",
+    ui: {
+      custom: () => {
+        opened = true;
+        throw new Error("UI must not open for invalid bounds");
+      },
+      notify: () => {},
+    },
+  };
+
+  for (const extra of invalidBounds) {
+    const params = { question: "Choose", options: [{ label: "Alpha" }], ...extra };
+    assert.throws(
+      () => tool.renderCall(params, theme, { expanded: false }),
+      /single-select.*omitted or both be 1/iu,
+    );
+    await assert.rejects(
+      tool.execute("question-bounds", params, new AbortController().signal, () => {}, ctx),
+      /single-select.*omitted or both be 1/iu,
+    );
+  }
+  assert.equal(opened, false);
+});
+
+test("question retains multiple-select bound validation before rendering and execution", async () => {
   const tool = createHarness().tools.get("question");
   const ctx = { mode: "tui", ui: { custom: () => { throw new Error("UI must not open for invalid bounds"); }, notify: () => {} } };
-  const execute = (extra) => tool.execute(
-    "question-bounds",
-    { question: "Choose", options: [{ label: "Alpha" }], ...extra },
-    new AbortController().signal,
-    () => {},
-    ctx,
-  );
+  const invalidBounds = [
+    { mode: "multiple", minSelections: 2, maxSelections: 1, error: /minimum.*maximum/iu },
+    { mode: "multiple", maxSelections: 3, error: /at most 2 selections/iu },
+  ];
 
-  await assert.rejects(execute({ minSelections: 1 }), /require mode.*multiple/iu);
-  await assert.rejects(execute({ mode: "single", maxSelections: 1 }), /require mode.*multiple/iu);
-  await assert.rejects(execute({ mode: "multiple", minSelections: 2, maxSelections: 1 }), /minimum.*maximum/iu);
-  await assert.rejects(execute({ mode: "multiple", maxSelections: 3 }), /at most 2 selections/iu);
+  for (const { error, ...extra } of invalidBounds) {
+    const params = { question: "Choose", options: [{ label: "Alpha" }], ...extra };
+    assert.throws(() => tool.renderCall(params, theme, { expanded: false }), error);
+    await assert.rejects(
+      tool.execute("question-bounds", params, new AbortController().signal, () => {}, ctx),
+      error,
+    );
+  }
 });
 
 test("goal updates use a Google-compatible status enum", () => {

@@ -70,7 +70,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 /exit                     Quit Pi gracefully
 ```
 
-`/goal` requires a saved session in TUI or RPC mode. Goal state is stored in versioned session entries on the active branch and restored after reload, resume, fork, or tree navigation. Active goals inject their unchanged objective every turn and continue one settled turn at a time. The model must use KillerOS’s private goal tool to mark verified completion. Blocking requires one stable lowercase blocker key recorded on three consecutive goal turns; a changed key, skipped turn, resume, or edit resets the streak. Final prose alone does not end the loop.
+`/goal` requires a saved session in TUI or RPC mode. Goal state is stored in versioned session entries on the active branch and restored after reload, resume, fork, or tree navigation. Active goals inject their unchanged objective every turn and continue one settled turn at a time. The model must use KillerOS’s private goal tool to report completion. For an objective that clearly asks to create, write, save, or generate a named file-like deliverable at one quoted absolute path, KillerOS saves that exact path with the goal and verifies that a regular file exists there before accepting completion. Other objectives retain model-reported completion. Blocking requires one stable lowercase blocker key recorded on three consecutive goal turns; a changed key, skipped turn, resume, or edit resets the streak. Final prose alone does not end the loop.
 
 `/goal pause` and `/goal clear` save paused or cleared state before aborting current goal work, so settlement cannot restart it. Aborted turns, provider failures, and continuation failures otherwise pause safely. Failed edit and replacement writes dispatch no edited objective; an active prior objective pauses fail-closed, while inactive durable state remains unchanged. Replacing unfinished work requires confirmation, and `/goal edit` requires TUI mode.
 
@@ -80,7 +80,7 @@ The generated file uses the four behavioral sections adapted from `writing-great
 
 ### Interactive questions
 
-Single-select remains the default. An agent opts into multi-select with `mode: "multiple"` and may set `minSelections` and `maxSelections`; the custom answer counts as one selection.
+Single-select remains the default. Explicit `minSelections: 1` and `maxSelections: 1` are equivalent to omitting both bounds; other single-select bounds are rejected. An agent opts into multi-select with `mode: "multiple"` and may set `minSelections` and `maxSelections`; the custom answer counts as one selection.
 
 In multi-select, use Space or a visible number to toggle an option, `/` to filter, and Enter to submit. The filter accepts spaces; Enter applies it and Escape returns to the choices. Checked options remain selected when the filter changes. Select **Type a custom answer** with Enter to add or edit one custom item alongside checked options.
 

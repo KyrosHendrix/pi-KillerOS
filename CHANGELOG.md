@@ -4,6 +4,11 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Verified exact persisted paths for clearly declared file-deliverable goals before completion, while preserving model-reported completion for general objectives.
+- Accepted explicit `1`/`1` bounds for single-select questions and applied the same bounds validation before rendering and execution.
+
 ## [2.0.6] - 2026-08-11
 
 ### Added

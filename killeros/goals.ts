@@ -1,4 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
+import { lstatSync } from "node:fs";
+import path from "node:path";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -7,7 +9,7 @@ import { BoundedText } from "./bounded-text.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
-import type { GoalBlockerAudit, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import type { GoalBlockerAudit, GoalFileVerification, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
 const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
@@ -52,6 +54,7 @@ const GoalUpdateParams = Type.Object({
 interface GoalUpdateDetails {
   status: "complete" | "blocked" | "blocker-audit";
   evidence: string;
+  verification?: "file" | "model-reported";
   blockerKey?: string;
   streak?: number;
 }
@@ -62,6 +65,41 @@ function isGoalStatus(value: unknown): value is GoalStatus {
 
 function finiteNonNegative(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isGoalFileVerification(value: unknown): value is GoalFileVerification {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<GoalFileVerification>;
+  return candidate.kind === "file"
+    && typeof candidate.path === "string"
+    && candidate.path === candidate.path.trim()
+    && isAbsoluteFilePath(candidate.path);
+}
+
+function isAbsoluteFilePath(value: string): boolean {
+  if (!value || /^(?:https?|file):\/\//iu.test(value) || /[\\\/]$/u.test(value)) return false;
+  return path.isAbsolute(value) || path.win32.isAbsolute(value);
+}
+
+function inferGoalVerification(objective: string): GoalFileVerification | undefined {
+  const destination = /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b[^\r\n]{0,80}?\b(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
+  const paths = [...objective.matchAll(destination)]
+    .map((match) => (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim())
+    .filter(isAbsoluteFilePath);
+  const unique = [...new Set(paths)];
+  return unique.length === 1 ? { kind: "file", path: unique[0]! } : undefined;
+}
+
+function verifyGoalDeliverable(verification: GoalFileVerification): void {
+  let artifact: ReturnType<typeof lstatSync>;
+  try {
+    artifact = lstatSync(verification.path);
+  } catch {
+    throw new Error(`Goal deliverable is not a regular file at the required path: ${verification.path}`);
+  }
+  if (!artifact.isFile()) {
+    throw new Error(`Goal deliverable is not a regular file at the required path: ${verification.path}`);
+  }
 }
 
 function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): value is GoalBlockerAudit {
@@ -92,6 +130,7 @@ function parseGoalState(value: unknown): GoalState | undefined {
     || !finiteNonNegative(candidate.baselineTokens)
     || candidate.activeStartedAt !== undefined && !finiteNonNegative(candidate.activeStartedAt)
     || candidate.result !== undefined && typeof candidate.result !== "string"
+    || candidate.verification !== undefined && !isGoalFileVerification(candidate.verification)
     || candidate.blockerAudit !== undefined && !isGoalBlockerAudit(candidate.blockerAudit, candidate.turns!, candidate.status)
     || candidate.resumeAfterManualCompaction !== undefined && candidate.resumeAfterManualCompaction !== true
     || candidate.resumeAfterManualCompaction === true && candidate.status !== "paused") {
@@ -112,6 +151,7 @@ function parseGoalState(value: unknown): GoalState | undefined {
     result: candidate.result,
     resumeAfterManualCompaction: candidate.resumeAfterManualCompaction,
     blockerAudit: candidate.blockerAudit,
+    verification: candidate.verification,
   };
 }
 
@@ -478,10 +518,14 @@ export function registerGoal(
       const evidence = params.evidence.trim();
       if (!evidence) throw new Error("Goal evidence must not be empty");
       if (params.status === "complete") {
+        if (state.verification) verifyGoalDeliverable(state.verification);
+        const verification = state.verification ? "file" : "model-reported";
         transitionGoal(pi, runtime, "complete", "complete", evidence, { resetBlockedAudit: true });
         return {
-          content: [{ type: "text", text: `Goal marked complete: ${evidence}` }],
-          details: { status: "complete", evidence },
+          content: [{ type: "text", text: state.verification
+            ? `Goal verified complete at ${state.verification.path}: ${evidence}`
+            : `Goal marked complete (model-reported): ${evidence}` }],
+          details: { status: "complete", evidence, verification },
         };
       }
       if (!runtime.goalTurnInFlight) throw new Error("A blocker audit can only be recorded during an active KillerOS goal turn");
@@ -798,6 +842,7 @@ export function registerGoal(
           activeStartedAt: now,
           blockedAuditStartTurn: current.turns,
           blockerAudit: undefined,
+          verification: inferGoalVerification(objective),
           result: undefined,
           resumeAfterManualCompaction: undefined,
         };
@@ -869,6 +914,7 @@ export function registerGoal(
         turns: 0,
         blockedAuditStartTurn: 0,
         baselineTokens: sumGoalTokens(ctx),
+        verification: inferGoalVerification(objective),
       };
       try {
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);

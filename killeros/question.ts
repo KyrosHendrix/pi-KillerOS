@@ -9,7 +9,7 @@ import {
   wrapTextWithAnsi,
   type EditorTheme,
 } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { BoundedText } from "./bounded-text.ts";
 
 const OptionSchema = Type.Object({
@@ -31,16 +31,42 @@ const QuestionParams = Type.Object({
   minSelections: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 10,
-    description: "Minimum answers required in multiple mode; defaults to 1",
+    description: "Minimum answers required in multiple mode; defaults to 1. Single mode accepts only an explicit 1/1 bounds pair",
   })),
   maxSelections: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 10,
-    description: "Maximum answers allowed in multiple mode; defaults to all options plus one custom answer",
+    description: "Maximum answers allowed in multiple mode; defaults to all options plus one custom answer. Single mode accepts only an explicit 1/1 bounds pair",
   })),
 });
 
-type QuestionMode = "single" | "multiple";
+type QuestionParamsValue = Static<typeof QuestionParams>;
+
+type NormalizedQuestionSelection =
+  | { mode: "single"; minSelections: 1; maxSelections: 1 }
+  | { mode: "multiple"; minSelections: number; maxSelections: number };
+
+function normalizeQuestionSelection(params: QuestionParamsValue): NormalizedQuestionSelection {
+  const mode = params.mode ?? "single";
+  if (mode === "single") {
+    const hasSelectionBounds = params.minSelections !== undefined || params.maxSelections !== undefined;
+    if (hasSelectionBounds && (params.minSelections !== 1 || params.maxSelections !== 1)) {
+      throw new Error("Single-select question bounds must be omitted or both be 1");
+    }
+    return { mode, minSelections: 1, maxSelections: 1 };
+  }
+
+  const maximumAvailable = params.options.length + 1;
+  const minSelections = params.minSelections ?? 1;
+  const maxSelections = params.maxSelections ?? maximumAvailable;
+  if (minSelections > maxSelections) {
+    throw new Error("Question minimum selections cannot exceed maximum selections");
+  }
+  if (maxSelections > maximumAvailable) {
+    throw new Error(`Question allows at most ${maximumAvailable} selections including one custom answer`);
+  }
+  return { mode, minSelections, maxSelections };
+}
 
 interface DisplayOption {
   label: string;
@@ -229,20 +255,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
     executionMode: "sequential",
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const mode: QuestionMode = params.mode ?? "single";
-      const hasSelectionBounds = params.minSelections !== undefined || params.maxSelections !== undefined;
-      if (mode === "single" && hasSelectionBounds) {
-        throw new Error("Question selection bounds require mode \"multiple\"");
-      }
-      const maximumAvailable = params.options.length + 1;
-      const minSelections = params.minSelections ?? 1;
-      const maxSelections = params.maxSelections ?? maximumAvailable;
-      if (minSelections > maxSelections) {
-        throw new Error("Question minimum selections cannot exceed maximum selections");
-      }
-      if (maxSelections > maximumAvailable) {
-        throw new Error(`Question allows at most ${maximumAvailable} selections including one custom answer`);
-      }
+      const { mode, minSelections, maxSelections } = normalizeQuestionSelection(params);
       if (ctx.mode !== "tui") throw new Error("The question tool requires interactive TUI mode");
       if (signal?.aborted) throw new Error("Question cancelled before it opened");
 
@@ -703,9 +716,8 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
     },
 
     renderCall(args, theme, context) {
-      const multiple = args.mode === "multiple";
-      const minimum = args.minSelections ?? 1;
-      const maximum = args.maxSelections ?? args.options.length + 1;
+      const { mode, minSelections: minimum, maxSelections: maximum } = normalizeQuestionSelection(args);
+      const multiple = mode === "multiple";
       if (!context.expanded) {
         const title = multiple ? "question (multi-select) " : "question ";
         const detail = multiple ? `${args.options.length} options · choose ${minimum}–${maximum}` : `${args.options.length} option${args.options.length === 1 ? "" : "s"}`;
