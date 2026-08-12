@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const main = readFileSync(new URL("../Killeros.ts", import.meta.url), "utf8");
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const product = readFileSync(new URL("../PRODUCT.md", import.meta.url), "utf8");
 const design = readFileSync(new URL("../DESIGN.md", import.meta.url), "utf8");
@@ -92,10 +93,15 @@ test("product and design docs match current runtime contracts", () => {
   assert.match(readme, /12-frame/u);
   assert.match(product, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
   assert.match(product, /120 ms/u);
-  assert.match(product, /esc to interrupt · thinking/u);
+  assert.match(product, /event-derived copy/u);
+  assert.match(product, /transient borderless trail/u);
+  assert.match(product, /`Done`, `Stopped`, or `Failed`/u);
   assert.match(design, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
   assert.match(design, /120 ms/u);
-  assert.match(design, /esc to interrupt · thinking/u);
+  assert.match(design, /`Mapping…` at request start/u);
+  assert.match(design, /### Work Trail/u);
+  assert.match(design, /### Settled Line/u);
+  assert.match(design, /no permanent rules or container border/iu);
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
   assert.match(readme, /\/goal <objective>/u);
   assert.match(readme, /\/goal pause\s+Stop the current goal turn and automatic continuation/u);
@@ -138,4 +144,17 @@ test("product and design docs match current runtime contracts", () => {
   assert.match(context, /\*\*Goal stop boundary\*\*/u);
   assert.match(context, /first saves non-active Goal truth, then aborts/u);
   assert.match(context, /\*\*Blocker audit streak\*\*/u);
+});
+
+test("request activity observes continuation scheduling before settlement cleanup", () => {
+  const goalSettlement = main.indexOf("registerGoalSettlement(pi");
+  const initSettlement = main.indexOf("registerInitSettlement(pi");
+  const activity = main.indexOf("registerRequestActivity(pi");
+  const notifications = main.indexOf("registerCompletionNotifications(pi");
+  const workedFor = main.indexOf("registerWorkedFor(pi");
+
+  assert.ok(goalSettlement < activity);
+  assert.ok(initSettlement < activity);
+  assert.ok(activity < notifications);
+  assert.ok(activity < workedFor);
 });

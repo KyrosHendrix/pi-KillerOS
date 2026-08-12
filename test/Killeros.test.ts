@@ -112,6 +112,38 @@ function createHarness() {
   return { api, activeTools, appendedEntries, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
 }
 
+async function startVariants({
+  terminalRows = 40,
+  current = "high",
+  keybindings = getKeybindings(),
+} = {}) {
+  const harness = createHarness();
+  const selectedLevels = [];
+  const notifications = [];
+  const tui = { requestRender() {}, terminal: { rows: terminalRows } };
+  let component;
+  harness.api.getThinkingLevel = () => current;
+  harness.api.setThinkingLevel = (level) => selectedLevels.push(level);
+  const ctx = {
+    mode: "tui",
+    model: {
+      provider: "test",
+      id: "reasoner",
+      reasoning: true,
+      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+    },
+    ui: {
+      custom: (factory) => new Promise((resolve) => {
+        component = factory(tui, theme, keybindings, resolve);
+      }),
+      notify: (message, level) => notifications.push({ message, level }),
+    },
+  };
+  const result = harness.commands.get("variants").handler("", ctx);
+  assert.ok(component);
+  return { ...harness, component, notifications, result, selectedLevels, tui };
+}
+
 test("all KillerOS tools expose provider-compatible object schemas", () => {
   const { tools } = createHarness();
 
@@ -171,6 +203,94 @@ test("question accepts omitted or explicit 1/1 single-select bounds before rende
     assert.equal("mode" in result.details, false);
   }
   assert.equal(opened, acceptedBounds.length);
+});
+
+test("/variants validates direct levels and model support", async () => {
+  const { api, commands } = createHarness();
+  const selectedLevels = [];
+  const notifications = [];
+  api.setThinkingLevel = (level) => selectedLevels.push(level);
+  const ctx = {
+    mode: "tui",
+    model: { provider: "test", id: "reasoner", reasoning: true },
+    ui: {
+      custom: () => { throw new Error("direct variants must not open the selector"); },
+      notify: (message, level) => notifications.push({ message, level }),
+    },
+  };
+  const variants = commands.get("variants");
+
+  await variants.handler("deep", ctx);
+  await variants.handler("xhigh", ctx);
+  await variants.handler("unknown", ctx);
+
+  assert.deepEqual(selectedLevels, ["high"]);
+  assert.match(notifications[0].message, /Thinking: High/u);
+  assert.match(notifications[1].message, /Extra High is not supported/u);
+  assert.match(notifications[2].message, /Unknown reasoning level/u);
+
+  await variants.handler("", { ...ctx, model: { provider: "test", id: "plain", reasoning: false } });
+  assert.match(notifications[3].message, /does not support extended reasoning/u);
+
+  await variants.handler("", { ...ctx, mode: "rpc" });
+  assert.match(notifications[4].message, /Use \/variants <level> outside TUI mode/u);
+});
+
+test("/variants initially focuses the current level and submits it", async () => {
+  const variants = await startVariants({ current: "high" });
+  const rendered = variants.component.render(80).join("\n");
+
+  assert.match(rendered, /→ High ← current/u);
+  variants.component.handleInput("\r");
+  await variants.result;
+  assert.deepEqual(variants.selectedLevels, ["high"]);
+});
+
+test("/variants stays within terminal bounds and preserves focus across resizes", async () => {
+  const variants = await startVariants({ current: "high" });
+  variants.component.handleInput("\x1B[B");
+
+  for (const rows of [12, 8, 7, 4, 3, 2, 1, 0]) {
+    variants.tui.terminal.rows = rows;
+    const rendered = variants.component.render(24);
+    assert.ok(rendered.length <= rows, `${rendered.length} rows rendered into a ${rows}-row terminal`);
+    assert.ok(rendered.every((line) => visibleWidth(line) <= 24));
+  }
+
+  variants.tui.terminal.rows = 12;
+  const fullLayout = variants.component.render(24);
+  assert.equal(fullLayout.length, 12);
+  assert.match(fullLayout.join("\n"), /→ Extra High/u);
+  assert.match(fullLayout.at(-1), /^─+$/u);
+  assert.deepEqual(variants.component.render(0), []);
+  variants.component.handleInput("\r");
+  await variants.result;
+  assert.deepEqual(variants.selectedLevels, ["xhigh"]);
+});
+
+test("/variants follows remapped selector bindings and cancellation", async () => {
+  const previous = getKeybindings();
+  const remapped = new TuiKeybindingsManager(TUI_KEYBINDINGS, {
+    "tui.select.down": "ctrl+n",
+    "tui.select.up": "ctrl+p",
+    "tui.select.confirm": "ctrl+y",
+    "tui.select.cancel": "ctrl+g",
+  });
+  setKeybindings(remapped);
+  try {
+    const variants = await startVariants({ current: "high", keybindings: remapped });
+    variants.component.handleInput("\x1B[B");
+    assert.match(variants.component.render(80).join("\n"), /→ High ← current/u);
+    variants.component.handleInput("\x0E");
+    const rendered = variants.component.render(80).join("\n");
+    assert.match(rendered, /→ Extra High/u);
+    assert.match(rendered, /ctrl\+p.*ctrl\+n/u);
+    variants.component.handleInput("\x07");
+    await variants.result;
+    assert.deepEqual(variants.selectedLevels, []);
+  } finally {
+    setKeybindings(previous);
+  }
 });
 
 test("question rejects every other single-select bound before rendering and execution", async () => {
@@ -450,6 +570,12 @@ function createTuiContext(entries = [], uiTheme = theme) {
       setWorkingMessage: (message) => {
         captured.workingMessages ??= [];
         captured.workingMessages.push(message);
+      },
+      setWidget: (key, content, options) => {
+        captured.widgets ??= [];
+        captured.widgets.push({ key, content, options });
+        if (typeof content === "function") captured.widgetComponent = content(tui, uiTheme);
+        if (content === undefined) captured.widgetComponent = undefined;
       },
       theme: uiTheme,
     },
@@ -3291,7 +3417,7 @@ test("footer uses model metadata and formats unknown provider names", () => {
   footer.dispose();
 });
 
-test("editor implementation uses public APIs, preserves framing, and supports Shift+Enter", async () => {
+test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", async () => {
   const source = readFileSync(new URL("../killeros/shell-ui.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /buildVisualLineMap|scrollOffset|lastWidth|as unknown as/u);
   assert.doesNotMatch(source, /COMMAND_TOKEN_PATTERN|highlightEditorLines/u);
@@ -3310,23 +3436,23 @@ test("editor implementation uses public APIs, preserves framing, and supports Sh
     },
   };
   const editor = captured.editorFactory(tui, editorTheme, getKeybindings());
+  editor.focused = true;
   const emptyRender = editor.render(40);
   const emptyLines = emptyRender.map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  const emptyPrompt = emptyLines[1] ?? "";
-  assert.equal(emptyLines.length, 3);
-  assert.equal(emptyLines[0], "─".repeat(40));
-  assert.match(emptyPrompt, /^❯\u00A0Try "/u);
+  const emptyPrompt = emptyLines[0] ?? "";
+  assert.equal(emptyLines.length, 1);
+  assert.match(emptyPrompt.replace(/\x1B_pi:c\x07/gu, ""), /^❯\u00A0Try "/u);
   assert.equal(visibleWidth(emptyPrompt), 40);
-  assert.equal(emptyLines[2], "─".repeat(40));
-  for (let width = 4; width <= 180; width += 1) {
+  assert.doesNotMatch(emptyPrompt, /─/u);
+  for (let width = 1; width <= 180; width += 1) {
     const lines = editor.render(width);
-    assert.equal(lines.length, 3, `empty editor rows at width ${width}`);
-    assert.ok(lines.every((line) => visibleWidth(line) === width), `empty editor width ${width}`);
+    assert.equal(lines.length, 1, `empty editor rows at width ${width}`);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width), `empty editor width ${width}`);
   }
 
   editor.setText("/model");
   const rendered = editor.render(40);
-  const promptLine = rendered[1]?.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "") ?? "";
+  const promptLine = rendered[0]?.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "") ?? "";
   assert.equal(promptLine.slice(0, 8), "❯\u00A0/model");
   assert.doesNotMatch(rendered.join("\n"), /Try "/u);
   assert.doesNotMatch(rendered.join("\n"), /\x1B\[34m/u);
@@ -3338,6 +3464,47 @@ test("editor implementation uses public APIs, preserves framing, and supports Sh
   editor.handleInput("\x1B[13;2u");
   editor.handleInput("second");
   assert.equal(editor.getText(), "first\nsecond");
+  const multiline = editor.render(40).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
+  assert.match(multiline[0], /^❯\u00A0first/u);
+  assert.match(multiline[1], /^  second/u);
+
+  editor.setText("wrapped text ".repeat(20));
+  const wrapped = editor.render(24).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
+  assert.match(wrapped[0], /^  ↑ \d+ more/u);
+  assert.ok(wrapped.slice(1).every((line) => line.startsWith("  ")));
+  assert.doesNotMatch(wrapped.join("\n"), /─/u);
+  editor.handleInput("\x1B[5~");
+  const scrolledUp = editor.render(24).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
+  assert.match(scrolledUp.at(-1) ?? "", /^  ↓ \d+ more/u);
+});
+
+test("editor arrow alone carries focus color", async () => {
+  const styledTheme = {
+    bold: (text) => text,
+    fg: (color, text) => `<${color}>${text}</${color}>`,
+    italic: (text) => text,
+    strikethrough: (text) => text,
+    underline: (text) => text,
+  };
+  const { handlers } = createHarness();
+  const { captured, ctx, tui } = createTuiContext([], styledTheme);
+  for (const handler of handlers.get("session_start")) await handler({}, ctx);
+  const editor = captured.editorFactory(tui, {
+    borderColor: (text) => text,
+    selectList: {
+      selectedPrefix: (text) => text,
+      selectedText: (text) => text,
+      description: (text) => text,
+      scrollInfo: (text) => text,
+      noMatch: (text) => text,
+    },
+  }, getKeybindings());
+
+  editor.setText("hello");
+  editor.focused = false;
+  assert.match(editor.render(20)[0], /^<dim>❯\u00A0<\/dim>hello/u);
+  editor.focused = true;
+  assert.match(editor.render(20)[0], /^<accent>❯\u00A0<\/accent>/u);
 });
 
 test("shell UI preserves an existing custom editor factory", async () => {
@@ -3368,6 +3535,37 @@ test("autocomplete omits unsupported argument hints", async () => {
     assert.doesNotMatch(item.description, new RegExp(`/${command} \\[`));
   }
   assert.ok(result.items.some((item) => item.label === "/exit"));
+});
+
+test("frameless editor keeps autocomplete rows aligned below the prompt", async () => {
+  const { handlers } = createHarness();
+  const { captured, ctx, tui } = createTuiContext();
+  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  const current = {
+    applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+    getSuggestions: async () => ({ prefix: "/", items: [] }),
+    shouldTriggerFileCompletion: () => true,
+  };
+  const editor = captured.editorFactory(tui, {
+    borderColor: (text) => text,
+    selectList: {
+      selectedPrefix: (text) => text,
+      selectedText: (text) => text,
+      description: (text) => text,
+      scrollInfo: (text) => text,
+      noMatch: (text) => text,
+    },
+  }, getKeybindings());
+  editor.focused = true;
+  editor.setAutocompleteProvider(captured.autocompleteFactory(current));
+  editor.handleInput("/");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const rendered = editor.render(60).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
+  assert.match(rendered[0], /^❯\u00A0\//u);
+  assert.ok(rendered.slice(1).some((line) => line.includes("/clear")));
+  assert.ok(rendered.slice(1).every((line) => line.startsWith("  ")));
+  assert.doesNotMatch(rendered.join("\n"), /─/u);
 });
 
 test("autocomplete preserves text and horizontal whitespace after the cursor", async () => {
@@ -3402,8 +3600,7 @@ test("autocomplete preserves text and horizontal whitespace after the cursor", a
   }
 });
 
-test("activity uses an animated orange glyph loop and a nonrepeating shuffled verb deck", (t) => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
+test("activity keeps the animated orange glyph loop and uses contextual request copy", () => {
   const { handlers } = createHarness();
   const { captured, ctx } = createTuiContext();
   for (const handler of handlers.get("session_start")) handler({}, ctx);
@@ -3414,19 +3611,11 @@ test("activity uses an animated orange glyph loop and a nonrepeating shuffled ve
   });
   assert.equal(captured.hiddenThinkingLabel, "└ Thinking…");
   for (const handler of handlers.get("agent_start")) handler({}, ctx);
-
-  const plainMessage = /^(?:Brewing|Pondering|Tinkering|Wrangling|Noodling|Cooking)… \(esc to interrupt · thinking\)$/u;
-  for (let index = 0; index < 5; index += 1) t.mock.timers.tick(2_500);
-  const firstDeck = captured.workingMessages.slice(-6);
-  assert.equal(new Set(firstDeck).size, 6);
-  assert.ok(firstDeck.every((message, index) => plainMessage.test(message) && (index === 0 || message !== firstDeck[index - 1])));
-
-  t.mock.timers.tick(2_500);
-  assert.notEqual(captured.workingMessages.at(-1), firstDeck.at(-1));
+  assert.equal(captured.workingMessages.at(-1), "Mapping… (esc to interrupt · understanding request)");
+  assert.deepEqual(captured.widgetComponent.render(80), ["Prompt ›"]);
 });
 
-test("activity styles glyph and verb orange with a gray bold interrupt status", (t) => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
+test("activity styles the glyph and causal verb orange with a gray bold interrupt status", () => {
   const styledTheme = {
     bold: (text) => `<bold>${text}</bold>`,
     fg: (color, text) => `<${color}>${text}</${color}>`,
@@ -3450,32 +3639,8 @@ test("activity styles glyph and verb orange with a gray bold interrupt status", 
 
   assert.match(
     captured.workingMessages.at(-1) ?? "",
-    /^<accent>(?:Brewing|Pondering|Tinkering|Wrangling|Noodling|Cooking)…<\/accent> <dim>\(<bold>esc<\/bold> to interrupt · thinking\)<\/dim>$/u,
+    /^<accent>Mapping…<\/accent> <dim>\(<bold>esc<\/bold> to interrupt · understanding request\)<\/dim>$/u,
   );
-  for (const handler of handlers.get("agent_end")) handler({ messages: [] }, ctx);
-});
-
-test("activity timer stops on agent end and session shutdown", (t) => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
-  const { handlers } = createHarness();
-  const { captured, ctx } = createTuiContext();
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
-  for (const handler of handlers.get("agent_start")) handler({}, ctx);
-  for (const handler of handlers.get("agent_end")) handler({ messages: [] }, ctx);
-  const countAfterEnd = captured.workingMessages.length;
-  t.mock.timers.tick(10_000);
-  assert.equal(captured.workingMessages.length, countAfterEnd);
-
-  for (const handler of handlers.get("agent_start")) handler({}, ctx);
-  for (const handler of handlers.get("agent_start")) handler({}, ctx);
-  const countBeforeReplacementTick = captured.workingMessages.length;
-  t.mock.timers.tick(2_500);
-  assert.equal(captured.workingMessages.length, countBeforeReplacementTick + 1);
-
-  for (const handler of handlers.get("session_shutdown")) handler({}, ctx);
-  const countAfterShutdown = captured.workingMessages.length;
-  t.mock.timers.tick(10_000);
-  assert.equal(captured.workingMessages.length, countAfterShutdown);
 });
 
 test("Git branch resolution is asynchronous and bounded", async () => {
@@ -3581,8 +3746,8 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
       };
       const firstEditor = captured.editorFactory(tui, editorTheme, getKeybindings());
       const secondEditor = captured.editorFactory(tui, editorTheme, getKeybindings());
-      const firstSuggestion = strip(firstEditor.render(76)[1] ?? "");
-      const secondSuggestion = strip(secondEditor.render(76)[1] ?? "");
+      const firstSuggestion = strip(firstEditor.render(76)[0] ?? "");
+      const secondSuggestion = strip(secondEditor.render(76)[0] ?? "");
       assert.equal(firstSuggestion, secondSuggestion);
       assert.match(firstSuggestion, /^❯\u00A0Try "/u);
       suggestions.push(firstSuggestion);

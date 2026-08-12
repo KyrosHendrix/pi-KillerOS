@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatWorkedForDuration, registerWorkedFor } from "../killeros/worked-for.ts";
+import { formatWorkedForDuration, registerWorkedFor, workedForOutcome } from "../killeros/worked-for.ts";
 
 function createWorkedForHarness(mode = "tui") {
   let currentTime = 0;
@@ -33,8 +33,8 @@ function createWorkedForHarness(mode = "tui") {
 
   return {
     appendedEntries,
-    emit: async (event) => {
-      for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
+    emit: async (event, data = {}) => {
+      for (const handler of handlers.get(event) ?? []) await handler({ type: event, ...data }, ctx);
     },
     notices,
     renderers,
@@ -66,13 +66,14 @@ test("a settled TUI run appends one durable timing entry measured from its first
   await harness.emit("agent_start");
   harness.setTime(4_000);
   await harness.emit("agent_start");
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
   harness.setTime(9_000);
   await harness.emit("agent_settled");
   await harness.emit("agent_settled");
 
   assert.deepEqual(harness.appendedEntries, [{
     customType: "killeros-worked-for",
-    data: { version: 1, milliseconds: 8_000 },
+    data: { version: 2, milliseconds: 8_000, outcome: "done" },
   }]);
 });
 
@@ -92,23 +93,93 @@ test("automatic continuations keep one timer running until the final idle settle
   assert.deepEqual(harness.appendedEntries, []);
 
   harness.setPendingMessages(false);
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
   harness.setTime(9_000);
   await harness.emit("agent_settled");
   assert.deepEqual(harness.appendedEntries, [{
     customType: "killeros-worked-for",
-    data: { version: 1, milliseconds: 8_000 },
+    data: { version: 2, milliseconds: 8_000, outcome: "done" },
   }]);
 });
 
-test("the durable entry renders as one dim line and rejects malformed saved data", () => {
+test("the durable entry renders semantic outcomes and preserves version-one history", () => {
   const harness = createWorkedForHarness();
   const renderer = harness.renderers.get("killeros-worked-for");
-  const component = renderer({ data: { version: 1, milliseconds: 125_000 } }, {}, theme);
+  const styledTheme = { fg: (color, text) => `<${color}>${text}</${color}>` };
 
-  assert.deepEqual(component.render(80).map((line) => line.trimEnd()), ["✻ Worked for 2m 05s"]);
-  for (const data of [undefined, {}, { version: 2, milliseconds: 1_000 }, { version: 1, milliseconds: -1 }]) {
+  const cases = [
+    [{ version: 2, milliseconds: 18_000, outcome: "done" }, "<success>✓ Done</success><dim> · 18s</dim>"],
+    [{ version: 2, milliseconds: 18_000, outcome: "stopped" }, "<warning>■ Stopped</warning><dim> · 18s</dim>"],
+    [{ version: 2, milliseconds: 18_000, outcome: "failed" }, "<error>× Failed</error><dim> · 18s</dim>"],
+    [{ version: 1, milliseconds: 125_000 }, "<dim>✻ Worked for 2m 05s</dim>"],
+  ];
+  for (const [data, expected] of cases) {
+    const component = renderer({ data }, {}, styledTheme);
+    assert.deepEqual(component.render(80).map((line) => line.trimEnd()), [expected]);
+  }
+
+  for (const data of [
+    undefined,
+    null,
+    [],
+    {},
+    { version: 3, milliseconds: 1_000 },
+    { version: 2, milliseconds: 1_000 },
+    { version: 2, milliseconds: 1_000, outcome: "unknown" },
+    { version: 1, milliseconds: -1 },
+    { version: 1, milliseconds: Number.NaN },
+  ]) {
     assert.equal(renderer({ data }, {}, theme), undefined);
   }
+});
+
+test("all Pi stop reasons map to truthful outcomes", async () => {
+  assert.equal(workedForOutcome("stop"), "done");
+  assert.equal(workedForOutcome("aborted"), "stopped");
+  for (const stopReason of ["error", "length", "toolUse", undefined]) {
+    assert.equal(workedForOutcome(stopReason), "failed");
+  }
+
+  for (const [stopReason, outcome] of [
+    ["stop", "done"],
+    ["aborted", "stopped"],
+    ["error", "failed"],
+    ["length", "failed"],
+    ["toolUse", "failed"],
+  ]) {
+    const harness = createWorkedForHarness();
+    harness.setTime(1_000);
+    await harness.emit("agent_start");
+    await harness.emit("agent_end", {
+      messages: [
+        { role: "assistant", stopReason: "error" },
+        { role: "toolResult" },
+        { role: "assistant", stopReason },
+      ],
+    });
+    harness.setTime(2_000);
+    await harness.emit("agent_settled");
+    assert.equal(harness.appendedEntries[0].data.outcome, outcome, stopReason);
+  }
+});
+
+test("the last assistant reason survives continuations and wins at final settlement", async () => {
+  const harness = createWorkedForHarness();
+  harness.setTime(1_000);
+  await harness.emit("agent_start");
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "toolUse" }] });
+  harness.setIdle(false);
+  await harness.emit("agent_settled");
+  await harness.emit("agent_start");
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  harness.setIdle(true);
+  harness.setTime(4_000);
+  await harness.emit("agent_settled");
+
+  assert.deepEqual(harness.appendedEntries, [{
+    customType: "killeros-worked-for",
+    data: { version: 2, milliseconds: 3_000, outcome: "done" },
+  }]);
 });
 
 test("non-TUI modes and settlements without a started run append nothing", async () => {

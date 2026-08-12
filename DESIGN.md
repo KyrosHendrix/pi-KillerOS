@@ -123,10 +123,10 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Output:** Muted neutral text, with restrained semantic colors reserved for actual diffs and errors.
 
 ### Prompt Editor
-- **Frame:** Use full-width `─` rules above and below the input, with a dim `❯` leading the first input row.
+- **Frame:** Use no permanent rules or container border. A dim `❯` leads the first input row and turns Signal Coral only while focused; continuation rows begin with two spaces.
 - **Suggestion:** While the editor is empty, show one dim `Try "…"` suggestion from a shuffled deck. Keep it fixed for the session and remove it as soon as the user enters text.
 - **Command feedback:** Keep typed prompt text in its normal role and use autocomplete to identify valid slash commands. Do not replace an editor factory owned by another extension.
-- **Boundaries:** Trigger slash autocomplete only at the start of a line or after horizontal whitespace. Completion must not alter unrelated text, cursor placement, or wrapping.
+- **Boundaries:** Trigger slash autocomplete only at the start of a line or after horizontal whitespace. Completion must not alter unrelated text, cursor placement, or wrapping. Show compact `↑ N more` or `↓ N more` rows only when the editor scrolls.
 
 ### Question Selector
 - **Single-select:** Preserve type-to-filter, configured Pi navigation and confirmation, custom answers, previews, and current result rendering.
@@ -139,9 +139,20 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 
 ### Activity Indicator
 - **Mark:** Animate the accent-orange glyph sequence `· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·` at 120 ms per frame; do not use green or a static indicator.
-- **Voice:** While an agent run is active, render the same accent orange on `Brewing`, `Pondering`, `Tinkering`, `Wrangling`, `Noodling`, and `Cooking`; shuffle without immediate repeats and change the word every 2.5 seconds.
-- **Status:** Show the gray `(esc to interrupt · thinking)` status after the orange verb, with only `esc` bold.
+- **Voice:** Derive the coral leading verb from real lifecycle events: `Mapping…` at request start; `Inspecting…` for read, grep, find, or list; `Changing…` for edit or write; `Running…` for commands; `Working…` for a sanitized custom tool name; `Reviewing…` after a successful tool result; `Recovering…` after a failed tool result; and `Responding…` when assistant text begins.
+- **Status:** Follow the verb with a gray parenthetical that names the observed action. Keep only `esc` bold and never infer verification, progress, or an ETA from a command.
 - **Hidden reasoning:** Use the static neutral label `└ Thinking…`.
+
+### Work Trail
+- **Content:** Show only observed request phases: `Prompt`, `Inspect`, `Change`, `Command`, `Tool`, and `Result`. `Result` appears only when assistant text starts; tool history stays in Pi's transcript.
+- **State:** Mark completed phases with `✓`, failed tool phases with `×`, and the active phase with `›`; color supports these markers but never replaces them. Collapse adjacent repeats and retain the latest four phases.
+- **Adaptation:** Render the trail borderlessly above the editor. Below 48 columns show only `› <active phase>`, and keep every line within terminal width.
+- **Lifetime:** Preserve one trail across retries, compaction recovery, queued messages, and automatic `/goal` continuations. Clear it at final idle settlement or session shutdown and never persist it.
+
+### Settled Line
+- **Outcome:** Render exactly one `✓ Done`, `■ Stopped`, or `× Failed` line followed by a dim middle dot and compact elapsed time. Use Success, Warning, or Error on the outcome respectively.
+- **Truth:** Map Pi's final assistant stop reason directly; missing or non-terminal reasons fail closed to `Failed`.
+- **History:** Keep valid version-1 `✻ Worked for …` session entries readable. Do not rewrite stored history or add a metrics panel.
 
 ### Jump Links
 - **Shape:** Square outlined controls with compact padding.

@@ -4,8 +4,18 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added a transient, width-aware work trail for observed request phases in TUI mode.
+
+### Changed
+
+- Replaced the framed prompt and shuffled activity verbs with a focus-aware single-arrow editor and event-derived working copy.
+- Made settled timing entries report `Done`, `Stopped`, or `Failed` while keeping existing `Worked for` history readable.
+
 ### Fixed
 
+- Kept `/variants` within the active terminal height, preserved the focused reasoning level across resizes, and initially focused the current level.
 - Rendered active, paused, and blocked `/goal` status text consistently in the footer's far-right slot.
 - Kept the private goal-update tool inactive outside active `/goal` runs and rendered its real execution errors instead of malformed blocker-audit fields.
 - Verified exact persisted paths for clearly declared file-deliverable goals before completion, while preserving model-reported completion for general objectives.

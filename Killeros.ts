@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerRequestActivity } from "./killeros/activity.ts";
 import { registerAliases, registerSlashAutocomplete } from "./killeros/commands.ts";
 import { registerConcisePrompt } from "./killeros/concise.ts";
 import { registerFooter } from "./killeros/footer.ts";
@@ -43,6 +44,7 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerLifecycleHooks(pi);
   registerGoalSettlement(pi, goalRuntime, initRuntime);
   registerInitSettlement(pi, initRuntime);
+  registerRequestActivity(pi);
   registerCompletionNotifications(pi, options.completionNotifications);
   registerWorkedFor(pi);
 }

@@ -40,8 +40,10 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 
 - 52-column Compact startup card with inline version, polished model/provider identity, adjacent `/model`, directory, conditional Git branch, and a shuffled session-stable tip
 - Cohesive dark theme with coral accents and neutral tool-call containers across pending, success, and error states
-- Animated orange 12-frame activity glyph loop at 120 ms per frame, with orange shuffled Claude-adjacent verbs changing every 2.5 seconds, a gray `(esc to interrupt · thinking)` status with bold `esc`, and a quiet hidden-thinking label
-- Full-width framed multiline editor with a shuffled session-stable empty-state suggestion, Shift+Enter support, and slash-command autocomplete; KillerOS preserves an editor factory configured by another extension
+- Animated orange 12-frame activity glyph loop at 120 ms per frame with contextual copy derived from request, tool, result, and response events, plus a quiet hidden-thinking label
+- Transient borderless work trail showing at most four observed phases above the editor in TUI mode; it condenses on narrow terminals and clears after final settlement
+- Frameless multiline editor with one focus-aware `❯`, a shuffled session-stable empty-state suggestion, overflow-only scroll indicators, Shift+Enter support, and slash-command autocomplete; KillerOS preserves an editor factory configured by another extension
+- One compact TUI transcript line reporting truthful `Done`, `Stopped`, or `Failed` settlement with elapsed time while preserving older `✻ Worked for …` entries
 - Responsive footer with polished model/provider identity, plain-language context, and active goal state remaining; reasoning, Git branch, elapsed time, cost, and path cut down by available width
 - Pi-owned context compaction with active goals continuing from Pi's settled boundary after manual, threshold, and overflow compaction
 - Optional completion sounds after successful or failed settled requests, excluding manual aborts

@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   CustomEditor,
-  DynamicBorder,
   VERSION,
   type ExtensionAPI,
   type ExtensionContext,
@@ -10,9 +9,7 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
-  Container,
   CURSOR_MARKER,
-  Text,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -182,7 +179,7 @@ function isBorderLine(line: string): boolean {
 
 function isScrolledTopBorder(line: string): boolean {
   const unstyled = stripAnsi(line);
-  return unstyled.includes("↑") || unstyled.includes(".");
+  return unstyled.includes("↑");
 }
 
 class PiCodeEditor extends CustomEditor {
@@ -219,8 +216,7 @@ class PiCodeEditor extends CustomEditor {
 
   override render(width: number): string[] {
     if (width <= 0) return [];
-    if (width < 4) return super.render(width).map((line) => truncateToWidth(line, width, ""));
-    const innerWidth = width - 2;
+    const innerWidth = Math.max(1, width - 2);
     const lines = super.render(innerWidth);
     if (lines.length < 2) return lines.map((line) => truncateToWidth(line, width, ""));
     let bottomBorderIndex = lines.length - 1;
@@ -231,44 +227,40 @@ class PiCodeEditor extends CustomEditor {
       }
     }
 
-    const gray = (text: string): string => this.runtimeTheme.fg("dim", text);
-    const framed: string[] = [];
+    const dim = (text: string): string => this.runtimeTheme.fg("dim", text);
+    const rendered: string[] = [];
     const top = stripAnsi(lines[0] ?? "");
     const isScrolledHeader = isScrolledTopBorder(lines[0] ?? "");
     if (isScrolledHeader) {
       const count = top.match(/↑\s*(\d+)/)?.[1] ?? "";
-      const indicator = `${gray("─── ↑ ")}${count}${gray(" more ")}${gray("─".repeat(Math.max(0, width - 12 - count.length)))}`;
-      framed.push(truncateToWidth(indicator, width, ""));
-    } else {
-      framed.push(gray("─".repeat(width)));
+      rendered.push(truncateToWidth(dim(`  ↑ ${count} more`), width, ""));
     }
 
     for (let index = 1; index < bottomBorderIndex; index += 1) {
       const isPromptLine = index === 1 && !isScrolledHeader;
-      const prefix = isPromptLine ? gray("❯\u00A0") : "  ";
+      const prefix = isPromptLine
+        ? this.runtimeTheme.fg(this.focused ? "accent" : "dim", "❯\u00A0")
+        : "  ";
       let content = lines[index] ?? "";
       if (isPromptLine && this.getText() === "") {
         const first = this.suggestion.slice(0, 1);
         const rest = this.suggestion.slice(1);
         const cursorMarker = this.focused ? CURSOR_MARKER : "";
-        content = `${cursorMarker}\x1B[7m${gray(first)}\x1B[27m${gray(rest)}`;
+        content = `${cursorMarker}\x1B[7m${dim(first)}\x1B[27m${dim(rest)}`;
       }
-      framed.push(`${prefix}${padRight(content, innerWidth)}`);
+      rendered.push(`${prefix}${padRight(content, innerWidth)}`);
     }
 
     const bottom = stripAnsi(lines[bottomBorderIndex] ?? "");
     if (bottom.includes("↓")) {
       const count = bottom.match(/↓\s*(\d+)/)?.[1] ?? "";
-      const indicator = `${gray("─── ↓ ")}${count}${gray(" more ")}${gray("─".repeat(Math.max(0, width - 12 - count.length)))}`;
-      framed.push(truncateToWidth(indicator, width, ""));
-    } else {
-      framed.push(gray("─".repeat(width)));
+      rendered.push(truncateToWidth(dim(`  ↓ ${count} more`), width, ""));
     }
 
     for (let index = bottomBorderIndex + 1; index < lines.length; index += 1) {
-      framed.push(`  ${padRight(lines[index] ?? "", innerWidth)}`);
+      rendered.push(`  ${padRight(lines[index] ?? "", innerWidth)}`);
     }
-    return framed.map((line) => truncateToWidth(line, width, ""));
+    return rendered.map((line) => truncateToWidth(line, width, ""));
   }
 }
 
@@ -277,39 +269,11 @@ const ACTIVITY_FRAMES = [
   "✽", "✻", "✶", "✱", "✢", "·",
 ] as const;
 const ACTIVITY_FRAME_INTERVAL_MS = 120;
-const ACTIVITY_WORDS = ["Brewing", "Pondering", "Tinkering", "Wrangling", "Noodling", "Cooking"] as const;
-
-function formatActivityMessage(word: string, theme: Theme): string {
-  return `${theme.fg("accent", `${word}…`)} ${theme.fg("dim", `(${theme.bold("esc")} to interrupt · thinking)`)}`;
-}
 
 let killerosEditorFactory: ReturnType<ExtensionContext["ui"]["getEditorComponent"]>;
 
 export function registerShellUi(pi: ExtensionAPI): void {
   let activeHeader: PiStartupHeader | undefined;
-  let activityDeck: string[] = [];
-  let lastActivityWord: string | undefined;
-  let activityTimer: ReturnType<typeof setInterval> | undefined;
-  const refillActivityDeck = (): void => {
-    activityDeck = [...ACTIVITY_WORDS];
-    for (let index = activityDeck.length - 1; index > 0; index -= 1) {
-      const swapIndex = Math.floor(Math.random() * (index + 1));
-      [activityDeck[index], activityDeck[swapIndex]] = [activityDeck[swapIndex]!, activityDeck[index]!];
-    }
-    if (activityDeck.length > 1 && activityDeck.at(-1) === lastActivityWord) {
-      [activityDeck[0], activityDeck[activityDeck.length - 1]] = [activityDeck.at(-1)!, activityDeck[0]!];
-    }
-  };
-  const nextActivityWord = (): string => {
-    if (activityDeck.length === 0) refillActivityDeck();
-    const word = activityDeck.pop() ?? ACTIVITY_WORDS[0];
-    lastActivityWord = word;
-    return word;
-  };
-  const clearActivityTimer = (): void => {
-    if (activityTimer) clearInterval(activityTimer);
-    activityTimer = undefined;
-  };
 
   pi.on("session_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
@@ -321,7 +285,6 @@ export function registerShellUi(pi: ExtensionAPI): void {
         activeHeader = new PiStartupHeader(pi, ctx, startupTip, tui);
         return activeHeader;
       });
-      clearActivityTimer();
       ctx.ui.setWorkingIndicator({
         frames: ACTIVITY_FRAMES.map((frame) => ctx.ui.theme.fg("accent", frame)),
         intervalMs: ACTIVITY_FRAME_INTERVAL_MS,
@@ -339,25 +302,8 @@ export function registerShellUi(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("agent_start", (_event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    clearActivityTimer();
-    const updateWorkingWord = (): void => ctx.ui.setWorkingMessage(formatActivityMessage(nextActivityWord(), ctx.ui.theme));
-    updateWorkingWord();
-    activityTimer = setInterval(updateWorkingWord, 2_500);
-    activityTimer.unref?.();
-  });
-
-  pi.on("agent_end", (_event, ctx) => {
-    clearActivityTimer();
-    if (ctx.mode === "tui") ctx.ui.setWorkingMessage();
-  });
-
   pi.on("session_shutdown", () => {
-    clearActivityTimer();
     activeHeader?.dispose();
     activeHeader = undefined;
-    activityDeck = [];
-    lastActivityWord = undefined;
   });
 }
