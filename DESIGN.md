@@ -124,6 +124,7 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 
 ### Prompt Editor
 - **Frame:** Use no permanent rules or container border. A dim `❯` leads the first input row and turns Signal Coral only while focused; continuation rows begin with two spaces.
+- **Response spacing:** Reserve one blank terminal row above the editor so the latest response and next input remain distinct.
 - **Suggestion:** While the editor is empty, show one dim `Try "…"` suggestion from a shuffled deck. Keep it fixed for the session and remove it as soon as the user enters text.
 - **Command feedback:** Keep typed prompt text in its normal role and use autocomplete to identify valid slash commands. Do not replace an editor factory owned by another extension.
 - **Boundaries:** Trigger slash autocomplete only at the start of a line or after horizontal whitespace. Completion must not alter unrelated text, cursor placement, or wrapping. Show compact `↑ N more` or `↓ N more` rows only when the editor scrolls.
@@ -142,12 +143,6 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Voice:** Derive the coral leading verb from real lifecycle events: `Mapping…` at request start; `Inspecting…` for read, grep, find, or list; `Changing…` for edit or write; `Running…` for commands; `Working…` for a sanitized custom tool name; `Reviewing…` after a successful tool result; `Recovering…` after a failed tool result; and `Responding…` when assistant text begins.
 - **Status:** Follow the verb with a gray parenthetical that names the observed action. Keep only `esc` bold and never infer verification, progress, or an ETA from a command.
 - **Hidden reasoning:** Use the static neutral label `└ Thinking…`.
-
-### Work Trail
-- **Content:** Show only observed request phases: `Prompt`, `Inspect`, `Change`, `Command`, `Tool`, and `Result`. `Result` appears only when assistant text starts; tool history stays in Pi's transcript.
-- **State:** Mark completed phases with `✓`, failed tool phases with `×`, and the active phase with `›`; color supports these markers but never replaces them. Collapse adjacent repeats and retain the latest four phases.
-- **Adaptation:** Render the trail borderlessly above the editor. Below 48 columns show only `› <active phase>`, and keep every line within terminal width.
-- **Lifetime:** Preserve one trail across retries, compaction recovery, queued messages, and automatic `/goal` continuations. Clear it at final idle settlement or session shutdown and never persist it.
 
 ### Settled Line
 - **Outcome:** Render exactly one `✓ Done`, `■ Stopped`, or `× Failed` line followed by a dim middle dot and compact elapsed time. Use Success, Warning, or Error on the outcome respectively.
@@ -171,11 +166,11 @@ Terminal frames use restrained 10–13px corners in browser documentation. Inter
 - **Glyph:** Use Nerd Font `U+F009A`. It is not an emoji, is cosmetic and non-clickable, and must not affect sound delivery when the terminal tab font cannot render it.
 
 ### Status Footer
-- **Style:** One compact line of real state. The human-readable model name leads in Console Ink; its provider follows in Dim Slate without a separator.
+- **Style:** Place a full-width Console Line Muted divider directly beneath the prompt editor, followed by two compact decks. The primary row leads with the human-readable model name in Console Ink and provider in Dim Slate, then reasoning and context; show elapsed time and session cost when space permits. The secondary row holds branch and workspace path.
 - **Context:** Show direct telemetry such as `82% left (1M)`. At critical pressure, append `/compact`; never use a progress bar.
-- **Wide:** Show model, provider, reasoning, context, branch, elapsed time, session cost, and the full path unless an active goal replaces the path.
-- **Focused:** Preserve model, provider, context, and a shortened path.
-- **Compact:** Preserve model, provider, and context. At emergency widths, preserve context and truncate model identity before overflowing.
+- **Wide:** Render the divider plus primary and secondary rows. The primary row shows model, provider, reasoning, context, elapsed time, and session cost; the secondary row shows branch and full path unless an active goal takes its right-side slot.
+- **Focused:** Preserve model, provider, and context on the primary row, plus a shortened path on the secondary row.
+- **Compact:** Preserve model, provider, and context. At emergency widths, preserve context and truncate model identity before overflowing; the secondary row may reduce to goal status or remain blank.
 - **Adaptation:** Select the richest tier that fits its actual content rather than relying on fixed terminal breakpoints.
 - **Goals:** Render an active goal on the right in Warning Amber as `/goal is active (10s)`, `/goal is active (2m 05s)`, or `/goal is active (1h 02m 05s)`; remove lower-priority left telemetry before clipping it. Keep paused and blocked goals persistent in their existing placement. Show completed goals in history and `/goal`, not the footer.
 

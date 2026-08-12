@@ -125,6 +125,10 @@ function renderFooterRow(left: string, right: string, width: number): string {
   return ` ${clippedLeft}${gap}${clippedRight} `;
 }
 
+function renderFooter(rows: string[], width: number, theme: Theme): string[] {
+  return [theme.fg("borderMuted", "─".repeat(width)), ...rows];
+}
+
 function formatGoalElapsed(milliseconds: number): string {
   const totalSeconds = Number.isFinite(milliseconds) ? Math.max(0, Math.floor(milliseconds / 1_000)) : 0;
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -210,43 +214,35 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
           const fullDirectory = theme.fg("dim", cwd);
           const focusedDirectory = theme.fg("dim", compactDirectory(cwd));
           const goal = formatGoalFooter(goalRuntime.state, theme);
-          const rich = joinFooterParts([
+          const primary = joinFooterParts([
             signature,
             level,
             context,
-            branch ? theme.fg("dim", branch) : "",
+          ], theme);
+          const primaryFocused = joinFooterParts([signature, context], theme);
+          const session = joinFooterParts([
             theme.fg("dim", formatTime(Date.now() - sessionStart)),
             theme.fg("dim", formatCost(getSessionCost(ctx))),
           ], theme);
-          const focused = joinFooterParts([signature, context], theme);
-
-          if (goal) {
-            if (footerRowFits(rich, goal, width)) {
-              return [renderFooterRow(rich, goal, width)];
-            }
-            if (footerRowFits(focused, goal, width)) {
-              return [renderFooterRow(focused, goal, width)];
-            }
-            if (footerRowFits(context, goal, width)) {
-              return [renderFooterRow(context, goal, width)];
-            }
-            return [renderFooterRow("", goal, width)];
-          }
-
-          if (footerRowFits(rich, fullDirectory, width)) {
-            return [renderFooterRow(rich, fullDirectory, width)];
-          }
-          if (footerRowFits(rich, focusedDirectory, width)) {
-            return [renderFooterRow(rich, focusedDirectory, width)];
-          }
-          if (footerRowFits(focused, focusedDirectory, width)) {
-            return [renderFooterRow(focused, focusedDirectory, width)];
-          }
-          if (footerRowFits(focused, "", width)) {
-            return [renderFooterRow(focused, "", width)];
-          }
           const essentialModel = formatModel(model, theme, false);
-          return [renderFooterRow(essentialModel, context, width)];
+          const primaryRow = footerRowFits(primary, session, width)
+            ? renderFooterRow(primary, session, width)
+            : footerRowFits(primary, "", width)
+              ? renderFooterRow(primary, "", width)
+              : footerRowFits(primaryFocused, "", width)
+                ? renderFooterRow(primaryFocused, "", width)
+                : renderFooterRow(essentialModel, context, width);
+          const branchLabel = branch ? theme.fg("dim", branch) : "";
+          const workspaceRight = goal || fullDirectory;
+          const secondaryRow = footerRowFits(branchLabel, workspaceRight, width)
+            ? renderFooterRow(branchLabel, workspaceRight, width)
+            : goal
+              ? renderFooterRow("", goal, width)
+              : footerRowFits(branchLabel, focusedDirectory, width)
+                ? renderFooterRow(branchLabel, focusedDirectory, width)
+                : renderFooterRow(branchLabel, "", width);
+
+          return renderFooter([primaryRow, secondaryRow], width, theme);
         },
       };
     });

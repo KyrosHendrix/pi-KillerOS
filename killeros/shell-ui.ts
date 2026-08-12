@@ -218,7 +218,7 @@ class PiCodeEditor extends CustomEditor {
     if (width <= 0) return [];
     const innerWidth = Math.max(1, width - 2);
     const lines = super.render(innerWidth);
-    if (lines.length < 2) return lines.map((line) => truncateToWidth(line, width, ""));
+    if (lines.length < 2) return ["", ...lines.map((line) => truncateToWidth(line, width, ""))];
     let bottomBorderIndex = lines.length - 1;
     for (let index = lines.length - 1; index >= 1; index -= 1) {
       if (isBorderLine(lines[index] ?? "")) {
@@ -260,7 +260,7 @@ class PiCodeEditor extends CustomEditor {
     for (let index = bottomBorderIndex + 1; index < lines.length; index += 1) {
       rendered.push(`  ${padRight(lines[index] ?? "", innerWidth)}`);
     }
-    return rendered.map((line) => truncateToWidth(line, width, ""));
+    return ["", ...rendered.map((line) => truncateToWidth(line, width, ""))];
   }
 }
 

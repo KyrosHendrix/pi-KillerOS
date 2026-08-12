@@ -1756,32 +1756,33 @@ test("active, paused, and blocked goals replace the footer path with exact statu
 
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 10_000;
-  const seconds = footer.render(160)[0];
+  const seconds = footer.render(160)[2] ?? "";
   assert.match(seconds, /\x1B\[33m\/goal is active \(10s\)\x1B\[39m/u);
   assert.ok(stripAnsi(seconds).trimEnd().endsWith("/goal is active (10s)"));
   assert.doesNotMatch(stripAnsi(seconds), /✻ goal|pi-KillerOS/u);
 
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 125_000;
-  assert.ok(stripAnsi(footer.render(40)[0]).trimEnd().endsWith("/goal is active (2m 05s)"));
+  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal is active (2m 05s)"));
 
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 3_725_000;
-  assert.ok(stripAnsi(footer.render(40)[0]).trimEnd().endsWith("/goal is active (1h 02m 05s)"));
+  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal is active (1h 02m 05s)"));
 
   for (let width = 1; width <= 180; width += 1) {
-    const line = stripAnsi(footer.render(width)[0]);
-    assert.equal([...line].length, width, `goal footer width mismatch at ${width}`);
+    const lines = footer.render(width).map(stripAnsi);
+    assert.equal(lines.length, 3, `goal footer rows at width ${width}`);
+    assert.ok(lines.every((line) => [...line].length === width), `goal footer width mismatch at ${width}`);
   }
 
   state.status = "paused";
   state.activeStartedAt = undefined;
-  const paused = stripAnsi(footer.render(160)[0]);
+  const paused = stripAnsi(footer.render(160)[2] ?? "");
   assert.ok(paused.trimEnd().endsWith("/goal is paused"));
   assert.doesNotMatch(paused, /Ⅱ goal paused/u);
 
   state.status = "blocked";
-  const blocked = stripAnsi(footer.render(160)[0]);
+  const blocked = stripAnsi(footer.render(160)[2] ?? "");
   assert.ok(blocked.trimEnd().endsWith("/goal is blocked"));
   assert.doesNotMatch(blocked, /! goal blocked/u);
   footer.dispose();
@@ -3329,7 +3330,7 @@ test("footer cuts down by priority while preserving model and context", () => {
   const { handlers } = createHarness();
   const entries = [{ type: "message", message: { role: "assistant", usage: usage(10) } }];
   const { captured, ctx, tui } = createTuiContext(entries);
-  ctx.cwd = path.join(path.parse(process.cwd()).root, "work", "pi-KillerOS");
+  ctx.cwd = path.join(path.parse(process.cwd()).root, "work", "a-very-long-workspace-directory-name", "pi-KillerOS");
   ctx.model = {
     id: "gpt-5.6-sol",
     name: "GPT-5.6 Sol",
@@ -3340,13 +3341,23 @@ test("footer cuts down by priority while preserving model and context", () => {
   ctx.getContextUsage = () => ({ tokens: 50_000, contextWindow: 1_050_000 });
   for (const handler of handlers.get("session_start")) handler({}, ctx);
 
-  const footer = captured.footerFactory(tui, theme, {
+  const quietTheme = {
+    ...theme,
+    fg: (color, text) => color === "borderMuted" ? `<borderMuted>${text}</borderMuted>` : text,
+  };
+  const footer = captured.footerFactory(tui, quietTheme, {
     getGitBranch: () => "main",
     onBranchChange: () => () => {},
   });
 
-  const wide = footer.render(160)[0];
-  assert.match(wide, /GPT-5\.6 Sol OpenAI · high · 95% left \(1M\) · main · \d+s · \$10\.00/u);
+  const wideRender = footer.render(160);
+  assert.equal(wideRender.length, 3);
+  assert.equal(wideRender[0], `<borderMuted>${"─".repeat(160)}</borderMuted>`);
+  const widePrimary = wideRender[1] ?? "";
+  const wideSecondary = wideRender[2] ?? "";
+  assert.match(widePrimary, /GPT-5\.6 Sol OpenAI · high · 95% left \(1M\)/u);
+  assert.match(widePrimary, /\d+s · \$10\.00/u);
+  assert.match(wideSecondary, /main/u);
   const normalizedHome = (process.env.HOME || process.env.USERPROFILE || os.homedir()).replace(/[\\/]+$/u, "");
   const normalizedCwd = ctx.cwd.replace(/[\\/]+$/u, "");
   const separator = normalizedCwd.slice(normalizedHome.length, normalizedHome.length + 1);
@@ -3355,25 +3366,31 @@ test("footer cuts down by priority while preserving model and context", () => {
     : normalizedCwd.startsWith(normalizedHome) && /^[\\/]/u.test(separator)
       ? `~${normalizedCwd.slice(normalizedHome.length)}`
       : ctx.cwd;
-  assert.ok(wide.includes(displayedCwd));
+  assert.ok(wideSecondary.includes(displayedCwd));
 
-  const focused = footer.render(72)[0];
-  assert.match(focused, /GPT-5\.6 Sol OpenAI · 95% left \(1M\)/u);
-  assert.match(focused, /…\/pi-KillerOS/u);
-  assert.doesNotMatch(focused, /· high|· main|\$10\.00/u);
+  const focused = footer.render(48);
+  assert.match(focused[1] ?? "", /GPT-5\.6 Sol OpenAI · high · 95% left \(1M\)/u);
+  assert.match(focused[2] ?? "", /…\/pi-KillerOS/u);
+  assert.doesNotMatch(focused[1] ?? "", /\d+s|\$10\.00/u);
 
-  const compact = footer.render(40)[0];
-  assert.match(compact, /GPT-5\.6 Sol OpenAI · 95% left \(1M\)/u);
-  assert.doesNotMatch(compact, /pi-KillerOS/u);
+  const compact = footer.render(40);
+  assert.match(compact[1] ?? "", /GPT-5\.6 Sol OpenAI · 95% left \(1M\)/u);
+  assert.match(compact[2] ?? "", /main/u);
+  assert.match(compact[2] ?? "", /…\/pi-KillerOS/u);
 
-  const emergency = footer.render(35)[0];
+  const tiny = footer.render(19);
+  assert.doesNotMatch(tiny[2] ?? "", /pi-KillerOS/u);
+
+  const emergency = footer.render(35)[1] ?? "";
   assert.match(emergency, /GPT-5\.6 Sol/u);
   assert.match(emergency, /95% left \(1M\)/u);
   assert.doesNotMatch(emergency, /OpenAI/u);
 
   for (let width = 1; width <= 180; width += 1) {
-    const line = footer.render(width)[0].replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
-    assert.equal([...line].length, width, `footer width mismatch at ${width}`);
+    const lines = footer.render(width);
+    assert.equal(lines.length, 3, `footer rows at width ${width}`);
+    assert.equal(lines[0], `<borderMuted>${"─".repeat(width)}</borderMuted>`);
+    assert.ok(lines.slice(1).every((line) => [...line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "")].length === width), `footer width mismatch at ${width}`);
   }
   footer.dispose();
 });
@@ -3399,20 +3416,20 @@ test("footer uses model metadata and formats unknown provider names", () => {
     getGitBranch: () => undefined,
     onBranchChange: () => () => {},
   });
-  const firstRender = footer.render(120)[0];
+  const firstRender = footer.render(120)[1] ?? "";
   assert.match(firstRender, /\x1B\[37m\x1B\[1mProfessional Model\x1B\[22m\x1B\[39m/u);
   assert.match(firstRender, /\x1B\[90mMy Private AI\x1B\[39m/u);
 
   for (const handler of handlers.get("model_select")) {
     handler({ model: { ...ctx.model, id: "next", name: "Next Model", provider: "future_provider" } });
   }
-  const updated = footer.render(120)[0].replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
+  const updated = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   assert.match(updated, /Next Model Future Provider/u);
 
   for (const handler of handlers.get("model_select")) {
     handler({ model: { ...ctx.model, id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", provider: "deepseek" } });
   }
-  const deepSeek = footer.render(120)[0].replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
+  const deepSeek = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   assert.match(deepSeek, /DeepSeek V4 Flash DeepSeek/u);
   footer.dispose();
 });
@@ -3439,20 +3456,22 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
   editor.focused = true;
   const emptyRender = editor.render(40);
   const emptyLines = emptyRender.map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  const emptyPrompt = emptyLines[0] ?? "";
-  assert.equal(emptyLines.length, 1);
+  assert.equal(emptyLines[0], "");
+  const emptyPrompt = emptyLines[1] ?? "";
+  assert.equal(emptyLines.length, 2);
   assert.match(emptyPrompt.replace(/\x1B_pi:c\x07/gu, ""), /^❯\u00A0Try "/u);
   assert.equal(visibleWidth(emptyPrompt), 40);
   assert.doesNotMatch(emptyPrompt, /─/u);
   for (let width = 1; width <= 180; width += 1) {
     const lines = editor.render(width);
-    assert.equal(lines.length, 1, `empty editor rows at width ${width}`);
+    assert.equal(lines[0], "", `missing response gap at width ${width}`);
+    assert.equal(lines.length, 2, `empty editor rows at width ${width}`);
     assert.ok(lines.every((line) => visibleWidth(line) <= width), `empty editor width ${width}`);
   }
 
   editor.setText("/model");
   const rendered = editor.render(40);
-  const promptLine = rendered[0]?.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "") ?? "";
+  const promptLine = rendered[1]?.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "") ?? "";
   assert.equal(promptLine.slice(0, 8), "❯\u00A0/model");
   assert.doesNotMatch(rendered.join("\n"), /Try "/u);
   assert.doesNotMatch(rendered.join("\n"), /\x1B\[34m/u);
@@ -3465,13 +3484,15 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
   editor.handleInput("second");
   assert.equal(editor.getText(), "first\nsecond");
   const multiline = editor.render(40).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  assert.match(multiline[0], /^❯\u00A0first/u);
-  assert.match(multiline[1], /^  second/u);
+  assert.equal(multiline[0], "");
+  assert.match(multiline[1], /^❯\u00A0first/u);
+  assert.match(multiline[2], /^  second/u);
 
   editor.setText("wrapped text ".repeat(20));
   const wrapped = editor.render(24).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  assert.match(wrapped[0], /^  ↑ \d+ more/u);
-  assert.ok(wrapped.slice(1).every((line) => line.startsWith("  ")));
+  assert.equal(wrapped[0], "");
+  assert.match(wrapped[1], /^  ↑ \d+ more/u);
+  assert.ok(wrapped.slice(2).every((line) => line.startsWith("  ")));
   assert.doesNotMatch(wrapped.join("\n"), /─/u);
   editor.handleInput("\x1B[5~");
   const scrolledUp = editor.render(24).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
@@ -3502,9 +3523,9 @@ test("editor arrow alone carries focus color", async () => {
 
   editor.setText("hello");
   editor.focused = false;
-  assert.match(editor.render(20)[0], /^<dim>❯\u00A0<\/dim>hello/u);
+  assert.match(editor.render(20)[1], /^<dim>❯\u00A0<\/dim>hello/u);
   editor.focused = true;
-  assert.match(editor.render(20)[0], /^<accent>❯\u00A0<\/accent>/u);
+  assert.match(editor.render(20)[1], /^<accent>❯\u00A0<\/accent>/u);
 });
 
 test("shell UI preserves an existing custom editor factory", async () => {
@@ -3562,9 +3583,10 @@ test("frameless editor keeps autocomplete rows aligned below the prompt", async 
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   const rendered = editor.render(60).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  assert.match(rendered[0], /^❯\u00A0\//u);
-  assert.ok(rendered.slice(1).some((line) => line.includes("/clear")));
-  assert.ok(rendered.slice(1).every((line) => line.startsWith("  ")));
+  assert.equal(rendered[0], "");
+  assert.match(rendered[1], /^❯\u00A0\//u);
+  assert.ok(rendered.slice(2).some((line) => line.includes("/clear")));
+  assert.ok(rendered.slice(2).every((line) => line.startsWith("  ")));
   assert.doesNotMatch(rendered.join("\n"), /─/u);
 });
 
@@ -3612,7 +3634,7 @@ test("activity keeps the animated orange glyph loop and uses contextual request 
   assert.equal(captured.hiddenThinkingLabel, "└ Thinking…");
   for (const handler of handlers.get("agent_start")) handler({}, ctx);
   assert.equal(captured.workingMessages.at(-1), "Mapping… (esc to interrupt · understanding request)");
-  assert.deepEqual(captured.widgetComponent.render(80), ["Prompt ›"]);
+  assert.equal(captured.widgetComponent, undefined);
 });
 
 test("activity styles the glyph and causal verb orange with a gray bold interrupt status", () => {
@@ -3746,8 +3768,8 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
       };
       const firstEditor = captured.editorFactory(tui, editorTheme, getKeybindings());
       const secondEditor = captured.editorFactory(tui, editorTheme, getKeybindings());
-      const firstSuggestion = strip(firstEditor.render(76)[0] ?? "");
-      const secondSuggestion = strip(secondEditor.render(76)[0] ?? "");
+      const firstSuggestion = strip(firstEditor.render(76)[1] ?? "");
+      const secondSuggestion = strip(secondEditor.render(76)[1] ?? "");
       assert.equal(firstSuggestion, secondSuggestion);
       assert.match(firstSuggestion, /^❯\u00A0Try "/u);
       suggestions.push(firstSuggestion);

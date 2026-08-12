@@ -94,12 +94,10 @@ test("product and design docs match current runtime contracts", () => {
   assert.match(product, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
   assert.match(product, /120 ms/u);
   assert.match(product, /event-derived copy/u);
-  assert.match(product, /transient borderless trail/u);
   assert.match(product, /`Done`, `Stopped`, or `Failed`/u);
   assert.match(design, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
   assert.match(design, /120 ms/u);
   assert.match(design, /`Mapping…` at request start/u);
-  assert.match(design, /### Work Trail/u);
   assert.match(design, /### Settled Line/u);
   assert.match(design, /no permanent rules or container border/iu);
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
@@ -117,6 +115,11 @@ test("product and design docs match current runtime contracts", () => {
   assert.match(readme, /Nerd Font/iu);
   assert.match(readme, /\/goal is active/iu);
   assert.match(product, /settled request/iu);
+  assert.doesNotMatch(product, /work trail|transient borderless trail/iu);
+  assert.doesNotMatch(design, /### Work Trail|work trail/iu);
+  assert.doesNotMatch(readme, /work trail|transient borderless trail/iu);
+  assert.match(product, /primary model, provider, reasoning, context, elapsed-time, and cost telemetry separate from secondary branch and workspace-path details/iu);
+  assert.match(design, /followed by two compact decks/iu);
   assert.match(product, /completion sound/iu);
   assert.match(design, /π - <cwd> 󰂚/u);
   assert.match(design, /U\+F009A/u);
