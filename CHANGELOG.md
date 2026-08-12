@@ -17,6 +17,7 @@ All notable changes to KillerOS are documented here.
 
 - Separated response output from the prompt editor while keeping footer telemetry close beneath a quiet muted divider.
 - Kept `/variants` within the active terminal height, preserved the focused reasoning level across resizes, and initially focused the current level.
+- Rendered `/variants` controls from the same Pi keybinding manager that handles input, including installations with separate package module instances.
 - Rendered active, paused, and blocked `/goal` status text consistently in the footer's far-right slot.
 - Kept the private goal-update tool inactive outside active `/goal` runs and rendered its real execution errors instead of malformed blocker-audit fields.
 - Verified exact persisted paths for clearly declared file-deliverable goals before completion, while preserving model-reported completion for general objectives.

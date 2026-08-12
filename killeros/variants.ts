@@ -1,4 +1,4 @@
-import { DynamicBorder, keyHint, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { SelectList, truncateToWidth } from "@earendil-works/pi-tui";
 
 export type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
@@ -102,7 +102,7 @@ export function registerVariants(pi: ExtensionAPI): void {
         label: level === current ? `${LEVEL_LABELS[level]} ← current` : LEVEL_LABELS[level],
         description: LEVEL_DESCRIPTIONS[level],
       }));
-      const selected = await ctx.ui.custom<ThinkingLevel | null>((tui, theme, _keybindings, done) => {
+      const selected = await ctx.ui.custom<ThinkingLevel | null>((tui, theme, keybindings, done) => {
         const listTheme = {
           selectedPrefix: (text: string) => theme.fg("accent", text),
           selectedText: (text: string) => theme.fg("accent", text),
@@ -140,6 +140,14 @@ export function registerVariants(pi: ExtensionAPI): void {
         const border = new DynamicBorder((text: string) => theme.fg("accent", text));
         const title = ` ${theme.fg("accent", theme.bold("Thinking variants"))}`;
         const model = ` ${theme.fg("dim", `Model: ${modelLabel(ctx.model)}`)}`;
+        const keyHint = (keybinding: Parameters<typeof keybindings.getKeys>[0], description: string): string => {
+          const keyText = keybindings.getKeys(keybinding)
+            .join("/")
+            .split("/")
+            .map((key) => key.split("+").map((part) => process.platform === "darwin" && part.toLocaleLowerCase() === "alt" ? "option" : part).join("+"))
+            .join("/");
+          return theme.fg("dim", keyText) + theme.fg("muted", ` ${description}`);
+        };
         const controls = ` ${theme.fg("dim", `${keyHint("tui.select.up", "up")} • ${keyHint("tui.select.down", "down")} • ${keyHint("tui.select.confirm", "select")} • ${keyHint("tui.select.cancel", "cancel")}`)}`;
 
         const render = (width: number): string[] => {
