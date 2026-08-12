@@ -4,8 +4,11 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.7] - 2026-08-13
+
 ### Changed
 
+- Raised the supported and locked Pi baseline from 0.82.1 to the current matched 0.84.1 AI, coding-agent, and TUI packages.
 - Added a compact two-deck footer beneath the prompt and removed the work-trail widget.
 - Replaced the framed prompt and shuffled activity verbs with a focus-aware single-arrow editor and event-derived working copy.
 - Made settled timing entries report `Done`, `Stopped`, or `Failed` while keeping existing `Worked for` history readable.
@@ -18,6 +21,10 @@ All notable changes to KillerOS are documented here.
 - Kept the private goal-update tool inactive outside active `/goal` runs and rendered its real execution errors instead of malformed blocker-audit fields.
 - Verified exact persisted paths for clearly declared file-deliverable goals before completion, while preserving model-reported completion for general objectives.
 - Accepted explicit `1`/`1` bounds for single-select questions and applied the same bounds validation before rendering and execution.
+- Prevented reload and branch navigation from preserving or reconstructing stale manual-compaction recovery eligibility; only Pi's live event in the current session can resume the interrupted goal safely.
+- Restricted goal deliverable verification to explicit destination phrases so source and reference paths cannot be reported as completed output.
+- Kept saved goals fully inactive in print and JSON modes, including the private update tool and shutdown checkpoints.
+- Rejected concurrent `/init` starts during preflight, cancelled pending preflight work on shutdown, and settled active `/init` command handlers when their session closes.
 
 ## [2.0.6] - 2026-08-11
 

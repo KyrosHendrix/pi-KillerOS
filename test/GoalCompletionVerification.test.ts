@@ -131,6 +131,18 @@ test("general natural-language goals retain model-reported completion", async ()
   assert.equal(result.details.verification, "model-reported");
 });
 
+test("reference paths are not inferred as goal deliverables", async () => {
+  for (const objective of [
+    "Write a report explaining how to use `C:\\data\\reference.md`",
+    "Write a report file comparing the current data to `/tmp/reference.md`; put the finished report in the session response.",
+  ]) {
+    const harness = createHarness();
+    const ctx = createContext();
+    const active = await startGoal(harness, ctx, objective);
+    assert.equal(active.verification, undefined, objective);
+  }
+});
+
 test("directory and symlink objectives do not create a regular-file contract", async () => {
   for (const objective of [
     "Create a directory at `C:\\work\\release.v1`",

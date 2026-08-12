@@ -1,6 +1,6 @@
 {
   "name": "killeros",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "description": "TUI, goals, and workflow automation for the Pi coding agent",
   "type": "module",
   "keywords": [
@@ -42,14 +42,15 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.82.1",
-    "@earendil-works/pi-coding-agent": ">=0.82.1",
-    "@earendil-works/pi-tui": ">=0.82.1",
+    "@earendil-works/pi-ai": ">=0.84.1",
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-tui": ">=0.84.1",
     "typebox": ">=1.1.38 <2"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.82.1",
-    "@earendil-works/pi-tui": "0.82.1",
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
     "@types/node": "24.12.4",
     "typebox": "1.1.38",
     "typescript": "5.9.3"

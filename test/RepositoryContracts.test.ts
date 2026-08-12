@@ -44,9 +44,9 @@ test("repository contains no retired feature references", () => {
 
 test("peer ranges enforce the documented lower bounds", () => {
   assert.deepEqual(packageJson.peerDependencies, {
-    "@earendil-works/pi-ai": ">=0.82.1",
-    "@earendil-works/pi-coding-agent": ">=0.82.1",
-    "@earendil-works/pi-tui": ">=0.82.1",
+    "@earendil-works/pi-ai": ">=0.84.1",
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-tui": ">=0.84.1",
     typebox: ">=1.1.38 <2",
   });
 });
@@ -69,8 +69,10 @@ test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.match(ci, /@earendil-works\/pi-coding-agent@\$PI_VERSION/u);
   assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
   assert.match(ci, /--package-lock=false/u);
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.82.1");
-  assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.82.1");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "0.84.1");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.84.1");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "0.84.1");
+  assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.84.1");
 });
 
 test("GitHub releases require a green CI version bump and consistent metadata", () => {
@@ -88,8 +90,8 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
 });
 
 test("product and design docs match current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.6");
-  assert.match(readme, /@v2\.0\.6/u);
+  assert.equal(packageJson.version, "2.0.7");
+  assert.match(readme, /@v2\.0\.7/u);
   assert.match(readme, /12-frame/u);
   assert.match(product, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
   assert.match(product, /120 ms/u);

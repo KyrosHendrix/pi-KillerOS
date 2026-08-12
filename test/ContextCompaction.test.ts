@@ -416,18 +416,28 @@ test("a provider error pauses without compaction recovery eligibility", async ()
   assert.equal(harness.appendedEntries.at(-1).data.state.resumeAfterManualCompaction, undefined);
 });
 
-test("reload finishes recovery when active-branch order proves compaction success", async () => {
+test("reload does not infer manual recovery from a persisted compaction entry", async () => {
   const entries = [goalEntry(savedGoalState()), compactionEntry()];
   const harness = createHarness();
   const { ctx } = createContext({ entries });
   await emitSequentially(harness.handlers.get("session_start"), { type: "session_start", reason: "resume" }, ctx);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(harness.appendedEntries.slice(-2).map((entry) => entry.data.event), ["resume", "turn"]);
-  assert.equal(harness.appendedEntries.at(-1).data.state.status, "active");
-  assert.equal(harness.appendedEntries.at(-1).data.state.revision, 6);
-  assert.equal(harness.appendedEntries.at(-1).data.state.turns, 3);
-  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(harness.appendedEntries.length, 0);
+  assert.equal(harness.sentMessages.length, 0);
+});
+
+test("reload clears stale manual recovery eligibility before later live compaction", async () => {
+  const entries = [goalEntry(savedGoalState())];
+  const harness = createHarness();
+  const { ctx, notifications } = createContext({ entries });
+  await emitSequentially(harness.handlers.get("session_start"), { type: "session_start", reason: "resume" }, ctx);
+  await emitSequentially(harness.handlers.get("session_compact"), { type: "session_compact", reason: "manual" }, ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.appendedEntries.length, 0);
+  assert.equal(harness.sentMessages.length, 0);
+  assert.equal(notifications.length, 0);
 });
 
 test("reload does not recover when compaction precedes the marked pause", async () => {
@@ -477,7 +487,7 @@ test("tree navigation evaluates only the destination branch", async () => {
     type: "session_tree", oldLeafId: null, newLeafId: "compact-1",
   }, ctx);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(harness.sentMessages.length, 0);
 });
 
 test("live recovery persistence failure stays paused and queues nothing", async () => {
@@ -493,7 +503,7 @@ test("live recovery persistence failure stays paused and queues nothing", async 
   assert.match(notifications.at(-1)?.message ?? "", /could not be resumed/u);
 });
 
-test("reload recovery persistence failure stays paused and queues nothing", async () => {
+test("reload never attempts recovery persistence without a live manual event", async () => {
   const entries = [goalEntry(savedGoalState()), compactionEntry()];
   const harness = createHarness();
   harness.api.appendEntry = () => { throw new Error("session storage unavailable"); };
@@ -503,7 +513,7 @@ test("reload recovery persistence failure stays paused and queues nothing", asyn
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(harness.sentMessages.length, 0);
-  assert.match(notifications.at(-1)?.message ?? "", /could not be resumed/u);
+  assert.equal(notifications.length, 0);
 });
 
 test("the main entry still exports the extension and display helper", async () => {

@@ -5,10 +5,12 @@ export type InitOutcome =
   | { kind: "pending" }
   | { kind: "written" }
   | { kind: "policy-conflict"; reason: string }
+  | { kind: "cancelled" }
   | { kind: "no-outcome" };
 
 export interface InitRuntime {
   active: boolean;
+  starting?: symbol;
   targetPath?: string;
   projectRoot?: string;
   activeTools?: string[];
@@ -77,6 +79,7 @@ export function createGoalRuntime(): GoalRuntime {
 
 export function resetInitRuntime(state: InitRuntime): void {
   state.active = false;
+  state.starting = undefined;
   state.targetPath = undefined;
   state.projectRoot = undefined;
   state.activeTools = undefined;

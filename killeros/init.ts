@@ -133,8 +133,10 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
 
   pi.on("session_start", () => setInitTools(pi, initState, false));
   pi.on("session_shutdown", () => {
+    const settle = initState.settle;
     setInitTools(pi, initState, false);
     resetInitRuntime(initState);
+    settle?.({ kind: "cancelled" });
   });
   pi.on("before_agent_start", () => {
     if (initState.active) setInitTools(pi, initState, true);
@@ -160,7 +162,7 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
         ctx.ui.notify("/init requires interactive TUI mode", "error");
         return;
       }
-      if (initState.active) {
+      if (initState.active || initState.starting) {
         ctx.ui.notify("/init is already running", "warning");
         return;
       }
@@ -172,28 +174,45 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
         ctx.ui.notify("Trust this project before running /init", "error");
         return;
       }
-      await ctx.waitForIdle();
+      const starting = Symbol();
+      initState.starting = starting;
+      try {
+        await ctx.waitForIdle();
+      } catch (error) {
+        if (initState.starting !== starting) return;
+        initState.starting = undefined;
+        reportError(ctx, "/init could not wait for active work", error);
+        return;
+      }
+      if (initState.starting !== starting) return;
 
       let projectRoot: string;
       try {
         projectRoot = await fs.realpath(ctx.cwd);
       } catch (error) {
+        if (initState.starting !== starting) return;
+        initState.starting = undefined;
         reportError(ctx, "/init could not resolve the project root", error);
         return;
       }
+      if (initState.starting !== starting) return;
       const targetPath = path.join(projectRoot, "AGENTS.md");
       try {
         const [{ index: evidence }, baseline] = await Promise.all([
           buildInitEvidence(projectRoot),
           captureInitTargetBaseline(targetPath),
         ]);
+        if (initState.starting !== starting) return;
         initState.active = true;
         initState.projectRoot = projectRoot;
         initState.targetPath = targetPath;
         initState.evidence = evidence;
         initState.baseline = baseline;
         initState.outcome = { kind: "pending" };
+        initState.starting = undefined;
       } catch (error) {
+        if (initState.starting !== starting) return;
+        initState.starting = undefined;
         reportError(ctx, "/init could not capture safe repository evidence", error);
         return;
       }
@@ -233,6 +252,8 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
           break;
         case "policy-conflict":
           ctx.ui.notify(`/init left AGENTS.md unchanged: ${outcome.reason}`, "warning");
+          break;
+        case "cancelled":
           break;
         default:
           reportError(ctx, "/init did not generate AGENTS.md", "the model completed without a write or policy-conflict outcome");

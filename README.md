@@ -5,7 +5,7 @@ A production-hardened Pi extension that combines a custom TUI, repository initia
 ## Requirements
 
 - Node.js `22.19.0` or later
-- Pi `0.82.1` or later
+- Pi `0.84.1` or later
 - Interactive TUI mode for the custom header, editor, footer, `question` tool, and `/init`
 
 The extension is strict TypeScript. Pi provides the runtime modules.
@@ -31,7 +31,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.6
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.7
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -50,7 +50,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Codex-style `/goal` with an interactive status/action panel, durable objectives, immediate pause and clear cancellation, automatic continuation, explicit completion, and durable blocker audits
 - Automatic `/init` guideline synthesis with a frozen safe evidence map, protected existing policy, and the four packaged behavioral sections adapted from `writing-great-guidelines`
 - `question` tool with single-select and opt-in bounded multi-select, height-bounded option windows, configured Pi keybindings, live option/input progress, proposal previews, custom answers, history, cancellation, and compact expandable transcript rendering
-- Mid-prompt slash completion with current Pi `0.82.1` commands, extensions, prompts, and skills; paths, URLs, and invalid commands remain plain text
+- Mid-prompt slash completion with current Pi `0.84.1` commands, extensions, prompts, and skills; paths, URLs, and invalid commands remain plain text
 - Goal-aware `/clear` that confirms, aborts active work, waits for settlement, and starts a new session, plus `/exit` for graceful shutdown
 - Concise system-prompt guidance and supported native concise defaults that preserve explicit provider settings
 

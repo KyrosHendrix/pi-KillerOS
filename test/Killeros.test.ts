@@ -1403,7 +1403,7 @@ test("saved goals stay inactive in print and JSON modes", async () => {
     },
   }];
   for (const mode of ["print", "json"]) {
-    const { commands, handlers, sentMessages } = createHarness();
+    const { activeTools, appendedEntries, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext(entries);
     ctx.mode = mode;
     const notifications = [];
@@ -1411,6 +1411,7 @@ test("saved goals stay inactive in print and JSON modes", async () => {
     for (const handler of handlers.get("session_start")) await handler({ reason: "resume" }, ctx);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(sentMessages.length, 0);
+    assert.equal(activeTools.includes("killeros_goal_update"), false);
 
     let systemPrompt = "base";
     for (const handler of handlers.get("before_agent_start")) {
@@ -1420,6 +1421,8 @@ test("saved goals stay inactive in print and JSON modes", async () => {
     assert.doesNotMatch(systemPrompt, /Active KillerOS goal/u);
     await commands.get("goal").handler("", ctx);
     assert.match(notifications.at(-1).message, /requires TUI or RPC mode/u);
+    for (const handler of handlers.get("session_shutdown")) await handler({}, ctx);
+    assert.equal(appendedEntries.length, 0, `${mode} must not checkpoint an inactive saved goal`);
   }
 });
 
@@ -1834,6 +1837,119 @@ test("registers /init as a native command and runs the hidden generation workflo
     assert.deepEqual(sentUserMessages, []);
     await emitSequentially(handlers.get("agent_settled"), {}, ctx);
     assert.equal(reloadCalls, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init rejects re-entry while the first invocation waits for idle", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-starting-"));
+  try {
+    const { commands, handlers, sentMessages } = createHarness();
+    const notifications = [];
+    let releaseIdle;
+    let waitCalls = 0;
+    const idle = new Promise((resolve) => { releaseIdle = resolve; });
+    const ctx = {
+      cwd: directory,
+      isProjectTrusted: () => true,
+      mode: "tui",
+      reload: async () => {},
+      ui: { notify: (message, level) => notifications.push({ message, level }) },
+      waitForIdle: async () => { waitCalls += 1; await idle; },
+    };
+
+    const first = commands.get("init").handler("", ctx);
+    await waitFor(() => waitCalls === 1);
+    await commands.get("init").handler("", ctx);
+    assert.equal(waitCalls, 1);
+    assert.deepEqual(notifications.at(-1), { message: "/init is already running", level: "warning" });
+
+    releaseIdle();
+    await waitFor(() => sentMessages.length === 1);
+    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await first;
+    assert.equal(sentMessages.length, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init cancels preflight when its session shuts down", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-shutdown-"));
+  try {
+    const { commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext();
+    let releaseIdle;
+    let waiting = false;
+    const idle = new Promise((resolve) => { releaseIdle = resolve; });
+    ctx.cwd = directory;
+    ctx.reload = async () => {};
+    ctx.waitForIdle = async () => { waiting = true; await idle; };
+
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => waiting);
+    await emitSequentially(handlers.get("session_shutdown"), {}, ctx);
+    releaseIdle();
+    await initRun;
+    assert.equal(sentMessages.length, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("cancelled /init preflight cannot overwrite a newer session", { timeout: 10_000 }, async () => {
+  const slowDirectory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-slow-"));
+  const fastDirectory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-fast-"));
+  try {
+    execFileSync("git", ["init"], { cwd: slowDirectory, stdio: "ignore", windowsHide: true });
+    execFileSync("git", ["init"], { cwd: fastDirectory, stdio: "ignore", windowsHide: true });
+    for (let index = 0; index < 300; index += 1) {
+      writeFileSync(path.join(slowDirectory, `source-${index}.txt`), "x".repeat(8_192));
+    }
+    writeFileSync(path.join(fastDirectory, "package.json"), '{"name":"new-session"}\n');
+
+    const { commands, handlers, sentMessages, tools } = createHarness();
+    const context = (cwd) => {
+      const { ctx } = createTuiContext();
+      ctx.cwd = cwd;
+      ctx.reload = async () => {};
+      return ctx;
+    };
+    const slow = commands.get("init").handler("", context(slowDirectory));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await emitSequentially(handlers.get("session_shutdown"), {}, context(slowDirectory));
+
+    const fastContext = context(fastDirectory);
+    const fast = commands.get("init").handler("", fastContext);
+    await waitFor(() => sentMessages.length === 1);
+    await slow;
+
+    const result = await tools.get("killeros_init_read").execute("new-session-read", { path: "package.json" });
+    assert.match(result.content[0].text, /new-session/u);
+    await emitSequentially(handlers.get("agent_settled"), {}, fastContext);
+    await fast;
+  } finally {
+    rmSync(slowDirectory, { recursive: true, force: true });
+    rmSync(fastDirectory, { recursive: true, force: true });
+  }
+});
+
+test("/init settles its command handler when the session shuts down", { timeout: 1_000 }, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-active-shutdown-"));
+  try {
+    const { commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext();
+    const notifications = [];
+    ctx.cwd = directory;
+    ctx.reload = async () => {};
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+
+    const initRun = commands.get("init").handler("", ctx);
+    await waitFor(() => sentMessages.length === 1);
+    await emitSequentially(handlers.get("session_shutdown"), {}, ctx);
+    await initRun;
+    assert.deepEqual(notifications, []);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -32,7 +32,6 @@ interface GoalTransitionOptions {
 
 interface RestoredGoalState {
   state?: GoalState;
-  recoveryProven: boolean;
 }
 
 const GoalUpdateParams = Type.Object({
@@ -83,7 +82,7 @@ function isAbsoluteFilePath(value: string): boolean {
 }
 
 function inferGoalVerification(objective: string): GoalFileVerification | undefined {
-  const destination = /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b[^\r\n]{0,80}?\b(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
+  const destination = /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b\s+(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
   const paths = [...objective.matchAll(destination)]
     .map((match) => (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim())
     .filter(isAbsoluteFilePath);
@@ -171,19 +170,17 @@ function restoreGoalState(ctx: ExtensionContext): RestoredGoalState {
     if (entry?.type !== "custom" || entry.customType !== GOAL_ENTRY_TYPE) continue;
     const data = entry.data as Partial<GoalEntryData> | undefined;
     if (!data || data.version !== GOAL_VERSION || data.state === null) {
-      return { state: undefined, recoveryProven: false };
+      return { state: undefined };
     }
     const restored = parseGoalState(data.state);
-    if (!restored) return { state: undefined, recoveryProven: false };
+    if (!restored) return { state: undefined };
     const state = restored.status === "active"
       ? { ...restored, activeStartedAt: Date.now() }
       : { ...restored, activeStartedAt: undefined };
-    const recoveryProven = state.status === "paused"
-      && state.resumeAfterManualCompaction === true
-      && entries.slice(index + 1).some((candidate) => candidate.type === "compaction");
-    return { state, recoveryProven };
+    if (state.status === "paused") state.resumeAfterManualCompaction = undefined;
+    return { state };
   }
-  return { state: undefined, recoveryProven: false };
+  return { state: undefined };
 }
 
 export function goalElapsedMilliseconds(state: GoalState, now = Date.now()): number {
@@ -595,7 +592,7 @@ export function registerGoal(
 
   const restoreGoal = (ctx: ExtensionContext): void => {
     const restored = restoreGoalState(ctx);
-    runtime.state = restored.state;
+    runtime.state = isGoalModeSupported(ctx) ? restored.state : undefined;
     syncGoalUpdateTool(pi, runtime);
     runtime.continuationScheduled = false;
     runtime.continuationHeld = false;
@@ -605,9 +602,7 @@ export function registerGoal(
     runtime.lastStopReason = undefined;
     runtime.lastError = undefined;
     runtime.requestRender?.();
-    if (restored.recoveryProven) {
-      recoverGoalAfterManualCompaction(pi, runtime, initState, ctx);
-    } else if (runtime.state?.status === "active") {
+    if (runtime.state?.status === "active") {
       setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
     }
   };

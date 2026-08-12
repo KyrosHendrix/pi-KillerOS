@@ -13,7 +13,7 @@ A disposable view that Pi’s default compaction summarizer writes from transcri
 _Avoid_: goal checkpoint, handoff ledger, second goal state
 
 **Manual compaction recovery**:
-The fail-closed transition recorded in `/goal` entries that makes a Pi-forced goal-turn abort eligible for reactivation only when active-branch order proves a successful later compaction for that exact paused Goal truth revision with no intervening goal transition. KillerOS reports the temporary pause and successful resume; a failed or cancelled compaction leaves the goal paused, reload can finish a proven recovery, and an explicit `/goal pause` clears recovery eligibility.
+The fail-closed transition recorded in `/goal` entries that makes a Pi-forced goal-turn abort eligible for reactivation only when Pi reports a successful live manual compaction for that exact paused Goal truth revision with no intervening goal transition. Persisted compaction entries do not record their reason, so reload and branch navigation leave the goal paused and clear recovery eligibility instead of guessing. KillerOS reports the temporary pause and successful live resume; a failed or cancelled compaction leaves the goal paused, and an explicit `/goal pause` clears recovery eligibility.
 _Avoid_: compaction preemption, unconditional abort resume, timer-based resume
 
 **Goal continuation gate**:

@@ -24,7 +24,7 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 
 ## Capabilities and Constraints
 
-- Requires Node.js 22.19.0 or later and Pi 0.82.1 or later.
+- Requires Node.js 22.19.0 or later and Pi 0.84.1 or later.
 - Full custom header, editor, footer, and interactive question behavior requires TUI mode.
 - RPC supports commands and concise prompt guidance but disables TUI components.
 - Print and JSON modes support concise prompt guidance but not interactive questions.
