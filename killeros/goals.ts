@@ -13,6 +13,7 @@ import type { GoalBlockerAudit, GoalFileVerification, GoalRuntime, GoalState, Go
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
 const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
+const GOAL_UPDATE_TOOL = "killeros_goal_update";
 const GOAL_OBJECTIVE_LIMIT = 4_000;
 const GOAL_VERSION = 1;
 
@@ -213,6 +214,21 @@ function sumGoalTokens(ctx: ExtensionContext): number {
   return total;
 }
 
+function setGoalUpdateToolActive(pi: ExtensionAPI, active: boolean): void {
+  const api = pi as ExtensionAPI & { getActiveTools?: () => string[]; setActiveTools?: (names: string[]) => void };
+  if (!api.getActiveTools || !api.setActiveTools) return;
+  const activeTools = api.getActiveTools();
+  const isActive = activeTools.includes(GOAL_UPDATE_TOOL);
+  if (active === isActive) return;
+  api.setActiveTools(active
+    ? [...activeTools, GOAL_UPDATE_TOOL]
+    : activeTools.filter((name) => name !== GOAL_UPDATE_TOOL));
+}
+
+function syncGoalUpdateTool(pi: ExtensionAPI, runtime: GoalRuntime): void {
+  setGoalUpdateToolActive(pi, runtime.state?.status === "active");
+}
+
 function persistGoalState(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -222,6 +238,7 @@ function persistGoalState(
   const data: GoalEntryData = { version: GOAL_VERSION, event, state: state ?? null };
   pi.appendEntry(GOAL_ENTRY_TYPE, data);
   runtime.state = state;
+  syncGoalUpdateTool(pi, runtime);
   runtime.persistenceRetryNeeded = false;
   runtime.requestRender?.();
 }
@@ -316,6 +333,7 @@ export function pauseGoalAfterFailure(
       result: reason,
       resumeAfterManualCompaction: undefined,
     } : undefined;
+    syncGoalUpdateTool(pi, runtime);
     runtime.persistenceRetryNeeded = true;
     runtime.continuationScheduled = false;
     runtime.requestRender?.();
@@ -341,6 +359,7 @@ function pauseGoalForPossibleManualCompaction(
       result: reason,
       resumeAfterManualCompaction: true,
     } : undefined;
+    syncGoalUpdateTool(pi, runtime);
     runtime.persistenceRetryNeeded = true;
     runtime.continuationScheduled = false;
     runtime.requestRender?.();
@@ -505,7 +524,7 @@ export function registerGoal(
   });
 
   pi.registerTool<typeof GoalUpdateParams, GoalUpdateDetails>({
-    name: "killeros_goal_update",
+    name: GOAL_UPDATE_TOOL,
     label: "Goal update",
     description: "Mark the active KillerOS long-running goal complete after verification, or record the same blocker key on three consecutive goal turns before blocking it.",
     parameters: GoalUpdateParams,
@@ -560,7 +579,12 @@ export function registerGoal(
     renderCall(args, theme) {
       return new Text(`${theme.fg("toolTitle", theme.bold("goal "))}${theme.fg("muted", args.status)}`, 0, 0);
     },
-    renderResult(result, options, theme) {
+    renderResult(result, options, theme, context) {
+      if (context?.isError) {
+        const first = result.content[0];
+        const message = first?.type === "text" ? first.text : "Goal update failed";
+        return new BoundedText(theme.fg("error", message), options.expanded ? undefined : 3);
+      }
       const details = result.details;
       if (!details) return new BoundedText(theme.fg("dim", "Goal updated"));
       const label = details.status === "complete" ? "✓ Complete" : details.status === "blocked" ? "! Blocked" : `! Blocker audit ${details.streak}/3`;
@@ -572,6 +596,7 @@ export function registerGoal(
   const restoreGoal = (ctx: ExtensionContext): void => {
     const restored = restoreGoalState(ctx);
     runtime.state = restored.state;
+    syncGoalUpdateTool(pi, runtime);
     runtime.continuationScheduled = false;
     runtime.continuationHeld = false;
     runtime.goalTurnInFlight = false;
@@ -605,6 +630,7 @@ export function registerGoal(
       }
     }
     runtime.state = undefined;
+    syncGoalUpdateTool(pi, runtime);
     runtime.continuationScheduled = false;
     runtime.continuationHeld = false;
     runtime.goalTurnInFlight = false;
@@ -724,6 +750,7 @@ export function registerGoal(
             ctx.ui.notify("Goal pause saved. Goal remains paused. Automatic compaction recovery is off.", "info");
           } catch (error) {
             runtime.state = checkpoint;
+            syncGoalUpdateTool(pi, runtime);
             runtime.persistenceRetryNeeded = true;
             runtime.continuationScheduled = false;
             runtime.requestRender?.();

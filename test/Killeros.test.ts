@@ -1038,6 +1038,48 @@ test("/goal restores only the current branch and resumes active saved work", asy
   assert.match(notifications.at(-1).message, /Finish the saved task/u);
 });
 
+test("goal update is active only while a goal is active", async () => {
+  const { activeTools, commands, handlers, tools } = createHarness();
+  const { ctx } = createTuiContext();
+
+  assert.equal(activeTools.includes("killeros_goal_update"), true);
+  await emitSequentially(handlers.get("session_start"), { reason: "startup" }, ctx);
+  assert.equal(activeTools.includes("killeros_goal_update"), false);
+
+  await commands.get("goal").handler("Finish only after explicit activation", ctx);
+  assert.equal(activeTools.includes("killeros_goal_update"), true);
+  await commands.get("goal").handler("pause", ctx);
+  assert.equal(activeTools.includes("killeros_goal_update"), false);
+  await commands.get("goal").handler("resume", ctx);
+  assert.equal(activeTools.includes("killeros_goal_update"), true);
+  await tools.get("killeros_goal_update").execute(
+    "complete-explicit-goal",
+    { status: "complete", evidence: "Verified complete" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  assert.equal(activeTools.includes("killeros_goal_update"), false);
+});
+
+test("goal update renders the real tool error instead of an undefined blocker audit", () => {
+  const tool = createHarness().tools.get("killeros_goal_update");
+  const call = tool.renderCall({ status: "complete" }, theme, {}).render(80).join("\n");
+  const result = tool.renderResult(
+    {
+      content: [{ type: "text", text: "There is no active KillerOS goal to update" }],
+      details: {},
+    },
+    { expanded: false, isPartial: false },
+    theme,
+    { isError: true },
+  ).render(80).join("\n");
+  const rendered = `${call.trimEnd()}\n${result.trimEnd()}`;
+
+  assert.match(rendered, /goal complete\nThere is no active KillerOS goal to update/u);
+  assert.doesNotMatch(rendered, /undefined|Blocker audit/u);
+});
+
 test("/goal validates objectives, reserves control words, and requires blocker audits during goal turns", async () => {
   const { commands, handlers, tools } = createHarness();
   const { ctx } = createTuiContext();
@@ -1570,7 +1612,7 @@ test("goal transcript rows are compact until expanded", () => {
   assert.equal((expandedEvidence.match(/E/gu) ?? []).length, 2_000);
 });
 
-test("active goal replaces the footer path with an exact yellow timer", async () => {
+test("active, paused, and blocked goals replace the footer path with exact status text", async () => {
   const { appendedEntries, commands, handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
   for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
@@ -1605,6 +1647,17 @@ test("active goal replaces the footer path with an exact yellow timer", async ()
     const line = stripAnsi(footer.render(width)[0]);
     assert.equal([...line].length, width, `goal footer width mismatch at ${width}`);
   }
+
+  state.status = "paused";
+  state.activeStartedAt = undefined;
+  const paused = stripAnsi(footer.render(160)[0]);
+  assert.ok(paused.trimEnd().endsWith("/goal is paused"));
+  assert.doesNotMatch(paused, /Ⅱ goal paused/u);
+
+  state.status = "blocked";
+  const blocked = stripAnsi(footer.render(160)[0]);
+  assert.ok(blocked.trimEnd().endsWith("/goal is blocked"));
+  assert.doesNotMatch(blocked, /! goal blocked/u);
   footer.dispose();
 });
 

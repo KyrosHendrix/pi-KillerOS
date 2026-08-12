@@ -138,15 +138,13 @@ function formatGoalElapsed(milliseconds: number): string {
   return `${hours}h ${minutes.toString().padStart(2, "0")}m ${seconds.toString().padStart(2, "0")}s`;
 }
 
-function formatActiveGoalFooter(state: GoalState | undefined, theme: Theme): string {
-  if (state?.status !== "active") return "";
-  return theme.fg("warning", `/goal is active (${formatGoalElapsed(goalElapsedMilliseconds(state))})`);
-}
-
 function formatGoalFooter(state: GoalState | undefined, theme: Theme): string {
   if (!state) return "";
-  if (state.status === "paused") return theme.fg("warning", "Ⅱ goal paused");
-  if (state.status === "blocked") return theme.fg("error", "! goal blocked");
+  if (state.status === "active") {
+    return theme.fg("warning", `/goal is active (${formatGoalElapsed(goalElapsedMilliseconds(state))})`);
+  }
+  if (state.status === "paused") return theme.fg("warning", "/goal is paused");
+  if (state.status === "blocked") return theme.fg("error", "/goal is blocked");
   return "";
 }
 
@@ -211,30 +209,28 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
           const signature = formatModel(model, theme);
           const fullDirectory = theme.fg("dim", cwd);
           const focusedDirectory = theme.fg("dim", compactDirectory(cwd));
-          const activeGoal = formatActiveGoalFooter(goalRuntime.state, theme);
           const goal = formatGoalFooter(goalRuntime.state, theme);
           const rich = joinFooterParts([
             signature,
             level,
             context,
-            goal,
             branch ? theme.fg("dim", branch) : "",
             theme.fg("dim", formatTime(Date.now() - sessionStart)),
             theme.fg("dim", formatCost(getSessionCost(ctx))),
           ], theme);
-          const focused = joinFooterParts([signature, context, goal], theme);
+          const focused = joinFooterParts([signature, context], theme);
 
-          if (activeGoal) {
-            if (footerRowFits(rich, activeGoal, width)) {
-              return [renderFooterRow(rich, activeGoal, width)];
+          if (goal) {
+            if (footerRowFits(rich, goal, width)) {
+              return [renderFooterRow(rich, goal, width)];
             }
-            if (footerRowFits(focused, activeGoal, width)) {
-              return [renderFooterRow(focused, activeGoal, width)];
+            if (footerRowFits(focused, goal, width)) {
+              return [renderFooterRow(focused, goal, width)];
             }
-            if (footerRowFits(context, activeGoal, width)) {
-              return [renderFooterRow(context, activeGoal, width)];
+            if (footerRowFits(context, goal, width)) {
+              return [renderFooterRow(context, goal, width)];
             }
-            return [renderFooterRow("", activeGoal, width)];
+            return [renderFooterRow("", goal, width)];
           }
 
           if (footerRowFits(rich, fullDirectory, width)) {
@@ -249,12 +245,6 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
           if (footerRowFits(focused, "", width)) {
             return [renderFooterRow(focused, "", width)];
           }
-          if (goal) {
-            const essentialGoal = joinFooterParts([context, goal], theme);
-            if (footerRowFits(essentialGoal, "", width)) return [renderFooterRow(essentialGoal, "", width)];
-            return [renderFooterRow(goal, context, width)];
-          }
-
           const essentialModel = formatModel(model, theme, false);
           return [renderFooterRow(essentialModel, context, width)];
         },

@@ -6,6 +6,8 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Rendered active, paused, and blocked `/goal` status text consistently in the footer's far-right slot.
+- Kept the private goal-update tool inactive outside active `/goal` runs and rendered its real execution errors instead of malformed blocker-audit fields.
 - Verified exact persisted paths for clearly declared file-deliverable goals before completion, while preserving model-reported completion for general objectives.
 - Accepted explicit `1`/`1` bounds for single-select questions and applied the same bounds validation before rendering and execution.
 
