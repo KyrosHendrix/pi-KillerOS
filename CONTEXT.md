@@ -88,6 +88,14 @@ _Avoid_: last writer wins, automatic re-merge, backup-and-replace
 An answer that is easy to start and follow because needed state is visible and the user is not expected to remember missing context.
 _Avoid_: hidden context, memory-dependent answer, contextless next step
 
+**Decision-gated workflow**:
+A user-activated workflow whose policy opens one structured question before Pi gives the model a turn, then keeps an explicit tool allowlist active until the workflow ends. It is a reusable workflow contract, not a skill name or prompt branch.
+_Avoid_: prompt-only gate, model-selected question, global lock
+
+**Pre-turn workflow gate**:
+The deterministic KillerOS boundary activated by an explicit workflow request, which opens the shared question UI and blocks model and tool activity until the decision is resolved. It must not infer activation from a model-loaded skill or rely on an after-the-fact mutation block.
+_Avoid_: tool-call-only guard, inferred skill activation, post-mutation protection
+
 **Progress checkpoint**:
 A user-facing update reserved for meaningful phase changes, long-running verification, failures, or required decisions rather than routine tool-by-tool narration.
 _Avoid_: tool narration, silent long-running work, conversational progress filler

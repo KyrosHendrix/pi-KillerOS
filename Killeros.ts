@@ -10,20 +10,33 @@ import {
   type CompletionNotificationDependencies,
 } from "./killeros/notifications.ts";
 import { registerPersonalInstructions } from "./killeros/personal-instructions.ts";
-import { registerQuestionTool } from "./killeros/question.ts";
+import { registerQuestionTool, type QuestionRunner } from "./killeros/question.ts";
+import { createDecisionGatedWorkflowAdapter } from "./killeros/decision-gated-workflow.ts";
 import { createGoalRuntime, createInitRuntime } from "./killeros/runtime.ts";
 import { registerShellUi } from "./killeros/shell-ui.ts";
 import { registerVariants } from "./killeros/variants.ts";
 import { registerWorkedFor } from "./killeros/worked-for.ts";
+import { registerWorkflowGate, type WorkflowAdapter } from "./killeros/workflow-gate.ts";
 
 export { contextPercentRemaining, formatCost, formatContextProgress } from "./killeros/footer.ts";
 export { executeHook } from "./killeros/hooks.ts";
 export { INIT_WORKFLOW_PROMPT } from "./killeros/init.ts";
 export { buildInitEvidence, listInitEvidence, readInitEvidence } from "./killeros/init-evidence.ts";
 export { captureInitTargetBaseline, installInitAgentsFile, validateGeneratedGuidance, writeInitAgentsFile } from "./killeros/init-target.ts";
+export { createDecisionGatedWorkflowAdapter } from "./killeros/decision-gated-workflow.ts";
+export { explicitSkillActivation, registerWorkflowGate } from "./killeros/workflow-gate.ts";
+export type {
+  WorkflowAdapter,
+  WorkflowGateController,
+  WorkflowGateState,
+  WorkflowPolicy,
+  WorkflowTerminalReason,
+  WorkflowToolAuthorization,
+} from "./killeros/workflow-gate.ts";
 
 export interface KillerosOptions {
   completionNotifications?: CompletionNotificationDependencies;
+  decisionGatedWorkflows?: readonly WorkflowAdapter[];
 }
 
 export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}): void {
@@ -32,7 +45,12 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerShellUi(pi);
   registerGoal(pi, goalRuntime, initRuntime);
   registerPersonalInstructions(pi, initRuntime);
-  registerQuestionTool(pi);
+  const questionRunner: QuestionRunner = registerQuestionTool(pi);
+  registerWorkflowGate(
+    pi,
+    questionRunner,
+    options.decisionGatedWorkflows ?? [createDecisionGatedWorkflowAdapter()],
+  );
   registerAliases(pi);
   registerSlashAutocomplete(pi);
   registerFooter(pi, goalRuntime);

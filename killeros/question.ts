@@ -1,5 +1,10 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import {
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ThemeColor,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import {
   decodeKittyPrintable,
   Editor,
@@ -40,7 +45,7 @@ const QuestionParams = Type.Object({
   })),
 });
 
-type QuestionParamsValue = Static<typeof QuestionParams>;
+export type QuestionParamsValue = Static<typeof QuestionParams>;
 
 type NormalizedQuestionSelection =
   | { mode: "single"; minSelections: 1; maxSelections: 1 }
@@ -95,7 +100,11 @@ interface MultipleQuestionDetails {
   cancelled?: boolean;
 }
 
-type QuestionDetails = SingleQuestionDetails | MultipleQuestionDetails;
+export type QuestionDetails = SingleQuestionDetails | MultipleQuestionDetails;
+
+export interface QuestionRunner {
+  ask(params: QuestionParamsValue, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<QuestionDetails>;
+}
 
 type QuestionSelection =
   | { kind: "selected"; answer: string; originalIndex: number }
@@ -210,7 +219,7 @@ class MultipleResultText {
   invalidate(): void {}
 }
 
-export function registerQuestionTool(pi: ExtensionAPI): void {
+export function registerQuestionTool(pi: ExtensionAPI): QuestionRunner {
   const customInputHistory: string[] = [];
   let customInputHistoryBytes = 0;
   const clearCustomInputHistory = (): void => {
@@ -242,7 +251,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
   pi.on("session_tree", clearCustomInputHistory);
   pi.on("session_shutdown", clearCustomInputHistory);
 
-  pi.registerTool<typeof QuestionParams, QuestionDetails>({
+  const questionTool: ToolDefinition<typeof QuestionParams, QuestionDetails> = {
     name: "question",
     label: "Question",
     description: `Ask one interactive multiple-choice question. Provide 1-9 concise options. Single-select is the default; opt into bounded multi-select with mode "multiple". The user can filter options or type a custom answer. Filter queries are limited to ${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()} characters and ${FILTER_QUERY_MAX_BYTES.toLocaleString()} bytes.`,
@@ -752,5 +761,14 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
       }
       return new BoundedText(`${theme.fg("success", "✓ ")}${theme.fg("accent", answer)}`);
     },
-  });
+  };
+  pi.registerTool(questionTool);
+
+  return {
+    async ask(params, signal, ctx): Promise<QuestionDetails> {
+      const result = await questionTool.execute("killeros-workflow-gate", params, signal, undefined, ctx);
+      if (!result.details) throw new Error("Question did not return a structured result");
+      return result.details;
+    },
+  };
 }

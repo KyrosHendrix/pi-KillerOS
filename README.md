@@ -5,7 +5,7 @@ A production-hardened Pi extension that combines a custom TUI, repository initia
 ## Requirements
 
 - Node.js `22.19.0` or later
-- Pi `0.84.1` or later
+- Pi `0.84.2` or later
 - Interactive TUI mode for the custom header, editor, footer, `question` tool, and `/init`
 
 The extension is strict TypeScript. Pi provides the runtime modules.
@@ -31,7 +31,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.7
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.8
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -49,8 +49,9 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` with an interactive status/action panel, durable objectives, immediate pause and clear cancellation, automatic continuation, explicit completion, and durable blocker audits
 - Automatic `/init` guideline synthesis with a frozen safe evidence map, protected existing policy, and the four packaged behavioral sections adapted from `writing-great-guidelines`
+- Opt-in decision-gated workflows that ask a structured policy question before explicit skill expansion, preserve the selected allowlist, and fail closed across tool and session boundaries
 - `question` tool with single-select and opt-in bounded multi-select, height-bounded option windows, configured Pi keybindings, live option/input progress, proposal previews, custom answers, history, cancellation, and compact expandable transcript rendering
-- Mid-prompt slash completion with current Pi `0.84.1` commands, extensions, prompts, and skills; paths, URLs, and invalid commands remain plain text
+- Mid-prompt slash completion with current Pi `0.84.2` commands, extensions, prompts, and skills; paths, URLs, and invalid commands remain plain text
 - Goal-aware `/clear` that confirms, aborts active work, waits for settlement, and starts a new session, plus `/exit` for graceful shutdown
 
 ## Commands
@@ -77,6 +78,10 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 `/init` freezes a safe project-file map and exposes only dedicated read and list operations while it generates root `AGENTS.md`. Git-ignored files, known secret paths, private-key formats, other guidance, dependencies, links, non-regular files, and files outside that map are unavailable. Existing root `AGENTS.md` is separate protected policy: compatible rules are preserved, a real policy conflict leaves it unchanged with a reason, and any concurrent target change aborts installation without replacing the newer file.
 
 The generated file uses the four behavioral sections adapted from `writing-great-guidelines`; no external skill installation is required. `/init` asks no setup questions, starts no second model process, writes no other file, and reloads Pi resources only after a successful write.
+
+### Decision-gated workflows
+
+Explicit `/skill:decision-gated-workflow` activation opens the shared question UI before Pi expands the skill. `Normal` allows only interview and read-only tools; `With docs` additionally permits agreed glossary, context-map, and ADR paths. The selected policy remains active until the workflow is explicitly finished or cancelled, and lifecycle changes clear it safely. Extensions can supply additional adapters through `KillerosOptions.decisionGatedWorkflows`.
 
 ### Interactive questions
 

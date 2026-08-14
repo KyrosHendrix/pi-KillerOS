@@ -4,9 +4,20 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.8] - 2026-08-15
+
+### Added
+
+- Added a reusable, opt-in pre-turn gate for explicitly activated decision-gated workflows. It opens the shared structured question UI before skill expansion, keeps the selected policy active, blocks unknown and disallowed tools, and clears safely across lifecycle boundaries.
+- Added a disposable decision-gated workflow fixture and focused coverage for activation ordering, pending safety, policy allowlists, lifecycle cleanup, adapter reuse, and Pi 0.84.2 compatibility.
+
 ### Removed
 
 - Removed KillerOS's always-on concise response policy and provider-specific concise defaults; Pi now owns response-style guidance.
+
+### Changed
+
+- Raised the locked direct Pi development packages to 0.84.2 while keeping the peer dependency floor at 0.84.1.
 
 ## [2.0.7] - 2026-08-13
 
