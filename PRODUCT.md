@@ -12,11 +12,11 @@ Developers using the Pi coding agent in an interactive terminal, especially thos
 
 ## Product Purpose
 
-KillerOS is a Pi extension that combines a custom terminal UI, reasoning controls, interactive questions, command aliases, and concise-response guidance. It should help users understand the current session and move into productive work quickly.
+KillerOS is a Pi extension that combines a custom terminal UI, reasoning controls, interactive questions, and command aliases. It should help users understand the current session and move into productive work quickly.
 
 ## Positioning
 
-Unlike a standalone theme or command bundle, KillerOS coordinates the startup header, editor, footer, reasoning controls, question flow, slash completion, and response guidance as one Pi workflow layer.
+Unlike a standalone theme or command bundle, KillerOS coordinates the startup header, editor, footer, reasoning controls, question flow, and slash completion as one Pi workflow layer.
 
 ## Operating Context
 
@@ -26,8 +26,8 @@ KillerOS runs inside Pi’s TUI during repository work. Users start sessions, in
 
 - Requires Node.js 22.19.0 or later and Pi 0.84.1 or later.
 - Full custom header, editor, footer, and interactive question behavior requires TUI mode.
-- RPC supports commands and concise prompt guidance but disables TUI components.
-- Print and JSON modes support concise prompt guidance but not interactive questions.
+- RPC supports commands but disables TUI components.
+- Print and JSON modes support core command behavior but not interactive questions.
 - UI components must remain legible across narrow and wide terminal widths and use the packaged KillerOS theme in TUI mode.
 - The prompt editor is frameless and keeps one blank row between the response and input: one dim `❯` turns coral on focus, continuation rows align under the input, and scroll indicators appear only when content overflows. The shuffled session-stable `Try "…"` suggestion and Shift+Enter remain; slash-command autocomplete stays available, typed prompt text uses the normal editor color, and KillerOS leaves a custom editor factory from another extension unchanged.
 - Interactive question components must never render more rows than the active terminal height; tiny terminals degrade to a compact usable view.

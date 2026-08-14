@@ -1,6 +1,6 @@
 # KillerOS
 
-A production-hardened Pi extension that combines a custom TUI, repository initialization, long-running goals, reasoning controls, interactive questions, command aliases, and concise-response guidance.
+A production-hardened Pi extension that combines a custom TUI, repository initialization, long-running goals, reasoning controls, interactive questions, and command aliases.
 
 ## Requirements
 
@@ -52,7 +52,6 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - `question` tool with single-select and opt-in bounded multi-select, height-bounded option windows, configured Pi keybindings, live option/input progress, proposal previews, custom answers, history, cancellation, and compact expandable transcript rendering
 - Mid-prompt slash completion with current Pi `0.84.1` commands, extensions, prompts, and skills; paths, URLs, and invalid commands remain plain text
 - Goal-aware `/clear` that confirms, aborts active work, waits for settlement, and starts a new session, plus `/exit` for graceful shutdown
-- Concise system-prompt guidance and supported native concise defaults that preserve explicit provider settings
 
 ## Commands
 
@@ -108,8 +107,8 @@ Lifecycle hooks are loaded from `.pi/killeros-hooks.json` at session start. Supp
 | Mode | Behavior |
 |---|---|
 | TUI | All features are available, including the completion sound and tab-title indicator |
-| RPC | Goal set/view/pause/resume/clear and concise prompt guidance work; TUI components, `/goal edit`, `/init`, completion sounds, and the title indicator are disabled |
-| Print/JSON | Concise prompt guidance works; interactive questions, `/goal`, and `/init` fail explicitly; completion sounds and the title indicator are disabled |
+| RPC | Goal set/view/pause/resume/clear work; TUI components, `/goal edit`, `/init`, completion sounds, and the title indicator are disabled |
+| Print/JSON | Interactive questions, `/goal`, and `/init` fail explicitly; completion sounds and the title indicator are disabled |
 
 ## Validation
 

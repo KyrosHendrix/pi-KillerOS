@@ -84,10 +84,6 @@ _Avoid_: generic no-write failure, silent omission, automatic conflict choice
 Any change to root `AGENTS.md` after `/init` captures its protected baseline and before the generated update is installed. KillerOS aborts the write, preserves the exact newer file, discards the generated candidate, and requires a rerun.
 _Avoid_: last writer wins, automatic re-merge, backup-and-replace
 
-**Concise guidance**:
-KillerOS’s universal, always-on response policy that reduces cognitive load and makes the next useful action clear without assuming or labeling a user’s neurotype.
-_Avoid_: ADHD mode, terse mode, brevity mode
-
 **Low-friction response**:
 An answer that is easy to start and follow because needed state is visible and the user is not expected to remember missing context.
 _Avoid_: hidden context, memory-dependent answer, contextless next step
@@ -144,10 +140,6 @@ _Avoid_: hard five-item cap, unranked long list, omitted required detail
 The one concrete step shown at the end only when progress depends on the user’s choice, information, or external action; completed or autonomously continuable work does not manufacture one.
 _Avoid_: optional closer, want-me-to question, artificial next step
 
-**Guidance precedence**:
-The conflict order for response shaping: safety and harness constraints, explicit user depth or format, correctness and completeness, then concise defaults.
-_Avoid_: brevity over safety, brevity over correctness, silent conflict resolution
-
 **Diagnostic reset**:
 After three consecutive turns leave the same issue broken, stop speculative edits, identify the likely invalid assumption from observed evidence, and ask one diagnostic question.
 _Avoid_: debug spiral, fourth speculative fix, repeated still-broken loop
@@ -167,18 +159,6 @@ _Avoid_: private editor adapter, editor replacement on conflict, pinned editor i
 **Completion sound**:
 The optional standard terminal bell sent once after a settled request that finishes normally or with an error; a manually aborted request does not ring. It is a global user preference, off by default, and advertised through the rotating startup tips. A simple Nerd Font line-bell glyph appears at the end of the terminal tab title only while this preference is enabled; it is not part of KillerOS’s startup card and is not clickable.
 _Avoid_: notification sound, alert tone, startup-header bell, header button, emoji bell
-
-**Response policy**:
-The self-contained, medium-length system guidance that teaches KillerOS’s cognitive-load model, contextual response shape, continuity behavior, exceptions, and pre-send check without copying external examples.
-_Avoid_: concise rules list, full skill copy, one-line style hint
-
-**Native concise settings**:
-Supported Responses API defaults that request low text verbosity and concise reasoning summaries only when those fields are absent. Explicit provider settings remain unchanged; the defaults complement response policy and stay limited to verified provider/model combinations.
-_Avoid_: forced provider override, reasoning-effort reduction, response policy replacement
-
-**Behavioral anchor**:
-A stable semantic contract asserted in tests so response-policy wording can evolve without weakening immediate-need framing, continuity, required actions, estimate discipline, diagnostic reset, or precedence.
-_Avoid_: full-prompt snapshot, wording lock, smoke-only assertion
 
 **Test-language parity**:
 The tracked test suite is written in the same language as the source tree (TypeScript), so the public repository presents one code language while the suite stays public and runtime-checked by CI; the npm package never shipped the suite.

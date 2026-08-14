@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerRequestActivity } from "./killeros/activity.ts";
 import { registerAliases, registerSlashAutocomplete } from "./killeros/commands.ts";
-import { registerConcisePrompt } from "./killeros/concise.ts";
 import { registerFooter } from "./killeros/footer.ts";
 import { registerGoal, registerGoalSettlement } from "./killeros/goals.ts";
 import { registerLifecycleHooks } from "./killeros/hooks.ts";
@@ -17,7 +16,6 @@ import { registerShellUi } from "./killeros/shell-ui.ts";
 import { registerVariants } from "./killeros/variants.ts";
 import { registerWorkedFor } from "./killeros/worked-for.ts";
 
-export { CONCISE_SYSTEM_PROMPT, isConciseEnabled, isConcisedEnabled } from "./killeros/concise.ts";
 export { contextPercentRemaining, formatCost, formatContextProgress } from "./killeros/footer.ts";
 export { executeHook } from "./killeros/hooks.ts";
 export { INIT_WORKFLOW_PROMPT } from "./killeros/init.ts";
@@ -32,7 +30,6 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   const initRuntime = createInitRuntime();
   const goalRuntime = createGoalRuntime();
   registerShellUi(pi);
-  registerConcisePrompt(pi);
   registerGoal(pi, goalRuntime, initRuntime);
   registerPersonalInstructions(pi, initRuntime);
   registerQuestionTool(pi);

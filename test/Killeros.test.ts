@@ -16,15 +16,12 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import Killeros, {
-  CONCISE_SYSTEM_PROMPT,
   buildInitEvidence,
   captureInitTargetBaseline,
   executeHook,
   formatContextProgress,
   INIT_WORKFLOW_PROMPT,
   installInitAgentsFile,
-  isConciseEnabled,
-  isConcisedEnabled,
   listInitEvidence,
   readInitEvidence,
   validateGeneratedGuidance,
@@ -362,80 +359,6 @@ test("goal updates use a Google-compatible status enum", () => {
   }
 });
 
-test("concise guidance encodes action-oriented behavioral anchors", () => {
-  assert.doesNotMatch(CONCISE_SYSTEM_PROMPT, /# Concise output rules/u);
-  assert.match(CONCISE_SYSTEM_PROMPT, /Make each response easy to start and easy to follow/u);
-  assert.match(CONCISE_SYSTEM_PROMPT, /first line serves the user's immediate need/u);
-  assert.match(CONCISE_SYSTEM_PROMPT, /state anchor only when multi-step work spans turns/u);
-  assert.match(CONCISE_SYSTEM_PROMPT, /concrete human execution estimate only when requested or supported by evidence/u);
-  assert.match(CONCISE_SYSTEM_PROMPT, /After three consecutive turns leave the same issue broken/u);
-  assert.match(CONCISE_SYSTEM_PROMPT, /Safety and harness constraints come first/u);
-  assert.match(CONCISE_SYSTEM_PROMPT, /explicit depth or format request, then correctness and completeness/u);
-  assert.match(CONCISE_SYSTEM_PROMPT, /Explain fully when asked/u);
-  assert.match(CONCISE_SYSTEM_PROMPT, /ending is either the verified outcome or one action the user must take/u);
-});
-
-test("exports the corrected concise state helper with a compatibility alias", () => {
-  assert.equal(isConciseEnabled(), true);
-  assert.equal(isConcisedEnabled(), isConciseEnabled());
-});
-
-test("applies concise defaults to Responses API payloads without existing settings", async () => {
-  const { handlers } = createHarness();
-  const payload = {
-    model: "gpt-5.6",
-    input: [],
-    text: { format: { type: "text" } },
-    reasoning: { effort: "high" },
-  };
-
-  const [result] = await emitSequentially(handlers.get("before_provider_request"), { payload }, {
-    model: { api: "openai-codex-responses", id: "gpt-5.6" },
-  });
-
-  assert.deepEqual(result, {
-    ...payload,
-    text: { format: { type: "text" }, verbosity: "low" },
-    reasoning: { effort: "high", summary: "concise" },
-  });
-});
-
-test("preserves explicit Responses API detail settings", async () => {
-  const { handlers } = createHarness();
-  const handler = handlers.get("before_provider_request")[0];
-  const payload = {
-    model: "gpt-5.6",
-    input: [],
-    text: { format: { type: "text" }, verbosity: "high" },
-    reasoning: { effort: "high", summary: "detailed" },
-  };
-
-  assert.strictEqual(await handler({ payload }, {
-    model: { api: "openai-codex-responses", id: "gpt-5.6" },
-  }), payload);
-});
-
-test("keeps concise provider settings scoped to compatible payload fields", async () => {
-  const { handlers } = createHarness();
-  const handler = handlers.get("before_provider_request")[0];
-  const withoutSettings = { model: "gpt-5.6-luna", input: [] };
-  const incompatible = { model: "deepseek-v4-flash", input: [], text: { verbosity: "high" } };
-
-  assert.deepEqual(await handler({ payload: withoutSettings }, {
-    model: { api: "openai-responses", id: "gpt-5.6-luna" },
-  }), {
-    model: "gpt-5.6-luna",
-    input: [],
-    text: { verbosity: "low" },
-  });
-  assert.strictEqual(await handler({ payload: incompatible }, {
-    model: { api: "openai-completions", id: "deepseek-v4-flash" },
-  }), incompatible);
-  assert.equal(await handler({ payload: null }, {
-    model: { api: "openai-responses", id: "gpt-5.6-luna" },
-  }), null);
-});
-
 async function emitSequentially(handlers, event, ctx) {
   const results = [];
   for (const handler of handlers ?? []) {
@@ -748,7 +671,6 @@ test("registers /goal and completes only through the model goal tool", async () 
   assert.match(sentMessages[0].message.content, /first concrete next step/u);
   assert.match(sentMessages[0].message.content, /checking the current repository state/u);
   assert.doesNotMatch(sentMessages[0].message.content, /hidden handoff|stored progress copy/u);
-  assert.doesNotMatch(sentMessages[0].message.content, /Action-oriented response guidance/u);
   assert.deepEqual(sentMessages[0].options, { triggerTurn: true, deliverAs: "followUp" });
   assert.equal(appendedEntries.at(-1).customType, "killeros-goal");
   assert.equal(appendedEntries.at(-1).data.state.status, "active");
@@ -761,7 +683,6 @@ test("registers /goal and completes only through the model goal tool", async () 
   assert.match(systemPrompt, /Active KillerOS goal/u);
   assert.match(systemPrompt, /Ship only after every release check passes/u);
   assert.match(systemPrompt, /killeros_goal_update/u);
-  assert.equal(systemPrompt.match(/# Action-oriented response guidance/gu)?.length, 1);
 
   const update = await tools.get("killeros_goal_update").execute(
     "goal-complete",

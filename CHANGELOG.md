@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Removed
+
+- Removed KillerOS's always-on concise response policy and provider-specific concise defaults; Pi now owns response-style guidance.
+
 ## [2.0.7] - 2026-08-13
 
 ### Changed
