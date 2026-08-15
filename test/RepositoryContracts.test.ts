@@ -90,8 +90,8 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
 });
 
 test("product and design docs match current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.8");
-  assert.match(readme, /@v2\.0\.8/u);
+  assert.equal(packageJson.version, "2.0.9");
+  assert.match(readme, /@v2\.0\.9/u);
   assert.match(readme, /12-frame/u);
   assert.match(product, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
   assert.match(product, /120 ms/u);
