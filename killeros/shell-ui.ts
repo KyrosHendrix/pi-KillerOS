@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   CURSOR_MARKER,
+  stripTerminalSequences,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -17,6 +18,11 @@ import {
   type TUI,
 } from "@earendil-works/pi-tui";
 import { formatCwd, padRight } from "./display.ts";
+import {
+  createSlashCommandResolver,
+  findSlashCommandTokens,
+  type SlashCommandResolver,
+} from "./commands.ts";
 import { reportError } from "./errors.ts";
 import { formatModel } from "./footer.ts";
 import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
@@ -166,10 +172,8 @@ class PiStartupHeader {
   }
 }
 
-const ANSI_REGEX = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-
 function stripAnsi(text: string): string {
-  return text.replace(ANSI_REGEX, "").trim();
+  return stripTerminalSequences(text).trim();
 }
 
 function isBorderLine(line: string): boolean {
@@ -182,10 +186,98 @@ function isScrolledTopBorder(line: string): boolean {
   return unstyled.includes("↑");
 }
 
+interface RenderChunk {
+  text: string;
+  plainStart: number;
+  isAnsi: boolean;
+}
+
+function extractTerminalSequence(text: string, position: number): { code: string; length: number } | undefined {
+  if (text[position] !== "\x1B") return undefined;
+  const next = text[position + 1];
+  if (next === "[") {
+    let end = position + 2;
+    while (end < text.length && !/[\x40-\x7E]/u.test(text[end] ?? "")) end += 1;
+    if (end < text.length) return { code: text.slice(position, end + 1), length: end + 1 - position };
+    return undefined;
+  }
+  if (next === "]" || next === "_") {
+    let end = position + 2;
+    while (end < text.length) {
+      if (text[end] === "\x07") return { code: text.slice(position, end + 1), length: end + 1 - position };
+      if (text[end] === "\x1B" && text[end + 1] === "\\") {
+        return { code: text.slice(position, end + 2), length: end + 2 - position };
+      }
+      end += 1;
+    }
+    return undefined;
+  }
+  if (next !== undefined) return { code: text.slice(position, position + 2), length: 2 };
+  return undefined;
+}
+
+export function highlightSlashCommands(
+  line: string,
+  isValidCommand: (name: string) => boolean,
+  styleCommand: (token: string) => string,
+): string {
+  const chunks: RenderChunk[] = [];
+  let plain = "";
+  let index = 0;
+  while (index < line.length) {
+    const ansi = extractTerminalSequence(line, index);
+    if (ansi) {
+      chunks.push({ text: ansi.code, plainStart: plain.length, isAnsi: true });
+      index += ansi.length;
+      continue;
+    }
+
+    const start = index;
+    const plainStart = plain.length;
+    while (index < line.length && !extractTerminalSequence(line, index)) {
+      plain += line[index] ?? "";
+      index += 1;
+    }
+    chunks.push({
+      text: line.slice(start, index),
+      plainStart,
+      isAnsi: false,
+    });
+  }
+
+  const tokens = findSlashCommandTokens(plain).filter((token) => isValidCommand(token.name));
+  if (tokens.length === 0) return line;
+
+  return chunks.map((chunk) => {
+    if (chunk.isAnsi) return chunk.text;
+    let output = "";
+    let offset = 0;
+    while (offset < chunk.text.length) {
+      const plainIndex = chunk.plainStart + offset;
+      const token = tokens.find(({ start, end }) => plainIndex >= start && plainIndex < end);
+      if (!token) {
+        const nextTokenStart = tokens.find(({ start }) => start > plainIndex)?.start;
+        const end = nextTokenStart === undefined
+          ? chunk.text.length
+          : Math.min(chunk.text.length, nextTokenStart - chunk.plainStart);
+        output += chunk.text.slice(offset, end);
+        offset = end;
+        continue;
+      }
+
+      const tokenEnd = Math.min(chunk.text.length, token.end - chunk.plainStart);
+      output += styleCommand(chunk.text.slice(offset, tokenEnd));
+      offset = tokenEnd;
+    }
+    return output;
+  }).join("");
+}
+
 class PiCodeEditor extends CustomEditor {
   private readonly appKeybindings: KeybindingsManager;
   private readonly runtimeTheme: Theme;
   private readonly suggestion: string;
+  private readonly commandResolver: SlashCommandResolver;
 
   constructor(
     tui: TUI,
@@ -193,11 +285,13 @@ class PiCodeEditor extends CustomEditor {
     appKeybindings: KeybindingsManager,
     runtimeTheme: Theme,
     suggestion: string,
+    commandResolver: SlashCommandResolver,
   ) {
     super(tui, theme, appKeybindings);
     this.appKeybindings = appKeybindings;
     this.runtimeTheme = runtimeTheme;
     this.suggestion = suggestion;
+    this.commandResolver = commandResolver;
   }
 
   override handleInput(data: string): void {
@@ -248,6 +342,13 @@ class PiCodeEditor extends CustomEditor {
         const cursorMarker = this.focused ? CURSOR_MARKER : "";
         content = `${cursorMarker}\x1B[7m${dim(first)}\x1B[27m${dim(rest)}`;
       }
+      if (this.getText() !== "") {
+        content = highlightSlashCommands(
+          content,
+          (name) => this.commandResolver.isValidCommand(name),
+          (token) => this.runtimeTheme.fg("mdLink", token),
+        );
+      }
       rendered.push(`${prefix}${padRight(content, innerWidth)}`);
     }
 
@@ -272,7 +373,10 @@ const ACTIVITY_FRAME_INTERVAL_MS = 120;
 
 let killerosEditorFactory: ReturnType<ExtensionContext["ui"]["getEditorComponent"]>;
 
-export function registerShellUi(pi: ExtensionAPI): void {
+export function registerShellUi(
+  pi: ExtensionAPI,
+  commandResolver: SlashCommandResolver = createSlashCommandResolver(pi),
+): void {
   let activeHeader: PiStartupHeader | undefined;
 
   pi.on("session_start", (_event, ctx) => {
@@ -294,7 +398,7 @@ export function registerShellUi(pi: ExtensionAPI): void {
       if (!existingEditorFactory || existingEditorFactory === killerosEditorFactory) {
         const editorSuggestion = nextEditorSuggestion();
         killerosEditorFactory = (tui, editorTheme, keybindings) =>
-          new PiCodeEditor(tui, editorTheme, keybindings, ctx.ui.theme, editorSuggestion);
+          new PiCodeEditor(tui, editorTheme, keybindings, ctx.ui.theme, editorSuggestion, commandResolver);
         ctx.ui.setEditorComponent(killerosEditorFactory);
       }
     } catch (error) {

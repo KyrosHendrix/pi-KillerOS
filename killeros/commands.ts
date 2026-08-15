@@ -30,6 +30,19 @@ interface CommandInfo {
   syntaxHint?: string;
 }
 
+export interface SlashCommandToken {
+  name: string;
+  start: number;
+  end: number;
+}
+
+export interface SlashCommandResolver {
+  clearFallbackCommands(): void;
+  updateFallbackCommands(items: readonly AutocompleteItem[]): void;
+  getCommandCatalog(baseSuggestions?: readonly AutocompleteItem[]): ReadonlyMap<string, CommandInfo>;
+  isValidCommand(name: string): boolean;
+}
+
 const BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
   { name: "settings", description: "Open settings menu" },
   { name: "model", description: "Select model" },
@@ -70,6 +83,87 @@ interface TaggedAutocompleteItem extends AutocompleteItem {
   killerosCommand?: string;
 }
 
+const SLASH_COMMAND_PREFIX_PATTERN = /(?:^|[ \t])\/([^\s/]*)$/u;
+const SLASH_COMMAND_TOKEN_PATTERN = /(?:^|[ \t])\/([^\s/]+)(?=$|[ \t])/gu;
+
+export function getSlashCommandPrefix(line: string): { prefix: string; slashIndex: number } | undefined {
+  const match = SLASH_COMMAND_PREFIX_PATTERN.exec(line);
+  if (!match || match.index === undefined) return undefined;
+  const prefix = match[1] ?? "";
+  const slashIndex = match.index + (match[0].startsWith("/") ? 0 : 1);
+  return { prefix, slashIndex };
+}
+
+export function findSlashCommandTokens(line: string): SlashCommandToken[] {
+  const tokens: SlashCommandToken[] = [];
+  for (const match of line.matchAll(SLASH_COMMAND_TOKEN_PATTERN)) {
+    const name = match[1];
+    if (name === undefined || match.index === undefined) continue;
+    const start = match.index + (match[0].startsWith("/") ? 0 : 1);
+    tokens.push({ name, start, end: start + name.length + 1 });
+  }
+  return tokens;
+}
+
+function commandNameFromAutocompleteItem(item: AutocompleteItem): string {
+  return (item.value || item.label).replace(/^\//u, "").trim().split(/\s+/u)[0] ?? "";
+}
+
+export function createSlashCommandResolver(
+  pi: Pick<ExtensionAPI, "getCommands">,
+): SlashCommandResolver {
+  let fallbackCommands = new Map<string, string | undefined>();
+
+  const getCommandCatalog = (baseSuggestions: readonly AutocompleteItem[] = []): ReadonlyMap<string, CommandInfo> => {
+    const commands = new Map<string, CommandInfo>();
+    BUILTIN_COMMANDS.forEach((command) => commands.set(command.name, {
+      ...command,
+      category: "Built-in",
+      syntaxHint: COMMAND_SYNTAX_HINTS[command.name],
+    }));
+
+    for (const command of pi.getCommands()) {
+      const category: CommandInfo["category"] = command.source === "skill"
+        ? "Skill"
+        : command.source === "prompt"
+          ? "Prompt"
+          : "Extension";
+      commands.set(command.name, {
+        name: command.name,
+        description: command.description,
+        category,
+        syntaxHint: COMMAND_SYNTAX_HINTS[command.name],
+      });
+    }
+
+    const baseCommands = baseSuggestions.length > 0
+      ? new Map(baseSuggestions.map((item) => [commandNameFromAutocompleteItem(item), item.description] as const))
+      : fallbackCommands;
+    for (const [name, description] of baseCommands) {
+      if (name && !commands.has(name)) {
+        commands.set(name, { name, description, category: "Built-in" });
+      }
+    }
+    return commands;
+  };
+
+  return {
+    clearFallbackCommands() {
+      fallbackCommands = new Map<string, string | undefined>();
+    },
+    updateFallbackCommands(items) {
+      fallbackCommands = new Map(
+        items.map((item) => [commandNameFromAutocompleteItem(item), item.description] as const)
+          .filter(([name]) => Boolean(name)),
+      );
+    },
+    getCommandCatalog,
+    isValidCommand(name) {
+      return getCommandCatalog().has(name);
+    },
+  };
+}
+
 function scoreCommandMatch(name: string, prefix: string): number {
   if (!prefix) return 1;
   const normalizedName = name.toLocaleLowerCase();
@@ -80,47 +174,26 @@ function scoreCommandMatch(name: string, prefix: string): number {
   return 0;
 }
 
-export function registerSlashAutocomplete(pi: ExtensionAPI): void {
+export function registerSlashAutocomplete(
+  pi: ExtensionAPI,
+  resolver: SlashCommandResolver = createSlashCommandResolver(pi),
+): SlashCommandResolver {
   const usage = new Map<string, number>();
   pi.on("session_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
+    resolver.clearFallbackCommands();
     ctx.ui.addAutocompleteProvider((current) => ({
       triggerCharacters: ["/"],
       async getSuggestions(lines, cursorLine, cursorCol, options) {
         const line = lines[cursorLine] ?? "";
         const beforeCursor = line.slice(0, cursorCol);
-        const match = beforeCursor.match(/(?:^|[ \t])\/([^\s/]*)$/);
-        if (!match) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+        const prefixMatch = getSlashCommandPrefix(beforeCursor);
+        if (!prefixMatch) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 
-        const prefix = (match[1] ?? "").toLocaleLowerCase();
+        const prefix = prefixMatch.prefix.toLocaleLowerCase();
         const baseSuggestions = await current.getSuggestions(lines, cursorLine, cursorCol, options);
-        const commands = new Map<string, CommandInfo>();
-        BUILTIN_COMMANDS.forEach((command) => commands.set(command.name, {
-          ...command,
-          category: "Built-in",
-          syntaxHint: COMMAND_SYNTAX_HINTS[command.name],
-        }));
-
-        for (const command of pi.getCommands()) {
-          const category: CommandInfo["category"] = command.source === "skill"
-            ? "Skill"
-            : command.source === "prompt"
-              ? "Prompt"
-              : "Extension";
-          commands.set(command.name, {
-            name: command.name,
-            description: command.description,
-            category,
-            syntaxHint: COMMAND_SYNTAX_HINTS[command.name],
-          });
-        }
-
-        for (const item of baseSuggestions?.items ?? []) {
-          const name = (item.value || item.label).replace(/^\//, "").trim().split(/\s+/)[0] ?? "";
-          if (name && !commands.has(name)) {
-            commands.set(name, { name, description: item.description, category: "Built-in" });
-          }
-        }
+        resolver.updateFallbackCommands(baseSuggestions?.items ?? []);
+        const commands = resolver.getCommandCatalog(baseSuggestions?.items ?? []);
 
         const ranked = [...commands.values()]
           .map((command) => ({
@@ -151,9 +224,9 @@ export function registerSlashAutocomplete(pi: ExtensionAPI): void {
         const line = lines[cursorLine] ?? "";
         const beforeCursor = line.slice(0, cursorCol);
         const afterCursor = line.slice(cursorCol);
-        const match = beforeCursor.match(/(?:^|[ \t])\/([^\s/]*)$/);
-        if (!match || match.index === undefined) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
-        const slashIndex = match.index + (match[0].startsWith("/") ? 0 : 1);
+        const prefixMatch = getSlashCommandPrefix(beforeCursor);
+        if (!prefixMatch) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+        const slashIndex = prefixMatch.slashIndex;
         const newBefore = beforeCursor.slice(0, slashIndex) + item.value;
         const nextLines = [...lines];
         nextLines[cursorLine] = newBefore + afterCursor;
@@ -164,4 +237,5 @@ export function registerSlashAutocomplete(pi: ExtensionAPI): void {
       },
     }));
   });
+  return resolver;
 }

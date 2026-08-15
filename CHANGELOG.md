@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Highlighted exact, currently registered slash commands in the TUI editor with the theme's shared command-blue link role while preserving autocomplete boundaries and ANSI cursor styling.
+
 ## [2.0.8] - 2026-08-15
 
 ### Added

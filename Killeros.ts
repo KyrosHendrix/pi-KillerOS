@@ -1,6 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerRequestActivity } from "./killeros/activity.ts";
-import { registerAliases, registerSlashAutocomplete } from "./killeros/commands.ts";
+import {
+  createSlashCommandResolver,
+  registerAliases,
+  registerSlashAutocomplete,
+} from "./killeros/commands.ts";
 import { registerFooter } from "./killeros/footer.ts";
 import { registerGoal, registerGoalSettlement } from "./killeros/goals.ts";
 import { registerLifecycleHooks } from "./killeros/hooks.ts";
@@ -42,7 +46,8 @@ export interface KillerosOptions {
 export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}): void {
   const initRuntime = createInitRuntime();
   const goalRuntime = createGoalRuntime();
-  registerShellUi(pi);
+  const commandResolver = createSlashCommandResolver(pi);
+  registerShellUi(pi, commandResolver);
   registerGoal(pi, goalRuntime, initRuntime);
   registerPersonalInstructions(pi, initRuntime);
   const questionRunner: QuestionRunner = registerQuestionTool(pi);
@@ -52,7 +57,7 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
     options.decisionGatedWorkflows ?? [createDecisionGatedWorkflowAdapter()],
   );
   registerAliases(pi);
-  registerSlashAutocomplete(pi);
+  registerSlashAutocomplete(pi, commandResolver);
   registerFooter(pi, goalRuntime);
   registerVariants(pi);
   registerInitCommand(pi, initRuntime, goalRuntime);
