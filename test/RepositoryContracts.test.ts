@@ -7,19 +7,18 @@ import test from "node:test";
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const main = readFileSync(new URL("../Killeros.ts", import.meta.url), "utf8");
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-const product = readFileSync(new URL("../PRODUCT.md", import.meta.url), "utf8");
-const design = readFileSync(new URL("../DESIGN.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
-const context = readFileSync(new URL("../CONTEXT.md", import.meta.url), "utf8");
 const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 const oldCompactionPlan = readFileSync(new URL("../docs/implemented/context-compaction.md", import.meta.url), "utf8");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const privateRootFiles = new Set(["AGENTS.md", "CONTEXT.md", "PRODUCT.md", "DESIGN.md"]);
 
 function repositoryFiles(directory = repositoryRoot): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(directory)) {
     if (entry === ".git" || entry === "node_modules") continue;
+    if (directory === repositoryRoot && privateRootFiles.has(entry)) continue;
     const entryPath = path.join(directory, entry);
     if (statSync(entryPath).isDirectory()) files.push(...repositoryFiles(entryPath));
     else files.push(entryPath);
@@ -89,19 +88,10 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
   assert.match(readme, /manual tag recovery path|recover a missing GitHub release/iu);
 });
 
-test("product and design docs match current runtime contracts", () => {
+test("public documentation matches current runtime contracts", () => {
   assert.equal(packageJson.version, "2.0.9");
   assert.match(readme, /@v2\.0\.9/u);
   assert.match(readme, /12-frame/u);
-  assert.match(product, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
-  assert.match(product, /120 ms/u);
-  assert.match(product, /event-derived copy/u);
-  assert.match(product, /`Done`, `Stopped`, or `Failed`/u);
-  assert.match(design, /· ✢ ✱ ✶ ✻ ✽ ✽ ✻ ✶ ✱ ✢ ·/u);
-  assert.match(design, /120 ms/u);
-  assert.match(design, /`Mapping…` at request start/u);
-  assert.match(design, /### Settled Line/u);
-  assert.match(design, /no permanent rules or container border/iu);
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
   assert.match(readme, /\/goal <objective>/u);
   assert.match(readme, /\/goal pause\s+Stop the current goal turn and automatic continuation/u);
@@ -116,39 +106,15 @@ test("product and design docs match current runtime contracts", () => {
   assert.match(readme, /audible bell/iu);
   assert.match(readme, /Nerd Font/iu);
   assert.match(readme, /\/goal is active/iu);
-  assert.match(product, /settled request/iu);
-  assert.doesNotMatch(product, /work trail|transient borderless trail/iu);
-  assert.doesNotMatch(design, /### Work Trail|work trail/iu);
   assert.doesNotMatch(readme, /work trail|transient borderless trail/iu);
-  assert.match(product, /primary model, provider, reasoning, context, elapsed-time, and cost telemetry separate from secondary branch and workspace-path details/iu);
-  assert.match(design, /followed by two compact decks/iu);
-  assert.match(product, /completion sound/iu);
-  assert.match(design, /π - <cwd> 󰂚/u);
-  assert.match(design, /U\+F009A/u);
-  assert.match(design, /\/goal is active \(10s\)/u);
   assert.match(changelog, /completion sound/iu);
-  assert.match(product, /custom terminal UI/u);
-  assert.match(product, /typed prompt text uses the normal editor color/u);
-  assert.match(product, /custom editor factory from another extension unchanged/u);
-  assert.doesNotMatch(product, /context remaining, and loaded package capabilities/u);
-  assert.match(design, /dynamic|package version|v<package version>/iu);
-  assert.match(design, /typed prompt text in its normal role/u);
-  assert.match(design, /Do not replace an editor factory owned by another extension/u);
-  assert.doesNotMatch(design, /\(v1\.2\.0\)/u);
   assert.match(changelog, /Scoped atomic `\/init` reads and writes/u);
   assert.match(changelog, /save terminal state before immediately stopping active goal work/u);
   assert.match(changelog, /one durable blocker key on three consecutive goal turns/u);
   assert.match(readme, /`mode: "multiple"`/u);
   assert.match(readme, /Space.*toggle.*`\/`.*filter.*Enter.*submit/isu);
   assert.match(readme, /single-select remains the default/iu);
-  assert.match(product, /multi-select.*opt-in/iu);
-  assert.match(product, /dedicated `\/` filter editor/iu);
-  assert.match(design, /### Question Selector/u);
-  assert.match(design, /\[ \].*\[x\]/isu);
   assert.match(changelog, /optional multi-select.*question/iu);
-  assert.match(context, /\*\*Goal stop boundary\*\*/u);
-  assert.match(context, /first saves non-active Goal truth, then aborts/u);
-  assert.match(context, /\*\*Blocker audit streak\*\*/u);
 });
 
 test("request activity observes continuation scheduling before settlement cleanup", () => {

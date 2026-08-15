@@ -10,3 +10,9 @@ docs/
 .env
 .env.*
 !.env.example
+
+# Personal local guidance and design context
+/AGENTS.md
+/CONTEXT.md
+/PRODUCT.md
+/DESIGN.md
