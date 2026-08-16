@@ -57,6 +57,7 @@ export interface GoalRuntime {
   continuationHeld: boolean;
   goalTurnInFlight: boolean;
   agentEndObserved: boolean;
+  automaticCompaction?: "pending" | "completed";
   persistenceRetryNeeded: boolean;
   lastStopReason?: string;
   lastError?: string;
@@ -73,6 +74,7 @@ export function createGoalRuntime(): GoalRuntime {
     continuationHeld: false,
     goalTurnInFlight: false,
     agentEndObserved: false,
+    automaticCompaction: undefined,
     persistenceRetryNeeded: false,
   };
 }

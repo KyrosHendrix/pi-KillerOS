@@ -19,7 +19,10 @@ export interface WorkflowPolicy {
 
 export interface WorkflowAdapter {
   id: string;
-  activation: string;
+  /** The existing single explicit skill activation API. */
+  activation?: string;
+  /** Additional explicit skill activations that share this adapter policy. */
+  activations?: readonly string[];
   question: QuestionParamsValue;
   policies: readonly WorkflowPolicy[];
   selectPolicy: (details: QuestionDetails) => WorkflowPolicy | undefined;
@@ -48,11 +51,14 @@ type InternalState =
   | {
     kind: "pending_decision";
     adapter: WorkflowAdapter;
+    activation: string;
     abortController: AbortController;
     token: symbol;
   }
-  | { kind: "active"; adapter: WorkflowAdapter; policy: WorkflowPolicy; token: symbol }
-  | { kind: "terminal_cleanup"; adapter: WorkflowAdapter; reason: WorkflowTerminalReason; token: symbol };
+  | { kind: "active"; adapter: WorkflowAdapter; activation: string; policy: WorkflowPolicy; token: symbol }
+  | { kind: "terminal_cleanup"; adapter: WorkflowAdapter; activation: string; reason: WorkflowTerminalReason; token: symbol };
+
+const ACTIVATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 
 function explicitSkillActivation(text: string): string | undefined {
   if (!text.startsWith("/skill:")) return;
@@ -76,21 +82,21 @@ function publicState(state: InternalState): WorkflowGateState {
     return {
       kind: state.kind,
       adapterId: state.adapter.id,
-      activation: state.adapter.activation,
+      activation: state.activation,
     };
   }
   if (state.kind === "terminal_cleanup") {
     return {
       kind: state.kind,
       adapterId: state.adapter.id,
-      activation: state.adapter.activation,
+      activation: state.activation,
       reason: state.reason,
     };
   }
   return {
     kind: state.kind,
     adapterId: state.adapter.id,
-    activation: state.adapter.activation,
+    activation: state.activation,
     policyId: state.policy.id,
   };
 }
@@ -141,14 +147,26 @@ export function registerWorkflowGate(
   const adaptersByActivation = new Map<string, WorkflowAdapter>();
   for (const adapter of adapters) {
     if (!adapter.id.trim()) throw new Error("Decision-gated workflow adapters require an id");
-    if (!/^[-A-Za-z0-9._]+$/u.test(adapter.activation)) {
-      throw new Error(`Invalid decision-gated workflow activation: ${adapter.activation}`);
+    if (adapter.activations !== undefined && !Array.isArray(adapter.activations)) {
+      throw new Error(`Workflow adapter ${adapter.id} activations must be an array`);
     }
-    if (adaptersByActivation.has(adapter.activation)) {
-      throw new Error(`Duplicate decision-gated workflow activation: ${adapter.activation}`);
+    const activations = [
+      ...(adapter.activation === undefined ? [] : [adapter.activation]),
+      ...(adapter.activations ?? []),
+    ];
+    if (activations.length === 0) {
+      throw new Error(`Workflow adapter ${adapter.id} must register at least one explicit skill activation`);
+    }
+    for (const activation of activations) {
+      if (typeof activation !== "string" || !ACTIVATION_PATTERN.test(activation)) {
+        throw new Error(`Invalid decision-gated workflow activation: ${activation}`);
+      }
+      if (adaptersByActivation.has(activation)) {
+        throw new Error(`Duplicate decision-gated workflow activation: ${activation}`);
+      }
+      adaptersByActivation.set(activation, adapter);
     }
     if (adapter.policies.length === 0) throw new Error(`Workflow adapter ${adapter.id} has no policies`);
-    adaptersByActivation.set(adapter.activation, adapter);
   }
 
   let state: InternalState = { kind: "inactive" };
@@ -160,6 +178,7 @@ export function registerWorkflowGate(
     state = {
       kind: "terminal_cleanup",
       adapter: current.adapter,
+      activation: current.activation,
       reason,
       token: current.token,
     };
@@ -204,13 +223,12 @@ export function registerWorkflowGate(
   };
 
   pi.on("input", async (event, ctx) => {
-    const activation = explicitSkillActivation(event.text);
-    if (!activation) return;
-
-    if (state.kind === "pending_decision" || state.kind === "terminal_cleanup") {
+    if ((state.kind === "pending_decision" || state.kind === "terminal_cleanup") && event.text.startsWith("/skill:")) {
       notify(ctx, "A decision-gated workflow is waiting for its structured question; skill routing is blocked", "warning");
       return { action: "handled" };
     }
+    const activation = explicitSkillActivation(event.text);
+    if (!activation) return;
 
     const adapter = adaptersByActivation.get(activation);
     if (!adapter) return;
@@ -230,7 +248,7 @@ export function registerWorkflowGate(
 
     const abortController = new AbortController();
     const token = Symbol();
-    state = { kind: "pending_decision", adapter, abortController, token };
+    state = { kind: "pending_decision", adapter, activation, abortController, token };
     let details: QuestionDetails;
     try {
       details = await questionRunner.ask(adapter.question, abortController.signal, ctx);
@@ -275,7 +293,7 @@ export function registerWorkflowGate(
     if (state.kind !== "pending_decision" || state.adapter !== adapter || state.token !== token) {
       return { action: "handled" };
     }
-    state = { kind: "active", adapter, policy, token };
+    state = { kind: "active", adapter, activation, policy, token };
     return { action: "continue" };
   });
 

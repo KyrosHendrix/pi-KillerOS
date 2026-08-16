@@ -31,7 +31,7 @@ pi install git:github.com/KyrosHendrix/pi-KillerOS
 Pin an install to a release:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.9
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.10
 ```
 
 Add `-l` to either command for a project-only install. Restart Pi after installing.
@@ -44,7 +44,7 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - Frameless multiline editor with one focus-aware `❯`, a shuffled session-stable empty-state suggestion, overflow-only scroll indicators, Shift+Enter support, and slash-command autocomplete; KillerOS preserves an editor factory configured by another extension
 - One compact TUI transcript line reporting truthful `Done`, `Stopped`, or `Failed` settlement with elapsed time while preserving older `✻ Worked for …` entries
 - Compact two-deck footer with session state above workspace state; model, context, and active goals stay prioritized as reasoning, time, cost, branch, and path reduce by available width
-- Pi-owned context compaction with active goals continuing from Pi's settled boundary after manual, threshold, and overflow compaction
+- Proactive turn-boundary context compaction in TUI and RPC modes, with ordinary prompts and active goals continuing safely after a successful summary
 - Optional completion sounds after successful or failed settled requests, excluding manual aborts
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` with an interactive status/action panel, durable objectives, immediate pause and clear cancellation, automatic continuation, explicit completion, and durable blocker audits
@@ -81,7 +81,7 @@ The generated file uses the four behavioral sections adapted from `writing-great
 
 ### Decision-gated workflows
 
-Explicit `/skill:decision-gated-workflow` activation opens the shared question UI before Pi expands the skill. `Normal` allows only interview and read-only tools; `With docs` additionally permits agreed glossary, context-map, and ADR paths. The selected policy remains active until the workflow is explicitly finished or cancelled, and lifecycle changes clear it safely. Extensions can supply additional adapters through `KillerosOptions.decisionGatedWorkflows`.
+Explicit `/skill:<name>` activation opens the shared question UI before Pi expands a registered skill. `WorkflowAdapter.activation` keeps the existing exact-match API, while `WorkflowAdapter.activations` lets one policy register multiple explicit skill names without duplicating the gate. `Normal` allows only interview and read-only tools; `With docs` additionally permits agreed glossary, context-map, and ADR paths. Unregistered names pass through unchanged, duplicate or ambiguous registrations fail at startup, and the selected policy remains active until the workflow is explicitly finished or cancelled. Extensions can supply additional adapters through `KillerosOptions.decisionGatedWorkflows`.
 
 ### Interactive questions
 
@@ -97,9 +97,22 @@ KillerOS activates its packaged `killeros` theme when a TUI session starts. Tool
 
 The completion sound is a global user preference stored in Pi's agent directory and is off by default. Run `/notification` in TUI mode to enable or disable it; enabling does not play a preview. Enabled TUI tabs append `󰂚`, which requires a Nerd Font in the terminal tab UI. An unsupported font may show a box without affecting sound. KillerOS uses the terminal's audible bell and cannot produce sound when the terminal disables it.
 
+Automatic compaction is enabled by default when Pi's effective `compaction.enabled` setting is true. After each completed assistant turn, including its tool execution, KillerOS reads the active model's current context usage and triggers the public Pi compaction API when `remainingTokens <= max(contextWindow * percentRemaining / 100, reserveTokens)`. The default `percentRemaining` is `15`; `reserveTokens` and `keepRecentTokens` remain Pi-owned. KillerOS reads those effective settings with Pi's public `SettingsManager` using `getAgentDir()` and the current project trust state. The KillerOS-only preference lives in the same global `killeros.json` file:
+
+```json
+{
+  "autoCompaction": {
+    "enabled": true,
+    "percentRemaining": 15
+  }
+}
+```
+
+Missing context readings skip the check. Successful ordinary-prompt compaction queues one hidden continuation; active `/goal` runs use the existing session-compaction and goal-continuation path. A failed compaction does not automatically retry. Manual `/compact` behavior is unchanged.
+
 KillerOS displays session costs in USD. The footer uses Pi's human-readable model name when available, keeps the provider visually secondary, and renders context as `percent left (tokens)` without a progress bar. An active goal replaces the right-side path with warning-yellow `/goal is active (...)` and keeps exact seconds in minute and hour formats. Paused and blocked goals retain their existing placement; completed goals remain in transcript history and `/goal` status rather than the footer. At narrow widths, context pressure and actionable goal state take priority.
 
-Pi decides when compaction runs and Pi writes the summary, applies manual focus instructions, tracks files, retries summarization, and handles overflow recovery. KillerOS does not add a second threshold or replace Pi's summary. Active `/goal` work continues from Pi's settled boundary, after Pi finishes retries, compaction, and queued work.
+Pi writes the summary, applies manual focus instructions, tracks files, retries summarization, and handles overflow recovery. KillerOS owns only the proactive turn-boundary trigger and does not replace Pi's compaction implementation. Active `/goal` work continues from the settled compaction boundary, after Pi finishes retries, compaction, and queued work.
 
 Manual `/compact` aborts the current goal turn before summarization, so KillerOS records an honest temporary pause for that exact goal revision. After Pi saves the manual summary, KillerOS resumes that revision automatically. A failed or cancelled manual compaction stays paused; run `/goal pause` during the pause to cancel automatic recovery.
 
@@ -111,9 +124,9 @@ Lifecycle hooks are loaded from `.pi/killeros-hooks.json` at session start. Supp
 
 | Mode | Behavior |
 |---|---|
-| TUI | All features are available, including the completion sound and tab-title indicator |
-| RPC | Goal set/view/pause/resume/clear work; TUI components, `/goal edit`, `/init`, completion sounds, and the title indicator are disabled |
-| Print/JSON | Interactive questions, `/goal`, and `/init` fail explicitly; completion sounds and the title indicator are disabled |
+| TUI | All features are available, including proactive compaction, the completion sound, and the tab-title indicator |
+| RPC | Proactive compaction and goal set/view/pause/resume/clear work; TUI components, `/goal edit`, `/init`, completion sounds, and the title indicator are disabled |
+| Print/JSON | Interactive questions, `/goal`, `/init`, and proactive compaction are disabled; completion sounds and the title indicator are disabled |
 
 ## Validation
 

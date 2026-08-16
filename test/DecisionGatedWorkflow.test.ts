@@ -156,6 +156,74 @@ test("explicit activation owns the first question before the model turn", async 
   });
 });
 
+test("one adapter gates multiple disposable fixture skills and preserves arguments", async () => {
+  let asks = 0;
+  const policy = { id: "fixture-policy", allowedTools: ["read"] } as const;
+  const adapter: WorkflowAdapter = {
+    id: "fixture-workflow",
+    activations: ["decision-gated-workflow", "decision-gated-route-target"],
+    question: { question: "Choose", options: [{ label: "Use" }] },
+    policies: [policy],
+    selectPolicy: () => policy,
+  };
+  const { controller, emit } = createHarness({
+    ask: async () => {
+      asks += 1;
+      return selected("Use");
+    },
+  }, [adapter]);
+  const { ctx } = createContext();
+  const first = { type: "input", text: "/skill:decision-gated-workflow --preserve this" };
+  const second = { type: "input", text: "/skill:decision-gated-route-target --preserve that" };
+
+  assert.deepEqual(await emit("input", first, ctx), { action: "continue" });
+  assert.equal(asks, 1);
+  assert.deepEqual(first, { type: "input", text: "/skill:decision-gated-workflow --preserve this" });
+  assert.deepEqual(controller.getState(), {
+    kind: "active",
+    adapterId: "fixture-workflow",
+    activation: "decision-gated-workflow",
+    policyId: "fixture-policy",
+  });
+  assert.equal(await controller.cancel(), true);
+
+  assert.deepEqual(await emit("input", second, ctx), { action: "continue" });
+  assert.equal(asks, 2);
+  assert.deepEqual(controller.getState(), {
+    kind: "active",
+    adapterId: "fixture-workflow",
+    activation: "decision-gated-route-target",
+    policyId: "fixture-policy",
+  });
+});
+
+test("ambiguous and empty activation registrations fail clearly", () => {
+  const policy = { id: "fixture-policy", allowedTools: ["read"] } as const;
+  const adapter = (overrides: Partial<WorkflowAdapter>): WorkflowAdapter => ({
+    id: "fixture-workflow",
+    question: { question: "Choose", options: [{ label: "Use" }] },
+    policies: [policy],
+    selectPolicy: () => policy,
+    ...overrides,
+  });
+
+  assert.throws(
+    () => createHarness({ ask: async () => selected("Use") }, [
+      adapter({ activations: ["fixture-one", "fixture-two"] }),
+      adapter({ id: "other-workflow", activation: "fixture-two" }),
+    ]),
+    /Duplicate decision-gated workflow activation: fixture-two/u,
+  );
+  assert.throws(
+    () => createHarness({ ask: async () => selected("Use") }, [adapter({})]),
+    /must register at least one explicit skill activation/u,
+  );
+  assert.throws(
+    () => createHarness({ ask: async () => selected("Use") }, [adapter({ activation: "-fixture" })]),
+    /Invalid decision-gated workflow activation: -fixture/u,
+  );
+});
+
 test("unknown skills pass through and pending state denies every tool", async () => {
   let answer: (details: QuestionDetails) => void = () => {};
   const runner: QuestionRunner = {
@@ -172,6 +240,8 @@ test("unknown skills pass through and pending state denies every tool", async ()
   await Promise.resolve();
   const blockedRoute = await emit("input", { type: "input", text: "/skill:unregistered" }, ctx) as { action: string };
   assert.equal(blockedRoute.action, "handled");
+  const malformedBlockedRoute = await emit("input", { type: "input", text: "/skill:invalid/name" }, ctx) as { action: string };
+  assert.equal(malformedBlockedRoute.action, "handled");
   for (const toolName of ["read", "edit", "write", "bash", "custom_mutator", "question"]) {
     const result = await emit("tool_call", toolCall(toolName), ctx) as { block: boolean };
     assert.equal(result.block, true, toolName);

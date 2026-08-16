@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerRequestActivity } from "./killeros/activity.ts";
+import { registerAutoCompaction } from "./killeros/auto-compaction.ts";
 import {
   createSlashCommandResolver,
   registerAliases,
@@ -62,7 +63,8 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerVariants(pi);
   registerInitCommand(pi, initRuntime, goalRuntime);
   registerLifecycleHooks(pi);
-  registerGoalSettlement(pi, goalRuntime, initRuntime);
+  const goalCompaction = registerGoalSettlement(pi, goalRuntime, initRuntime);
+  registerAutoCompaction(pi, { goal: goalCompaction });
   registerInitSettlement(pi, initRuntime);
   registerRequestActivity(pi);
   registerCompletionNotifications(pi, options.completionNotifications);

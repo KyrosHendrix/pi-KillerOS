@@ -184,13 +184,13 @@ function compactEvent(reason, willRetry = false) {
   };
 }
 
-test("KillerOS leaves compaction triggering and summary generation to Pi", async () => {
+test("auto-compaction stays idle while context remains above its threshold", async () => {
   const harness = createHarness();
   const { compactCalls, ctx, notifications } = createContext({
     usage: { tokens: 100_000, contextWindow: 128_000 },
   });
 
-  assert.equal(harness.handlers.has("session_before_compact"), false);
+  assert.equal(harness.handlers.has("turn_end"), true);
   await emitSequentially(harness.handlers.get("turn_end"), {
     type: "turn_end", turnIndex: 0, message: {}, toolResults: [],
   }, ctx);

@@ -50,11 +50,15 @@ test("peer ranges enforce the documented lower bounds", () => {
   });
 });
 
-test("compaction documentation assigns ownership to Pi", () => {
-  assert.match(readme, /Pi decides when compaction runs/u);
+test("compaction documentation assigns triggering to KillerOS and summary ownership to Pi", () => {
+  assert.match(readme, /Automatic compaction is enabled by default/iu);
+  assert.match(readme, /SettingsManager.*getAgentDir/isu);
+  assert.match(readme, /remainingTokens <= max\(contextWindow.*reserveTokens/su);
+  assert.match(readme, /one hidden continuation/iu);
+  assert.match(readme, /active `\/goal` runs.*existing session-compaction.*goal-continuation/isu);
   assert.match(readme, /Pi writes the summary/u);
   assert.match(readme, /manual `\/compact`.*pause.*resumes/isu);
-  assert.doesNotMatch(readme, /40% remaining|deterministic fallback|KillerOS checks context after each agent turn/iu);
+  assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
   assert.match(oldCompactionPlan, /STATUS: SUPERSEDED/u);
   assert.match(oldCompactionPlan, /docs\/adr\/0001-let-pi-own-compaction\.md/u);
 });
@@ -89,8 +93,8 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
 });
 
 test("public documentation matches current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.9");
-  assert.match(readme, /@v2\.0\.9/u);
+  assert.equal(packageJson.version, "2.0.10");
+  assert.match(readme, /@v2\.0\.10/u);
   assert.match(readme, /12-frame/u);
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
   assert.match(readme, /\/goal <objective>/u);

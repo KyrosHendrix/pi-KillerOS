@@ -4,6 +4,13 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.10] - 2026-08-16
+
+### Added
+
+- Added proactive turn-boundary compaction with Pi-owned settings and safe continuation for ordinary prompts and active goals.
+- Added reusable multi-activation decision-gated workflow registrations while preserving exact-match behavior.
+
 ## [2.0.9] - 2026-08-15
 
 ### Added

@@ -264,7 +264,10 @@ function transitionGoal(
     resumeAfterManualCompaction: options.resumeAfterManualCompaction,
   };
   persistGoalState(pi, runtime, event, next);
-  if (status !== "active") runtime.continuationScheduled = false;
+  if (status !== "active") {
+    runtime.continuationScheduled = false;
+    runtime.automaticCompaction = undefined;
+  }
   return next;
 }
 
@@ -272,6 +275,7 @@ function clearGoalExecutionFlags(runtime: GoalRuntime): void {
   runtime.continuationScheduled = false;
   runtime.goalTurnInFlight = false;
   runtime.agentEndObserved = false;
+  runtime.automaticCompaction = undefined;
   runtime.lastStopReason = undefined;
   runtime.lastError = undefined;
 }
@@ -333,6 +337,7 @@ export function pauseGoalAfterFailure(
     syncGoalUpdateTool(pi, runtime);
     runtime.persistenceRetryNeeded = true;
     runtime.continuationScheduled = false;
+    runtime.automaticCompaction = undefined;
     runtime.requestRender?.();
   }
   if (notify) ctx.ui.notify(`Goal paused: ${reason}\n${recoveryInstruction}`, "error");
@@ -359,6 +364,7 @@ function pauseGoalForPossibleManualCompaction(
     syncGoalUpdateTool(pi, runtime);
     runtime.persistenceRetryNeeded = true;
     runtime.continuationScheduled = false;
+    runtime.automaticCompaction = undefined;
     runtime.requestRender?.();
   }
   ctx.ui.notify(
@@ -384,6 +390,7 @@ function recoverGoalAfterManualCompaction(
     return false;
   }
   runtime.continuationScheduled = false;
+  runtime.automaticCompaction = undefined;
   ctx.ui.notify("Manual compaction complete. Goal resumed.", "info");
   setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
   return true;
@@ -448,6 +455,42 @@ function scheduleGoalContinuation(
     pauseGoalAfterFailure(pi, runtime, ctx, `continuation could not start: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   }
+}
+
+function completeAutomaticCompaction(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  initState: InitRuntime,
+  ctx: ExtensionContext,
+): void {
+  if (runtime.automaticCompaction === undefined) return;
+  if (runtime.state?.status !== "active" || initState.active) {
+    runtime.automaticCompaction = undefined;
+    return;
+  }
+  runtime.automaticCompaction = "completed";
+  if (runtime.goalTurnInFlight || !ctx.isIdle()) return;
+  runtime.automaticCompaction = undefined;
+  setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+}
+
+function failAutomaticCompaction(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  ctx: ExtensionContext,
+  error: unknown,
+): void {
+  if (runtime.automaticCompaction === undefined) return;
+  runtime.automaticCompaction = undefined;
+  if (runtime.state?.status !== "active") return;
+  const reason = error instanceof Error ? error.message : String(error);
+  pauseGoalAfterFailure(
+    pi,
+    runtime,
+    ctx,
+    `automatic compaction failed: ${reason}`,
+    "Automatic continuation is stopped. Run /goal resume after resolving the compaction problem.",
+  );
 }
 
 function goalInstructions(state: GoalState, heading: string): string {
@@ -598,6 +641,7 @@ export function registerGoal(
     runtime.continuationHeld = false;
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
+    runtime.automaticCompaction = undefined;
     runtime.persistenceRetryNeeded = false;
     runtime.lastStopReason = undefined;
     runtime.lastError = undefined;
@@ -630,6 +674,7 @@ export function registerGoal(
     runtime.continuationHeld = false;
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
+    runtime.automaticCompaction = undefined;
     runtime.persistenceRetryNeeded = false;
     runtime.lastStopReason = undefined;
     runtime.lastError = undefined;
@@ -983,7 +1028,12 @@ export function registerGoalSettlement(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   initState: InitRuntime,
-): void {
+): {
+  isActive(ctx: ExtensionContext): boolean;
+  onRequested(): void;
+  onCompleted(ctx: ExtensionContext): void;
+  onFailed(ctx: ExtensionContext, error: unknown): void;
+} {
   pi.on("agent_settled", (_event, ctx) => {
     const wasGoalTurn = runtime.goalTurnInFlight;
     const continuationWasScheduled = runtime.continuationScheduled;
@@ -1000,6 +1050,7 @@ export function registerGoalSettlement(
       return;
     }
     if (!agentEndObserved) {
+      if (runtime.automaticCompaction !== undefined) return;
       pauseGoalAfterFailure(pi, runtime, ctx, "the goal turn ended without an agent result");
       return;
     }
@@ -1007,6 +1058,12 @@ export function registerGoalSettlement(
       const reason = runtime.lastError || "the agent turn was aborted";
       runtime.lastStopReason = undefined;
       runtime.lastError = undefined;
+      if (runtime.automaticCompaction !== undefined) {
+        if (runtime.automaticCompaction === "completed") {
+          completeAutomaticCompaction(pi, runtime, initState, ctx);
+        }
+        return;
+      }
       pauseGoalForPossibleManualCompaction(pi, runtime, ctx, reason);
       return;
     }
@@ -1023,7 +1080,23 @@ export function registerGoalSettlement(
   });
 
   pi.on("session_compact", (event, ctx) => {
+    if (runtime.automaticCompaction !== undefined) {
+      completeAutomaticCompaction(pi, runtime, initState, ctx);
+      return;
+    }
     if (event.reason !== "manual") return;
     recoverGoalAfterManualCompaction(pi, runtime, initState, ctx);
   });
+
+  return {
+    isActive: (ctx: ExtensionContext): boolean => isGoalModeSupported(ctx)
+      && isSavedSession(ctx)
+      && runtime.state?.status === "active"
+      && !initState.active,
+    onRequested: (): void => {
+      if (runtime.state?.status === "active") runtime.automaticCompaction = "pending";
+    },
+    onCompleted: (ctx: ExtensionContext): void => completeAutomaticCompaction(pi, runtime, initState, ctx),
+    onFailed: (ctx: ExtensionContext, error: unknown): void => failAutomaticCompaction(pi, runtime, ctx, error),
+  };
 }

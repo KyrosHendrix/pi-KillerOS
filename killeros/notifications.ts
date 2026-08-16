@@ -1,12 +1,10 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename } from "node:path";
 import type { StopReason } from "@earendil-works/pi-ai";
 import {
-  getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { createKillerosSettingsStore } from "./settings.ts";
 
 export interface NotificationPreferenceStore {
   load(): boolean;
@@ -20,42 +18,14 @@ export interface CompletionNotificationDependencies {
 
 export const COMPLETION_BELL_GLYPH = "󰂚";
 
-const defaultSettingsPath = (): string => join(getAgentDir(), "killeros.json");
-
-type StoredSettings = Record<string, unknown>;
-
-function readStoredSettings(settingsPath: string): StoredSettings {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("KillerOS settings must contain a JSON object");
-    }
-    return parsed as StoredSettings;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw error;
-  }
-}
-
 export function createNotificationPreferenceStore(
-  settingsPath = defaultSettingsPath(),
+  settingsPath?: string,
 ): NotificationPreferenceStore {
+  const settings = createKillerosSettingsStore(settingsPath);
   return {
-    load: () => readStoredSettings(settingsPath).completionSound === true,
+    load: () => settings.load().completionSound === true,
     save: (enabled) => {
-      const current = readStoredSettings(settingsPath);
-      mkdirSync(dirname(settingsPath), { recursive: true });
-      const temporaryPath = `${settingsPath}.${process.pid}.${randomUUID()}.tmp`;
-      try {
-        writeFileSync(
-          temporaryPath,
-          `${JSON.stringify({ ...current, completionSound: enabled }, null, 2)}\n`,
-          { encoding: "utf8", mode: 0o600 },
-        );
-        renameSync(temporaryPath, settingsPath);
-      } finally {
-        rmSync(temporaryPath, { force: true });
-      }
+      settings.update({ completionSound: enabled });
     },
   };
 }
