@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
 import type {
   ExtensionAPI,
   ExtensionContext,
   ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
+import { parse } from "yaml";
 import type { QuestionDetails, QuestionParamsValue, QuestionRunner } from "./question.ts";
 
 export type WorkflowToolAuthorization = true | false | string;
@@ -15,6 +17,12 @@ export interface WorkflowPolicy {
     input: Readonly<Record<string, unknown>>,
     ctx: ExtensionContext,
   ) => WorkflowToolAuthorization;
+}
+
+export interface DeclarativeWorkflowProfile {
+  id: string;
+  version: number;
+  adapter: WorkflowAdapter;
 }
 
 export interface WorkflowAdapter {
@@ -59,6 +67,79 @@ type InternalState =
   | { kind: "terminal_cleanup"; adapter: WorkflowAdapter; activation: string; reason: WorkflowTerminalReason; token: symbol };
 
 const ACTIVATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const DECLARATIVE_WORKFLOW_KEY = "killeros.workflow";
+const DECLARATIVE_WORKFLOW_PATTERN = /^([a-z0-9][a-z0-9-]*)@([1-9][0-9]*)$/u;
+
+type DeclarativeResolution =
+  | { kind: "undeclared" }
+  | { kind: "resolved"; adapter: WorkflowAdapter }
+  | { kind: "invalid"; message: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function frontmatter(content: string): Record<string, unknown> {
+  const normalized = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  if (!normalized.startsWith("---")) return {};
+  const endIndex = normalized.indexOf("\n---", 3);
+  if (endIndex === -1) return {};
+  const value: unknown = parse(normalized.slice(4, endIndex));
+  if (!isRecord(value)) throw new Error("skill frontmatter must be a mapping");
+  return value;
+}
+
+function declarativeProfilesByReference(
+  profiles: readonly DeclarativeWorkflowProfile[],
+): Map<string, WorkflowAdapter> {
+  const result = new Map<string, WorkflowAdapter>();
+  for (const profile of profiles) {
+    if (!/^[a-z0-9][a-z0-9-]*$/u.test(profile.id) || !Number.isSafeInteger(profile.version) || profile.version < 1) {
+      throw new Error(`Invalid declarative workflow profile: ${profile.id}@${profile.version}`);
+    }
+    const reference = `${profile.id}@${profile.version}`;
+    if (result.has(reference)) throw new Error(`Duplicate declarative workflow profile: ${reference}`);
+    result.set(reference, profile.adapter);
+  }
+  return result;
+}
+
+function resolveDeclarativeWorkflow(
+  pi: Pick<ExtensionAPI, "getCommands">,
+  activation: string,
+  profiles: ReadonlyMap<string, WorkflowAdapter>,
+): DeclarativeResolution {
+  const command = pi.getCommands().find((candidate) => (
+    candidate.source === "skill" && candidate.name === `skill:${activation}`
+  ));
+  if (!command) return { kind: "undeclared" };
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = frontmatter(readFileSync(command.sourceInfo.path, "utf8"));
+  } catch (error) {
+    return {
+      kind: "invalid",
+      message: `could not read declared skill metadata: ${errorMessage(error)}`,
+    };
+  }
+  if (!isRecord(parsed.metadata) || !Object.hasOwn(parsed.metadata, DECLARATIVE_WORKFLOW_KEY)) {
+    return { kind: "undeclared" };
+  }
+
+  const declaration = parsed.metadata[DECLARATIVE_WORKFLOW_KEY];
+  if (typeof declaration !== "string" || !DECLARATIVE_WORKFLOW_PATTERN.test(declaration)) {
+    return {
+      kind: "invalid",
+      message: `${DECLARATIVE_WORKFLOW_KEY} must be a versioned profile such as question-first@1`,
+    };
+  }
+  const adapter = profiles.get(declaration);
+  if (!adapter) {
+    return { kind: "invalid", message: `unknown or unsupported profile ${declaration}` };
+  }
+  return { kind: "resolved", adapter };
+}
 
 function explicitSkillActivation(text: string): string | undefined {
   if (!text.startsWith("/skill:")) return;
@@ -143,8 +224,10 @@ export function registerWorkflowGate(
   pi: ExtensionAPI,
   questionRunner: QuestionRunner,
   adapters: readonly WorkflowAdapter[],
+  declarativeProfiles: readonly DeclarativeWorkflowProfile[] = [],
 ): WorkflowGateController {
   const adaptersByActivation = new Map<string, WorkflowAdapter>();
+  const profilesByReference = declarativeProfilesByReference(declarativeProfiles);
   for (const adapter of adapters) {
     if (!adapter.id.trim()) throw new Error("Decision-gated workflow adapters require an id");
     if (adapter.activations !== undefined && !Array.isArray(adapter.activations)) {
@@ -230,7 +313,17 @@ export function registerWorkflowGate(
     const activation = explicitSkillActivation(event.text);
     if (!activation) return;
 
-    const adapter = adaptersByActivation.get(activation);
+    const registeredAdapter = adaptersByActivation.get(activation);
+    const declaration = resolveDeclarativeWorkflow(pi, activation, profilesByReference);
+    if (declaration.kind === "invalid") {
+      notify(ctx, `Invalid KillerOS workflow declaration for /skill:${activation}: ${declaration.message}`);
+      return { action: "handled" };
+    }
+    if (registeredAdapter && declaration.kind === "resolved") {
+      notify(ctx, `/skill:${activation} has both declarative metadata and a programmatic adapter`);
+      return { action: "handled" };
+    }
+    const adapter = registeredAdapter ?? (declaration.kind === "resolved" ? declaration.adapter : undefined);
     if (!adapter) return;
 
     if (state.kind === "active") {

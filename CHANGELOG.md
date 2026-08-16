@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Let independently installed skills opt into deterministic question-first workflow gating through versioned `killeros.workflow` metadata, with pre-turn resolution and fail-closed validation.
+
 ## [2.0.10] - 2026-08-16
 
 ### Added

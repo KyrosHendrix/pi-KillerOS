@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getKeybindings } from "@earendil-works/pi-tui";
 import { createDecisionGatedWorkflowAdapter } from "../killeros/decision-gated-workflow.ts";
@@ -32,6 +35,7 @@ function createContext(mode: "tui" | "print" = "tui"): TestContextData {
 function createHarness(
   runner: QuestionRunner,
   adapters: readonly WorkflowAdapter[],
+  skills: Readonly<Record<string, string>> = {},
 ): {
   controller: ReturnType<typeof registerWorkflowGate>;
   emit: (eventName: string, event: unknown, ctx: ExtensionContext) => Promise<unknown>;
@@ -43,8 +47,17 @@ function createHarness(
       current.push(handler);
       handlers.set(eventName, current);
     },
+    getCommands: () => Object.entries(skills).map(([name, skillPath]) => ({
+      name: `skill:${name}`,
+      source: "skill" as const,
+      sourceInfo: { path: skillPath },
+    })),
   } as unknown as ExtensionAPI;
-  const controller = registerWorkflowGate(api, runner, adapters);
+  const controller = registerWorkflowGate(api, runner, adapters, [{
+    id: "question-first",
+    version: 1,
+    adapter: createDecisionGatedWorkflowAdapter(),
+  }]);
   return {
     controller,
     async emit(eventName, event, ctx): Promise<unknown> {
@@ -195,6 +208,88 @@ test("one adapter gates multiple disposable fixture skills and preserves argumen
     activation: "decision-gated-route-target",
     policyId: "fixture-policy",
   });
+});
+
+test("an arbitrary discovered skill opts into question-first gating through metadata", async () => {
+  const fixturePath = fileURLToPath(new URL("./fixtures/declarative-question-first/SKILL.md", import.meta.url));
+  const undeclaredPath = fileURLToPath(new URL("./fixtures/decision-gated-route-target/SKILL.md", import.meta.url));
+  let asks = 0;
+  let answer: (details: QuestionDetails) => void = () => {};
+  const { controller, emit } = createHarness({
+    ask: async () => {
+      asks += 1;
+      return new Promise<QuestionDetails>((resolve) => { answer = resolve; });
+    },
+  }, [], {
+    "declarative-question-first": fixturePath,
+    "decision-gated-route-target": undeclaredPath,
+  });
+  const { ctx } = createContext();
+  const input = { type: "input", text: "/skill:declarative-question-first investigate now" };
+
+  assert.equal(await emit("input", { type: "input", text: "/skill:decision-gated-route-target" }, ctx), undefined);
+  const inputPromise = emit("input", input, ctx);
+  await Promise.resolve();
+  assert.equal(asks, 1);
+  assert.equal((await emit("tool_call", toolCall("read"), ctx) as { block: boolean }).block, true);
+  assert.deepEqual(controller.getState(), {
+    kind: "pending_decision",
+    adapterId: "decision-gated-workflow",
+    activation: "declarative-question-first",
+  });
+
+  answer(selected("Normal"));
+  assert.deepEqual(await inputPromise, { action: "continue" });
+  assert.deepEqual(input, { type: "input", text: "/skill:declarative-question-first investigate now" });
+  assert.deepEqual(controller.getState(), {
+    kind: "active",
+    adapterId: "decision-gated-workflow",
+    activation: "declarative-question-first",
+    policyId: "normal",
+  });
+  assert.equal((await emit("tool_call", toolCall("write"), ctx) as { block: boolean }).block, true);
+});
+
+test("invalid declarations and programmatic conflicts fail closed", async (t) => {
+  const fixturePath = fileURLToPath(new URL("./fixtures/declarative-question-first/SKILL.md", import.meta.url));
+  const invalidCases = [
+    ["unknown", "metadata:\n  killeros.workflow: unknown@1"],
+    ["unsupported", "metadata:\n  killeros.workflow: question-first@2"],
+    ["malformed", "metadata:\n  killeros.workflow: 1"],
+  ] as const;
+  for (const [name, declaration] of invalidCases) {
+    const directory = mkdtempSync(join(tmpdir(), "killeros-workflow-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const skillPath = join(directory, "SKILL.md");
+    writeFileSync(skillPath, `---\nname: ${name}\ndescription: Invalid fixture\n${declaration}\n---\n`);
+    let asks = 0;
+    const { emit } = createHarness({ ask: async () => { asks += 1; return selected("Normal"); } }, [], { [name]: skillPath });
+    const { ctx, notifications } = createContext();
+    assert.deepEqual(await emit("input", { type: "input", text: `/skill:${name}` }, ctx), { action: "handled" });
+    assert.equal(asks, 0);
+    assert.match(notifications.at(-1)?.message ?? "", /KillerOS workflow declaration/u);
+  }
+
+  let printAsks = 0;
+  const printHarness = createHarness({ ask: async () => { printAsks += 1; return selected("Normal"); } }, [], {
+    "declarative-question-first": fixturePath,
+  });
+  const printContext = createContext("print");
+  assert.deepEqual(
+    await printHarness.emit("input", { type: "input", text: "/skill:declarative-question-first" }, printContext.ctx),
+    { action: "handled" },
+  );
+  assert.equal(printAsks, 0);
+  assert.match(printContext.notifications.at(-1)?.message ?? "", /requires interactive TUI mode/u);
+
+  const adapter = createDecisionGatedWorkflowAdapter();
+  adapter.activation = "declarative-question-first";
+  const { emit } = createHarness({ ask: async () => selected("Normal") }, [adapter], {
+    "declarative-question-first": fixturePath,
+  });
+  const { ctx, notifications } = createContext();
+  assert.deepEqual(await emit("input", { type: "input", text: "/skill:declarative-question-first" }, ctx), { action: "handled" });
+  assert.match(notifications.at(-1)?.message ?? "", /both declarative metadata and a programmatic adapter/u);
 });
 
 test("ambiguous and empty activation registrations fail clearly", () => {

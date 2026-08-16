@@ -81,7 +81,26 @@ The generated file uses the four behavioral sections adapted from `writing-great
 
 ### Decision-gated workflows
 
-Explicit `/skill:<name>` activation opens the shared question UI before Pi expands a registered skill. `WorkflowAdapter.activation` keeps the existing exact-match API, while `WorkflowAdapter.activations` lets one policy register multiple explicit skill names without duplicating the gate. `Normal` allows only interview and read-only tools; `With docs` additionally permits agreed glossary, context-map, and ADR paths. Unregistered names pass through unchanged, duplicate or ambiguous registrations fail at startup, and the selected policy remains active until the workflow is explicitly finished or cancelled. Extensions can supply additional adapters through `KillerosOptions.decisionGatedWorkflows`.
+Skills have three enforcement levels:
+
+- **Instruction only:** A normal skill relies on the model following its `SKILL.md` prose. KillerOS passes it through unchanged.
+- **Declaratively gated:** An independently installed skill can select the built-in, versioned `question-first@1` profile in standard namespaced metadata. KillerOS opens its shared policy question before Pi expands the explicit skill command or starts the model.
+- **Programmatically gated:** An extension can register exact skill names with `WorkflowAdapter.activation` or `.activations` through `KillerosOptions.decisionGatedWorkflows`.
+
+A portable declarative skill uses this frontmatter:
+
+```yaml
+---
+name: my-interview-skill
+description: Interview before investigating or implementing.
+metadata:
+  killeros.workflow: question-first@1
+---
+```
+
+The metadata value can only select a KillerOS-owned profile; it cannot define tools, execute code, or grant write paths. `question-first@1` asks the user to choose `Normal` (interview and read-only tools) or `With docs` (also the agreed glossary, context-map, and ADR paths). The selected policy remains active until explicit finish, cancellation, failure, or lifecycle reset. KillerOS preserves skill arguments when expansion continues.
+
+Unknown profiles, unsupported versions, malformed declarations, unavailable interactive UI, and skills that also have a programmatic adapter fail closed with an error. Undeclared skills pass through. Duplicate or ambiguous programmatic registrations fail at startup. This protects explicit `/skill:<name>` activation only; automatic model-driven skill loading remains instruction-only.
 
 ### Interactive questions
 

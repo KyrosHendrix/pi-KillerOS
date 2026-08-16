@@ -31,6 +31,7 @@ export { captureInitTargetBaseline, installInitAgentsFile, validateGeneratedGuid
 export { createDecisionGatedWorkflowAdapter } from "./killeros/decision-gated-workflow.ts";
 export { explicitSkillActivation, registerWorkflowGate } from "./killeros/workflow-gate.ts";
 export type {
+  DeclarativeWorkflowProfile,
   WorkflowAdapter,
   WorkflowGateController,
   WorkflowGateState,
@@ -52,10 +53,12 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerGoal(pi, goalRuntime, initRuntime);
   registerPersonalInstructions(pi, initRuntime);
   const questionRunner: QuestionRunner = registerQuestionTool(pi);
+  const questionFirstAdapter = createDecisionGatedWorkflowAdapter();
   registerWorkflowGate(
     pi,
     questionRunner,
-    options.decisionGatedWorkflows ?? [createDecisionGatedWorkflowAdapter()],
+    options.decisionGatedWorkflows ?? [questionFirstAdapter],
+    [{ id: "question-first", version: 1, adapter: questionFirstAdapter }],
   );
   registerAliases(pi);
   registerSlashAutocomplete(pi, commandResolver);
