@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.11] - 2026-08-17
+
 ### Fixed
 
 - Made automated npm publication and GitHub release recovery idempotent, aligned the documented and tested Pi floor, and made machine-identifier casing locale-independent.
