@@ -291,7 +291,7 @@ async function stopGoalRun(runtime: GoalRuntime, ctx: ExtensionCommandContext, s
 }
 
 function goalStatusLabel(status: GoalStatus): string {
-  return `${status.charAt(0).toLocaleUpperCase()}${status.slice(1)}`;
+  return `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
 }
 
 function goalPanelActions(status: GoalStatus): Array<{ label: string; control: "pause" | "resume" | "edit" | "clear" }> {
@@ -309,7 +309,7 @@ function goalPanelActions(status: GoalStatus): Array<{ label: string; control: "
 function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
   const usedTokens = Math.max(0, sumGoalTokens(ctx) - state.baselineTokens);
   const lines = [
-    `Goal ${goalStatusLabel(state.status).toLocaleLowerCase()} · ${state.turns} turn${state.turns === 1 ? "" : "s"} · ${formatTime(goalElapsedMilliseconds(state))} · ${formatTokens(usedTokens)} tokens`,
+    `Goal ${goalStatusLabel(state.status).toLowerCase()} · ${state.turns} turn${state.turns === 1 ? "" : "s"} · ${formatTime(goalElapsedMilliseconds(state))} · ${formatTokens(usedTokens)} tokens`,
     state.objective,
   ];
   if (state.result) lines.push(state.result);
@@ -708,7 +708,7 @@ export function registerGoal(
         return;
       }
       const input = args.trim();
-      const control = input.toLocaleLowerCase();
+      const control = input.toLowerCase();
       const isControl = control === "clear" || control === "edit" || control === "pause" || control === "resume";
 
       if (!input) {
@@ -1008,7 +1008,7 @@ export function registerGoal(
   pi.registerCommand("goal", {
     description: "Set or view the goal for a long-running task",
     getArgumentCompletions: (prefix) => {
-      const normalized = prefix.trimStart().toLocaleLowerCase();
+      const normalized = prefix.trimStart().toLowerCase();
       if (normalized.includes(" ")) return null;
       const actions = [
         { value: "clear", description: "Remove the current goal" },

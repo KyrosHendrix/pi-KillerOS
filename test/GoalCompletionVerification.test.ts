@@ -8,7 +8,7 @@ import Killeros from "../Killeros.ts";
 function createHarness(entries: Array<Record<string, unknown>> = []) {
   const commands = new Map<string, { handler: (args: string, ctx: ReturnType<typeof createContext>) => Promise<void> }>();
   const handlers = new Map<string, Array<(event: Record<string, unknown>, ctx: ReturnType<typeof createContext>) => unknown>>();
-  const tools = new Map<string, { execute: (...args: unknown[]) => Promise<{ details: { status: string } }> }>();
+  const tools = new Map<string, { execute: (...args: unknown[]) => Promise<{ details: { status: string; verification?: string } }> }>();
   const appendedEntries: Array<{ customType: string; data: { event: string; state: Record<string, unknown> | null } }> = [];
   const sentMessages: Array<unknown> = [];
   const api = {
@@ -24,7 +24,7 @@ function createHarness(entries: Array<Record<string, unknown>> = []) {
     },
     registerCommand: (name: string, command: { handler: (args: string, ctx: ReturnType<typeof createContext>) => Promise<void> }) => commands.set(name, command),
     registerEntryRenderer: () => {},
-    registerTool: (tool: { name: string; execute: (...args: unknown[]) => Promise<{ details: { status: string } }> }) => tools.set(tool.name, tool),
+    registerTool: (tool: { name: string; execute: (...args: unknown[]) => Promise<{ details: { status: string; verification?: string } }> }) => tools.set(tool.name, tool),
     sendMessage: (message: unknown) => sentMessages.push(message),
     sendUserMessage: () => {},
     setThinkingLevel: () => {},

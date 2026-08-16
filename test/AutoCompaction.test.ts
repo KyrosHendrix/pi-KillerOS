@@ -45,7 +45,7 @@ function createHarness(
   const compactCalls: CompactOptions[] = [];
   const notifications: AutoHarness["notifications"] = [];
   const sentMessages: AutoHarness["sentMessages"] = [];
-  let usage = initialUsage;
+  let usage: ContextUsage | undefined = initialUsage;
   const api = {
     on(eventName: string, handler: Handler): void {
       const current = handlers.get(eventName) ?? [];

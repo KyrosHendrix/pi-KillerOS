@@ -13,7 +13,7 @@ function command(name: string, source: "extension" | "prompt" | "skill" = "exten
   return {
     name,
     source,
-    sourceInfo: { path: "test", source: "test", baseDir: "." },
+    sourceInfo: { path: "test", source: "test", scope: "temporary" as const, origin: "top-level" as const, baseDir: "." },
   };
 }
 

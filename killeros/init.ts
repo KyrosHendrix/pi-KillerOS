@@ -76,7 +76,7 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
       if (!initState.active || !initState.evidence || !initState.targetPath || !initState.projectRoot) {
         throw new Error("killeros_init_read is available only during /init");
       }
-      const generatedTarget = initState.outcome.kind === "written" && requestedPath.replaceAll("\\", "/").toLocaleLowerCase() === "agents.md";
+      const generatedTarget = initState.outcome.kind === "written" && requestedPath.replaceAll("\\", "/").toLowerCase() === "agents.md";
       const text = generatedTarget
         ? await readGeneratedInitTarget(initState.projectRoot, initState.targetPath)
         : await readInitEvidence(initState.evidence, requestedPath);

@@ -6,7 +6,12 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
-- Let independently installed skills opt into deterministic question-first workflow gating through versioned `killeros.workflow` metadata, with pre-turn resolution and fail-closed validation.
+- Made automated npm publication and GitHub release recovery idempotent, aligned the documented and tested Pi floor, and made machine-identifier casing locale-independent.
+- Extended strict type checking to release scripts and typed test suites, while correctly identifying JavaScript-only suites as `.js`.
+
+### Removed
+
+- Removed the decision-gated workflow subsystem, its skill-specific policy, public extension interface, and YAML dependency. Skills now remain instruction-only.
 
 ## [2.0.10] - 2026-08-16
 

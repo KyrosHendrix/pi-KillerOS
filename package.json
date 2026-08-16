@@ -31,7 +31,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types test/*.test.ts"
+    "test": "node --test --experimental-strip-types test/*.test.*"
   },
   "pi": {
     "extensions": [
@@ -42,9 +42,9 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.84.1",
-    "@earendil-works/pi-coding-agent": ">=0.84.1",
-    "@earendil-works/pi-tui": ">=0.84.1",
+    "@earendil-works/pi-ai": ">=0.84.2",
+    "@earendil-works/pi-coding-agent": ">=0.84.2",
+    "@earendil-works/pi-tui": ">=0.84.2",
     "typebox": ">=1.1.38 <2"
   },
   "devDependencies": {
@@ -58,8 +58,5 @@
   "overrides": {
     "brace-expansion": "5.0.9",
     "undici": "8.9.0"
-  },
-  "dependencies": {
-    "yaml": "2.9.0"
   }
 }

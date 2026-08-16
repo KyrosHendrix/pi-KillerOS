@@ -30,7 +30,7 @@ export function formatActivityMessage(message: ActivityMessage, theme: Theme): s
       detail = "assembling the answer";
       break;
     case "tool":
-      switch (message.toolName.trim().toLocaleLowerCase()) {
+      switch (message.toolName.trim().toLowerCase()) {
         case "read":
         case "grep":
         case "find":

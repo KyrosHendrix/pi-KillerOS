@@ -75,12 +75,12 @@ const PROVIDER_WORDS: Readonly<Record<string, string>> = {
 
 function formatProviderName(provider: string): string {
   const normalized = provider.trim();
-  const known = PROVIDER_LABELS[normalized.toLocaleLowerCase()];
+  const known = PROVIDER_LABELS[normalized.toLowerCase()];
   if (known) return known;
   return normalized
     .split(/[-_]+/u)
     .filter(Boolean)
-    .map((word) => PROVIDER_WORDS[word.toLocaleLowerCase()] ?? `${word.charAt(0).toLocaleUpperCase()}${word.slice(1)}`)
+    .map((word) => PROVIDER_WORDS[word.toLowerCase()] ?? `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
     .join(" ") || "Unknown provider";
 }
 

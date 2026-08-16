@@ -45,7 +45,7 @@ const QuestionParams = Type.Object({
   })),
 });
 
-export type QuestionParamsValue = Static<typeof QuestionParams>;
+type QuestionParamsValue = Static<typeof QuestionParams>;
 
 type NormalizedQuestionSelection =
   | { mode: "single"; minSelections: 1; maxSelections: 1 }
@@ -100,11 +100,7 @@ interface MultipleQuestionDetails {
   cancelled?: boolean;
 }
 
-export type QuestionDetails = SingleQuestionDetails | MultipleQuestionDetails;
-
-export interface QuestionRunner {
-  ask(params: QuestionParamsValue, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<QuestionDetails>;
-}
+type QuestionDetails = SingleQuestionDetails | MultipleQuestionDetails;
 
 type QuestionSelection =
   | { kind: "selected"; answer: string; originalIndex: number }
@@ -219,7 +215,7 @@ class MultipleResultText {
   invalidate(): void {}
 }
 
-export function registerQuestionTool(pi: ExtensionAPI): QuestionRunner {
+export function registerQuestionTool(pi: ExtensionAPI): void {
   const customInputHistory: string[] = [];
   let customInputHistoryBytes = 0;
   const clearCustomInputHistory = (): void => {
@@ -303,7 +299,7 @@ export function registerQuestionTool(pi: ExtensionAPI): QuestionRunner {
           const keyText = keybindings.getKeys(keybinding)
             .join("/")
             .split("/")
-            .map((key) => key.split("+").map((part) => process.platform === "darwin" && part.toLocaleLowerCase() === "alt" ? "option" : part).join("+"))
+            .map((key) => key.split("+").map((part) => process.platform === "darwin" && part.toLowerCase() === "alt" ? "option" : part).join("+"))
             .join("/");
           return theme.fg("dim", keyText) + theme.fg("muted", ` ${description}`);
         };
@@ -322,11 +318,11 @@ export function registerQuestionTool(pi: ExtensionAPI): QuestionRunner {
         customInputHistory.forEach((value) => editor.addToHistory(value));
 
         const filteredOptions = (): DisplayOption[] => {
-          const query = filterQuery.trim().toLocaleLowerCase();
+          const query = filterQuery.trim().toLowerCase();
           return options.filter((option) => option.isOther
             || query.length === 0
-            || option.label.toLocaleLowerCase().includes(query)
-            || option.description?.toLocaleLowerCase().includes(query));
+            || option.label.toLowerCase().includes(query)
+            || option.description?.toLowerCase().includes(query));
         };
         const selectedCount = (): number => selectedOriginalIndices.size + (customAnswer === undefined ? 0 : 1);
         const orderedMultipleSelection = () => {
@@ -763,12 +759,4 @@ export function registerQuestionTool(pi: ExtensionAPI): QuestionRunner {
     },
   };
   pi.registerTool(questionTool);
-
-  return {
-    async ask(params, signal, ctx): Promise<QuestionDetails> {
-      const result = await questionTool.execute("killeros-workflow-gate", params, signal, undefined, ctx);
-      if (!result.details) throw new Error("Question did not return a structured result");
-      return result.details;
-    },
-  };
 }

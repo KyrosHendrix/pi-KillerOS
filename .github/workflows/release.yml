@@ -88,17 +88,24 @@ jobs:
           node scripts/release-notes.ts CHANGELOG.md "$VERSION" > /tmp/release-notes.md
           test -s /tmp/release-notes.md
 
+          PUBLISH_NPM=true
+          if npm view "killeros@${VERSION}" version >/dev/null 2>&1; then
+            PUBLISH_NPM=false
+            echo "killeros@${VERSION} already exists on npm; skipping package publication."
+          fi
+
           echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "publish_npm=${PUBLISH_NPM}" >> "$GITHUB_OUTPUT"
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure npm trusted publishing support
-        if: steps.metadata.outputs.publish == 'true'
+        if: steps.metadata.outputs.publish_npm == 'true'
         run: npm install --global npm@11.5.1
 
       - name: Publish package to npm
-        if: steps.metadata.outputs.publish == 'true'
+        if: steps.metadata.outputs.publish_npm == 'true'
         run: npm publish
 
       - name: Create release

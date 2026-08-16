@@ -11,7 +11,7 @@ import {
   registerCompletionNotifications,
 } from "../killeros/notifications.ts";
 
-function createTemporaryDirectory(t: test.TestContext): string {
+function createTemporaryDirectory(t) {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-notification-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;

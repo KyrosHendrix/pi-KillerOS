@@ -35,11 +35,11 @@ export interface InitEvidenceBuildResult {
 
 function evidenceKey(relativePath: string): string {
   const normalized = relativePath.replaceAll("\\", "/");
-  return process.platform === "win32" ? normalized.toLocaleLowerCase() : normalized;
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function sensitiveEvidencePath(relativePath: string): boolean {
-  const normalized = relativePath.replaceAll("\\", "/").toLocaleLowerCase();
+  const normalized = relativePath.replaceAll("\\", "/").toLowerCase();
   const name = path.posix.basename(normalized);
   return /^\.env(?:\.|$)/u.test(name)
     || [".npmrc", ".pypirc", ".netrc", "id_rsa", "id_ed25519", "credentials.json"].includes(name)
@@ -50,8 +50,8 @@ function sensitiveEvidencePath(relativePath: string): boolean {
 function excludedPath(relativePath: string): boolean {
   const segments = relativePath.replaceAll("\\", "/").split("/");
   return segments.some((segment, index) =>
-    (index < segments.length - 1 && EXCLUDED_DIRS.has(segment.toLocaleLowerCase()))
-    || EXCLUDED_GUIDANCE.has(segment.toLocaleLowerCase()))
+    (index < segments.length - 1 && EXCLUDED_DIRS.has(segment.toLowerCase()))
+    || EXCLUDED_GUIDANCE.has(segment.toLowerCase()))
     || sensitiveEvidencePath(relativePath);
 }
 
@@ -74,7 +74,7 @@ async function collectCandidates(projectRoot: string): Promise<string[]> {
       if (files.length >= PATH_LIMIT) break;
       const relativePath = path.posix.join(current.relativePath.replaceAll("\\", "/"), entry.name);
       if (entry.isDirectory()) {
-        if (current.depth < DEPTH_LIMIT && !EXCLUDED_DIRS.has(entry.name.toLocaleLowerCase())) {
+        if (current.depth < DEPTH_LIMIT && !EXCLUDED_DIRS.has(entry.name.toLowerCase())) {
           queue.push({ relativePath, depth: current.depth + 1 });
         }
       } else if (entry.isFile() && !excludedPath(relativePath)) {

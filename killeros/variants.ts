@@ -46,7 +46,7 @@ function isThinkingLevel(value: string): value is ThinkingLevel {
 }
 
 function resolveThinkingLevel(input: string): ThinkingLevel | undefined {
-  const normalized = input.trim().toLocaleLowerCase();
+  const normalized = input.trim().toLowerCase();
   return isThinkingLevel(normalized) ? normalized : LEVEL_ALIASES[normalized];
 }
 
@@ -144,7 +144,7 @@ export function registerVariants(pi: ExtensionAPI): void {
           const keyText = keybindings.getKeys(keybinding)
             .join("/")
             .split("/")
-            .map((key) => key.split("+").map((part) => process.platform === "darwin" && part.toLocaleLowerCase() === "alt" ? "option" : part).join("+"))
+            .map((key) => key.split("+").map((part) => process.platform === "darwin" && part.toLowerCase() === "alt" ? "option" : part).join("+"))
             .join("/");
           return theme.fg("dim", keyText) + theme.fg("muted", ` ${description}`);
         };

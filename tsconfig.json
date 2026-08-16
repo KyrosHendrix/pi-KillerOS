@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["Killeros.ts"]
+  "include": ["Killeros.ts", "scripts/**/*.ts", "test/**/*.ts"]
 }

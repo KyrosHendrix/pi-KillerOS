@@ -166,8 +166,8 @@ export function createSlashCommandResolver(
 
 function scoreCommandMatch(name: string, prefix: string): number {
   if (!prefix) return 1;
-  const normalizedName = name.toLocaleLowerCase();
-  const normalizedPrefix = prefix.toLocaleLowerCase();
+  const normalizedName = name.toLowerCase();
+  const normalizedPrefix = prefix.toLowerCase();
   if (normalizedName.startsWith(normalizedPrefix)) return 100;
   if (normalizedName.split(/[:\-_]/).some((token) => token.startsWith(normalizedPrefix))) return 80;
   if (normalizedName.includes(normalizedPrefix)) return 50;
@@ -190,7 +190,7 @@ export function registerSlashAutocomplete(
         const prefixMatch = getSlashCommandPrefix(beforeCursor);
         if (!prefixMatch) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 
-        const prefix = prefixMatch.prefix.toLocaleLowerCase();
+        const prefix = prefixMatch.prefix.toLowerCase();
         const baseSuggestions = await current.getSuggestions(lines, cursorLine, cursorCol, options);
         resolver.updateFallbackCommands(baseSuggestions?.items ?? []);
         const commands = resolver.getCommandCatalog(baseSuggestions?.items ?? []);

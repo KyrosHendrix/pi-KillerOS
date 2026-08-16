@@ -49,7 +49,6 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 - `/variants` selector and direct reasoning-level arguments
 - Codex-style `/goal` with an interactive status/action panel, durable objectives, immediate pause and clear cancellation, automatic continuation, explicit completion, and durable blocker audits
 - Automatic `/init` guideline synthesis with a frozen safe evidence map, protected existing policy, and the four packaged behavioral sections adapted from `writing-great-guidelines`
-- Opt-in decision-gated workflows that ask a structured policy question before explicit skill expansion, preserve the selected allowlist, and fail closed across tool and session boundaries
 - `question` tool with single-select and opt-in bounded multi-select, height-bounded option windows, configured Pi keybindings, live option/input progress, proposal previews, custom answers, history, cancellation, and compact expandable transcript rendering
 - Mid-prompt slash completion with current Pi `0.84.2` commands, extensions, prompts, and skills; paths, URLs, and invalid commands remain plain text
 - Goal-aware `/clear` that confirms, aborts active work, waits for settlement, and starts a new session, plus `/exit` for graceful shutdown
@@ -78,29 +77,6 @@ Add `-l` to either command for a project-only install. Restart Pi after installi
 `/init` freezes a safe project-file map and exposes only dedicated read and list operations while it generates root `AGENTS.md`. Git-ignored files, known secret paths, private-key formats, other guidance, dependencies, links, non-regular files, and files outside that map are unavailable. Existing root `AGENTS.md` is separate protected policy: compatible rules are preserved, a real policy conflict leaves it unchanged with a reason, and any concurrent target change aborts installation without replacing the newer file.
 
 The generated file uses the four behavioral sections adapted from `writing-great-guidelines`; no external skill installation is required. `/init` asks no setup questions, starts no second model process, writes no other file, and reloads Pi resources only after a successful write.
-
-### Decision-gated workflows
-
-Skills have three enforcement levels:
-
-- **Instruction only:** A normal skill relies on the model following its `SKILL.md` prose. KillerOS passes it through unchanged.
-- **Declaratively gated:** An independently installed skill can select the built-in, versioned `question-first@1` profile in standard namespaced metadata. KillerOS opens its shared policy question before Pi expands the explicit skill command or starts the model.
-- **Programmatically gated:** An extension can register exact skill names with `WorkflowAdapter.activation` or `.activations` through `KillerosOptions.decisionGatedWorkflows`.
-
-A portable declarative skill uses this frontmatter:
-
-```yaml
----
-name: my-interview-skill
-description: Interview before investigating or implementing.
-metadata:
-  killeros.workflow: question-first@1
----
-```
-
-The metadata value can only select a KillerOS-owned profile; it cannot define tools, execute code, or grant write paths. `question-first@1` asks the user to choose `Normal` (interview and read-only tools) or `With docs` (also the agreed glossary, context-map, and ADR paths). The selected policy remains active until explicit finish, cancellation, failure, or lifecycle reset. KillerOS preserves skill arguments when expansion continues.
-
-Unknown profiles, unsupported versions, malformed declarations, unavailable interactive UI, and skills that also have a programmatic adapter fail closed with an error. Undeclared skills pass through. Duplicate or ambiguous programmatic registrations fail at startup. This protects explicit `/skill:<name>` activation only; automatic model-driven skill loading remains instruction-only.
 
 ### Interactive questions
 
@@ -163,16 +139,9 @@ The package manifest lists Pi’s built-in modules as peer dependencies, so npm 
 
 ## Publish
 
-To create a GitHub release, update the version in `package.json` and `package-lock.json`, add the matching `CHANGELOG.md` section, and push the release commit to `main`. After the full CI workflow passes, the release workflow creates the matching tag and GitHub release from that verified commit.
+To release KillerOS, update the version in `package.json` and `package-lock.json`, add the matching `CHANGELOG.md` section, and push the release commit to `main`. After the full CI workflow passes, the release workflow publishes the package to npm through trusted publishing, then creates the matching tag and GitHub release from that verified commit. The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes the npm release visible in Pi’s package catalog.
 
-Do not manually tag a normal release. If automation must recover a missing GitHub release, push the matching version tag; the same workflow validates the tag against the package and changelog before creating the release.
-
-The [`pi-package`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) keyword makes a published npm release visible in Pi’s package catalog. GitHub release automation does not publish to npm. Publish there separately after validation:
-
-```bash
-npm login
-npm publish
-```
+Do not manually tag a normal release. If automation must recover a missing GitHub release, push the matching version tag. The workflow validates the tag against the package and changelog, skips npm publication when that version already exists, and creates only the missing release.
 
 ## Security
 
