@@ -57,7 +57,7 @@ export interface GoalRuntime {
   continuationHeld: boolean;
   goalTurnInFlight: boolean;
   agentEndObserved: boolean;
-  automaticCompaction?: "pending" | "completed";
+  automaticCompaction?: "pending";
   persistenceRetryNeeded: boolean;
   lastStopReason?: string;
   lastError?: string;

@@ -289,7 +289,7 @@ test("a successful goal compaction uses the goal continuation callback without a
   assert.equal(harness.sentMessages.length, 0);
 });
 
-test("an active goal resumes once through the existing session-compaction continuation path", async () => {
+test("an active goal resumes once after Pi completes automatic compaction", async () => {
   const harness = createGoalHarness();
   await harness.startGoal("Continue this goal after compaction");
   assert.equal(harness.sentMessages.length, 1);
@@ -306,6 +306,10 @@ test("an active goal resumes once through the existing session-compaction contin
   await harness.emit("session_compact", { type: "session_compact", reason: "manual" });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.state().state?.status, "active");
+  assert.equal(harness.sentMessages.length, 1, "the compaction event precedes Pi's completion callback");
+
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.sentMessages.length, 2);
   assert.equal((harness.sentMessages[1]?.message as { customType: string }).customType, "killeros-goal-continuation");
 
@@ -325,6 +329,7 @@ test("a failed automatic goal compaction pauses without scheduling a retry", asy
   await harness.emit("agent_settled");
   harness.compactCalls[0]?.onError?.(new Error("compaction unavailable"));
   assert.equal(harness.state().state?.status, "paused");
+  assert.match(harness.state().state?.result ?? "", /automatic compaction failed: compaction unavailable/u);
   assert.equal(harness.sentMessages.length, 1);
 });
 

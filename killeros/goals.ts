@@ -468,8 +468,6 @@ function completeAutomaticCompaction(
     runtime.automaticCompaction = undefined;
     return;
   }
-  runtime.automaticCompaction = "completed";
-  if (runtime.goalTurnInFlight || !ctx.isIdle()) return;
   runtime.automaticCompaction = undefined;
   setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
 }
@@ -1058,12 +1056,7 @@ export function registerGoalSettlement(
       const reason = runtime.lastError || "the agent turn was aborted";
       runtime.lastStopReason = undefined;
       runtime.lastError = undefined;
-      if (runtime.automaticCompaction !== undefined) {
-        if (runtime.automaticCompaction === "completed") {
-          completeAutomaticCompaction(pi, runtime, initState, ctx);
-        }
-        return;
-      }
+      if (runtime.automaticCompaction !== undefined) return;
       pauseGoalForPossibleManualCompaction(pi, runtime, ctx, reason);
       return;
     }
@@ -1080,10 +1073,7 @@ export function registerGoalSettlement(
   });
 
   pi.on("session_compact", (event, ctx) => {
-    if (runtime.automaticCompaction !== undefined) {
-      completeAutomaticCompaction(pi, runtime, initState, ctx);
-      return;
-    }
+    if (runtime.automaticCompaction !== undefined) return;
     if (event.reason !== "manual") return;
     recoverGoalAfterManualCompaction(pi, runtime, initState, ctx);
   });
