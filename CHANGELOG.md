@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.12] - 2026-08-18
+
 ### Fixed
 
 - Resumed active goals exactly once after Pi reports automatic compaction complete.
