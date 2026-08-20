@@ -1,3 +1,0 @@
-# Let Pi Own Compaction
-
-Pi owns compaction timing, cut points, summary generation, retries, file tracking, manual instructions, and overflow recovery through its public lifecycle; KillerOS does not mirror thresholds, replace summaries, or provide fallbacks. `/goal` remains the only authoritative owner of the objective and status, continues from Pi’s settled boundary, and records only the fail-closed recovery needed to reactivate the same paused revision after a successful manual compaction. This boundary avoids duplicate state and version-specific integration while accepting Pi’s summary quality and recovery behavior as host responsibilities.
