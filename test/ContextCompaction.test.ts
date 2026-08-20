@@ -1,55 +1,184 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import Killeros from "../Killeros.ts";
 
 const theme = {
-  bold: (text) => text,
-  fg: (_color, text) => text,
-  italic: (text) => text,
-  strikethrough: (text) => text,
-  underline: (text) => text,
+  bold(text: string): string { return text; },
+  fg(_color: string, text: string): string { return text; },
+  italic(text: string): string { return text; },
+  strikethrough(text: string): string { return text; },
+  underline(text: string): string { return text; },
+} as unknown as Theme;
+
+type TestEvent = {
+  type: string;
+  [key: string]: unknown;
 };
 
-function createHarness() {
-  const commands = new Map();
-  const handlers = new Map();
-  const tools = new Map();
-  const appendedEntries = [];
-  const sentMessages = [];
-  const activeTools = [];
+type TestHandler = (event: TestEvent, ctx: TestContext) => unknown | Promise<unknown>;
+
+type TestCommand = {
+  description?: string;
+  handler(args: string, ctx: TestContext): unknown | Promise<unknown>;
+};
+
+type TestTool = {
+  name: string;
+  execute(...args: unknown[]): Promise<unknown>;
+};
+
+type TestEntry = {
+  type: string;
+  id?: string;
+  parentId?: string | null;
+  timestamp?: string;
+  customType?: string;
+  data?: Record<string, unknown>;
+  summary?: string;
+  firstKeptEntryId?: string;
+  tokensBefore?: number;
+};
+
+type SavedGoalState = {
+  version: number;
+  revision: number;
+  objective: string;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+  activeMilliseconds: number;
+  turns: number;
+  blockedAuditStartTurn: number;
+  baselineTokens: number;
+  resumeAfterManualCompaction?: boolean;
+  [key: string]: unknown;
+};
+
+type AppendedEntry = {
+  type: "custom";
+  customType: string;
+  data: { event: string; state: SavedGoalState };
+};
+
+type TestContext = {
+  cwd: string;
+  getContextUsage(): unknown;
+  hasPendingMessages(): boolean;
+  hasUI: boolean;
+  isIdle(): boolean;
+  isProjectTrusted(): boolean;
+  mode: "tui";
+  model: unknown;
+  modelRegistry: {
+    getApiKeyAndHeaders(): Promise<unknown>;
+    getProvider(): unknown;
+  };
+  sessionManager: {
+    getBranch(): TestEntry[];
+    getEntries(): TestEntry[];
+    getSessionFile(): string;
+  };
+  signal: AbortSignal | undefined;
+  abort(): void;
+  compact(options: unknown): void;
+  getSystemPrompt(): string;
+  shutdown(): void;
+  ui: {
+    addAutocompleteProvider(...args: unknown[]): void;
+    confirm(...args: unknown[]): Promise<boolean>;
+    editor(title: string, prefill?: string): Promise<string | undefined>;
+    notify(message: string, level?: string): void;
+    setEditorComponent(...args: unknown[]): void;
+    setFooter(...args: unknown[]): void;
+    setHeader(...args: unknown[]): void;
+    setTitle(...args: unknown[]): void;
+    setTheme(...args: unknown[]): { success: boolean };
+    setHiddenThinkingLabel(...args: unknown[]): void;
+    setWorkingIndicator(...args: unknown[]): void;
+    setWorkingMessage(...args: unknown[]): void;
+    theme: Theme;
+  };
+  waitForIdle(): Promise<void>;
+};
+
+type TestAPI = {
+  appendEntry(customType: string, data: unknown): void;
+  getAllTools(): Array<TestTool & { sourceInfo: Record<string, string> }>;
+  getCommands(): Array<{ name: string; description?: string; source: string; sourceInfo: Record<string, string> }>;
+  getSessionName(): undefined;
+  getThinkingLevel(): string;
+  on(event: string, handler: TestHandler): void;
+  registerCommand(name: string, command: TestCommand): void;
+  registerEntryRenderer(...args: unknown[]): void;
+  registerTool(tool: TestTool): void;
+  sendMessage(message: unknown, options?: unknown): void;
+  sendUserMessage(...args: unknown[]): void;
+  setThinkingLevel(...args: unknown[]): void;
+  getActiveTools(): string[];
+  setActiveTools(names: string[]): void;
+};
+
+type Harness = {
+  api: TestAPI;
+  appendedEntries: AppendedEntry[];
+  commands: Map<string, TestCommand>;
+  handlers: Map<string, TestHandler[]>;
+  sentMessages: Array<{ message: unknown; options: unknown }>;
+  tools: Map<string, TestTool>;
+};
+
+type ContextUsage = { tokens: number | null; contextWindow: number };
+type ContextOptions = {
+  entries?: TestEntry[];
+  usage?: ContextUsage | (() => ContextUsage | undefined);
+  notifications?: Array<{ message: string; level?: string }>;
+  compactCalls?: unknown[];
+};
+
+function createHarness(): Harness {
+  const commands = new Map<string, TestCommand>();
+  const handlers = new Map<string, TestHandler[]>();
+  const tools = new Map<string, TestTool>();
+  const appendedEntries: AppendedEntry[] = [];
+  const sentMessages: Array<{ message: unknown; options: unknown }> = [];
+  const activeTools: string[] = [];
   const sourceInfo = {
     path: `${process.cwd()}/Killeros.ts`,
     source: "npm:killeros",
     baseDir: process.cwd(),
   };
-  const api = {
-    appendEntry: (customType, data) => appendedEntries.push({ type: "custom", customType, data }),
-    getAllTools: () => [...tools.values()].map((tool) => ({ ...tool, sourceInfo: tool.sourceInfo ?? sourceInfo })),
+  const api: TestAPI = {
+    appendEntry: (customType: string, data: unknown) => {
+      const entryData = data as { event: string; state: SavedGoalState };
+      appendedEntries.push({ type: "custom", customType, data: entryData });
+    },
+    getAllTools: () => [...tools.values()].map((tool) => ({ ...tool, sourceInfo })),
     getCommands: () => [...commands].map(([name, command]) => ({
       name,
       description: command.description,
       source: "extension",
-      sourceInfo: command.sourceInfo ?? sourceInfo,
+      sourceInfo,
     })),
     getSessionName: () => undefined,
     getThinkingLevel: () => "high",
-    on: (event, handler) => {
+    on: (event: string, handler: TestHandler) => {
       const eventHandlers = handlers.get(event) ?? [];
       eventHandlers.push(handler);
       handlers.set(event, eventHandlers);
     },
-    registerCommand: (name, command) => commands.set(name, command),
+    registerCommand: (name: string, command: TestCommand) => { commands.set(name, command); },
     registerEntryRenderer: () => {},
-    registerTool: (tool) => tools.set(tool.name, tool),
-    sendMessage: (message, options) => sentMessages.push({ message, options }),
+    registerTool: (tool: TestTool) => { tools.set(tool.name, tool); },
+    sendMessage: (message: unknown, options?: unknown) => sentMessages.push({ message, options }),
     sendUserMessage: () => {},
     setThinkingLevel: () => {},
     getActiveTools: () => [...activeTools],
-    setActiveTools: (names) => activeTools.splice(0, activeTools.length, ...names),
+    setActiveTools: (names: string[]) => { activeTools.splice(0, activeTools.length, ...names); },
   };
 
-  Killeros(api, {
+  Killeros(api as unknown as ExtensionAPI, {
     completionNotifications: {
       store: { load: () => false, save: () => {} },
       ring: () => {},
@@ -64,8 +193,8 @@ function createContext({
   usage = { tokens: 1_000, contextWindow: 128_000 },
   notifications = [],
   compactCalls = [],
-} = {}) {
-  const ctx = {
+}: ContextOptions = {}): { compactCalls: unknown[]; ctx: TestContext; notifications: Array<{ message: string; level?: string }> } {
+  const ctx: TestContext = {
     cwd: process.cwd(),
     getContextUsage: () => (typeof usage === "function" ? usage() : usage),
     hasPendingMessages: () => false,
@@ -85,14 +214,14 @@ function createContext({
     },
     signal: undefined,
     abort() {},
-    compact: (options) => compactCalls.push(options),
+    compact: (options: unknown) => { compactCalls.push(options); },
     getSystemPrompt: () => "",
     shutdown() {},
     ui: {
       addAutocompleteProvider: () => {},
       confirm: async () => true,
-      editor: async (_title, prefill) => prefill,
-      notify: (message, level) => notifications.push({ message, level }),
+      editor: async (_title: string, prefill?: string) => prefill,
+      notify: (message: string, level?: string) => { notifications.push({ message, level }); },
       setEditorComponent: () => {},
       setFooter: () => {},
       setHeader: () => {},
@@ -108,14 +237,36 @@ function createContext({
   return { compactCalls, ctx, notifications };
 }
 
-async function emitSequentially(handlers, event, ctx) {
-  const results = [];
+async function emitSequentially(
+  handlers: TestHandler[] | undefined,
+  event: TestEvent,
+  ctx: TestContext,
+): Promise<unknown[]> {
+  const results: unknown[] = [];
   for (const handler of handlers ?? []) results.push(await handler(event, ctx));
   return results;
 }
 
-async function startGoalTurn(harness, ctx, objective = "Finish the migration") {
-  await harness.commands.get("goal").handler(objective, ctx);
+function getCommand(harness: Harness, name: string): TestCommand {
+  const command = harness.commands.get(name);
+  assert.ok(command);
+  return command;
+}
+
+function getTool(harness: Harness, name: string): TestTool {
+  const tool = harness.tools.get(name);
+  assert.ok(tool);
+  return tool;
+}
+
+function lastAppendedEntry(harness: Harness): AppendedEntry {
+  const entry = harness.appendedEntries.at(-1);
+  assert.ok(entry);
+  return entry;
+}
+
+async function startGoalTurn(harness: Harness, ctx: TestContext, objective = "Finish the migration"): Promise<void> {
+  await getCommand(harness, "goal").handler(objective, ctx);
   await emitSequentially(harness.handlers.get("before_agent_start"), {
     type: "before_agent_start",
     prompt: "",
@@ -124,7 +275,7 @@ async function startGoalTurn(harness, ctx, objective = "Finish the migration") {
   }, ctx);
 }
 
-async function abortActiveGoal(harness, ctx) {
+async function abortActiveGoal(harness: Harness, ctx: TestContext): Promise<void> {
   await startGoalTurn(harness, ctx, "Continue after manual compaction");
   await emitSequentially(harness.handlers.get("agent_end"), {
     type: "agent_end",
@@ -133,7 +284,7 @@ async function abortActiveGoal(harness, ctx) {
   await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
 }
 
-function savedGoalState(overrides = {}) {
+function savedGoalState(overrides: Partial<SavedGoalState> = {}): SavedGoalState {
   const now = Date.now();
   return {
     version: 1,
@@ -151,7 +302,7 @@ function savedGoalState(overrides = {}) {
   };
 }
 
-function goalEntry(state, event = "error") {
+function goalEntry(state: SavedGoalState, event = "error"): TestEntry {
   return {
     type: "custom",
     id: `goal-${state.revision}`,
@@ -162,7 +313,7 @@ function goalEntry(state, event = "error") {
   };
 }
 
-function compactionEntry(id = "compact-1") {
+function compactionEntry(id = "compact-1"): TestEntry {
   return {
     type: "compaction",
     id,
@@ -174,7 +325,7 @@ function compactionEntry(id = "compact-1") {
   };
 }
 
-function compactEvent(reason, willRetry = false) {
+function compactEvent(reason: string, willRetry = false): TestEvent {
   return {
     type: "session_compact",
     compactionEntry: compactionEntry(),
@@ -201,9 +352,9 @@ test("auto-compaction stays idle while context remains above its threshold", asy
 
 test("contextPercentRemaining remains a public display helper", async () => {
   const { contextPercentRemaining } = await import("../Killeros.ts");
-  const makeContext = (tokens, contextWindow = 128_000) => ({
+  const makeContext = (tokens: number | null, contextWindow = 128_000): ExtensionContext => ({
     getContextUsage: () => ({ tokens, contextWindow }),
-  });
+  } as unknown as ExtensionContext);
 
   assert.equal(contextPercentRemaining(makeContext(89_600)), 30);
   assert.equal(contextPercentRemaining(makeContext(64_000)), 50);
@@ -211,8 +362,10 @@ test("contextPercentRemaining remains a public display helper", async () => {
   assert.equal(contextPercentRemaining(makeContext(-1)), 100);
   assert.equal(contextPercentRemaining(makeContext(null)), null);
   assert.equal(contextPercentRemaining(makeContext(1, 0)), null);
-  assert.equal(contextPercentRemaining({ getContextUsage: () => undefined }), null);
-  assert.equal(contextPercentRemaining({ getContextUsage: () => { throw new Error("unavailable"); } }), null);
+  assert.equal(contextPercentRemaining({ getContextUsage: () => undefined } as unknown as ExtensionContext), null);
+  assert.equal(contextPercentRemaining({
+    getContextUsage: () => { throw new Error("unavailable"); },
+  } as unknown as ExtensionContext), null);
 });
 
 test("threshold compaction continues a goal only at Pi's settled boundary", async () => {
@@ -272,9 +425,9 @@ test("an unrecovered overflow pauses through normal goal error handling", async 
   }, ctx);
   await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
 
-  assert.equal(harness.appendedEntries.at(-1).data.state.status, "paused");
-  assert.match(harness.appendedEntries.at(-1).data.state.result, /overflow recovery failed/u);
-  assert.equal(harness.appendedEntries.at(-1).data.state.resumeAfterManualCompaction, undefined);
+  assert.equal(lastAppendedEntry(harness).data.state.status, "paused");
+  assert.match(String(lastAppendedEntry(harness).data.state.result), /overflow recovery failed/u);
+  assert.equal(lastAppendedEntry(harness).data.state.resumeAfterManualCompaction, undefined);
   assert.equal(harness.sentMessages.length, 1);
 });
 
@@ -283,7 +436,7 @@ test("manual compaction resumes only the exact recovery-eligible paused goal", a
   const { ctx, notifications } = createContext();
   await abortActiveGoal(harness, ctx);
 
-  const paused = harness.appendedEntries.at(-1).data.state;
+  const paused = lastAppendedEntry(harness).data.state;
   assert.equal(paused.status, "paused");
   assert.equal(paused.resumeAfterManualCompaction, true);
   assert.match(notifications.at(-1)?.message ?? "", /paused.*\/compact|\/compact.*paused/iu);
@@ -291,7 +444,7 @@ test("manual compaction resumes only the exact recovery-eligible paused goal", a
   await emitSequentially(harness.handlers.get("session_compact"), compactEvent("manual"), ctx);
   await new Promise((resolve) => setImmediate(resolve));
 
-  const resumed = harness.appendedEntries.at(-1).data.state;
+  const resumed = lastAppendedEntry(harness).data.state;
   assert.equal(resumed.status, "active");
   assert.equal(resumed.resumeAfterManualCompaction, undefined);
   assert.equal(harness.sentMessages.length, 2);
@@ -315,7 +468,7 @@ test("failed or cancelled manual compaction leaves the marked goal paused", asyn
 
   // Pi emits no session_compact event on failure or cancellation.
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(harness.appendedEntries.at(-1).data.state.status, "paused");
+  assert.equal(lastAppendedEntry(harness).data.state.status, "paused");
   assert.equal(harness.sentMessages.length, 1);
 });
 
@@ -326,7 +479,7 @@ test("threshold and overflow compaction never consume manual recovery eligibilit
     await abortActiveGoal(harness, ctx);
     await emitSequentially(harness.handlers.get("session_compact"), compactEvent(reason, reason === "overflow"), ctx);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(harness.appendedEntries.at(-1).data.state.status, "paused", reason);
+    assert.equal(lastAppendedEntry(harness).data.state.status, "paused", reason);
     assert.equal(harness.sentMessages.length, 1, reason);
   }
 });
@@ -335,9 +488,9 @@ test("explicit /goal pause clears pending manual recovery", async () => {
   const harness = createHarness();
   const { ctx } = createContext();
   await abortActiveGoal(harness, ctx);
-  await harness.commands.get("goal").handler("pause", ctx);
+  await getCommand(harness, "goal").handler("pause", ctx);
 
-  const explicitPause = harness.appendedEntries.at(-1).data.state;
+  const explicitPause = lastAppendedEntry(harness).data.state;
   assert.equal(explicitPause.status, "paused");
   assert.equal(explicitPause.resumeAfterManualCompaction, undefined);
 
@@ -352,7 +505,7 @@ test("explicit pause cancellation cannot become manual-compaction recovery", asy
   let abortCalls = 0;
   ctx.abort = () => { abortCalls += 1; };
   await startGoalTurn(harness, ctx, "Stay paused after explicit cancellation");
-  await harness.commands.get("goal").handler("pause", ctx);
+  await getCommand(harness, "goal").handler("pause", ctx);
   assert.equal(abortCalls, 1);
 
   await emitSequentially(harness.handlers.get("agent_end"), {
@@ -362,8 +515,8 @@ test("explicit pause cancellation cannot become manual-compaction recovery", asy
   await emitSequentially(harness.handlers.get("session_compact"), compactEvent("manual"), ctx);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(harness.appendedEntries.at(-1).data.state.status, "paused");
-  assert.equal(harness.appendedEntries.at(-1).data.state.resumeAfterManualCompaction, undefined);
+  assert.equal(lastAppendedEntry(harness).data.state.status, "paused");
+  assert.equal(lastAppendedEntry(harness).data.state.resumeAfterManualCompaction, undefined);
   assert.equal(harness.sentMessages.length, 1);
 });
 
@@ -372,9 +525,9 @@ test("editing a marked paused goal clears recovery before reactivation", async (
   const { ctx } = createContext();
   await abortActiveGoal(harness, ctx);
   ctx.ui.editor = async () => "Edited objective";
-  await harness.commands.get("goal").handler("edit", ctx);
+  await getCommand(harness, "goal").handler("edit", ctx);
 
-  const edited = harness.appendedEntries.at(-1).data.state;
+  const edited = lastAppendedEntry(harness).data.state;
   assert.equal(edited.objective, "Edited objective");
   assert.equal(edited.status, "active");
   assert.equal(edited.resumeAfterManualCompaction, undefined);
@@ -384,7 +537,7 @@ test("a terminal goal update cannot be revived by manual compaction", async () =
   const harness = createHarness();
   const { ctx } = createContext();
   await startGoalTurn(harness, ctx, "Complete before compaction");
-  await harness.tools.get("killeros_goal_update").execute(
+  await getTool(harness, "killeros_goal_update").execute(
     "complete-before-compaction",
     { status: "complete", evidence: "verified before the manual abort" },
     new AbortController().signal,
@@ -398,7 +551,7 @@ test("a terminal goal update cannot be revived by manual compaction", async () =
   await emitSequentially(harness.handlers.get("session_compact"), compactEvent("manual"), ctx);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(harness.appendedEntries.at(-1).data.state.status, "complete");
+  assert.equal(lastAppendedEntry(harness).data.state.status, "complete");
   assert.equal(harness.sentMessages.length, 1);
 });
 
@@ -412,8 +565,8 @@ test("a provider error pauses without compaction recovery eligibility", async ()
   }, ctx);
   await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
 
-  assert.equal(harness.appendedEntries.at(-1).data.state.status, "paused");
-  assert.equal(harness.appendedEntries.at(-1).data.state.resumeAfterManualCompaction, undefined);
+  assert.equal(lastAppendedEntry(harness).data.state.status, "paused");
+  assert.equal(lastAppendedEntry(harness).data.state.resumeAfterManualCompaction, undefined);
 });
 
 test("reload does not infer manual recovery from a persisted compaction entry", async () => {
@@ -477,7 +630,7 @@ test("malformed active recovery markers fail closed", async () => {
 });
 
 test("tree navigation evaluates only the destination branch", async () => {
-  const entries = [];
+  const entries: TestEntry[] = [];
   const harness = createHarness();
   const { ctx } = createContext({ entries });
   await emitSequentially(harness.handlers.get("session_start"), { type: "session_start", reason: "startup" }, ctx);

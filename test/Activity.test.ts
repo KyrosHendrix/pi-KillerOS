@@ -1,22 +1,46 @@
 import assert from "node:assert/strict";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import test from "node:test";
 import {
+  type ActivityMessage,
   formatActivityMessage,
   registerRequestActivity,
 } from "../killeros/activity.ts";
 
-const plainTheme = {
-  bold: (text) => text,
-  fg: (_color, text) => text,
+type ActivityEvent = {
+  type: string;
+  toolName?: string;
+  isError?: boolean;
+  assistantMessageEvent?: { type: string };
 };
+
+type ActivityHandler = (event: ActivityEvent, ctx: ActivityContext) => void | Promise<void>;
+type ActivityAPI = { on(event: string, handler: ActivityHandler): void };
+
+type ActivityContext = Pick<ExtensionContext, "mode" | "hasPendingMessages" | "isIdle"> & {
+  ui: Pick<ExtensionContext["ui"], "theme" | "setWorkingMessage" | "setWidget">;
+};
+
+type ActivityHarness = {
+  emit(event: string, data?: Record<string, unknown>): Promise<void>;
+  setIdle(value: boolean): void;
+  setPendingMessages(value: boolean): void;
+  widgetCalls: boolean[];
+  workingMessages: Array<string | undefined>;
+};
+
+const plainTheme = {
+  bold(text: string): string { return text; },
+  fg(_color: string, text: string): string { return text; },
+} as unknown as Theme;
 
 const styledTheme = {
-  bold: (text) => `<bold>${text}</bold>`,
-  fg: (color, text) => `<${color}>${text}</${color}>`,
-};
+  bold(text: string): string { return `<bold>${text}</bold>`; },
+  fg(color: string, text: string): string { return `<${color}>${text}</${color}>`; },
+} as unknown as Theme;
 
 test("working messages use exact causal copy and sanitize custom tool names", () => {
-  const cases = [
+  const cases: ReadonlyArray<readonly [ActivityMessage, string]> = [
     [{ kind: "prompt" }, "Mapping… (esc to interrupt · understanding request)"],
     [{ kind: "tool", toolName: "read" }, "Inspecting… (esc to interrupt · reading relevant code)"],
     [{ kind: "tool", toolName: "edit" }, "Changing… (esc to interrupt · editing)"],
@@ -41,37 +65,37 @@ test("working messages use exact causal copy and sanitize custom tool names", ()
   );
 });
 
-function createActivityHarness(mode = "tui") {
-  const handlers = new Map();
-  const workingMessages = [];
-  const widgetCalls = [];
+function createActivityHarness(mode: ActivityContext["mode"] = "tui"): ActivityHarness {
+  const handlers = new Map<string, ActivityHandler[]>();
+  const workingMessages: Array<string | undefined> = [];
+  const widgetCalls: boolean[] = [];
   let idle = true;
   let pendingMessages = false;
-  const ctx = {
+  const ctx: ActivityContext = {
     mode,
     hasPendingMessages: () => pendingMessages,
     isIdle: () => idle,
     ui: {
       theme: plainTheme,
-      setWorkingMessage: (message) => workingMessages.push(message),
+      setWorkingMessage: (message?: string) => { workingMessages.push(message); },
       setWidget: () => widgetCalls.push(true),
     },
   };
-  const api = {
-    on: (event, handler) => {
+  const api: ActivityAPI = {
+    on: (event: string, handler: ActivityHandler) => {
       const eventHandlers = handlers.get(event) ?? [];
       eventHandlers.push(handler);
       handlers.set(event, eventHandlers);
     },
   };
-  registerRequestActivity(api);
+  registerRequestActivity(api as unknown as ExtensionAPI);
 
   return {
-    emit: async (event, data = {}) => {
+    emit: async (event: string, data: Record<string, unknown> = {}) => {
       for (const handler of handlers.get(event) ?? []) await handler({ type: event, ...data }, ctx);
     },
-    setIdle: (value) => { idle = value; },
-    setPendingMessages: (value) => { pendingMessages = value; },
+    setIdle: (value: boolean) => { idle = value; },
+    setPendingMessages: (value: boolean) => { pendingMessages = value; },
     widgetCalls,
     workingMessages,
   };
@@ -125,13 +149,17 @@ test("errors, custom tools, shutdown, and non-TUI modes stay truthful", async ()
   const harness = createActivityHarness();
   await harness.emit("agent_start");
   await harness.emit("tool_execution_start", { toolName: "question\nunsafe" });
-  assert.match(harness.workingMessages.at(-1), /^Working… .*question unsafe/u);
+  const customMessage = harness.workingMessages.at(-1);
+  assert.ok(customMessage);
+  assert.match(customMessage, /^Working… .*question unsafe/u);
   await harness.emit("tool_execution_end", { toolName: "question", isError: true });
-  assert.match(harness.workingMessages.at(-1), /^Recovering…/u);
+  const recoveryMessage = harness.workingMessages.at(-1);
+  assert.ok(recoveryMessage);
+  assert.match(recoveryMessage, /^Recovering…/u);
   await harness.emit("session_shutdown");
   assert.equal(harness.workingMessages.at(-1), undefined);
 
-  for (const mode of ["rpc", "print", "json"]) {
+  for (const mode of ["rpc", "print", "json"] as const) {
     const nonTui = createActivityHarness(mode);
     await nonTui.emit("agent_start");
     await nonTui.emit("tool_execution_start", { toolName: "read" });

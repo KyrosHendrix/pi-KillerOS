@@ -4,6 +4,16 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.13] - 2026-08-21
+
+### Added
+
+- Added the process-local bare `/codex-fast` toggle for Codex priority requests, with a bold inline `Fast` footer indicator while an active Codex model uses it.
+
+### Changed
+
+- Converted all tracked test suites from JavaScript to strict TypeScript while keeping Node's built-in test runner.
+
 ## [2.0.12] - 2026-08-18
 
 ### Fixed

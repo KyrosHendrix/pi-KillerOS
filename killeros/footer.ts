@@ -1,11 +1,13 @@
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Container, Text, truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, formatTokens, padRight } from "./display.ts";
 import { goalElapsedMilliseconds } from "./goals.ts";
 import type { GoalRuntime, GoalState } from "./runtime.ts";
 import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
 
 const FOOTER_REFRESH_INTERVAL_MS = 1_000;
+const CODEX_PROVIDER = "openai-codex";
 
 export function formatCost(usd: number): string {
   if (!Number.isFinite(usd)) return "$—";
@@ -88,10 +90,19 @@ function modelDisplayName(model: NonNullable<ExtensionContext["model"]>): string
   return model.name?.trim() || model.id;
 }
 
-export function formatModel(model: ExtensionContext["model"], theme: Theme, includeProvider = true): string {
+export function formatModel(
+  model: ExtensionContext["model"],
+  theme: Theme,
+  includeProvider = true,
+  showCodexFast = false,
+): string {
   if (!model) return theme.fg("dim", "No model");
   const name = theme.fg("text", theme.bold(modelDisplayName(model)));
-  return includeProvider ? `${name} ${theme.fg("dim", formatProviderName(model.provider))}` : name;
+  const fast = showCodexFast && model.provider === CODEX_PROVIDER
+    ? theme.fg("accent", theme.bold("Fast"))
+    : "";
+  const provider = includeProvider ? theme.fg("dim", formatProviderName(model.provider)) : "";
+  return [name, fast, provider].filter(Boolean).join(" ");
 }
 
 function compactDirectory(cwd: string): string {
@@ -158,6 +169,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
   let activeTui: TUI | undefined;
   let cachedSessionCost = 0;
   let sessionCostDirty = true;
+  let unsubscribeCodexFast: (() => void) | undefined;
   const resetSessionCost = (): void => {
     cachedSessionCost = 0;
     sessionCostDirty = true;
@@ -178,6 +190,8 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
   pi.on("session_start", (_event, ctx) => {
     resetSessionCost();
     if (ctx.mode !== "tui") return;
+    unsubscribeCodexFast?.();
+    unsubscribeCodexFast = subscribeCodexFast(() => activeTui?.requestRender());
     const sessionStart = Date.now();
     currentModel = ctx.model;
     thinkingLevel = pi.getThinkingLevel() as ThinkingLevel;
@@ -210,7 +224,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
           const contextWindow = usage?.contextWindow ?? model?.contextWindow ?? 128_000;
           const context = formatContextProgress(usage?.tokens ?? null, contextWindow, theme);
           const branch = footerData.getGitBranch();
-          const signature = formatModel(model, theme);
+          const signature = formatModel(model, theme, true, isCodexFastEnabled());
           const fullDirectory = theme.fg("dim", cwd);
           const focusedDirectory = theme.fg("dim", compactDirectory(cwd));
           const goal = formatGoalFooter(goalRuntime.state, theme);
@@ -224,7 +238,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
             theme.fg("dim", formatTime(Date.now() - sessionStart)),
             theme.fg("dim", formatCost(getSessionCost(ctx))),
           ], theme);
-          const essentialModel = formatModel(model, theme, false);
+          const essentialModel = formatModel(model, theme, false, isCodexFastEnabled());
           const primaryRow = footerRowFits(primary, session, width)
             ? renderFooterRow(primary, session, width)
             : footerRowFits(primary, "", width)
@@ -241,7 +255,6 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
               : footerRowFits(branchLabel, focusedDirectory, width)
                 ? renderFooterRow(branchLabel, focusedDirectory, width)
                 : renderFooterRow(branchLabel, "", width);
-
           return renderFooter([primaryRow, secondaryRow], width, theme);
         },
       };
@@ -263,6 +276,8 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
     activeTui?.requestRender();
   });
   pi.on("session_shutdown", () => {
+    unsubscribeCodexFast?.();
+    unsubscribeCodexFast = undefined;
     resetSessionCost();
     activeTui = undefined;
     goalRuntime.requestRender = undefined;

@@ -14,6 +14,7 @@ import {
   registerCompletionNotifications,
   type CompletionNotificationDependencies,
 } from "./killeros/notifications.ts";
+import { registerCodexFastMode } from "./killeros/codex-fast.ts";
 import { registerPersonalInstructions } from "./killeros/personal-instructions.ts";
 import { registerQuestionTool } from "./killeros/question.ts";
 import { createGoalRuntime, createInitRuntime } from "./killeros/runtime.ts";
@@ -42,6 +43,7 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerSlashAutocomplete(pi, commandResolver);
   registerFooter(pi, goalRuntime);
   registerVariants(pi);
+  registerCodexFastMode(pi);
   registerInitCommand(pi, initRuntime, goalRuntime);
   registerLifecycleHooks(pi);
   const goalCompaction = registerGoalSettlement(pi, goalRuntime, initRuntime);

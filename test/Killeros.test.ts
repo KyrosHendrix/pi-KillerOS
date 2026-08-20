@@ -5,7 +5,8 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { PassThrough } from "node:stream";
 import path from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import {
@@ -28,22 +29,237 @@ import Killeros, {
   writeInitAgentsFile,
 } from "../Killeros.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
+import { resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { resolvePersonalInstructions } from "../killeros/personal-instructions.ts";
 import { resolveGitBranch } from "../killeros/shell-ui.ts";
 import { BoundedText } from "../killeros/bounded-text.ts";
 
-const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+type PackageJson = { version: string };
+type ThemeJson = { colors: Record<string, string>; vars: Record<string, string> };
+type QuestionOption = { label: string; description?: string; preview?: string; [key: string]: unknown };
+type TestStyle = {
+  bold(text: string): string;
+  fg(color: string, text: string): string;
+};
+type TestFullStyle = TestStyle & {
+  italic(text: string): string;
+  strikethrough(text: string): string;
+  underline(text: string): string;
+};
+type TestEditorTheme = {
+  borderColor(text: string): string;
+  selectList: {
+    selectedPrefix(text: string): string;
+    selectedText(text: string): string;
+    description(text: string): string;
+    scrollInfo(text: string): string;
+    noMatch(text: string): string;
+  };
+};
+type TestUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+};
+type TestEvent = Record<string, unknown>;
+type TestNotification = { message: string; level?: string };
+type TestHandlerResult = {
+  block?: boolean;
+  reason?: string;
+  systemPrompt?: string;
+  content?: Array<{ type: string; text: string }>;
+  [key: string]: unknown;
+} | undefined;
+type TestHandler = (event: TestEvent, ctx?: unknown) => TestHandlerResult | Promise<TestHandlerResult>;
+type TestRenderable = {
+  render(width: number): string[];
+  handleInput(input: string): void;
+  setAutocompleteProvider(provider: unknown): void;
+  dispose(): void;
+  focused: boolean;
+  setText(text: string): void;
+  getText(): string;
+};
+type ToolSchema = Parameters<typeof Check>[0];
+type TestResult = {
+  details: Record<string, unknown>;
+  content: Array<{ type: string; text: string }>;
+  systemPrompt?: string;
+  [key: string]: unknown;
+};
+type TestTool = {
+  name: string;
+  description: string;
+  parameters: ToolSchema;
+  renderCall(...args: unknown[]): TestRenderable;
+  renderResult(...args: unknown[]): TestRenderable;
+  execute(...args: unknown[]): Promise<TestResult>;
+};
+type TestCommand = {
+  description?: string;
+  getArgumentCompletions?: unknown;
+  handler(args: string, ctx: unknown): unknown | Promise<unknown>;
+};
+type SourceInfo = { path: string; source: string; baseDir: string };
+type TestEntry = { [key: string]: unknown };
+type TestGoalState = {
+  status: string;
+  objective?: string;
+  result: string;
+  resumeAfterManualCompaction?: boolean;
+  [key: string]: unknown;
+};
+type TestEntryData = {
+  state: TestGoalState;
+  event?: string;
+  [key: string]: unknown;
+};
+type TestAppendedEntry = { type: string; customType: string; data: TestEntryData };
+type RequiredArray<T> = Omit<T[], "at"> & { at(index: number): T };
+type TestSentMessage = {
+  message: { customType: string; content: string; display?: boolean; [key: string]: unknown };
+  options: unknown;
+};
+type TestRenderer = (...args: unknown[]) => TestRenderable;
+type TestCapturedFactory = (...args: unknown[]) => TestRenderable;
+type CompletionItem = { label: string; description: string; [key: string]: unknown };
+type CompletionResult = { prefix: string; items: CompletionItem[] };
+type TestProvider = {
+  applyCompletion(
+    lines: string[],
+    lineIndex: number,
+    cursorColumn: number,
+    item: CompletionItem,
+    prefix: string,
+  ): { lines: string[]; cursorLine: number; cursorCol: number };
+  getSuggestions(
+    lines: string[],
+    lineIndex: number,
+    cursorColumn: number,
+    signal: unknown,
+  ): Promise<CompletionResult>;
+  shouldTriggerFileCompletion(): boolean;
+  [key: string]: unknown;
+};
+type RequiredRegistry<T> = Omit<Map<string, T>, "get"> & { get(key: string): T };
+type Captured = {
+  autocompleteFactory: (current: unknown) => TestProvider;
+  currentEditorFactory: unknown;
+  editorFactory: TestCapturedFactory;
+  footerFactory: TestCapturedFactory;
+  goalPanel: { title: string; options: unknown };
+  headerFactory: TestCapturedFactory;
+  hiddenThinkingLabel?: string;
+  selection: { title: string; options: string[] };
+  statuses?: Map<string, string>;
+  themeName?: string;
+  titles?: string[];
+  widgetComponent?: unknown;
+  widgets?: Array<{ key: string; content: unknown; options: unknown }>;
+  workingIndicator?: unknown;
+  workingMessages: RequiredArray<string | undefined>;
+};
+type TestTui = { requestRender(): void; terminal: { rows: number } };
+type TestModel = {
+  id: string;
+  name?: string;
+  provider: string;
+  reasoning: boolean;
+  thinkingLevelMap?: Record<string, string>;
+  contextWindow?: number;
+  [key: string]: unknown;
+};
+type TestSessionManager = {
+  getBranch(): TestEntry[];
+  getEntries(): TestEntry[];
+  getSessionFile(): string;
+};
+type TestTuiContext = {
+  abort(): void;
+  cwd: string;
+  getContextUsage(): { tokens: number | null; contextWindow: number };
+  hasPendingMessages(): boolean;
+  hasUI: boolean;
+  isIdle(): boolean;
+  isProjectTrusted(): boolean;
+  mode: string;
+  model: TestModel;
+  reload(): Promise<void>;
+  sessionManager: TestSessionManager;
+  ui: {
+    addAutocompleteProvider(factory: unknown): void;
+    confirm(...args: unknown[]): Promise<boolean>;
+    editor(title: string, prefill?: string): Promise<string | undefined>;
+    getEditorComponent(): unknown;
+    notify(message: string, level?: string): void;
+    select(title: string, options: string[]): Promise<string | undefined>;
+    setEditorComponent(factory: unknown): void;
+    setFooter(factory: TestCapturedFactory): void;
+    setHeader(factory: TestCapturedFactory): void;
+    setStatus(key: string, text?: string): void;
+    setTheme(name: string): { success: boolean };
+    setTitle(title: string): void;
+    setHiddenThinkingLabel(label: string): void;
+    setWorkingIndicator(options: unknown): void;
+    setWorkingMessage(message?: string): void;
+    setWidget(key: string, content?: unknown, options?: unknown): void;
+    theme: Theme;
+  };
+  waitForIdle(): Promise<void>;
+};
+type VariantsContext = {
+  mode: "tui";
+  model: TestModel;
+  ui: {
+    custom(factory: (...args: unknown[]) => unknown): Promise<unknown>;
+    notify(message: string, level?: string): void;
+  };
+};
+type TestAPI = {
+  appendEntry(customType: string, data: TestEntryData): void;
+  getAllTools(): Array<TestTool & { sourceInfo: SourceInfo }>;
+  getCommands(): Array<{ name: string; description?: string; source: string; sourceInfo: SourceInfo }>;
+  getSessionName(): undefined;
+  getThinkingLevel(): string;
+  on(event: string, handler: TestHandler): void;
+  registerCommand(name: string, command: TestCommand): void;
+  registerEntryRenderer(customType: string, renderer: TestRenderer): void;
+  registerTool(tool: TestTool): void;
+  sendMessage(message: unknown, options?: unknown): void;
+  sendUserMessage(message: unknown, options?: unknown): void;
+  setThinkingLevel(level: string): void;
+  getActiveTools(): string[];
+  setActiveTools(names: string[]): void;
+};
+type HookSpawner = Parameters<typeof executeHook>[4];
+type Harness = {
+  api: TestAPI;
+  activeTools: string[];
+  appendedEntries: RequiredArray<TestAppendedEntry>;
+  commandRegistrations: string[];
+  commands: RequiredRegistry<TestCommand>;
+  entryRenderers: RequiredRegistry<TestRenderer>;
+  handlers: RequiredRegistry<TestHandler[]>;
+  sentMessages: TestSentMessage[];
+  sentUserMessages: Array<{ message: unknown; options: unknown }>;
+  tools: RequiredRegistry<TestTool>;
+};
+
+const PACKAGE_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as PackageJson).version;
 initTheme("dark", false);
 
 const theme = {
-  bold: (text) => text,
-  fg: (_color, text) => text,
-  italic: (text) => text,
-  strikethrough: (text) => text,
-  underline: (text) => text,
-};
+  bold(text: string): string { return text; },
+  fg(_color: string, text: string): string { return text; },
+  italic(text: string): string { return text; },
+  strikethrough(text: string): string { return text; },
+  underline(text: string): string { return text; },
+} as unknown as Theme;
 
-function usage(cost) {
+function usage(cost: number): TestUsage {
   return {
     input: 0,
     output: 0,
@@ -54,74 +270,102 @@ function usage(cost) {
   };
 }
 
-function createHarness() {
-  const commands = new Map();
-  const handlers = new Map();
-  const tools = new Map();
-  const entryRenderers = new Map();
-  const appendedEntries = [];
-  const sentMessages = [];
-  const sentUserMessages = [];
-  const activeTools = [];
-  const api = {
-    appendEntry: (customType, data) => appendedEntries.push({ type: "custom", customType, data }),
+function createHarness(): Harness {
+  const commands = new Map<string, TestCommand>() as RequiredRegistry<TestCommand>;
+  const commandRegistrations: string[] = [];
+  const handlers = new Map<string, TestHandler[]>() as RequiredRegistry<TestHandler[]>;
+  const tools = new Map<string, TestTool>() as RequiredRegistry<TestTool>;
+  const entryRenderers = new Map<string, TestRenderer>() as RequiredRegistry<TestRenderer>;
+  const appendedEntries = [] as unknown as RequiredArray<TestAppendedEntry>;
+  const sentMessages: TestSentMessage[] = [];
+  const sentUserMessages: Array<{ message: unknown; options: unknown }> = [];
+  const activeTools: string[] = [];
+  const sourceInfo: SourceInfo = {
+    path: `${process.cwd()}/Killeros.ts`,
+    source: "npm:killeros",
+    baseDir: process.cwd(),
+  };
+  const api: TestAPI = {
+    appendEntry: (customType: string, data: TestEntryData) => {
+      appendedEntries.push({ type: "custom", customType, data });
+    },
     getAllTools: () => [...tools.values()].map((tool) => ({
       ...tool,
-      sourceInfo: tool.sourceInfo ?? {
-        path: `${process.cwd()}/Killeros.ts`,
-        source: "npm:killeros",
-        baseDir: process.cwd(),
-      },
+      sourceInfo,
     })),
     getCommands: () => [...commands].map(([name, command]) => ({
       name,
       description: command.description,
       source: "extension",
-      sourceInfo: command.sourceInfo ?? {
-        path: `${process.cwd()}/Killeros.ts`,
-        source: "npm:killeros",
-        baseDir: process.cwd(),
-      },
+      sourceInfo,
     })),
     getSessionName: () => undefined,
     getThinkingLevel: () => "high",
-    on: (event, handler) => {
+    on: (event: string, handler: TestHandler) => {
       const eventHandlers = handlers.get(event) ?? [];
       eventHandlers.push(handler);
       handlers.set(event, eventHandlers);
     },
-    registerCommand: (name, command) => commands.set(name, command),
-    registerEntryRenderer: (customType, renderer) => entryRenderers.set(customType, renderer),
-    registerTool: (tool) => tools.set(tool.name, tool),
-    sendMessage: (message, options) => sentMessages.push({ message, options }),
-    sendUserMessage: (message, options) => sentUserMessages.push({ message, options }),
-    setThinkingLevel: () => {},
+    registerCommand: (name: string, command: TestCommand) => {
+      commandRegistrations.push(name);
+      commands.set(name, command);
+    },
+    registerEntryRenderer: (customType: string, renderer: TestRenderer) => { entryRenderers.set(customType, renderer); },
+    registerTool: (tool: TestTool) => { tools.set(tool.name, tool); },
+    sendMessage: (message: unknown, options?: unknown) => sentMessages.push({
+      message: message as TestSentMessage["message"],
+      options,
+    }),
+    sendUserMessage: (message: unknown, options?: unknown) => sentUserMessages.push({ message, options }),
+    setThinkingLevel: (_level: string) => {},
     getActiveTools: () => [...activeTools],
-    setActiveTools: (names) => activeTools.splice(0, activeTools.length, ...names),
+    setActiveTools: (names: string[]) => { activeTools.splice(0, activeTools.length, ...names); },
   };
-  Killeros(api, {
+  Killeros(api as unknown as ExtensionAPI, {
     completionNotifications: {
       store: { load: () => false, save: () => {} },
       ring: () => {},
     },
   });
   activeTools.push(...tools.keys());
-  return { api, activeTools, appendedEntries, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
+  return { api, activeTools, appendedEntries, commandRegistrations, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
+}
+
+function getCommand(harness: Harness, name: string): TestCommand {
+  const command = harness.commands.get(name);
+  assert.ok(command);
+  return command;
+}
+
+function getTool(harness: Harness, name: string): TestTool {
+  const tool = harness.tools.get(name);
+  assert.ok(tool);
+  return tool;
+}
+
+function last<T>(values: T[]): T {
+  const value = values.at(-1);
+  assert.ok(value);
+  return value;
 }
 
 async function startVariants({
   terminalRows = 40,
   current = "high",
   keybindings = getKeybindings(),
+}: {
+  terminalRows?: number;
+  current?: string;
+  keybindings?: ReturnType<typeof getKeybindings>;
 } = {}) {
   const harness = createHarness();
-  const selectedLevels = [];
-  const notifications = [];
-  const tui = { requestRender() {}, terminal: { rows: terminalRows } };
-  let component;
+  const selectedLevels: string[] = [];
+  const notifications: Array<{ message: string; level?: string }> = [];
+  const tui: TestTui = { requestRender() {}, terminal: { rows: terminalRows } };
+  let component: TestRenderable | undefined;
   harness.api.getThinkingLevel = () => current;
-  harness.api.setThinkingLevel = (level) => selectedLevels.push(level);
-  const ctx = {
+  harness.api.setThinkingLevel = (level: string) => { selectedLevels.push(level); };
+  const ctx: VariantsContext = {
     mode: "tui",
     model: {
       provider: "test",
@@ -130,13 +374,13 @@ async function startVariants({
       thinkingLevelMap: { xhigh: "xhigh", max: "max" },
     },
     ui: {
-      custom: (factory) => new Promise((resolve) => {
-        component = factory(tui, theme, keybindings, resolve);
+      custom: (factory: (...args: unknown[]) => unknown) => new Promise((resolve) => {
+        component = factory(tui, theme, keybindings, resolve) as TestRenderable;
       }),
-      notify: (message, level) => notifications.push({ message, level }),
+      notify: (message: string, level?: string) => { notifications.push({ message, level }); },
     },
   };
-  const result = harness.commands.get("variants").handler("", ctx);
+  const result = getCommand(harness, "variants").handler("", ctx);
   assert.ok(component);
   return { ...harness, component, notifications, result, selectedLevels, tui };
 }
@@ -153,8 +397,129 @@ test("all KillerOS tools expose provider-compatible object schemas", () => {
   }
 });
 
+test("/codex-fast is registered once and toggles Codex priority requests", async () => {
+  resetCodexFastState();
+  const harness = createHarness();
+  assert.equal(harness.commandRegistrations.filter((name) => name === "codex-fast").length, 1);
+
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const { ctx } = createTuiContext();
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  const command = harness.commands.get("codex-fast");
+  assert.ok(command);
+  assert.equal(command.getArgumentCompletions, undefined);
+
+  const requestHandler = harness.handlers.get("before_provider_request")?.at(-1);
+  assert.ok(requestHandler);
+  const payload = { model: "gpt-5.5", input: [] };
+  const codexContext = { ...ctx, model: { ...ctx.model, provider: "openai-codex" } };
+  assert.strictEqual(await requestHandler({ type: "before_provider_request", payload }, codexContext), payload);
+
+  await command.handler("", ctx);
+  assert.deepEqual(notifications.at(-1), { message: "Fast enabled", level: "info" });
+  assert.deepEqual(
+    await requestHandler({ type: "before_provider_request", payload }, codexContext),
+    { model: "gpt-5.5", input: [], service_tier: "priority" },
+  );
+
+  const nonCodexPayload = { model: "gpt-5.5", input: [] };
+  assert.strictEqual(
+    await requestHandler({ type: "before_provider_request", payload: nonCodexPayload }, {
+      ...ctx,
+      model: { ...ctx.model, provider: "openai" },
+    }),
+    nonCodexPayload,
+  );
+
+  await command.handler("", ctx);
+  assert.deepEqual(notifications.at(-1), { message: "Fast disabled", level: "info" });
+  assert.strictEqual(await requestHandler({ type: "before_provider_request", payload }, codexContext), payload);
+
+  ctx.mode = "rpc";
+  await command.handler("", ctx);
+  assert.deepEqual(notifications.at(-1), { message: "Fast enabled", level: "info" });
+});
+
+test("/codex-fast rejects arguments without changing its state", async () => {
+  resetCodexFastState();
+  const harness = createHarness();
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const { ctx } = createTuiContext();
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  const command = harness.commands.get("codex-fast");
+  const requestHandler = harness.handlers.get("before_provider_request")?.at(-1);
+  assert.ok(command);
+  assert.ok(requestHandler);
+
+  const payload = { model: "gpt-5.5", input: [] };
+  const codexContext = { ...ctx, model: { ...ctx.model, provider: "openai-codex" } };
+  await command.handler("", ctx);
+  await command.handler("status", ctx);
+  assert.deepEqual(notifications.at(-1), { message: "Usage: /codex-fast", level: "error" });
+  assert.deepEqual(
+    await requestHandler({ type: "before_provider_request", payload }, codexContext),
+    { model: "gpt-5.5", input: [], service_tier: "priority" },
+  );
+
+  await command.handler("off now", ctx);
+  assert.deepEqual(notifications.at(-1), { message: "Usage: /codex-fast", level: "error" });
+  assert.deepEqual(
+    await requestHandler({ type: "before_provider_request", payload }, codexContext),
+    { model: "gpt-5.5", input: [], service_tier: "priority" },
+  );
+});
+
+test("/codex-fast state survives extension reloads and renders inline for Codex", async () => {
+  resetCodexFastState();
+  const first = createHarness();
+  const firstContext = createTuiContext().ctx;
+  const sessionManager = firstContext.sessionManager;
+  firstContext.model = { ...firstContext.model, provider: "openai-codex" };
+  await first.commands.get("codex-fast").handler("", firstContext);
+
+  const second = createHarness();
+  const { captured, ctx, tui } = createTuiContext([], theme, sessionManager);
+  ctx.model = { ...ctx.model, provider: "openai-codex" };
+  const requestHandler = second.handlers.get("before_provider_request")?.at(-1);
+  assert.ok(requestHandler);
+  const payload = { model: "gpt-5.5", input: [] };
+  assert.deepEqual(
+    await requestHandler({ type: "before_provider_request", payload }, ctx),
+    { model: "gpt-5.5", input: [], service_tier: "priority" },
+  );
+
+  for (const handler of second.handlers.get("session_start") ?? []) await handler({}, ctx);
+  assert.equal(captured.statuses?.size ?? 0, 0);
+  const semanticTheme: TestStyle = {
+    ...theme,
+    bold: (text: string) => `<bold>${text}</bold>`,
+    fg: (color: string, text: string) => color === "accent" ? `<accent>${text}</accent>` : text,
+  } as unknown as Theme;
+  const footer = captured.footerFactory(tui, semanticTheme, {
+    getGitBranch: () => undefined,
+    getExtensionStatuses: () => new Map(),
+    onBranchChange: () => () => {},
+  });
+  const enabledRender = footer.render(120).join("\n");
+  assert.match(enabledRender, /Test model.*Fast.*OpenAI/u);
+  assert.match(enabledRender, /<accent><bold>Fast<\/bold><\/accent>/u);
+  assert.equal(footer.render(120).length, 3);
+
+  for (const handler of second.handlers.get("model_select") ?? []) {
+    handler({ model: { ...ctx.model, provider: "openai" } });
+  }
+  assert.doesNotMatch(footer.render(120).join("\n"), /Fast/u);
+
+  for (const handler of second.handlers.get("model_select") ?? []) {
+    handler({ model: { ...ctx.model, provider: "openai-codex" } });
+  }
+  assert.match(footer.render(120).join("\n"), /Test model.*Fast.*OpenAI/u);
+  footer.dispose();
+  resetCodexFastState();
+});
+
 test("question exposes a Google-compatible optional selection mode", () => {
-  const tool = createHarness().tools.get("question");
+  const tool = getTool(createHarness(), "question");
   const schema = JSON.parse(JSON.stringify(tool.parameters));
 
   assert.deepEqual(schema.properties.mode, {
@@ -173,7 +538,7 @@ test("question exposes a Google-compatible optional selection mode", () => {
 });
 
 test("question accepts omitted or explicit 1/1 single-select bounds before rendering and execution", async () => {
-  const tool = createHarness().tools.get("question");
+  const tool = getTool(createHarness(), "question");
   const acceptedBounds = [
     {},
     { mode: "single" },
@@ -204,15 +569,15 @@ test("question accepts omitted or explicit 1/1 single-select bounds before rende
 
 test("/variants validates direct levels and model support", async () => {
   const { api, commands } = createHarness();
-  const selectedLevels = [];
-  const notifications = [];
+  const selectedLevels: string[] = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   api.setThinkingLevel = (level) => selectedLevels.push(level);
   const ctx = {
     mode: "tui",
     model: { provider: "test", id: "reasoner", reasoning: true },
     ui: {
       custom: () => { throw new Error("direct variants must not open the selector"); },
-      notify: (message, level) => notifications.push({ message, level }),
+      notify: (message: string, level?: string) => notifications.push({ message, level }),
     },
   };
   const variants = commands.get("variants");
@@ -258,7 +623,7 @@ test("/variants stays within terminal bounds and preserves focus across resizes"
   const fullLayout = variants.component.render(24);
   assert.equal(fullLayout.length, 12);
   assert.match(fullLayout.join("\n"), /→ Extra High/u);
-  assert.match(fullLayout.at(-1), /^─+$/u);
+  assert.match(fullLayout.at(-1) ?? "", /^─+$/u);
   assert.deepEqual(variants.component.render(0), []);
   variants.component.handleInput("\r");
   await variants.result;
@@ -359,14 +724,25 @@ test("goal updates use a Google-compatible status enum", () => {
   }
 });
 
-async function emitSequentially(handlers, event, ctx) {
-  const results = [];
+async function emitSequentially(
+  handlers: TestHandler[] | undefined,
+  event: TestEvent,
+  ctx: unknown,
+): Promise<TestHandlerResult[]> {
+  const results: TestHandlerResult[] = [];
   for (const handler of handlers ?? []) {
     const result = await handler(event, ctx);
     results.push(result);
-    if (result?.block) break;
+    if (typeof result === "object" && result !== null && "block" in result && result.block === true) break;
   }
   return results;
+}
+
+function resultReason(results: TestHandlerResult[]): string {
+  const result = results.find((candidate) => candidate?.block);
+  const reason = result?.reason;
+  assert.ok(reason);
+  return reason;
 }
 
 const validGeneratedGuidance = `# AGENTS.md
@@ -384,15 +760,23 @@ Touch only files required by the task.
 Define and run exact verification.
 `;
 
-async function emitSuccessfulInitWrite(handlers, tools, ctx, content = validGeneratedGuidance, toolCallId = "init-write") {
+async function emitSuccessfulInitWrite(
+  handlers: Map<string, TestHandler[]>,
+  tools: RequiredRegistry<TestTool>,
+  ctx: unknown,
+  content: string = validGeneratedGuidance,
+  toolCallId = "init-write",
+): Promise<void> {
   const input = { content };
   const callResults = await emitSequentially(handlers.get("tool_call"), {
     toolCallId,
     toolName: "killeros_init_write",
     input,
   }, ctx);
-  assert.equal(callResults.some((result) => result?.block), false);
-  await tools.get("killeros_init_write").execute(
+  assert.equal(callResults.some((result) => (
+    typeof result === "object" && result !== null && "block" in result && result.block === true
+  )), false);
+  await getTool({ tools } as Harness, "killeros_init_write").execute(
     toolCallId,
     input,
     new AbortController().signal,
@@ -401,7 +785,7 @@ async function emitSuccessfulInitWrite(handlers, tools, ctx, content = validGene
   );
 }
 
-async function waitFor(predicate) {
+async function waitFor(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -409,31 +793,31 @@ async function waitFor(predicate) {
   assert.fail("timed out waiting for asynchronous test state");
 }
 
-async function removeDirectoryEventually(directory) {
+async function removeDirectoryEventually(directory: string): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       rmSync(directory, { recursive: true, force: true });
       return;
     } catch (error) {
-      if (!["EPERM", "EBUSY"].includes(error.code)) throw error;
+      if (!(error instanceof Error) || !("code" in error) || !["EPERM", "EBUSY"].includes(String(error.code))) throw error;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
   rmSync(directory, { recursive: true, force: true });
 }
 
-async function emitGoalStart(handlers, ctx) {
-  for (const handler of handlers.get("before_agent_start")) {
+async function emitGoalStart(handlers: Map<string, TestHandler[]>, ctx: unknown): Promise<void> {
+  for (const handler of handlers.get("before_agent_start") ?? []) {
     await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
   }
 }
 
-function createFileSymlinkOrSkip(t, target, linkPath) {
+function createFileSymlinkOrSkip(t: TestContext, target: string, linkPath: string): boolean {
   try {
     symlinkSync(target, linkPath, "file");
     return true;
   } catch (error) {
-    if (["EACCES", "EPERM"].includes(error.code)) {
+    if (error instanceof Error && "code" in error && ["EACCES", "EPERM"].includes(String(error.code))) {
       t.skip("file symlinks are unavailable in this environment");
       return false;
     }
@@ -441,10 +825,18 @@ function createFileSymlinkOrSkip(t, target, linkPath) {
   }
 }
 
-function createTuiContext(entries = [], uiTheme = theme) {
-  const captured = {};
-  const tui = { requestRender() {}, terminal: { rows: 40 } };
-  const ctx = {
+function createTuiContext(
+  entries: TestEntry[] = [],
+  uiTheme: Theme = theme,
+  sessionManager: TestSessionManager = {
+  getBranch: () => entries,
+  getEntries: () => entries,
+  getSessionFile: () => path.join(process.cwd(), "session.jsonl"),
+  },
+): { captured: Captured; ctx: TestTuiContext; tui: TestTui } {
+  const captured = {} as Captured;
+  const tui: TestTui = { requestRender() {}, terminal: { rows: 40 } };
+  const ctx: TestTuiContext = {
     abort() {},
     cwd: process.cwd(),
     getContextUsage: () => ({ tokens: 1_000, contextWindow: 128_000 }),
@@ -459,45 +851,51 @@ function createTuiContext(entries = [], uiTheme = theme) {
       provider: "test",
       reasoning: true,
     },
-    sessionManager: {
-      getBranch: () => entries,
-      getEntries: () => entries,
-      getSessionFile: () => path.join(process.cwd(), "session.jsonl"),
-    },
+    reload: async () => {},
+    sessionManager,
     ui: {
-      addAutocompleteProvider: (factory) => { captured.autocompleteFactory = factory; },
+      addAutocompleteProvider: (factory: unknown) => {
+        captured.autocompleteFactory = factory as (current: unknown) => TestProvider;
+      },
       confirm: async () => true,
-      editor: async (_title, prefill) => prefill,
+      editor: async (_title: string, prefill?: string) => prefill,
       notify() {},
-      select: async (title, options) => {
+      select: async (title: string, options: string[]) => {
         captured.selection = { title, options };
         return undefined;
       },
       getEditorComponent: () => captured.currentEditorFactory,
-      setEditorComponent: (factory) => {
-        captured.editorFactory = factory;
+      setEditorComponent: (factory: unknown) => {
+        captured.editorFactory = factory as TestCapturedFactory;
         captured.currentEditorFactory = factory;
       },
-      setFooter: (factory) => { captured.footerFactory = factory; },
-      setHeader: (factory) => { captured.headerFactory = factory; },
-      setTitle: (title) => {
+      setFooter: (factory: TestCapturedFactory) => { captured.footerFactory = factory; },
+      setStatus: (key: string, text?: string) => {
+        captured.statuses ??= new Map();
+        if (text === undefined) captured.statuses.delete(key);
+        else captured.statuses.set(key, text);
+      },
+      setHeader: (factory: TestCapturedFactory) => { captured.headerFactory = factory; },
+      setTitle: (title: string) => {
         captured.titles ??= [];
         captured.titles.push(title);
       },
-      setTheme: (name) => {
+      setTheme: (name: string) => {
         captured.themeName = name;
         return { success: true };
       },
-      setHiddenThinkingLabel: (label) => { captured.hiddenThinkingLabel = label; },
-      setWorkingIndicator: (options) => { captured.workingIndicator = options; },
-      setWorkingMessage: (message) => {
-        captured.workingMessages ??= [];
+      setHiddenThinkingLabel: (label: string) => { captured.hiddenThinkingLabel = label; },
+      setWorkingIndicator: (options: unknown) => { captured.workingIndicator = options; },
+      setWorkingMessage: (message?: string) => {
+        captured.workingMessages ??= [] as unknown as RequiredArray<string | undefined>;
         captured.workingMessages.push(message);
       },
-      setWidget: (key, content, options) => {
+      setWidget: (key: string, content?: unknown, options?: unknown) => {
         captured.widgets ??= [];
         captured.widgets.push({ key, content, options });
-        if (typeof content === "function") captured.widgetComponent = content(tui, uiTheme);
+        if (typeof content === "function") {
+          captured.widgetComponent = (content as (tui: TestTui, theme: Theme) => unknown)(tui, uiTheme);
+        }
         if (content === undefined) captured.widgetComponent = undefined;
       },
       theme: uiTheme,
@@ -505,6 +903,19 @@ function createTuiContext(entries = [], uiTheme = theme) {
     waitForIdle: async () => {},
   };
   return { captured, ctx, tui };
+}
+
+function createEditorTheme(): TestEditorTheme {
+  return {
+    borderColor: (text) => text,
+    selectList: {
+      selectedPrefix: (text) => text,
+      selectedText: (text) => text,
+      description: (text) => text,
+      scrollInfo: (text) => text,
+      noMatch: (text) => text,
+    },
+  };
 }
 
 test("BoundedText limits collapsed rows and preserves full expanded text", () => {
@@ -518,26 +929,32 @@ test("BoundedText limits collapsed rows and preserves full expanded text", () =>
   assert.match(expanded.at(-1) ?? "", /line 20/u);
 });
 
-async function startQuestion(
-  tool,
-  options = [{ label: "Alpha" }],
+function startQuestion(
+  tool: TestTool,
+  options: QuestionOption[] = [{ label: "Alpha" }],
   questionText = "Choose",
   terminalRows = 40,
   keybindings = getKeybindings(),
-  extraParams = {},
-) {
-  let component;
-  let finish;
-  const notifications = [];
-  const tui = { requestRender() {}, terminal: { rows: terminalRows } };
+  extraParams: Record<string, unknown> = {},
+): {
+  component: TestRenderable;
+  finish: (value: unknown) => void;
+  result: Promise<TestResult>;
+  notifications: RequiredArray<TestNotification>;
+  tui: TestTui;
+} {
+  let component: TestRenderable | undefined;
+  let finish: ((value: unknown) => void) | undefined;
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const tui: TestTui = { requestRender() {}, terminal: { rows: terminalRows } };
   const ctx = {
-    mode: "tui",
+    mode: "tui" as const,
     ui: {
-      custom: (factory) => new Promise((resolve) => {
+      custom: (factory: (...args: unknown[]) => unknown) => new Promise((resolve) => {
         finish = resolve;
-        component = factory(tui, theme, keybindings, resolve);
+        component = factory(tui, theme, keybindings, resolve) as TestRenderable;
       }),
-      notify: (message, level) => notifications.push({ message, level }),
+      notify: (message: string, level?: string) => notifications.push({ message, level }),
     },
   };
   const result = tool.execute(
@@ -553,38 +970,40 @@ async function startQuestion(
 }
 
 test("uses one neutral background for every tool state", () => {
-  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8"));
+  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8")) as ThemeJson;
   assert.equal(killerosTheme.colors.toolPendingBg, "surface");
   assert.equal(killerosTheme.colors.toolSuccessBg, "surface");
   assert.equal(killerosTheme.colors.toolErrorBg, "surface");
 });
 
 test("uses achromatic neutrals without changing the coral accent", () => {
-  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8"));
+  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8")) as ThemeJson;
   assert.equal(killerosTheme.vars.coral, "#d77757");
   assert.equal(killerosTheme.vars.coralBright, "#e58b6d");
 
   for (const name of ["canvas", "surface", "surfaceRaised", "line", "lineMuted", "text", "muted", "dim"]) {
-    const [, red, green, blue] = /^#(..)(..)(..)$/.exec(killerosTheme.vars[name]);
+    const match = /^#(..)(..)(..)$/.exec(killerosTheme.vars[name]);
+    assert.ok(match);
+    const [, red, green, blue] = match;
     assert.equal(red, green, `${name} must not have a color cast`);
     assert.equal(green, blue, `${name} must not have a color cast`);
   }
 });
 
-function relativeLuminance(hex) {
+function relativeLuminance(hex: string): number {
   const channels = [1, 3, 5]
     .map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255)
     .map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
   return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
 }
 
-function contrastRatio(foreground, background) {
+function contrastRatio(foreground: string, background: string): number {
   const values = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a);
   return (values[0] + 0.05) / (values[1] + 0.05);
 }
 
 test("reasoning text meets normal-text contrast on KillerOS surfaces", () => {
-  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8"));
+  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8")) as ThemeJson;
   for (const role of ["thinkingMinimal", "thinkingLow"]) {
     const foreground = killerosTheme.colors[role].startsWith("#")
       ? killerosTheme.colors[role]
@@ -605,7 +1024,7 @@ test("registers /exit without conflicting with Pi's /quit", async () => {
   assert.equal(commands.has("exit"), true);
   assert.equal(commands.has("quit"), false);
 
-  const calls = [];
+  const calls: string[] = [];
   await commands.get("exit").handler("", {
     isIdle: () => false,
     abort: () => calls.push("abort"),
@@ -624,9 +1043,9 @@ test("registers /exit without conflicting with Pi's /quit", async () => {
 
 test("/clear confirms before aborting and waits before creating a session", async () => {
   const { commands } = createHarness();
-  const calls = [];
-  let releaseIdle;
-  const idle = new Promise((resolve) => { releaseIdle = resolve; });
+  const calls: string[] = [];
+  let releaseIdle: () => void = () => {};
+  const idle = new Promise<void>((resolve) => { releaseIdle = resolve; });
   const run = commands.get("clear").handler("", {
     hasUI: true,
     isIdle: () => false,
@@ -656,7 +1075,7 @@ test("/clear confirms before aborting and waits before creating a session", asyn
 test("registers /goal and completes only through the model goal tool", async () => {
   const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
 
   assert.equal(commands.has("goal"), true);
@@ -785,7 +1204,7 @@ test("/goal custom-message continuations enter goal turns without before_agent_s
   await commands.get("goal").handler("Audit the host continuation lifecycle", ctx);
 
   assert.match(sentMessages[0].message.content, /Status: active · Turn: 1/u);
-  assert.equal(appendedEntries.filter((entry) => entry.data.event === "turn").at(-1).data.state.turns, 1);
+  assert.equal(last(appendedEntries.filter((entry) => entry.data.event === "turn")).data.state.turns, 1);
   const first = await tools.get("killeros_goal_update").execute(
     "first-host-turn",
     { status: "blocked", blockerKey: "host-lifecycle", evidence: "The same external blocker remains" },
@@ -809,7 +1228,7 @@ test("/goal custom-message continuations enter goal turns without before_agent_s
   await emitSequentially(handlers.get("agent_settled"), {}, ctx);
 
   assert.match(sentMessages[1].message.content, /Status: active · Turn: 2/u);
-  assert.equal(appendedEntries.filter((entry) => entry.data.event === "turn").at(-1).data.state.turns, 2);
+  assert.equal(last(appendedEntries.filter((entry) => entry.data.event === "turn")).data.state.turns, 2);
   const second = await tools.get("killeros_goal_update").execute(
     "second-host-turn",
     { status: "blocked", blockerKey: "host-lifecycle", evidence: "The blocker remains on the next turn" },
@@ -847,7 +1266,7 @@ test("/goal pauses when a dispatched continuation settles without an agent resul
   const { ctx } = createTuiContext();
   await commands.get("goal").handler("Start reliably", ctx);
   await emitSequentially(handlers.get("agent_settled"), {}, ctx);
-  const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
+  const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
   assert.equal(lastGoalEntry.data.state.status, "paused");
   assert.match(lastGoalEntry.data.state.result, /without an agent result/u);
   assert.equal(lastGoalEntry.data.state.turns, 1);
@@ -857,8 +1276,8 @@ test("/goal does not report start, resume, or edit success after dispatch failur
   for (const control of ["start", "resume", "edit"]) {
     const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();
-    const notifications = [];
-    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    ctx.ui.notify = (message: string, level?: string) => notifications.push({ message, level });
 
     if (control === "start") {
       api.sendMessage = () => { throw new Error("provider unavailable"); };
@@ -881,7 +1300,7 @@ test("/goal does not report start, resume, or edit success after dispatch failur
       }
     }
 
-    const state = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1).data.state;
+    const state = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal")).data.state;
     assert.equal(state.status, "paused", `${control} failure must pause the goal`);
     assert.match(state.result, /continuation could not start: provider unavailable/u);
     assert.equal(sentMessages.length, control === "start" ? 0 : 1);
@@ -893,7 +1312,7 @@ test("/goal does not report start, resume, or edit success after dispatch failur
 test("/goal reports start, resume, and edit success after dispatch", async () => {
   const { commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
 
   await commands.get("goal").handler("Original objective", ctx);
@@ -930,7 +1349,7 @@ test("/goal waits for an unrelated active run to settle before dispatch", async 
 test("/goal does not claim success when a pending message defers dispatch", async () => {
   const { appendedEntries, commands, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   ctx.hasPendingMessages = () => true;
 
@@ -951,7 +1370,7 @@ test("/goal pauses after an aborted or failed goal turn", async () => {
     messages: [{ role: "assistant", stopReason: "error", errorMessage: "provider unavailable" }],
   }, ctx);
   await emitSequentially(handlers.get("agent_settled"), {}, ctx);
-  const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
+  const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
   assert.equal(lastGoalEntry.data.state.status, "paused");
   assert.match(lastGoalEntry.data.state.result, /provider unavailable/u);
 });
@@ -973,7 +1392,7 @@ test("/goal edit, pause, resume, and clear persist explicit transitions", async 
   }
   ctx.ui.editor = async () => "Edited objective";
   await commands.get("goal").handler("edit", ctx);
-  const editEntry = appendedEntries.filter((entry) => entry.data.event === "edit").at(-1);
+  const editEntry = last(appendedEntries.filter((entry) => entry.data.event === "edit"));
   assert.equal(editEntry.data.state.objective, "Edited objective");
   assert.equal(appendedEntries.at(-1).data.state.status, "active");
 
@@ -986,8 +1405,8 @@ test("/goal pause and clear stop continuation when their first session write fai
   for (const control of ["pause", "clear"]) {
     const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();
-    const notifications = [];
-    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    ctx.ui.notify = (message: string, level?: string) => notifications.push({ message, level });
     await commands.get("goal").handler(`Safely ${control} this goal`, ctx);
     assert.equal(sentMessages.length, 1);
 
@@ -1002,7 +1421,7 @@ test("/goal pause and clear stop continuation when their first session write fai
     };
 
     await commands.get("goal").handler(control, ctx);
-    const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
+    const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
     assert.equal(lastGoalEntry.data.state.status, "paused");
     assert.match(lastGoalEntry.data.state.result, new RegExp(`requested ${control} could not be saved`, "u"));
     assert.match(notifications.at(-1).message, /Automatic continuation is stopped/u);
@@ -1018,7 +1437,7 @@ test("/goal pause and clear stop continuation when their first session write fai
 test("/goal pause can save an in-memory fallback after persistence recovers", async () => {
   const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   await commands.get("goal").handler("Pause even if storage fails", ctx);
 
@@ -1029,7 +1448,7 @@ test("/goal pause can save an in-memory fallback after persistence recovers", as
 
   api.appendEntry = appendEntry;
   await commands.get("goal").handler("pause", ctx);
-  const lastGoalEntry = appendedEntries.filter((entry) => entry.customType === "killeros-goal").at(-1);
+    const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
   assert.equal(lastGoalEntry.data.event, "pause");
   assert.equal(lastGoalEntry.data.state.status, "paused");
   assert.match(notifications.at(-1).message, /Goal pause saved/u);
@@ -1044,7 +1463,7 @@ test("/goal pause can save an in-memory fallback after persistence recovers", as
 test("an active goal blocks /init before repository work starts", async () => {
   const { commands, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   await commands.get("goal").handler("Finish this first", ctx);
   await commands.get("init").handler("", ctx);
@@ -1077,7 +1496,7 @@ test("/goal restores only the current branch and resumes active saved work", asy
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(sentMessages.length, 1);
 
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   ctx.mode = "rpc";
   await commands.get("goal").handler("", ctx);
@@ -1130,7 +1549,7 @@ test("goal update renders the real tool error instead of an undefined blocker au
 test("/goal validates objectives, reserves control words, and requires blocker audits during goal turns", async () => {
   const { commands, handlers, tools } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
 
   await commands.get("goal").handler("x".repeat(4_001), ctx);
@@ -1170,7 +1589,7 @@ test("/goal validates objectives, reserves control words, and requires blocker a
 test("a goal blocks only after the same blocker is recorded on three consecutive turns", async () => {
   const { appendedEntries, commands, handlers, tools } = createHarness();
   const { ctx } = createTuiContext();
-  const blocked = (id, blockerKey = "missing-credential") => tools.get("killeros_goal_update").execute(
+  const blocked = (id: string, blockerKey = "missing-credential"): Promise<TestResult> => tools.get("killeros_goal_update").execute(
     id,
     { status: "blocked", blockerKey, evidence: `Evidence for ${blockerKey}` },
     new AbortController().signal,
@@ -1245,7 +1664,7 @@ test("resume, edit, and completion clear blocker audit progress", async () => {
 test("changed and skipped blocker turns reset the blocker streak", async () => {
   const { appendedEntries, commands, handlers, tools } = createHarness();
   const { ctx } = createTuiContext();
-  const blocked = (blockerKey) => tools.get("killeros_goal_update").execute(
+  const blocked = (blockerKey: string): Promise<TestResult> => tools.get("killeros_goal_update").execute(
     blockerKey,
     { status: "blocked", blockerKey, evidence: "Repeated evidence" },
     new AbortController().signal,
@@ -1327,7 +1746,7 @@ test("saved goals stay inactive in print and JSON modes", async () => {
     const { activeTools, appendedEntries, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext(entries);
     ctx.mode = mode;
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
     for (const handler of handlers.get("session_start")) await handler({ reason: "resume" }, ctx);
     await new Promise((resolve) => setImmediate(resolve));
@@ -1350,7 +1769,7 @@ test("saved goals stay inactive in print and JSON modes", async () => {
 test("/goal edit resumes after invalid input and pauses after persistence failure", async () => {
   const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   await commands.get("goal").handler("Keep the original objective", ctx);
   for (const handler of handlers.get("before_agent_start")) {
@@ -1381,14 +1800,14 @@ test("/goal pause and clear persist terminal state before stopping an active goa
       const { api, commands, handlers, sentMessages } = createHarness();
       const { ctx } = createTuiContext();
       ctx.mode = mode;
-      const calls = [];
+      const calls: string[] = [];
       const appendEntry = api.appendEntry;
       api.appendEntry = (customType, data) => {
         appendEntry(customType, data);
         if (data.event === control) calls.push(`persist:${data.state?.status ?? "clear"}`);
       };
       ctx.abort = () => calls.push("abort");
-      ctx.waitForIdle = async () => calls.push("waitForIdle");
+      ctx.waitForIdle = async () => { calls.push("waitForIdle"); };
       ctx.ui.notify = () => calls.push("notify");
 
       await commands.get("goal").handler(`Immediately ${control} active work`, ctx);
@@ -1407,9 +1826,9 @@ test("/goal pause and clear persist terminal state before stopping an active goa
 test("/goal pause stops a scheduled continuation before its goal turn starts", async () => {
   const { commands, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const calls = [];
+  const calls: string[] = [];
   ctx.abort = () => calls.push("abort");
-  ctx.waitForIdle = async () => calls.push("waitForIdle");
+  ctx.waitForIdle = async () => { calls.push("waitForIdle"); };
   await commands.get("goal").handler("Pause scheduled work", ctx);
   assert.equal(sentMessages.length, 1);
   calls.length = 0;
@@ -1447,7 +1866,7 @@ test("saved goal cancellation remains terminal when host stopping fails", async 
   for (const control of ["pause", "clear"]) {
     const { appendedEntries, commands, handlers } = createHarness();
     const { ctx } = createTuiContext();
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
     await commands.get("goal").handler(`Persist ${control} before abort`, ctx);
     await emitGoalStart(handlers, ctx);
@@ -1474,7 +1893,7 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
   };
-  const restore = async (blockerAudit) => {
+  const restore = async (blockerAudit: unknown) => {
     const entries = [{
       type: "custom",
       customType: "killeros-goal",
@@ -1534,7 +1953,7 @@ test("/goal edit reports persistence failure for every goal status", async () =>
     const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: status, state } }];
     const { api, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext(entries);
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
     ctx.ui.editor = async () => "Edited objective";
     await emitSequentially(handlers.get("session_start"), { reason: "resume" }, ctx);
@@ -1554,7 +1973,7 @@ test("/goal edit reports persistence failure for every goal status", async () =>
 test("failed goal replacement pauses the old active goal and dispatches neither objective", async () => {
   const { api, commands, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   await commands.get("goal").handler("Old objective", ctx);
   api.appendEntry = () => { throw new Error("replacement write failed"); };
@@ -1585,7 +2004,7 @@ test("failed replacement preserves paused and blocked goals", async () => {
     const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: status, state } }];
     const { api, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext(entries);
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
     await emitSequentially(handlers.get("session_start"), { reason: "resume" }, ctx);
     api.appendEntry = () => { throw new Error(`${status} replacement failed`); };
@@ -1602,7 +2021,7 @@ test("failed replacement preserves paused and blocked goals", async () => {
 test("first goal write failure reports the error and dispatches nothing", async () => {
   const { api, commands, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   api.appendEntry = () => { throw new Error("first write failed"); };
   await commands.get("goal").handler("New objective", ctx);
@@ -1613,7 +2032,7 @@ test("first goal write failure reports the error and dispatches nothing", async 
 test("completed goals leave the footer but remain available through /goal", async () => {
   const { commands, handlers, tools } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   for (const handler of handlers.get("session_start")) await handler({}, ctx);
   await commands.get("goal").handler("Finish cleanly", ctx);
@@ -1670,13 +2089,13 @@ test("active, paused, and blocked goals replace the footer path with exact statu
   const state = appendedEntries.at(-1).data.state;
   const yellowTheme = {
     ...theme,
-    fg: (color, text) => color === "warning" ? `\x1B[33m${text}\x1B[39m` : text,
-  };
+    fg: (color: string, text: string) => color === "warning" ? `\x1B[33m${text}\x1B[39m` : text,
+  } as unknown as Theme;
   const footer = captured.footerFactory(tui, yellowTheme, {
     getGitBranch: () => "main",
     onBranchChange: () => () => {},
   });
-  const stripAnsi = (line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
+  const stripAnsi = (line: string) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
 
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 10_000;
@@ -1720,14 +2139,14 @@ test("registers /init as a native command and runs the hidden generation workflo
     assert.equal(tools.has("init"), false);
     assert.equal(tools.has("init_survey"), false);
 
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     let reloadCalls = 0;
     const ctx = {
       cwd: directory,
       isProjectTrusted: () => true,
       mode: "tui",
       reload: async () => { reloadCalls += 1; },
-      ui: { notify: (message, level) => notifications.push({ message, level }) },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
       waitForIdle: async () => {},
     };
     const initRun = commands.get("init").handler("", ctx);
@@ -1767,16 +2186,16 @@ test("/init rejects re-entry while the first invocation waits for idle", async (
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-starting-"));
   try {
     const { commands, handlers, sentMessages } = createHarness();
-    const notifications = [];
-    let releaseIdle;
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    let releaseIdle: () => void = () => {};
     let waitCalls = 0;
-    const idle = new Promise((resolve) => { releaseIdle = resolve; });
+    const idle = new Promise<void>((resolve) => { releaseIdle = resolve; });
     const ctx = {
       cwd: directory,
       isProjectTrusted: () => true,
       mode: "tui",
       reload: async () => {},
-      ui: { notify: (message, level) => notifications.push({ message, level }) },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
       waitForIdle: async () => { waitCalls += 1; await idle; },
     };
 
@@ -1801,9 +2220,9 @@ test("/init cancels preflight when its session shuts down", async () => {
   try {
     const { commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();
-    let releaseIdle;
+    let releaseIdle: () => void = () => {};
     let waiting = false;
-    const idle = new Promise((resolve) => { releaseIdle = resolve; });
+    const idle = new Promise<void>((resolve) => { releaseIdle = resolve; });
     ctx.cwd = directory;
     ctx.reload = async () => {};
     ctx.waitForIdle = async () => { waiting = true; await idle; };
@@ -1831,7 +2250,7 @@ test("cancelled /init preflight cannot overwrite a newer session", { timeout: 10
     writeFileSync(path.join(fastDirectory, "package.json"), '{"name":"new-session"}\n');
 
     const { commands, handlers, sentMessages, tools } = createHarness();
-    const context = (cwd) => {
+    const context = (cwd: string): TestTuiContext => {
       const { ctx } = createTuiContext();
       ctx.cwd = cwd;
       ctx.reload = async () => {};
@@ -1861,7 +2280,7 @@ test("/init settles its command handler when the session shuts down", { timeout:
   try {
     const { commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     ctx.cwd = directory;
     ctx.reload = async () => {};
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
@@ -1880,14 +2299,14 @@ test("/init reports failure instead of reloading when the model does not write",
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-no-write-"));
   try {
     const { commands, handlers, sentMessages } = createHarness();
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     let reloadCalls = 0;
     const ctx = {
       cwd: directory,
       isProjectTrusted: () => true,
       mode: "tui",
       reload: async () => { reloadCalls += 1; },
-      ui: { notify: (message, level) => notifications.push({ message, level }) },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
       waitForIdle: async () => {},
     };
     const initRun = commands.get("init").handler("", ctx);
@@ -1911,14 +2330,14 @@ test("/init reports a structured policy conflict without writing or reloading", 
     const target = path.join(directory, "AGENTS.md");
     writeFileSync(target, "# AGENTS.md\n\nProtected policy.\n");
     const { commands, handlers, sentMessages, tools } = createHarness();
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     let reloadCalls = 0;
     const ctx = {
       cwd: directory,
       isProjectTrusted: () => true,
       mode: "tui",
       reload: async () => { reloadCalls += 1; },
-      ui: { notify: (message, level) => notifications.push({ message, level }) },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
       waitForIdle: async () => {},
     };
     const initRun = commands.get("init").handler("", ctx);
@@ -1980,21 +2399,21 @@ test("/init preserves compatible protected policy and blocks every other mutatio
       toolName: "killeros_init_write",
       input: { content: "replacement" },
     }, ctx);
-    assert.match(secondWrite.find((result) => result?.block)?.reason, /exactly one write or policy-conflict/u);
+    assert.match(resultReason(secondWrite), /exactly one write or policy-conflict/u);
 
     const editTarget = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "edit-existing",
       toolName: "edit",
       input: { path: "AGENTS.md", edits: [{ oldText: "Generated", newText: "Changed" }] },
     }, ctx);
-    assert.match(editTarget.find((result) => result?.block)?.reason, /bounded evidence and terminal tools/u);
+    assert.match(resultReason(editTarget), /bounded evidence and terminal tools/u);
 
     const otherFile = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "write-other",
       toolName: "write",
       input: { path: "README.md", content: "replacement" },
     }, ctx);
-    assert.match(otherFile.find((result) => result?.block)?.reason, /bounded evidence and terminal tools/u);
+    assert.match(resultReason(otherFile), /bounded evidence and terminal tools/u);
 
     await emitSequentially(handlers.get("agent_settled"), {}, ctx);
     await initRun;
@@ -2131,6 +2550,7 @@ test("/init rejects a target swapped after tool-call validation", async () => {
       } catch {
         mkdirSync(target);
       }
+      return undefined;
     });
     const callResults = await emitSequentially(handlers.get("tool_call"), {
       toolCallId: "swap-target",
@@ -2169,20 +2589,22 @@ test("/init preserves a target created after an absent baseline", async () => {
 
 test("/init recovers when its agent workflow cannot start", async () => {
   const { api, commands, handlers, sentMessages } = createHarness();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   const ctx = {
     cwd: process.cwd(),
     isProjectTrusted: () => true,
     mode: "tui",
     reload: async () => {},
-    ui: { notify: (message, level) => notifications.push({ message, level }) },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
     waitForIdle: async () => {},
   };
   api.sendMessage = () => { throw new Error("no active model"); };
   await commands.get("init").handler("", ctx);
   assert.deepEqual(notifications.at(-1), { message: "/init failed to start: no active model", level: "error" });
 
-  api.sendMessage = (message, options) => sentMessages.push({ message, options });
+  api.sendMessage = (message, options) => {
+    sentMessages.push({ message: message as TestSentMessage["message"], options });
+  };
   const retry = commands.get("init").handler("", ctx);
   await waitFor(() => sentMessages.length === 1);
   assert.equal(sentMessages.length, 1);
@@ -2192,12 +2614,12 @@ test("/init recovers when its agent workflow cannot start", async () => {
 
 test("/init refuses untrusted projects before scanning or starting the model", async () => {
   const { commands, sentMessages } = createHarness();
-  const notifications = [];
+  const notifications = [] as unknown as RequiredArray<TestNotification>;
   await commands.get("init").handler("", {
     cwd: process.cwd(),
     isProjectTrusted: () => false,
     mode: "tui",
-    ui: { notify: (message, level) => notifications.push({ message, level }) },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
     waitForIdle: async () => {},
   });
   assert.deepEqual(notifications.at(-1), { message: "Trust this project before running /init", level: "error" });
@@ -2307,13 +2729,13 @@ test("/init evidence excludes secrets, ignored files, links, and paths outside t
       symlinkSync("allowed.ts", path.join(directory, "linked.ts"), "file");
       linked = true;
     } catch (error) {
-      if (!["EACCES", "EPERM", "UNKNOWN"].includes(error.code)) throw error;
+      if (!(error instanceof Error) || !("code" in error) || !["EACCES", "EPERM", "UNKNOWN"].includes(String(error.code))) throw error;
     }
     writeFileSync(path.join(directory, "hard-link-source.ts"), "linked\n");
     try {
       linkSync(path.join(directory, "hard-link-source.ts"), path.join(directory, "hard-linked.ts"));
     } catch (error) {
-      if (!["EACCES", "EPERM", "UNKNOWN"].includes(error.code)) throw error;
+      if (!(error instanceof Error) || !("code" in error) || !["EACCES", "EPERM", "UNKNOWN"].includes(String(error.code))) throw error;
     }
 
     const { index } = await buildInitEvidence(directory);
@@ -2509,7 +2931,7 @@ test("does not load lifecycle hooks for untrusted projects", async () => {
     }));
 
     const { handlers } = createHarness();
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.isProjectTrusted = () => false;
@@ -2540,7 +2962,7 @@ test("rejects agent_settled matchers without executing their commands", async ()
     }));
 
     const { handlers } = createHarness();
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
@@ -2568,7 +2990,7 @@ test("project tool_call hooks can deterministically block a tool", async () => {
     }));
 
     const { handlers } = createHarness();
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
@@ -2581,7 +3003,7 @@ test("project tool_call hooks can deterministically block a tool", async () => {
     }, ctx);
     const blocked = results.find((result) => result?.block);
     assert.equal(blocked?.block, true);
-    assert.match(blocked?.reason, /blocked/u);
+    assert.match(resultReason(results), /blocked/u);
     assert.equal(notifications.at(-1).level, "error");
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -2596,7 +3018,8 @@ test("hook output preserves UTF-8 characters split across stream chunks", async 
     kill() { return true; }
   }
   const child = new ChunkedHook();
-  const resultPromise = executeHook("ignored", process.cwd(), {}, 1_000, () => child);
+  const spawnChild = (() => child) as unknown as HookSpawner;
+  const resultPromise = executeHook("ignored", process.cwd(), {}, 1_000, spawnChild);
   child.stdout.write(Buffer.from([0xf0, 0x9f]));
   child.stdout.write(Buffer.from([0x98, 0x80]));
   child.emit("close", 0);
@@ -2610,15 +3033,16 @@ test("never-closing hooks report unconfirmed exit after bounded cleanup", async 
     stdout = new PassThrough();
     stderr = new PassThrough();
     pid = undefined;
-    signals = [];
+    signals: NodeJS.Signals[] = [];
 
-    kill(signal) {
+    kill(signal: NodeJS.Signals) {
       this.signals.push(signal);
       return true;
     }
   }
   const child = new NeverClosingHook();
-  const result = await executeHook("ignored", process.cwd(), {}, 1_000, () => child);
+  const spawnChild = (() => child) as unknown as HookSpawner;
+  const result = await executeHook("ignored", process.cwd(), {}, 1_000, spawnChild);
   assert.equal(result.code, 124);
   assert.equal(result.timedOut, true);
   assert.equal(result.exitUnconfirmed, true);
@@ -2630,12 +3054,13 @@ test("aborting a running hook terminates it and reports cancellation", async () 
     stdout = new PassThrough();
     stderr = new PassThrough();
     pid = undefined;
-    signals = [];
-    kill(signal) { this.signals.push(signal); return true; }
+    signals: NodeJS.Signals[] = [];
+    kill(signal: NodeJS.Signals) { this.signals.push(signal); return true; }
   }
   const controller = new AbortController();
   const child = new NeverClosingChild();
-  const resultPromise = executeHook("ignored", process.cwd(), {}, 30_000, () => child, controller.signal);
+  const spawnChild = (() => child) as unknown as HookSpawner;
+  const resultPromise = executeHook("ignored", process.cwd(), {}, 30_000, spawnChild, controller.signal);
   controller.abort();
   const result = await resultPromise;
   assert.equal(result.cancelled, true);
@@ -2646,13 +3071,14 @@ test("aborting a running hook terminates it and reports cancellation", async () 
   let spawned = false;
   const alreadyAborted = new AbortController();
   alreadyAborted.abort();
-  const preResult = await executeHook("ignored", process.cwd(), {}, 30_000, () => { spawned = true; }, alreadyAborted.signal);
+  const neverSpawn = (() => { spawned = true; return undefined; }) as unknown as HookSpawner;
+  const preResult = await executeHook("ignored", process.cwd(), {}, 30_000, neverSpawn, alreadyAborted.signal);
   assert.equal(spawned, false);
   assert.equal(preResult.cancelled, true);
   assert.equal(preResult.code, 130);
 
   const racingChild = new NeverClosingChild();
-  racingChild.kill = function(signal) {
+  racingChild.kill = function kill(signal: NodeJS.Signals) {
     this.signals.push(signal);
     queueMicrotask(() => this.emit("close", null));
     return true;
@@ -2662,8 +3088,9 @@ test("aborting a running hook terminates it and reports cancellation", async () 
     get aborted() { abortedReads += 1; return abortedReads > 1; },
     addEventListener() {},
     removeEventListener() {},
-  };
-  const racingResult = await executeHook("ignored", process.cwd(), {}, 30_000, () => racingChild, racingSignal);
+  } as unknown as AbortSignal;
+  const racingSpawn = (() => racingChild) as unknown as HookSpawner;
+  const racingResult = await executeHook("ignored", process.cwd(), {}, 30_000, racingSpawn, racingSignal);
   assert.equal(racingResult.cancelled, true);
   assert.equal(racingResult.timedOut, false);
   assert.deepEqual(racingChild.signals, ["SIGTERM"]);
@@ -2688,7 +3115,7 @@ test("timed-out hooks terminate the process tree or report bounded uncertainty",
     }));
 
     const { handlers } = createHarness();
-    const notifications = [];
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
@@ -3253,6 +3680,7 @@ test("display formatters contain non-finite telemetry and honor Windows path cas
   }
 
   const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  assert.ok(platform);
   Object.defineProperty(process, "platform", { value: "win32" });
   const previousHome = process.env.HOME;
   const previousProfile = process.env.USERPROFILE;
@@ -3378,7 +3806,7 @@ test("footer cuts down by priority while preserving model and context", () => {
   ctx.getContextUsage = () => ({ tokens: 50_000, contextWindow: 1_050_000 });
   for (const handler of handlers.get("session_start")) handler({}, ctx);
 
-  const quietTheme = {
+  const quietTheme: { fg(color: string, text: string): string } = {
     ...theme,
     fg: (color, text) => color === "borderMuted" ? `<borderMuted>${text}</borderMuted>` : text,
   };
@@ -3443,7 +3871,7 @@ test("footer uses model metadata and formats unknown provider names", () => {
   };
   for (const handler of handlers.get("session_start")) handler({}, ctx);
 
-  const semanticTheme = {
+  const semanticTheme: TestStyle = {
     bold: (text) => `\x1B[1m${text}\x1B[22m`,
     fg: (color, text) => color === "text"
       ? `\x1B[37m${text}\x1B[39m`
@@ -3479,7 +3907,7 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
   const { handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
   for (const handler of handlers.get("session_start")) await handler({}, ctx);
-  const editorTheme = {
+  const editorTheme: TestEditorTheme = {
     borderColor: (text) => text,
     selectList: {
       selectedPrefix: (text) => text,
@@ -3537,7 +3965,7 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
 });
 
 test("editor arrow alone carries focus color", async () => {
-  const styledTheme = {
+  const styledTheme: TestFullStyle = {
     bold: (text) => text,
     fg: (color, text) => `<${color}>${text}</${color}>`,
     italic: (text) => text,
@@ -3545,18 +3973,9 @@ test("editor arrow alone carries focus color", async () => {
     underline: (text) => text,
   };
   const { handlers } = createHarness();
-  const { captured, ctx, tui } = createTuiContext([], styledTheme);
+  const { captured, ctx, tui } = createTuiContext([], styledTheme as unknown as Theme);
   for (const handler of handlers.get("session_start")) await handler({}, ctx);
-  const editor = captured.editorFactory(tui, {
-    borderColor: (text) => text,
-    selectList: {
-      selectedPrefix: (text) => text,
-      selectedText: (text) => text,
-      description: (text) => text,
-      scrollInfo: (text) => text,
-      noMatch: (text) => text,
-    },
-  }, getKeybindings());
+  const editor = captured.editorFactory(tui, createEditorTheme(), getKeybindings());
 
   editor.setText("hello");
   editor.focused = false;
@@ -3604,16 +4023,7 @@ test("frameless editor keeps autocomplete rows aligned below the prompt", async 
     getSuggestions: async () => ({ prefix: "/", items: [] }),
     shouldTriggerFileCompletion: () => true,
   };
-  const editor = captured.editorFactory(tui, {
-    borderColor: (text) => text,
-    selectList: {
-      selectedPrefix: (text) => text,
-      selectedText: (text) => text,
-      description: (text) => text,
-      scrollInfo: (text) => text,
-      noMatch: (text) => text,
-    },
-  }, getKeybindings());
+  const editor = captured.editorFactory(tui, createEditorTheme(), getKeybindings());
   editor.focused = true;
   editor.setAutocompleteProvider(captured.autocompleteFactory(current));
   editor.handleInput("/");
@@ -3675,7 +4085,7 @@ test("activity keeps the animated orange glyph loop and uses contextual request 
 });
 
 test("activity styles the glyph and causal verb orange with a gray bold interrupt status", () => {
-  const styledTheme = {
+  const styledTheme: TestFullStyle = {
     bold: (text) => `<bold>${text}</bold>`,
     fg: (color, text) => `<${color}>${text}</${color}>`,
     italic: (text) => text,
@@ -3683,7 +4093,7 @@ test("activity styles the glyph and causal verb orange with a gray bold interrup
     underline: (text) => text,
   };
   const { handlers } = createHarness();
-  const { captured, ctx } = createTuiContext([], styledTheme);
+  const { captured, ctx } = createTuiContext([], styledTheme as unknown as Theme);
   for (const handler of handlers.get("session_start")) handler({}, ctx);
 
   assert.deepEqual(captured.workingIndicator, {
@@ -3731,7 +4141,7 @@ test("header renders the compact KillerOS card", () => {
   const { handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
   ctx.cwd = path.join(path.parse(process.cwd()).root, "work", "pi-KillerOS");
-  ctx.ui.theme = {
+  const headerTheme: TestStyle = {
     bold: (text) => `\x1B[1m${text}\x1B[22m`,
     fg: (color, text) => color === "text"
       ? `\x1B[37m${text}\x1B[39m`
@@ -3739,11 +4149,12 @@ test("header renders the compact KillerOS card", () => {
         ? `\x1B[90m${text}\x1B[39m`
         : color === "mdLink" ? `\x1B[34m${text}\x1B[39m` : text,
   };
+  ctx.ui.theme = { ...theme, ...headerTheme } as unknown as Theme;
   for (const handler of handlers.get("session_start")) handler({}, ctx);
   assert.equal(captured.themeName, "killeros");
 
   const header = captured.headerFactory(tui);
-  const strip = (line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
+  const strip = (line: string) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   const rendered = header.render(120);
   const wide = rendered.map(strip);
   assert.equal(wide.length, 9);
@@ -3774,9 +4185,9 @@ test("header renders the compact KillerOS card", () => {
 
 test("startup tips and editor suggestions stay fixed per session and exhaust their shuffled decks", async () => {
   const originalRandom = Math.random;
-  const suggestions = [];
-  const tips = [];
-  const strip = (line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "").trim();
+  const suggestions: string[] = [];
+  const tips: string[] = [];
+  const strip = (line: string) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "").trim();
   const shellUiUrl = new URL("../killeros/shell-ui.ts", import.meta.url);
   shellUiUrl.searchParams.set("startup-tip-test", String(Date.now()));
   const { registerShellUi } = await import(shellUiUrl.href);
@@ -3787,13 +4198,14 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
       const { api, handlers } = createHarness();
       registerShellUi(api);
       const { captured, ctx, tui } = createTuiContext();
-      handlers.get("session_start").at(-1)({}, ctx);
+      last(handlers.get("session_start"))({}, ctx);
       const first = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
       const second = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
       assert.equal(first, second);
+      assert.ok(first);
       tips.push(first);
 
-      const editorTheme = {
+      const editorTheme: TestEditorTheme = {
         borderColor: (text) => text,
         selectList: {
           selectedPrefix: (text) => text,
@@ -3810,7 +4222,7 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
       assert.equal(firstSuggestion, secondSuggestion);
       assert.match(firstSuggestion, /^❯\u00A0Try "/u);
       suggestions.push(firstSuggestion);
-      handlers.get("session_shutdown").at(-1)({}, ctx);
+      last(handlers.get("session_shutdown"))({}, ctx);
     }
   } finally {
     Math.random = originalRandom;

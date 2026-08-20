@@ -1,51 +1,95 @@
 import assert from "node:assert/strict";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { StopReason } from "@earendil-works/pi-ai";
 import test from "node:test";
-import { formatWorkedForDuration, registerWorkedFor, workedForOutcome } from "../killeros/worked-for.ts";
+import {
+  formatWorkedForDuration,
+  registerWorkedFor,
+  type WorkedForOutcome,
+  workedForOutcome,
+} from "../killeros/worked-for.ts";
 
-function createWorkedForHarness(mode = "tui") {
+type WorkedForEvent = {
+  type: string;
+  messages?: Array<{ role?: string; stopReason?: StopReason }>;
+};
+
+type WorkedForContext = Pick<ExtensionContext, "mode" | "hasPendingMessages" | "isIdle"> & {
+  ui: Pick<ExtensionContext["ui"], "notify">;
+};
+
+type WorkedForHandler = (event: WorkedForEvent, ctx: WorkedForContext) => void | Promise<void>;
+type WorkedForAPI = {
+  appendEntry(customType: string, data: unknown): void;
+  on(event: string, handler: WorkedForHandler): void;
+  registerEntryRenderer(customType: string, renderer: WorkedForRenderer): void;
+};
+type WorkedForRenderer = (
+  entry: { data: unknown },
+  options: unknown,
+  theme: Theme,
+) => { render(width: number): string[] } | undefined;
+
+type WorkedForEntry = { customType: string; data: Record<string, unknown> };
+type NotificationLevel = Parameters<ExtensionContext["ui"]["notify"]>[1];
+
+type WorkedForHarness = {
+  appendedEntries: WorkedForEntry[];
+  emit(event: string, data?: Partial<WorkedForEvent>): Promise<void>;
+  notices: Array<{ message: string; level: NotificationLevel }>;
+  renderers: Map<string, WorkedForRenderer>;
+  setAppendError(error: Error | undefined): void;
+  setIdle(value: boolean): void;
+  setPendingMessages(value: boolean): void;
+  setTime(milliseconds: number): void;
+};
+
+function createWorkedForHarness(mode: WorkedForContext["mode"] = "tui"): WorkedForHarness {
   let currentTime = 0;
-  let appendError;
+  let appendError: Error | undefined;
   let idle = true;
   let pendingMessages = false;
-  const appendedEntries = [];
-  const handlers = new Map();
-  const notices = [];
-  const renderers = new Map();
-  const api = {
-    appendEntry: (customType, data) => {
+  const appendedEntries: WorkedForEntry[] = [];
+  const handlers = new Map<string, WorkedForHandler[]>();
+  const notices: Array<{ message: string; level: NotificationLevel }> = [];
+  const renderers = new Map<string, WorkedForRenderer>();
+  const api: WorkedForAPI = {
+    appendEntry: (customType: string, data: unknown) => {
       if (appendError) throw appendError;
-      appendedEntries.push({ customType, data });
+      appendedEntries.push({ customType, data: data as Record<string, unknown> });
     },
-    on: (event, handler) => {
+    on: (event: string, handler: WorkedForHandler) => {
       const eventHandlers = handlers.get(event) ?? [];
       eventHandlers.push(handler);
       handlers.set(event, eventHandlers);
     },
-    registerEntryRenderer: (customType, renderer) => renderers.set(customType, renderer),
+    registerEntryRenderer: (customType: string, renderer: WorkedForRenderer) => {
+      renderers.set(customType, renderer);
+    },
   };
-  const ctx = {
+  const ctx: WorkedForContext = {
     hasPendingMessages: () => pendingMessages,
     isIdle: () => idle,
     mode,
-    ui: { notify: (message, level) => notices.push({ message, level }) },
+    ui: { notify: (message: string, level?: NotificationLevel) => notices.push({ message, level }) },
   };
-  registerWorkedFor(api, () => currentTime);
+  registerWorkedFor(api as unknown as ExtensionAPI, () => currentTime);
 
   return {
     appendedEntries,
-    emit: async (event, data = {}) => {
+    emit: async (event: string, data: Partial<WorkedForEvent> = {}) => {
       for (const handler of handlers.get(event) ?? []) await handler({ type: event, ...data }, ctx);
     },
     notices,
     renderers,
-    setAppendError: (error) => { appendError = error; },
-    setIdle: (value) => { idle = value; },
-    setPendingMessages: (value) => { pendingMessages = value; },
-    setTime: (milliseconds) => { currentTime = milliseconds; },
+    setAppendError: (error: Error | undefined) => { appendError = error; },
+    setIdle: (value: boolean) => { idle = value; },
+    setPendingMessages: (value: boolean) => { pendingMessages = value; },
+    setTime: (milliseconds: number) => { currentTime = milliseconds; },
   };
 }
 
-const theme = { fg: (_color, text) => text };
+const theme = { fg: (_color: string, text: string): string => text } as unknown as Theme;
 
 test("worked-for durations use compact mixed units with a one-second minimum", () => {
   assert.equal(formatWorkedForDuration(0), "1s");
@@ -105,9 +149,12 @@ test("automatic continuations keep one timer running until the final idle settle
 test("the durable entry renders semantic outcomes and preserves version-one history", () => {
   const harness = createWorkedForHarness();
   const renderer = harness.renderers.get("killeros-worked-for");
-  const styledTheme = { fg: (color, text) => `<${color}>${text}</${color}>` };
+  assert.ok(renderer);
+  const styledTheme = {
+    fg: (color: string, text: string): string => `<${color}>${text}</${color}>`,
+  } as unknown as Theme;
 
-  const cases = [
+  const cases: ReadonlyArray<readonly [Record<string, unknown>, string]> = [
     [{ version: 2, milliseconds: 18_000, outcome: "done" }, "<success>✓ Done</success><dim> · 18s</dim>"],
     [{ version: 2, milliseconds: 18_000, outcome: "stopped" }, "<warning>■ Stopped</warning><dim> · 18s</dim>"],
     [{ version: 2, milliseconds: 18_000, outcome: "failed" }, "<error>× Failed</error><dim> · 18s</dim>"],
@@ -115,6 +162,7 @@ test("the durable entry renders semantic outcomes and preserves version-one hist
   ];
   for (const [data, expected] of cases) {
     const component = renderer({ data }, {}, styledTheme);
+    assert.ok(component);
     assert.deepEqual(component.render(80).map((line) => line.trimEnd()), [expected]);
   }
 
@@ -136,7 +184,7 @@ test("the durable entry renders semantic outcomes and preserves version-one hist
 test("all Pi stop reasons map to truthful outcomes", async () => {
   assert.equal(workedForOutcome("stop"), "done");
   assert.equal(workedForOutcome("aborted"), "stopped");
-  for (const stopReason of ["error", "length", "toolUse", undefined]) {
+  for (const stopReason of ["error", "length", "toolUse", undefined] as const) {
     assert.equal(workedForOutcome(stopReason), "failed");
   }
 
@@ -146,7 +194,7 @@ test("all Pi stop reasons map to truthful outcomes", async () => {
     ["error", "failed"],
     ["length", "failed"],
     ["toolUse", "failed"],
-  ]) {
+  ] as const) {
     const harness = createWorkedForHarness();
     harness.setTime(1_000);
     await harness.emit("agent_start");
@@ -183,7 +231,7 @@ test("the last assistant reason survives continuations and wins at final settlem
 });
 
 test("non-TUI modes and settlements without a started run append nothing", async () => {
-  for (const mode of ["rpc", "json", "print"]) {
+  for (const mode of ["rpc", "json", "print"] as const) {
     const harness = createWorkedForHarness(mode);
     await harness.emit("session_start");
     await harness.emit("agent_start");

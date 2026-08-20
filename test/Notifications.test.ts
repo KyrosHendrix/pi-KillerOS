@@ -3,15 +3,70 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { StopReason } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   COMPLETION_BELL_GLYPH,
+  type CompletionNotificationDependencies,
   createNotificationPreferenceStore,
   formatNotificationTitle,
   registerCompletionNotifications,
 } from "../killeros/notifications.ts";
 
-function createTemporaryDirectory(t) {
+type NotificationLevel = Parameters<ExtensionContext["ui"]["notify"]>[1];
+type NotificationMode = ExtensionContext["mode"];
+
+type NotificationEvent = {
+  messages?: Array<{ role?: string; stopReason?: StopReason }>;
+  [key: string]: unknown;
+};
+
+type NotificationContext = {
+  cwd: string;
+  hasPendingMessages(): boolean;
+  isIdle(): boolean;
+  mode: NotificationMode;
+  ui: {
+    notify(message: string, level?: NotificationLevel): void;
+    select(title: string, options: string[]): Promise<string | undefined>;
+    setTitle(title: string): void;
+  };
+};
+
+type NotificationHandler = (event: NotificationEvent, ctx: NotificationContext) => void | Promise<void>;
+type NotificationCommand = { handler(args: string, ctx: NotificationContext): Promise<void> };
+type NotificationAPI = {
+  getSessionName(): string | undefined;
+  on(event: string, handler: NotificationHandler): void;
+  registerCommand(name: string, command: NotificationCommand): void;
+};
+
+type NotificationHarnessOptions = {
+  saved?: boolean;
+  sessionName?: string;
+  mode?: NotificationMode;
+  loadError?: unknown;
+  saveError?: unknown;
+  ringError?: unknown;
+};
+
+type NotificationHarness = {
+  commands: Map<string, NotificationCommand>;
+  ctx: NotificationContext;
+  emit(event: string, value?: NotificationEvent): Promise<void>;
+  readonly rings: number;
+  readonly saved: boolean;
+  readonly saves: number;
+  notices: Array<{ message: string; level: NotificationLevel }>;
+  setIdle(value: boolean): void;
+  setPendingMessages(value: boolean): void;
+  setSelected(value: string | undefined): void;
+  setSessionName(value: string | undefined): void;
+  titles: string[];
+};
+
+function createTemporaryDirectory(t: TestContext): string {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-notification-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;
@@ -92,25 +147,25 @@ test("notification title follows Pi title shape and enabled suffix", () => {
   );
 });
 
-function createNotificationHarness(options = {}) {
+function createNotificationHarness(options: NotificationHarnessOptions = {}): NotificationHarness {
   let saved = options.saved ?? false;
-  let sessionName = options.sessionName;
+  let sessionName: string | undefined = options.sessionName;
   let idle = true;
   let pendingMessages = false;
-  let selected;
+  let selected: string | undefined;
   let rings = 0;
   let saves = 0;
-  const commands = new Map();
-  const handlers = new Map();
-  const titles = [];
-  const notices = [];
-  const dependencies = {
+  const commands = new Map<string, NotificationCommand>();
+  const handlers = new Map<string, NotificationHandler[]>();
+  const titles: string[] = [];
+  const notices: Array<{ message: string; level: NotificationLevel }> = [];
+  const dependencies: CompletionNotificationDependencies = {
     store: {
       load: () => {
         if (options.loadError) throw options.loadError;
         return saved;
       },
-      save: (enabled) => {
+      save: (enabled: boolean) => {
         if (options.saveError) throw options.saveError;
         saves += 1;
         saved = enabled;
@@ -121,28 +176,32 @@ function createNotificationHarness(options = {}) {
       rings += 1;
     },
   };
-  const api = {
+  const api: NotificationAPI = {
     getSessionName: () => sessionName,
-    on: (event, handler) => {
+    on: (event: string, handler: NotificationHandler) => {
       const eventHandlers = handlers.get(event) ?? [];
       eventHandlers.push(handler);
       handlers.set(event, eventHandlers);
     },
-    registerCommand: (name, command) => commands.set(name, command),
+    registerCommand: (name: string, command: NotificationCommand) => {
+      commands.set(name, command);
+    },
   };
-  registerCompletionNotifications(api, dependencies);
-  const ctx = {
+  registerCompletionNotifications(api as unknown as ExtensionAPI, dependencies);
+  const ctx: NotificationContext = {
     cwd: "/work/pi-KillerOS",
     hasPendingMessages: () => pendingMessages,
     isIdle: () => idle,
     mode: options.mode ?? "tui",
     ui: {
-      notify: (message, level) => notices.push({ message, level }),
+      notify: (message: string, level?: NotificationLevel) => {
+        notices.push({ message, level });
+      },
       select: async () => selected,
-      setTitle: (title) => titles.push(title),
+      setTitle: (title: string) => titles.push(title),
     },
   };
-  const emit = async (event, value = {}) => {
+  const emit = async (event: string, value: NotificationEvent = {}) => {
     for (const handler of handlers.get(event) ?? []) await handler(value, ctx);
   };
   return {
@@ -153,19 +212,27 @@ function createNotificationHarness(options = {}) {
     get saved() { return saved; },
     get saves() { return saves; },
     notices,
-    setIdle: (value) => { idle = value; },
-    setPendingMessages: (value) => { pendingMessages = value; },
-    setSelected: (value) => { selected = value; },
-    setSessionName: (value) => { sessionName = value; },
+    setIdle: (value: boolean) => { idle = value; },
+    setPendingMessages: (value: boolean) => { pendingMessages = value; },
+    setSelected: (value: string | undefined) => { selected = value; },
+    setSessionName: (value: string | undefined) => { sessionName = value; },
     titles,
   };
 }
 
-const assistantEnd = (stopReason) => ({ messages: [{ role: "assistant", stopReason }] });
+function notificationCommand(harness: NotificationHarness): NotificationCommand {
+  const command = harness.commands.get("notification");
+  assert.ok(command);
+  return command;
+}
 
-async function enableNotifications(harness) {
+const assistantEnd = (stopReason: StopReason | undefined): NotificationEvent => ({
+  messages: [{ role: "assistant", stopReason }],
+});
+
+async function enableNotifications(harness: NotificationHarness): Promise<void> {
   harness.setSelected("On");
-  await harness.commands.get("notification").handler("", harness.ctx);
+  await notificationCommand(harness).handler("", harness.ctx);
 }
 
 test("notification command starts off and enables without a preview", async () => {
@@ -178,7 +245,7 @@ test("notification command starts off and enables without a preview", async () =
   assert.equal(harness.rings, 0);
   assert.equal(harness.saves, 0);
 
-  await harness.commands.get("notification").handler("", harness.ctx);
+  await notificationCommand(harness).handler("", harness.ctx);
   assert.equal(harness.saves, 0);
   assert.equal(harness.rings, 0);
   assert.deepEqual(harness.notices, []);
@@ -256,7 +323,7 @@ test("disabled and non-TUI notification runtimes never ring or set titles", asyn
   await disabled.emit("agent_settled");
   assert.equal(disabled.rings, 0);
 
-  for (const mode of ["rpc", "json", "print"]) {
+  for (const mode of ["rpc", "json", "print"] as const) {
     const harness = createNotificationHarness({ mode, saved: true });
     await harness.emit("session_start");
     await harness.emit("agent_start");
@@ -264,7 +331,7 @@ test("disabled and non-TUI notification runtimes never ring or set titles", asyn
     await harness.emit("agent_settled");
     assert.deepEqual(harness.titles, []);
     assert.equal(harness.rings, 0);
-    await harness.commands.get("notification").handler("", harness.ctx);
+    await notificationCommand(harness).handler("", harness.ctx);
     assert.deepEqual(harness.notices.at(-1), { message: "/notification requires TUI mode", level: "error" });
   }
 });
@@ -277,11 +344,11 @@ test("notification title tracks session names and disabling removes the glyph", 
   assert.equal(harness.titles.at(-1), `π - release check - pi-KillerOS ${COMPLETION_BELL_GLYPH}`);
 
   harness.setSelected("Off");
-  await harness.commands.get("notification").handler("", harness.ctx);
+  await notificationCommand(harness).handler("", harness.ctx);
   assert.equal(harness.titles.at(-1), "π - release check - pi-KillerOS");
 });
 
-test("default notification output is exactly one standard BEL byte", (t) => {
+test("default notification output is exactly one standard BEL byte", (t: TestContext) => {
   const agentDirectory = createTemporaryDirectory(t);
   writeFileSync(path.join(agentDirectory, "killeros.json"), JSON.stringify({ completionSound: true }));
   const moduleUrl = new URL("../killeros/notifications.ts", import.meta.url).href;
@@ -319,9 +386,13 @@ test("default notification output is exactly one standard BEL byte", (t) => {
     timeout: 10_000,
   });
 
-  assert.equal(result.status, 0, result.stderr.toString("utf8"));
-  assert.deepEqual([...result.stdout], [0x07]);
-  assert.equal(result.stderr.length, 0);
+  const stdout = result.stdout;
+  const stderr = result.stderr;
+  assert.ok(stdout);
+  assert.ok(stderr);
+  assert.equal(result.status, 0, stderr.toString("utf8"));
+  assert.deepEqual([...stdout], [0x07]);
+  assert.equal(stderr.length, 0);
 });
 
 test("notification failures stay contained and preserve disabled state", async () => {

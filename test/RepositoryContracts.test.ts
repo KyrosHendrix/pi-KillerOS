@@ -4,8 +4,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-const tsconfig = JSON.parse(readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8"));
+type PackageJson = {
+  version: string;
+  dependencies?: Record<string, unknown>;
+  peerDependencies: Record<string, string>;
+  devDependencies: Record<string, string>;
+};
+
+type TypeScriptConfig = {
+  include: string[];
+};
+
+const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as PackageJson;
+const tsconfig = JSON.parse(readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8")) as TypeScriptConfig;
 const main = readFileSync(new URL("../Killeros.ts", import.meta.url), "utf8");
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
@@ -13,10 +24,10 @@ const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url),
 const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 const oldCompactionPlan = readFileSync(new URL("../docs/implemented/context-compaction.md", import.meta.url), "utf8");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const privateRootFiles = new Set(["AGENTS.md", "CONTEXT.md", "PRODUCT.md", "DESIGN.md"]);
+const privateRootFiles = new Set<string>(["AGENTS.md", "CONTEXT.md", "PRODUCT.md", "DESIGN.md"]);
 
-function repositoryFiles(directory = repositoryRoot) {
-  const files = [];
+function repositoryFiles(directory: string = repositoryRoot): string[] {
+  const files: string[] = [];
   for (const entry of readdirSync(directory)) {
     if (entry === ".git" || entry === "node_modules") continue;
     if (directory === repositoryRoot && privateRootFiles.has(entry)) continue;
@@ -35,7 +46,7 @@ test("repository contains no retired feature references", () => {
     "child" + " agent",
     "child" + " thread",
   ];
-  const matches = repositoryFiles().filter((file) => {
+  const matches = repositoryFiles().filter((file: string) => {
     const content = readFileSync(file, "utf8").toLowerCase();
     return retiredTerms.some((term) => content.includes(term));
   });
@@ -63,8 +74,8 @@ test("peer ranges enforce the tested Pi floor", () => {
 
 test("machine identifiers use locale-independent casing", () => {
   const source = repositoryFiles(path.join(repositoryRoot, "killeros"))
-    .filter((file) => file.endsWith(".ts"))
-    .map((file) => readFileSync(file, "utf8"))
+    .filter((file: string) => file.endsWith(".ts"))
+    .map((file: string) => readFileSync(file, "utf8"))
     .join("\n");
   assert.doesNotMatch(source, /\.toLocale(?:Lower|Upper)Case\(/u);
 });
@@ -120,8 +131,8 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
 });
 
 test("public documentation matches current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.12");
-  assert.match(readme, /@v2\.0\.12/u);
+  assert.equal(packageJson.version, "2.0.13");
+  assert.match(readme, /@v2\.0\.13/u);
   assert.match(readme, /12-frame/u);
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
   assert.match(readme, /\/goal <objective>/u);
