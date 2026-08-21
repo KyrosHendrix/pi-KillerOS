@@ -121,9 +121,9 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
   assert.match(release, /packageJson\.version !== packageLock\.version/u);
   assert.match(release, /scripts\/release-notes\.ts CHANGELOG\.md/u);
   assert.match(release, /Existing tag.*verified commit/u);
-  assert.match(release, /push:\s*\n\s*tags:/u);
+  assert.doesNotMatch(release, /push:\s*\n\s*tags:/u);
   assert.match(readme, /After the full CI workflow passes.*matching tag and GitHub release/su);
-  assert.match(readme, /manual tag recovery path|recover a missing GitHub release/iu);
+  assert.match(readme, /Tag pushes cannot publish/iu);
   assert.match(release, /npm view "killeros@\$\{VERSION\}" version/u);
   assert.match(release, /publish_npm/u);
   assert.match(readme, /publishes the package to npm.*creates the matching tag and GitHub release/isu);

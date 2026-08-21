@@ -175,7 +175,7 @@ For a normal release:
 
 After the full CI workflow passes on `main`, the release workflow validates the commit and changelog, publishes the package to npm through trusted publishing, and creates the matching tag and GitHub release. The [`pi-package` keyword](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) makes the npm package visible in Pi's package catalog.
 
-Do not create a tag for the normal path. If a release is missing, use the manual tag recovery path and push the matching version tag. The recovery path checks the tag against the package and changelog, skips npm publication when that version already exists, and creates only the missing GitHub release.
+Do not push version tags manually. Tag pushes cannot publish; every published commit must pass the full `main` CI workflow.
 
 ## Security
 

@@ -9,11 +9,6 @@ on:
       - completed
     branches:
       - main
-  # Recovery path: a manually pushed version tag can recreate a missing release.
-  push:
-    tags:
-      - 'v*'
-
 concurrency:
   group: release
   cancel-in-progress: false
@@ -21,9 +16,7 @@ concurrency:
 jobs:
   release:
     name: Create GitHub Release
-    if: >-
-      github.event_name == 'push' ||
-      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -34,7 +27,7 @@ jobs:
       - name: Check out verified source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 2
           persist-credentials: false
 
@@ -47,13 +40,11 @@ jobs:
       - name: Validate release metadata
         id: metadata
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUSHED_TAG: ${{ github.ref_name }}
           VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
 
-          SHA="${VERIFIED_SHA:-$GITHUB_SHA}"
+          SHA="$VERIFIED_SHA"
           test "$(git rev-parse HEAD)" = "$SHA"
 
           VERSION=$(node --input-type=module -e '
@@ -70,19 +61,14 @@ jobs:
           ')
           TAG="v${VERSION}"
 
-          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
-            PREVIOUS_VERSION=$(git show HEAD^:package.json | node --input-type=module -e '
-              import { readFileSync } from "node:fs";
-              process.stdout.write(JSON.parse(readFileSync(0, "utf8")).version);
-            ')
-            if [[ "$PREVIOUS_VERSION" == "$VERSION" ]]; then
-              echo "publish=false" >> "$GITHUB_OUTPUT"
-              echo "Package version is unchanged; no release is needed."
-              exit 0
-            fi
-          elif [[ "$PUSHED_TAG" != "$TAG" ]]; then
-            echo "Pushed tag ${PUSHED_TAG} does not match package version ${TAG}." >&2
-            exit 1
+          PREVIOUS_VERSION=$(git show HEAD^:package.json | node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            process.stdout.write(JSON.parse(readFileSync(0, "utf8")).version);
+          ')
+          if [[ "$PREVIOUS_VERSION" == "$VERSION" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Package version is unchanged; no release is needed."
+            exit 0
           fi
 
           node scripts/release-notes.ts CHANGELOG.md "$VERSION" > /tmp/release-notes.md

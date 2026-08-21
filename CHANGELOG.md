@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevented direct tag pushes from publishing commits that have not passed CI on `main`.
+
 ## [2.0.13] - 2026-08-21
 
 ### Added
