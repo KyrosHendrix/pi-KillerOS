@@ -22,7 +22,6 @@ const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-const oldCompactionPlan = readFileSync(new URL("../docs/implemented/context-compaction.md", import.meta.url), "utf8");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const privateRootFiles = new Set<string>(["AGENTS.md", "CONTEXT.md", "PRODUCT.md", "DESIGN.md"]);
 
@@ -93,8 +92,6 @@ test("compaction documentation assigns triggering to KillerOS and summary owners
   assert.match(readme, /Pi writes the summary/u);
   assert.match(readme, /manual `\/compact`.*pause.*resumes/isu);
   assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
-  assert.match(oldCompactionPlan, /STATUS: SUPERSEDED/u);
-  assert.match(oldCompactionPlan, /docs\/adr\/0001-let-pi-own-compaction\.md/u);
 });
 
 test("CI checks the locked Pi floor and latest matched Pi packages", () => {
@@ -121,9 +118,9 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
   assert.match(release, /packageJson\.version !== packageLock\.version/u);
   assert.match(release, /scripts\/release-notes\.ts CHANGELOG\.md/u);
   assert.match(release, /Existing tag.*verified commit/u);
-  assert.match(release, /push:\s*\n\s*tags:/u);
+  assert.doesNotMatch(release, /push:\s*\n\s*tags:/u);
   assert.match(readme, /After the full CI workflow passes.*matching tag and GitHub release/su);
-  assert.match(readme, /manual tag recovery path|recover a missing GitHub release/iu);
+  assert.match(readme, /Tag pushes cannot publish/iu);
   assert.match(release, /npm view "killeros@\$\{VERSION\}" version/u);
   assert.match(release, /publish_npm/u);
   assert.match(readme, /publishes the package to npm.*creates the matching tag and GitHub release/isu);
@@ -131,8 +128,8 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
 });
 
 test("public documentation matches current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.13");
-  assert.match(readme, /@v2\.0\.13/u);
+  assert.equal(packageJson.version, "2.0.14");
+  assert.match(readme, /@v2\.0\.14/u);
   assert.match(readme, /12-frame/u);
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
   assert.match(readme, /\/goal <objective>/u);

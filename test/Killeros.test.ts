@@ -1528,6 +1528,41 @@ test("goal update is active only while a goal is active", async () => {
   assert.equal(activeTools.includes("killeros_goal_update"), false);
 });
 
+test("question and goal renderers strip terminal controls while preserving line breaks", () => {
+  const { entryRenderers, tools } = createHarness();
+  const unsafe = "safe\x1B[2Jspoof\u0007\nnext";
+  const question = tools.get("question");
+  const questionCall = question.renderCall({
+    question: unsafe,
+    options: [{ label: unsafe, description: unsafe, preview: unsafe }],
+  }, theme, { expanded: true }).render(80).join("\n");
+  const questionResult = question.renderResult({
+    content: [{ type: "text", text: unsafe }],
+    details: { question: unsafe, options: [unsafe], answer: unsafe, wasCustom: true },
+  }, { expanded: true }, theme).render(80).join("\n");
+  const goalEntry = entryRenderers.get("killeros-goal")({ data: { version: 1, event: "complete", state: {
+    version: 1,
+    revision: 1,
+    objective: unsafe,
+    result: unsafe,
+    status: "complete",
+    createdAt: 1,
+    updatedAt: 1,
+    activeMilliseconds: 0,
+    turns: 0,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+  } } }, { expanded: true }, theme).render(80).join("\n");
+  const goalResult = tools.get("killeros_goal_update").renderResult({
+    content: [], details: { status: "complete", evidence: unsafe },
+  }, { expanded: true }, theme, {}).render(80).join("\n");
+
+  for (const rendered of [questionCall, questionResult, goalEntry, goalResult]) {
+    assert.doesNotMatch(rendered, /\x1B|\u0007|\[2J/u);
+    assert.match(rendered, /safespoof[^\S\r\n]*\nnext/u);
+  }
+});
+
 test("goal update renders the real tool error instead of an undefined blocker audit", () => {
   const tool = createHarness().tools.get("killeros_goal_update");
   const call = tool.renderCall({ status: "complete" }, theme, {}).render(80).join("\n");
@@ -2979,6 +3014,39 @@ test("rejects agent_settled matchers without executing their commands", async ()
   }
 });
 
+test("hook timeout validation accepts five minutes and rejects one millisecond more", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-timeout-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const command = (file: string) => `"${process.execPath}" -e "require('node:fs').writeFileSync('${file}','ran')"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { tool_call: [
+        { command: command("accepted"), timeoutMs: 300_000 },
+        { command: command("rejected"), timeoutMs: 300_001 },
+      ] },
+    }));
+
+    const { handlers } = createHarness();
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "hook-timeout-boundary",
+      toolName: "write",
+      input: {},
+    }, ctx);
+
+    assert.equal(existsSync(path.join(directory, "accepted")), true);
+    assert.equal(existsSync(path.join(directory, "rejected")), false);
+    assert.match(notifications.at(-1)?.message, /Ignored tool_call hook 2: timeoutMs must be an integer from 1 to 300000/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("project tool_call hooks can deterministically block a tool", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-"));
   try {
@@ -3005,6 +3073,32 @@ test("project tool_call hooks can deterministically block a tool", async () => {
     assert.equal(blocked?.block, true);
     assert.match(resultReason(results), /blocked/u);
     assert.equal(notifications.at(-1).level, "error");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("oversized hook payloads remain valid JSON and report truncation", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-payload-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const command = `"${process.execPath}" -e "const value=process.env.KILLEROS_PAYLOAD;const payload=JSON.parse(value);if(value.length>8000||payload.truncated!==true||typeof payload.preview!=='string')process.exit(2)"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { tool_call: [{ matcher: "^write$", command }] },
+    }));
+
+    const { handlers } = createHarness();
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+
+    const results = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "large-hook-payload",
+      toolName: "write",
+      input: { path: "example.txt", content: "x".repeat(9_000) },
+    }, ctx);
+    assert.equal(results.some((result) => result?.block), false);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

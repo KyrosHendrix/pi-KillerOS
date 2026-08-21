@@ -16,6 +16,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { BoundedText } from "./bounded-text.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const OptionSchema = Type.Object({
   label: Type.String({ minLength: 1, maxLength: 200, description: "Display label for the option" }),
@@ -264,11 +265,12 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
       if (ctx.mode !== "tui") throw new Error("The question tool requires interactive TUI mode");
       if (signal?.aborted) throw new Error("Question cancelled before it opened");
 
+      const question = safeTerminalText(params.question);
       const options: DisplayOption[] = [
         ...params.options.map((option, index) => ({
-          label: option.label,
-          description: option.description,
-          preview: option.preview,
+          label: safeTerminalText(option.label),
+          description: option.description === undefined ? undefined : safeTerminalText(option.description),
+          preview: option.preview === undefined ? undefined : safeTerminalText(option.preview),
           originalIndex: index + 1,
           isOther: false,
         })),
@@ -599,7 +601,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
             } else lines = [`${selected ? `> ${selected.label}` : "No matching options"} · ${position}`];
           } else if (rowBudget <= 5) {
             lines = [
-              ...boundedQuestionLines(params.question, width, Math.max(1, rowBudget - 3)),
+              ...boundedQuestionLines(question, width, Math.max(1, rowBudget - 3)),
               editMode !== "none"
                 ? `${editMode === "filter" ? "Filter" : "Answer"} ${editMode === "filter" ? filterCount : editorCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`
                 : selected ? optionLabel(selected, optionIndex) : "No matching options",
@@ -607,7 +609,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
               editMode !== "none" ? editHint : browseHint,
             ];
           } else {
-            const questionLines = boundedQuestionLines(params.question, width, Math.max(1, rowBudget - 5));
+            const questionLines = boundedQuestionLines(question, width, Math.max(1, rowBudget - 5));
             const contentRows = rowBudget - questionLines.length - 4;
             const optionCapacity = Math.max(1, Math.min(5, Math.ceil(contentRows / 2)));
             const detailCapacity = Math.max(0, contentRows - optionCapacity);
@@ -723,20 +725,26 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
     renderCall(args, theme, context) {
       const { mode, minSelections: minimum, maxSelections: maximum } = normalizeQuestionSelection(args);
       const multiple = mode === "multiple";
+      const question = safeTerminalText(args.question);
+      const options = args.options.map((option) => ({
+        label: safeTerminalText(option.label),
+        description: option.description === undefined ? undefined : safeTerminalText(option.description),
+        preview: option.preview === undefined ? undefined : safeTerminalText(option.preview),
+      }));
       if (!context.expanded) {
         const title = multiple ? "question (multi-select) " : "question ";
-        const detail = multiple ? `${args.options.length} options · choose ${minimum}–${maximum}` : `${args.options.length} option${args.options.length === 1 ? "" : "s"}`;
-        return new BoundedText(`${theme.fg("toolTitle", theme.bold(title))}${theme.fg("muted", oneLine(args.question))}\n${theme.fg("dim", `  ${detail}`)}`, 3);
+        const detail = multiple ? `${options.length} options · choose ${minimum}–${maximum}` : `${options.length} option${options.length === 1 ? "" : "s"}`;
+        return new BoundedText(`${theme.fg("toolTitle", theme.bold(title))}${theme.fg("muted", oneLine(question))}\n${theme.fg("dim", `  ${detail}`)}`, 3);
       }
       const title = multiple ? "question (multi-select) " : "question ";
-      const lines = [`${theme.fg("toolTitle", theme.bold(title))}${theme.fg("muted", args.question)}`];
-      if (multiple) lines.push(theme.fg("dim", `${args.options.length} options · choose ${minimum}–${maximum}`));
-      args.options.forEach((option, index) => {
+      const lines = [`${theme.fg("toolTitle", theme.bold(title))}${theme.fg("muted", question)}`];
+      if (multiple) lines.push(theme.fg("dim", `${options.length} options · choose ${minimum}–${maximum}`));
+      options.forEach((option, index) => {
         lines.push(theme.fg("text", `${multiple ? "[ ] " : ""}${index + 1}. ${option.label}`));
         if (option.description) lines.push(theme.fg("muted", `   ${option.description}`));
         if (option.preview) lines.push(theme.fg("dim", option.preview));
       });
-      lines.push(theme.fg("text", `${multiple ? "[ ] " : ""}${args.options.length + 1}. Type a custom answer`));
+      lines.push(theme.fg("text", `${multiple ? "[ ] " : ""}${options.length + 1}. Type a custom answer`));
       return new BoundedText(lines.join("\n"));
     },
 
@@ -744,14 +752,16 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
       const details = result.details;
       if (!details) {
         const first = result.content[0];
-        return new BoundedText(first?.type === "text" ? first.text : "", options.expanded ? undefined : 3);
+        return new BoundedText(first?.type === "text" ? safeTerminalText(first.text) : "", options.expanded ? undefined : 3);
       }
       if (details.cancelled || ("answer" in details && details.answer === null)) return new BoundedText(theme.fg("warning", "Cancelled"));
       if ("mode" in details && details.mode === "multiple") {
-        return new MultipleResultText(details.answers, options.expanded, details.customAnswer, theme.fg.bind(theme));
+        const answers = details.answers.map(safeTerminalText);
+        const customAnswer = details.customAnswer === undefined ? undefined : safeTerminalText(details.customAnswer);
+        return new MultipleResultText(answers, options.expanded, customAnswer, theme.fg.bind(theme));
       }
       if (!("answer" in details) || details.answer === null) return new BoundedText("");
-      const answer = details.answer;
+      const answer = safeTerminalText(details.answer);
       if (details.wasCustom) {
         return new BoundedText(`${theme.fg("success", "✓ ")}${theme.fg("muted", "(wrote) ")}${theme.fg("accent", answer)}`, options.expanded ? undefined : 3);
       }

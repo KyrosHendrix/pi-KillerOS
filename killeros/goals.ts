@@ -9,7 +9,8 @@ import { BoundedText } from "./bounded-text.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
-import type { GoalBlockerAudit, GoalFileVerification, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import type { GoalBlockerAudit, GoalFileBaseline, GoalFileVerification, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
 const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
@@ -67,18 +68,35 @@ function finiteNonNegative(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function isGoalFileBaseline(value: unknown): value is GoalFileBaseline {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { exists?: unknown; size?: unknown; mtimeMs?: unknown };
+  if (candidate.exists === false) return candidate.size === undefined && candidate.mtimeMs === undefined;
+  return candidate.exists === true && finiteNonNegative(candidate.size) && finiteNonNegative(candidate.mtimeMs);
+}
+
 function isGoalFileVerification(value: unknown): value is GoalFileVerification {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<GoalFileVerification>;
   return candidate.kind === "file"
     && typeof candidate.path === "string"
     && candidate.path === candidate.path.trim()
-    && isAbsoluteFilePath(candidate.path);
+    && isAbsoluteFilePath(candidate.path)
+    && isGoalFileBaseline(candidate.baseline);
 }
 
 function isAbsoluteFilePath(value: string): boolean {
   if (!value || /^(?:https?|file):\/\//iu.test(value) || /[\\\/]$/u.test(value)) return false;
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
+}
+
+function captureGoalFileBaseline(filePath: string): GoalFileBaseline {
+  try {
+    const artifact = lstatSync(filePath);
+    return { exists: true, size: artifact.size, mtimeMs: artifact.mtimeMs };
+  } catch {
+    return { exists: false };
+  }
 }
 
 function inferGoalVerification(objective: string): GoalFileVerification | undefined {
@@ -87,7 +105,8 @@ function inferGoalVerification(objective: string): GoalFileVerification | undefi
     .map((match) => (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim())
     .filter(isAbsoluteFilePath);
   const unique = [...new Set(paths)];
-  return unique.length === 1 ? { kind: "file", path: unique[0]! } : undefined;
+  const filePath = unique.length === 1 ? unique[0] : undefined;
+  return filePath ? { kind: "file", path: filePath, baseline: captureGoalFileBaseline(filePath) } : undefined;
 }
 
 function verifyGoalDeliverable(verification: GoalFileVerification): void {
@@ -99,6 +118,11 @@ function verifyGoalDeliverable(verification: GoalFileVerification): void {
   }
   if (!artifact.isFile()) {
     throw new Error(`Goal deliverable is not a regular file at the required path: ${verification.path}`);
+  }
+  if (verification.baseline.exists
+    && artifact.size === verification.baseline.size
+    && artifact.mtimeMs === verification.baseline.mtimeMs) {
+    throw new Error(`Goal deliverable has not changed since the goal started: ${verification.path}`);
   }
 }
 
@@ -555,9 +579,10 @@ export function registerGoal(
     const icon = state.status === "active" ? "✻" : state.status === "paused" ? "Ⅱ" : state.status === "blocked" ? "!" : "✓";
     const color: ThemeColor = state.status === "active" ? "accent" : state.status === "paused" ? "warning" : state.status === "blocked" ? "error" : "success";
     const status = theme.fg(color, `${icon} Goal ${state.status}`);
-    if (!options.expanded) return new BoundedText(`${status}${theme.fg("dim", ` · ${state.objective}`)}`, 3);
-    const lines = [status, theme.fg("dim", state.objective)];
-    if (state.result) lines.push(theme.fg("muted", state.result));
+    const objective = safeTerminalText(state.objective);
+    if (!options.expanded) return new BoundedText(`${status}${theme.fg("dim", ` · ${objective}`)}`, 3);
+    const lines = [status, theme.fg("dim", objective)];
+    if (state.result) lines.push(theme.fg("muted", safeTerminalText(state.result)));
     return new BoundedText(lines.join("\n"));
   });
 
@@ -615,18 +640,18 @@ export function registerGoal(
       };
     },
     renderCall(args, theme) {
-      return new Text(`${theme.fg("toolTitle", theme.bold("goal "))}${theme.fg("muted", args.status)}`, 0, 0);
+      return new Text(`${theme.fg("toolTitle", theme.bold("goal "))}${theme.fg("muted", safeTerminalText(args.status))}`, 0, 0);
     },
     renderResult(result, options, theme, context) {
       if (context?.isError) {
         const first = result.content[0];
-        const message = first?.type === "text" ? first.text : "Goal update failed";
+        const message = first?.type === "text" ? safeTerminalText(first.text) : "Goal update failed";
         return new BoundedText(theme.fg("error", message), options.expanded ? undefined : 3);
       }
       const details = result.details;
       if (!details) return new BoundedText(theme.fg("dim", "Goal updated"));
       const label = details.status === "complete" ? "✓ Complete" : details.status === "blocked" ? "! Blocked" : `! Blocker audit ${details.streak}/3`;
-      const text = `${theme.fg(details.status === "complete" ? "success" : "warning", label)}${theme.fg("dim", ` · ${details.evidence}`)}`;
+      const text = `${theme.fg(details.status === "complete" ? "success" : "warning", label)}${theme.fg("dim", ` · ${safeTerminalText(details.evidence)}`)}`;
       return new BoundedText(text, options.expanded ? undefined : 3);
     },
   });

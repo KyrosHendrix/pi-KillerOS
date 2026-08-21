@@ -4,6 +4,17 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.14] - 2026-08-22
+
+### Fixed
+
+- Prevented direct tag pushes from publishing commits that have not passed CI on `main`.
+- Kept oversized hook payloads valid JSON and marked their bounded preview as truncated.
+- Stripped terminal escape sequences and unsafe controls from model-controlled question and goal text.
+- Aligned hook timeout validation and execution on the documented five-minute maximum.
+- Required file-backed goals to create or change their deliverable after the goal starts, including after session restore.
+- Removed a CI test dependency on an intentionally untracked internal document.
+
 ## [2.0.13] - 2026-08-21
 
 ### Added
