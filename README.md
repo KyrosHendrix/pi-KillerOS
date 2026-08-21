@@ -24,10 +24,10 @@ Install from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin an install to version `v2.0.13`:
+Pin an install to version `v2.0.14`:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.13
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.14
 ```
 
 Add `-l` to either command to install only for the current project. Restart Pi after installing.
