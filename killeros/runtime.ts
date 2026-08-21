@@ -28,9 +28,14 @@ export interface GoalBlockerAudit {
   lastTurn: number;
 }
 
+export type GoalFileBaseline =
+  | { exists: false }
+  | { exists: true; size: number; mtimeMs: number };
+
 export interface GoalFileVerification {
   kind: "file";
   path: string;
+  baseline: GoalFileBaseline;
 }
 
 export interface GoalState {

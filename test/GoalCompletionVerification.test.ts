@@ -95,7 +95,7 @@ test("file goals verify the persisted exact path before completion", async (t) =
   const ctx = createContext();
   const active = await startGoal(harness, ctx, `Write the Markdown file to \`${requested}\``);
 
-  assert.deepEqual(active.verification, { kind: "file", path: requested });
+  assert.deepEqual(active.verification, { kind: "file", path: requested, baseline: { exists: false } });
   await assert.rejects(complete(harness, ctx), /not a regular file at the required path/u);
   assert.equal(harness.appendedEntries.at(-1)!.data.state!.status, "active");
   assert.equal(harness.appendedEntries.some((entry) => entry.data.event === "complete"), false);
@@ -119,6 +119,28 @@ test("file goals verify the persisted exact path before completion", async (t) =
   assert.equal(result.details.status, "complete");
   assert.equal(result.details.verification, "file");
   assert.equal(harness.appendedEntries.at(-1)!.data.state!.status, "complete");
+});
+
+test("pre-existing file goals require a changed deliverable after restore", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-stale-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const requested = path.join(directory, "requested.md");
+  writeFileSync(requested, "stale");
+  const originalHarness = createHarness();
+  const originalContext = createContext();
+  const active = await startGoal(originalHarness, originalContext, `Write the Markdown file to \`${requested}\``);
+
+  assert.equal((active.verification as { baseline: { exists: boolean } }).baseline.exists, true);
+  const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: "set", state: active } }];
+  const restoredHarness = createHarness(entries);
+  const restoredContext = createContext(entries);
+  for (const handler of restoredHarness.handlers.get("session_start") ?? []) await handler({}, restoredContext);
+
+  await assert.rejects(complete(restoredHarness, restoredContext), /has not changed since the goal started/u);
+  writeFileSync(requested, "changed deliverable");
+  const result = await complete(restoredHarness, restoredContext);
+  assert.equal(result.details.status, "complete");
+  assert.equal(result.details.verification, "file");
 });
 
 test("general natural-language goals retain model-reported completion", async () => {
@@ -162,7 +184,7 @@ test("explicit file goals support extensionless absolute destinations", async (t
   const harness = createHarness();
   const ctx = createContext();
   const active = await startGoal(harness, ctx, `Create the file at \`${requested}\``);
-  assert.deepEqual(active.verification, { kind: "file", path: requested });
+  assert.deepEqual(active.verification, { kind: "file", path: requested, baseline: { exists: false } });
 });
 
 test("old goal state restores, while malformed persisted verification fails closed", async () => {
@@ -190,6 +212,7 @@ test("old goal state restores, while malformed persisted verification fails clos
   };
 
   assert.equal((await restore(baseState)).sentMessages.length, 1);
-  assert.equal((await restore({ ...baseState, verification: { kind: "file", path: "relative.md" } })).sentMessages.length, 0);
-  assert.equal((await restore({ ...baseState, verification: { kind: "url", path: "C:\\out.md" } })).sentMessages.length, 0);
+  assert.equal((await restore({ ...baseState, verification: { kind: "file", path: "relative.md", baseline: { exists: false } } })).sentMessages.length, 0);
+  assert.equal((await restore({ ...baseState, verification: { kind: "file", path: "C:\\out.md" } })).sentMessages.length, 0);
+  assert.equal((await restore({ ...baseState, verification: { kind: "url", path: "C:\\out.md", baseline: { exists: false } } })).sentMessages.length, 0);
 });
