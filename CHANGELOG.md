@@ -7,6 +7,7 @@ All notable changes to KillerOS are documented here.
 ### Fixed
 
 - Prevented direct tag pushes from publishing commits that have not passed CI on `main`.
+- Kept oversized hook payloads valid JSON and marked their bounded preview as truncated.
 
 ## [2.0.13] - 2026-08-21
 

@@ -3010,6 +3010,32 @@ test("project tool_call hooks can deterministically block a tool", async () => {
   }
 });
 
+test("oversized hook payloads remain valid JSON and report truncation", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-payload-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const command = `"${process.execPath}" -e "const value=process.env.KILLEROS_PAYLOAD;const payload=JSON.parse(value);if(value.length>8000||payload.truncated!==true||typeof payload.preview!=='string')process.exit(2)"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { tool_call: [{ matcher: "^write$", command }] },
+    }));
+
+    const { handlers } = createHarness();
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+
+    const results = await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "large-hook-payload",
+      toolName: "write",
+      input: { path: "example.txt", content: "x".repeat(9_000) },
+    }, ctx);
+    assert.equal(results.some((result) => result?.block), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("hook output preserves UTF-8 characters split across stream chunks", async () => {
   class ChunkedHook extends EventEmitter {
     stdout = new PassThrough();

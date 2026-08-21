@@ -29,6 +29,7 @@ interface HookExecutionResult {
 
 const HOOK_EVENTS: readonly KillerosHookEvent[] = ["tool_call", "tool_result", "agent_settled"];
 const HOOK_OUTPUT_LIMIT = 16 * 1024;
+const HOOK_PAYLOAD_LIMIT = 8_000;
 
 function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
   const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "killeros-hooks.json");
@@ -193,11 +194,18 @@ export function executeHook(
   });
 }
 
+function serializeHookPayload(payload: unknown): string {
+  const serialized = JSON.stringify(payload) ?? "null";
+  if (serialized.length <= HOOK_PAYLOAD_LIMIT) return serialized;
+  const previewLength = Math.floor((HOOK_PAYLOAD_LIMIT - 64) / 2);
+  return JSON.stringify({ truncated: true, preview: serialized.slice(0, previewLength) });
+}
+
 function hookEnvironment(event: KillerosHookEvent, toolName = "", payload: unknown = {}): Record<string, string> {
   return {
     KILLEROS_EVENT: event,
     KILLEROS_TOOL: toolName,
-    KILLEROS_PAYLOAD: JSON.stringify(payload).slice(0, 8_000),
+    KILLEROS_PAYLOAD: serializeHookPayload(payload),
   };
 }
 
