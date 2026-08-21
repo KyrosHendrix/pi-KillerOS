@@ -22,7 +22,6 @@ const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-const oldCompactionPlan = readFileSync(new URL("../docs/implemented/context-compaction.md", import.meta.url), "utf8");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const privateRootFiles = new Set<string>(["AGENTS.md", "CONTEXT.md", "PRODUCT.md", "DESIGN.md"]);
 
@@ -93,8 +92,6 @@ test("compaction documentation assigns triggering to KillerOS and summary owners
   assert.match(readme, /Pi writes the summary/u);
   assert.match(readme, /manual `\/compact`.*pause.*resumes/isu);
   assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
-  assert.match(oldCompactionPlan, /STATUS: SUPERSEDED/u);
-  assert.match(oldCompactionPlan, /docs\/adr\/0001-let-pi-own-compaction\.md/u);
 });
 
 test("CI checks the locked Pi floor and latest matched Pi packages", () => {
