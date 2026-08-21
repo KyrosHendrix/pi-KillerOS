@@ -10,6 +10,7 @@ import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
 import type { GoalBlockerAudit, GoalFileVerification, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
 const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
@@ -555,9 +556,10 @@ export function registerGoal(
     const icon = state.status === "active" ? "✻" : state.status === "paused" ? "Ⅱ" : state.status === "blocked" ? "!" : "✓";
     const color: ThemeColor = state.status === "active" ? "accent" : state.status === "paused" ? "warning" : state.status === "blocked" ? "error" : "success";
     const status = theme.fg(color, `${icon} Goal ${state.status}`);
-    if (!options.expanded) return new BoundedText(`${status}${theme.fg("dim", ` · ${state.objective}`)}`, 3);
-    const lines = [status, theme.fg("dim", state.objective)];
-    if (state.result) lines.push(theme.fg("muted", state.result));
+    const objective = safeTerminalText(state.objective);
+    if (!options.expanded) return new BoundedText(`${status}${theme.fg("dim", ` · ${objective}`)}`, 3);
+    const lines = [status, theme.fg("dim", objective)];
+    if (state.result) lines.push(theme.fg("muted", safeTerminalText(state.result)));
     return new BoundedText(lines.join("\n"));
   });
 
@@ -615,18 +617,18 @@ export function registerGoal(
       };
     },
     renderCall(args, theme) {
-      return new Text(`${theme.fg("toolTitle", theme.bold("goal "))}${theme.fg("muted", args.status)}`, 0, 0);
+      return new Text(`${theme.fg("toolTitle", theme.bold("goal "))}${theme.fg("muted", safeTerminalText(args.status))}`, 0, 0);
     },
     renderResult(result, options, theme, context) {
       if (context?.isError) {
         const first = result.content[0];
-        const message = first?.type === "text" ? first.text : "Goal update failed";
+        const message = first?.type === "text" ? safeTerminalText(first.text) : "Goal update failed";
         return new BoundedText(theme.fg("error", message), options.expanded ? undefined : 3);
       }
       const details = result.details;
       if (!details) return new BoundedText(theme.fg("dim", "Goal updated"));
       const label = details.status === "complete" ? "✓ Complete" : details.status === "blocked" ? "! Blocked" : `! Blocker audit ${details.streak}/3`;
-      const text = `${theme.fg(details.status === "complete" ? "success" : "warning", label)}${theme.fg("dim", ` · ${details.evidence}`)}`;
+      const text = `${theme.fg(details.status === "complete" ? "success" : "warning", label)}${theme.fg("dim", ` · ${safeTerminalText(details.evidence)}`)}`;
       return new BoundedText(text, options.expanded ? undefined : 3);
     },
   });

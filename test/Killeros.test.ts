@@ -1528,6 +1528,41 @@ test("goal update is active only while a goal is active", async () => {
   assert.equal(activeTools.includes("killeros_goal_update"), false);
 });
 
+test("question and goal renderers strip terminal controls while preserving line breaks", () => {
+  const { entryRenderers, tools } = createHarness();
+  const unsafe = "safe\x1B[2Jspoof\u0007\nnext";
+  const question = tools.get("question");
+  const questionCall = question.renderCall({
+    question: unsafe,
+    options: [{ label: unsafe, description: unsafe, preview: unsafe }],
+  }, theme, { expanded: true }).render(80).join("\n");
+  const questionResult = question.renderResult({
+    content: [{ type: "text", text: unsafe }],
+    details: { question: unsafe, options: [unsafe], answer: unsafe, wasCustom: true },
+  }, { expanded: true }, theme).render(80).join("\n");
+  const goalEntry = entryRenderers.get("killeros-goal")({ data: { version: 1, event: "complete", state: {
+    version: 1,
+    revision: 1,
+    objective: unsafe,
+    result: unsafe,
+    status: "complete",
+    createdAt: 1,
+    updatedAt: 1,
+    activeMilliseconds: 0,
+    turns: 0,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+  } } }, { expanded: true }, theme).render(80).join("\n");
+  const goalResult = tools.get("killeros_goal_update").renderResult({
+    content: [], details: { status: "complete", evidence: unsafe },
+  }, { expanded: true }, theme, {}).render(80).join("\n");
+
+  for (const rendered of [questionCall, questionResult, goalEntry, goalResult]) {
+    assert.doesNotMatch(rendered, /\x1B|\u0007|\[2J/u);
+    assert.match(rendered, /safespoof[^\S\r\n]*\nnext/u);
+  }
+});
+
 test("goal update renders the real tool error instead of an undefined blocker audit", () => {
   const tool = createHarness().tools.get("killeros_goal_update");
   const call = tool.renderCall({ status: "complete" }, theme, {}).render(80).join("\n");
