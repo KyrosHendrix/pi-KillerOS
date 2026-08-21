@@ -3014,6 +3014,39 @@ test("rejects agent_settled matchers without executing their commands", async ()
   }
 });
 
+test("hook timeout validation accepts five minutes and rejects one millisecond more", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-timeout-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const command = (file: string) => `"${process.execPath}" -e "require('node:fs').writeFileSync('${file}','ran')"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { tool_call: [
+        { command: command("accepted"), timeoutMs: 300_000 },
+        { command: command("rejected"), timeoutMs: 300_001 },
+      ] },
+    }));
+
+    const { handlers } = createHarness();
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "hook-timeout-boundary",
+      toolName: "write",
+      input: {},
+    }, ctx);
+
+    assert.equal(existsSync(path.join(directory, "accepted")), true);
+    assert.equal(existsSync(path.join(directory, "rejected")), false);
+    assert.match(notifications.at(-1)?.message, /Ignored tool_call hook 2: timeoutMs must be an integer from 1 to 300000/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("project tool_call hooks can deterministically block a tool", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-"));
   try {

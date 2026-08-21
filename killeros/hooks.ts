@@ -4,7 +4,6 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { reportError } from "./errors.ts";
-import { MAX_NODE_TIMER_MS } from "./limits.ts";
 
 type KillerosHookEvent = "tool_call" | "tool_result" | "agent_settled";
 
@@ -30,6 +29,7 @@ interface HookExecutionResult {
 const HOOK_EVENTS: readonly KillerosHookEvent[] = ["tool_call", "tool_result", "agent_settled"];
 const HOOK_OUTPUT_LIMIT = 16 * 1024;
 const HOOK_PAYLOAD_LIMIT = 8_000;
+const HOOK_TIMEOUT_MAX_MS = 300_000;
 
 function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
   const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "killeros-hooks.json");
@@ -50,11 +50,14 @@ function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
           ctx.ui.notify(`Ignored ${event} hook ${index + 1}: matchers are only valid for tool events`, "warning");
           return false;
         }
+        if (hook?.timeoutMs !== undefined && (!Number.isSafeInteger(hook.timeoutMs) || hook.timeoutMs <= 0 || hook.timeoutMs > HOOK_TIMEOUT_MAX_MS)) {
+          ctx.ui.notify(`Ignored ${event} hook ${index + 1}: timeoutMs must be an integer from 1 to ${HOOK_TIMEOUT_MAX_MS}`, "warning");
+          return false;
+        }
         const valid = hook
           && typeof hook.command === "string"
           && hook.command.trim().length > 0
-          && (hook.matcher === undefined || typeof hook.matcher === "string")
-          && (hook.timeoutMs === undefined || Number.isSafeInteger(hook.timeoutMs) && hook.timeoutMs > 0 && hook.timeoutMs <= MAX_NODE_TIMER_MS);
+          && (hook.matcher === undefined || typeof hook.matcher === "string");
         if (!valid) {
           ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${configPath}`, "warning");
           return false;
@@ -190,7 +193,7 @@ export function executeHook(
       finish(termination ? terminationCode() : 1);
     });
     child.once("close", (code) => finish(termination ? terminationCode() : code ?? 1));
-    timer = setTimeout(() => beginTermination("timeout"), Math.max(1_000, Math.min(timeoutMs, 300_000)));
+    timer = setTimeout(() => beginTermination("timeout"), Math.max(1, Math.min(timeoutMs, HOOK_TIMEOUT_MAX_MS)));
   });
 }
 
