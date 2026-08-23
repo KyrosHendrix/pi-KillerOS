@@ -420,15 +420,16 @@ function pauseGoalForPossibleManualCompaction(
   reason: string,
 ): void {
   if (runtime.state?.status !== "active") return;
+  const safeReason = safeTerminalText(reason);
   try {
-    transitionGoal(pi, runtime, "error", "paused", reason, {
+    transitionGoal(pi, runtime, "error", "paused", safeReason, {
       resumeAfterManualCompaction: true,
     });
   } catch {
     runtime.state = runtime.state ? {
       ...stopGoalClock(runtime.state, Date.now()),
       status: "paused",
-      result: reason,
+      result: safeReason,
       resumeAfterManualCompaction: true,
     } : undefined;
     syncGoalUpdateTool(pi, runtime);

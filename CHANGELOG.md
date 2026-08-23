@@ -17,6 +17,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Sanitized manual-compaction abort diagnostics before saving recovery-eligible goal state.
 - Stripped terminal commands and unsafe controls from saved goal text before showing status panels or notifications.
 - Sanitized provider and storage diagnostics before persisting or announcing an automatically paused goal.
 - Routed handoff generation and session-replacement failures through the shared terminal-safe error reporter.

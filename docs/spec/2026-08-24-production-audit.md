@@ -43,7 +43,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 5. The packaged consumer boundary is not exercised. Unit tests import the source tree directly and therefore do not prove the npm tarball can be installed and loaded as a Pi extension.
 6. Documentation support-floor mismatch: `PRODUCT.md` says Pi 0.84.1+, while package metadata and README say 0.84.2+.
 7. Caught errors routed through the shared user-facing formatter retain terminal commands and unsafe control bytes.
-8. Manual-compaction abort state can retain raw provider diagnostics, though current goal renderers and status summaries sanitize their terminal output.
+8. Manual-compaction abort state retains raw provider diagnostics even though current goal renderers and status summaries sanitize their terminal output.
 9. Header and footer cwd formatting sends an unusual project path to Pi's terminal renderer without control-byte sanitization.
 
 ## Pi lifecycle contract observed
@@ -103,3 +103,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced terminal-command injection from restored objective and completion-result text in the `/goal` action panel.
 - Sanitized the complete status summary at its TUI/RPC output boundary, preserving its intentional line breaks and covering legacy state without rewriting session history.
+
+### Manual-compaction pause state
+
+- Reproduced OSC title injection, ANSI styling, BEL, and NUL bytes in recovery-eligible goal state after an aborted provider turn.
+- Sanitized the abort reason before normal or fallback persistence while leaving the static manual-compaction recovery notification unchanged.

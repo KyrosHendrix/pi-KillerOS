@@ -275,11 +275,11 @@ async function startGoalTurn(harness: Harness, ctx: TestContext, objective = "Fi
   }, ctx);
 }
 
-async function abortActiveGoal(harness: Harness, ctx: TestContext): Promise<void> {
+async function abortActiveGoal(harness: Harness, ctx: TestContext, errorMessage?: string): Promise<void> {
   await startGoalTurn(harness, ctx, "Continue after manual compaction");
   await emitSequentially(harness.handlers.get("agent_end"), {
     type: "agent_end",
-    messages: [{ role: "assistant", stopReason: "aborted" }],
+    messages: [{ role: "assistant", stopReason: "aborted", errorMessage }],
   }, ctx);
   await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
 }
@@ -434,10 +434,11 @@ test("an unrecovered overflow pauses through normal goal error handling", async 
 test("manual compaction resumes only the exact recovery-eligible paused goal", async () => {
   const harness = createHarness();
   const { ctx, notifications } = createContext();
-  await abortActiveGoal(harness, ctx);
+  await abortActiveGoal(harness, ctx, "\x1b]2;owned\x07\x1b[31mcompaction\x1b[0m\0 started");
 
   const paused = lastAppendedEntry(harness).data.state;
   assert.equal(paused.status, "paused");
+  assert.equal(paused.result, "compaction started");
   assert.equal(paused.resumeAfterManualCompaction, true);
   assert.match(notifications.at(-1)?.message ?? "", /paused.*\/compact|\/compact.*paused/iu);
 
