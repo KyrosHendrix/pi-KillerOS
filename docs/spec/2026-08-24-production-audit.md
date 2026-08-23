@@ -53,6 +53,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 15. Explicit goal-pause fallback sanitizes its stored failure reason but later notifies with the original unsafe storage-error message.
 16. The model-authored `/init` policy-conflict reason reaches tool output, runtime state, and a Pi warning without terminal-control sanitization.
 17. Custom model names, IDs, and provider identifiers render raw in the shared shell header/footer formatter.
+18. Goal file-baseline capture treats every `lstat` failure as a missing deliverable, allowing unverifiable starts and bypassing the command's error boundary.
 
 ## Pi lifecycle contract observed
 
@@ -168,3 +169,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced OSC title injection, ANSI styling, BEL, NUL, and line-feed bytes from custom model/provider metadata in a footer row.
 - Sanitized the shared model formatter so both shell header and footer receive single-line labels, retaining name-to-ID fallback and adding a safe empty-label fallback.
+
+### Goal file baseline errors
+
+- Reproduced a non-I/O path failure being persisted as an absent-file baseline and immediately dispatching the first goal turn.
+- Classified only `ENOENT` as absent and moved baseline inference inside the existing start/replacement error boundary, so other filesystem failures are contained without dispatch.

@@ -118,8 +118,9 @@ function captureGoalFileBaseline(filePath: string): GoalFileBaseline {
   let artifact: ReturnType<typeof lstatSync>;
   try {
     artifact = lstatSync(filePath);
-  } catch {
-    return { exists: false };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
+    throw error;
   }
   const baseline = { exists: true as const, size: artifact.size, mtimeMs: artifact.mtimeMs };
   if (!artifact.isFile()) return baseline;
@@ -1040,21 +1041,21 @@ export function registerGoal(
         return;
       }
       const now = Date.now();
-      const state: GoalState = {
-        version: GOAL_VERSION,
-        revision: 1,
-        objective,
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-        activeMilliseconds: 0,
-        activeStartedAt: now,
-        turns: 0,
-        blockedAuditStartTurn: 0,
-        baselineTokens: sumGoalTokens(ctx),
-        verification: inferGoalVerification(objective),
-      };
       try {
+        const state: GoalState = {
+          version: GOAL_VERSION,
+          revision: 1,
+          objective,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+          activeMilliseconds: 0,
+          activeStartedAt: now,
+          turns: 0,
+          blockedAuditStartTurn: 0,
+          baselineTokens: sumGoalTokens(ctx),
+          verification: inferGoalVerification(objective),
+        };
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
         if (scheduleGoalContinuation(pi, runtime, initState, ctx)) {
           ctx.ui.notify("Goal active. KillerOS will continue until completion, a repeated blocker, or pause.", "info");

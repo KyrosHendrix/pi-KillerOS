@@ -18,6 +18,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Rejected explicit file goals when their starting filesystem baseline cannot be inspected instead of treating every error as a missing file.
 - Kept custom model and provider labels single-line and terminal-safe in the shell header and footer.
 - Sanitized model-reported `/init` policy conflicts before returning, storing, or notifying with them.
 - Kept session-storage failure details terminal-safe when an explicit goal pause falls back to in-memory state.

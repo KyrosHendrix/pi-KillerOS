@@ -56,7 +56,7 @@ function createContext(entries: Array<Record<string, unknown>> = []) {
       confirm: async () => true,
       editor: async (_title: string, prefill: string) => prefill,
       getEditorComponent: () => undefined,
-      notify() {},
+      notify(_message: string, _level?: string) {},
       select: async () => undefined,
       setEditorComponent() {},
       setFooter() {},
@@ -197,6 +197,23 @@ test("file goals fail closed when their current content baseline is unavailable"
   for (const handler of restoredHarness.handlers.get("session_start") ?? []) await handler({}, restoredContext);
 
   await assert.rejects(complete(restoredHarness, restoredContext), /content cannot be verified/u);
+});
+
+test("file goals reject baseline paths the filesystem cannot inspect", async () => {
+  const requested = path.join(path.parse(process.cwd()).root, "killeros-invalid\0report.md");
+  const harness = createHarness();
+  const ctx = createContext();
+  const notifications: Array<{ message: string; level?: string }> = [];
+  ctx.ui.notify = (message, level) => { notifications.push({ message, level }); };
+
+  await harness.commands.get("goal")!.handler(`Write the Markdown file to \`${requested}\``, ctx);
+
+  assert.equal(harness.appendedEntries.length, 0);
+  assert.equal(harness.sentMessages.length, 0);
+  assert.equal(notifications.length, 1);
+  assert.match(notifications[0]!.message, /^Goal could not be started:/u);
+  assert.equal(notifications[0]!.message.includes("\0"), false);
+  assert.equal(notifications[0]!.level, "error");
 });
 
 test("general natural-language goals retain model-reported completion", async () => {
