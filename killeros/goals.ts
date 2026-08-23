@@ -880,7 +880,7 @@ export function registerGoal(
           transitionGoal(pi, runtime, "pause", "paused");
           saved = true;
         } catch (error) {
-          failureReason = `the requested pause could not be saved: ${error instanceof Error ? error.message : String(error)}`;
+          failureReason = safeTerminalText(`the requested pause could not be saved: ${error instanceof Error ? error.message : String(error)}`);
           pauseGoalAfterFailure(
             pi,
             runtime,

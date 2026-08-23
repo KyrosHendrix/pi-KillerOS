@@ -2129,7 +2129,7 @@ test("/goal pause and clear stop continuation when their first session write fai
     api.appendEntry = (...args) => {
       if (!failed) {
         failed = true;
-        throw new Error("transient session write failure");
+        throw new Error("\x1b]2;owned\x07\x1b[31mtransient\x1b[0m\0 session write failure");
       }
       return appendEntry(...args);
     };
@@ -2137,8 +2137,10 @@ test("/goal pause and clear stop continuation when their first session write fai
     await commands.get("goal").handler(control, ctx);
     const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
     assert.equal(lastGoalEntry.data.state.status, "paused");
-    assert.match(lastGoalEntry.data.state.result, new RegExp(`requested ${control} could not be saved`, "u"));
-    assert.match(notifications.at(-1).message, /Automatic continuation is stopped/u);
+    assert.equal(lastGoalEntry.data.state.result, `the requested ${control} could not be saved: transient session write failure`);
+    assert.equal(notifications.at(-1).message, control === "pause"
+      ? "Goal paused: the requested pause could not be saved: transient session write failure\nAutomatic continuation is stopped. If session storage is still unavailable, retry /goal pause after it recovers."
+      : "Goal paused: the requested clear could not be saved\nAutomatic continuation is stopped. Retry /goal clear to remove the goal.");
 
     await emitSequentially(handlers.get("agent_end"), {
       messages: [{ role: "assistant", stopReason: "stop" }],
