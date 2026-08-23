@@ -2,6 +2,9 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
+      - dev
   pull_request:
     types:
       - opened
@@ -16,7 +19,7 @@ on:
 permissions:
   contents: read
 
-# A pull request and its branch push share a group, so obsolete runs are cancelled.
+# Cancel obsolete runs for the same event ref.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true

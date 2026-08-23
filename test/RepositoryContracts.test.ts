@@ -115,6 +115,7 @@ test("public compaction documentation states the configurable default", () => {
 });
 
 test("CI checks the locked Pi floor and latest matched Pi packages", () => {
+  assert.match(ci, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- dev/u);
   assert.match(ci, /Pi latest compatibility/u);
   assert.match(ci, /npm view @earendil-works\/pi-coding-agent version/u);
   assert.match(ci, /dependencies\.@earendil-works\/pi-ai/u);
