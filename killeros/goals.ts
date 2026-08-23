@@ -5,7 +5,6 @@ import path from "node:path";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { MAX_NODE_TIMER_MS } from "./limits.ts";
 import { BoundedText } from "./bounded-text.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
@@ -131,6 +130,7 @@ function captureGoalFileBaseline(filePath: string): GoalFileBaseline {
   }
 }
 
+/** Captures one explicit absolute output path so goal completion can verify its creation or modification. */
 function inferGoalVerification(objective: string): GoalFileVerification | undefined {
   const destination = /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b\s+(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
   const paths = [...objective.matchAll(destination)]
@@ -283,12 +283,10 @@ function sumGoalTokens(ctx: ExtensionContext): number {
 }
 
 function setGoalUpdateToolActive(pi: ExtensionAPI, active: boolean): void {
-  const api = pi as ExtensionAPI & { getActiveTools?: () => string[]; setActiveTools?: (names: string[]) => void };
-  if (!api.getActiveTools || !api.setActiveTools) return;
-  const activeTools = api.getActiveTools();
+  const activeTools = pi.getActiveTools();
   const isActive = activeTools.includes(GOAL_UPDATE_TOOL);
   if (active === isActive) return;
-  api.setActiveTools(active
+  pi.setActiveTools(active
     ? [...activeTools, GOAL_UPDATE_TOOL]
     : activeTools.filter((name) => name !== GOAL_UPDATE_TOOL));
 }
@@ -495,6 +493,7 @@ function beginGoalTurn(
   return next;
 }
 
+/** Starts one goal turn only after Pi is idle and all competing workflow gates are clear. */
 function scheduleGoalContinuation(
   pi: ExtensionAPI,
   runtime: GoalRuntime,

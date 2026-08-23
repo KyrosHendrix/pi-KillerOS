@@ -146,6 +146,7 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
+/** Installs generated guidance atomically and preserves any target changed after baseline capture. */
 export async function installInitAgentsFile(
   targetPath: string,
   content: string,

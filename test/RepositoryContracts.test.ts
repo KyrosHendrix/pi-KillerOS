@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -37,6 +38,28 @@ function repositoryFiles(directory: string = repositoryRoot): string[] {
   return files;
 }
 
+function repositoryContractFiles(): string[] {
+  return execFileSync(
+    "git",
+    ["-C", repositoryRoot, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    { encoding: "utf8" },
+  )
+    .split("\0")
+    .filter(Boolean)
+    .map((file) => path.join(repositoryRoot, file))
+    .filter(existsSync);
+}
+
+test("repository contract scan includes untracked non-ignored files", () => {
+  const probePath = path.join(repositoryRoot, `.killeros-contract-probe-${process.pid}.txt`);
+  writeFileSync(probePath, "contract probe", { flag: "wx" });
+  try {
+    assert.ok(repositoryContractFiles().includes(probePath));
+  } finally {
+    unlinkSync(probePath);
+  }
+});
+
 test("repository contains no retired feature references", () => {
   const retiredTerms = [
     "sub" + "agent",
@@ -45,7 +68,7 @@ test("repository contains no retired feature references", () => {
     "child" + " agent",
     "child" + " thread",
   ];
-  const matches = repositoryFiles().filter((file: string) => {
+  const matches = repositoryContractFiles().filter((file: string) => {
     const content = readFileSync(file, "utf8").toLowerCase();
     return retiredTerms.some((term) => content.includes(term));
   });
@@ -92,6 +115,7 @@ test("public compaction documentation states the configurable default", () => {
 });
 
 test("CI checks the locked Pi floor and latest matched Pi packages", () => {
+  assert.match(ci, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- dev/u);
   assert.match(ci, /Pi latest compatibility/u);
   assert.match(ci, /npm view @earendil-works\/pi-coding-agent version/u);
   assert.match(ci, /dependencies\.@earendil-works\/pi-ai/u);
@@ -140,6 +164,7 @@ test("public documentation exposes current requirements and commands", () => {
   assert.match(changelog, /Scoped atomic `\/init` reads and writes/u);
   assert.match(changelog, /save terminal state before immediately stopping active goal work/u);
   assert.match(changelog, /one durable blocker key on three consecutive goal turns/u);
+  assert.match(readme, /settled.*token usage/iu);
   assert.match(readme, /question.*single-select and multi-select/iu);
   assert.match(changelog, /optional multi-select.*question/iu);
 });
@@ -151,8 +176,8 @@ test("request activity observes continuation scheduling before settlement cleanu
   const notifications = main.indexOf("registerCompletionNotifications(pi");
   const workedFor = main.indexOf("registerWorkedFor(pi");
 
+  assert.ok(workedFor < goalSettlement);
   assert.ok(goalSettlement < activity);
   assert.ok(initSettlement < activity);
   assert.ok(activity < notifications);
-  assert.ok(activity < workedFor);
 });

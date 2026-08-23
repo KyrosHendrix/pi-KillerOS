@@ -4,7 +4,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 
 ## What you get
 
-- A custom TUI: startup card with version, model, provider, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state.
+- A custom TUI: startup card with version, model, provider, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.
 - `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Pause, resume, edit, or clear it anytime.
 - `/init`: generates a root `AGENTS.md` from repository evidence, preserving compatible existing rules.
 - `/variants`: pick a reasoning level supported by the active model.
@@ -34,7 +34,7 @@ Or from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin a version with `@v2.0.16`, add `-l` to install only for the current project. Restart Pi after installing.
+Pin a release by appending its tag, for example `@v2.0.17`. Add `-l` to install only for the current project. Restart Pi after installing.
 
 ## Commands
 

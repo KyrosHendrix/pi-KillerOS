@@ -47,16 +47,14 @@ After a successful write, read generated AGENTS.md once through killeros_init_re
 `.trim();
 
 function setInitTools(pi: ExtensionAPI, initState: InitRuntime, active: boolean): void {
-  const runtime = pi as ExtensionAPI & { getActiveTools?: () => string[]; setActiveTools?: (names: string[]) => void };
-  if (!runtime.getActiveTools || !runtime.setActiveTools) return;
   if (active) {
-    initState.activeTools ??= runtime.getActiveTools().filter((name) => !INIT_SCOPED_TOOLS.includes(name as (typeof INIT_SCOPED_TOOLS)[number]));
-    runtime.setActiveTools([...INIT_SCOPED_TOOLS]);
+    initState.activeTools ??= pi.getActiveTools().filter((name) => !INIT_SCOPED_TOOLS.includes(name as (typeof INIT_SCOPED_TOOLS)[number]));
+    pi.setActiveTools([...INIT_SCOPED_TOOLS]);
   } else if (initState.activeTools) {
-    runtime.setActiveTools(initState.activeTools);
+    pi.setActiveTools(initState.activeTools);
     initState.activeTools = undefined;
   } else {
-    runtime.setActiveTools(runtime.getActiveTools().filter((name) => !INIT_SCOPED_TOOLS.includes(name as (typeof INIT_SCOPED_TOOLS)[number])));
+    pi.setActiveTools(pi.getActiveTools().filter((name) => !INIT_SCOPED_TOOLS.includes(name as (typeof INIT_SCOPED_TOOLS)[number])));
   }
 }
 

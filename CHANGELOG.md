@@ -4,6 +4,22 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.17] - 2026-08-23
+
+### Added
+
+- Added per-task token usage to settled TUI receipts for ordinary requests and individual goal turns.
+
+### Changed
+
+- Limited push CI to `main` and `dev`; feature branches run through pull request CI without duplicate push runs.
+- Removed obsolete Pi tool API casts, shared caught-error formatting, and expanded the non-repeating startup tip and editor suggestion banks.
+- Clarified that the README's pinned Git tag is an example rather than the current package version.
+
+### Fixed
+
+- Limited retired-feature repository checks to tracked and non-ignored files so ignored private notes cannot fail the suite.
+
 ## [2.0.16] - 2026-08-23
 
 ### Fixed
