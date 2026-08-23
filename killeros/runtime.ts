@@ -30,7 +30,7 @@ export interface GoalBlockerAudit {
 
 export type GoalFileBaseline =
   | { exists: false }
-  | { exists: true; size: number; mtimeMs: number };
+  | { exists: true; size: number; mtimeMs: number; contentHash?: string | null };
 
 export interface GoalFileVerification {
   kind: "file";

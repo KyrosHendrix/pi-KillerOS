@@ -564,7 +564,8 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
 
         const render = (width: number): string[] => {
           if (width <= 0) return [];
-          const rowBudget = Math.max(1, tui.terminal.rows);
+          const rowBudget = tui.terminal.rows;
+          if (rowBudget <= 0) return [];
           if (cachedLines && cachedWidth === width && cachedRows === rowBudget) return cachedLines;
           const visibleOptions = filteredOptions();
           if (optionIndex >= visibleOptions.length) optionIndex = Math.max(0, visibleOptions.length - 1);

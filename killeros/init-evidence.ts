@@ -262,10 +262,11 @@ export async function readGeneratedInitTarget(projectRoot: string, targetPath: s
 export function listInitEvidence(index: InitEvidenceIndex, requestedPath = "."): string[] {
   const prefix = requestedPath === "." ? "" : normalizeRequestedPath(requestedPath).replace(/\/$/u, "");
   const prefixWithSlash = prefix ? `${prefix}/` : "";
+  const evidencePrefix = evidenceKey(prefixWithSlash);
   const children = new Set<string>();
   let found = !prefix;
   for (const relativePath of index.canonicalPaths.values()) {
-    if (!relativePath.startsWith(prefixWithSlash)) continue;
+    if (!evidenceKey(relativePath).startsWith(evidencePrefix)) continue;
     const remainder = relativePath.slice(prefixWithSlash.length);
     if (!remainder) continue;
     found = true;
