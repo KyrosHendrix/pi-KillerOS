@@ -3616,7 +3616,7 @@ test("does not inject AGENTS.local.md into the /init generation turn", async () 
   }
 });
 
-test("injects trusted AGENTS.local.md imports after shared context", async () => {
+test("injects trusted AGENTS.local.md imports without source-path metadata", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-personal-"));
   try {
     writeFileSync(path.join(directory, "personal.md"), "Prefer concise tradeoff explanations.\n");
@@ -3629,7 +3629,8 @@ test("injects trusted AGENTS.local.md imports after shared context", async () =>
       if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
     }
     assert.match(event.systemPrompt, /shared AGENTS context/u);
-    assert.match(event.systemPrompt, /<personal_instructions/u);
+    assert.match(event.systemPrompt, /\n<personal_instructions>\n/u);
+    assert.doesNotMatch(event.systemPrompt, /source=/u);
     assert.match(event.systemPrompt, /Prefer concise tradeoff explanations\./u);
     assert.ok(event.systemPrompt.indexOf("shared AGENTS context") < event.systemPrompt.indexOf("<personal_instructions"));
 
@@ -4519,8 +4520,8 @@ test("personal instruction truncation preserves valid UTF-8", () => {
     writeFileSync(path.join(directory, "AGENTS.local.md"), `${"a".repeat(32_767)}é`, "utf8");
     const instructions = resolvePersonalInstructions(directory);
     assert.ok(instructions);
-    assert.doesNotMatch(instructions.content, /�/u);
-    assert.match(instructions.content, /truncated by KillerOS/u);
+    assert.doesNotMatch(instructions, /�/u);
+    assert.match(instructions, /truncated by KillerOS/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -587,7 +587,7 @@ function goalContinuationMessage(state: GoalState, ctx: ExtensionContext): strin
   if (ctx.isProjectTrusted()) {
     const personal = resolvePersonalInstructions(ctx.cwd);
     if (personal) {
-      sections.push(`<personal_instructions source=${JSON.stringify(personal.source)}>\n${personal.content}\n</personal_instructions>`);
+      sections.push(personal);
     }
   }
   return sections.join("\n\n");

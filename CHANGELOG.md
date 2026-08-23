@@ -17,6 +17,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Removed filesystem source paths from personal-instruction prompt wrappers so unusual project paths cannot alter prompt structure.
 - Stripped terminal commands and unsafe control bytes from lifecycle hook failure notifications and tool block reasons.
 - Limited retired-feature repository checks to tracked and non-ignored files so ignored private notes cannot fail the suite.
 

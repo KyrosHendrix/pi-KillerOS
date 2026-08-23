@@ -68,3 +68,9 @@ None.
 - Exercised the package manifest through Pi's public `DefaultResourceLoader` and `createAgentSession` APIs in an isolated project and agent home.
 - Verified activation has no loader or lifecycle errors, both lifecycle handlers exist, command registration is unique, reload replaces the runner, the old context becomes stale, and the fresh runner preserves the command contract without diagnostics.
 - Kept the test on public Pi exports so the existing pinned-floor/latest CI matrix now detects incompatible Pi lifecycle changes.
+
+### Personal-instruction source metadata
+
+- Confirmed that both ordinary and goal-continuation prompt wrappers interpolated the resolved filesystem path into XML-like metadata.
+- Removed the undocumented source attribute and its data plumbing instead of maintaining a custom escaping layer.
+- Centralized the source-free block in `resolvePersonalInstructions`, preserving trust checks, imports, fallback content, and bounded UTF-8 reads for both callers.
