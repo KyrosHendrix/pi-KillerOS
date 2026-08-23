@@ -382,7 +382,7 @@ function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
     state.objective,
   ];
   if (state.result) lines.push(state.result);
-  return lines.join("\n");
+  return safeTerminalText(lines.join("\n"));
 }
 
 export function pauseGoalAfterFailure(

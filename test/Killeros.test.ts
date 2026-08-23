@@ -1853,6 +1853,8 @@ test("goal panel confirms clear and leaves direct goal commands compatible", asy
 });
 
 test("goal panel actions match paused, blocked, and complete states", async () => {
+  const unsafeObjective = "\x1b]2;owned\x07\x1b[31mobjective\x1b[0m\0";
+  const unsafeResult = "\x1b]2;owned\x07\x1b[31mverified\x1b[0m\0";
   const expected = {
     paused: ["Resume automatic continuation", "Edit objective", "Clear goal"],
     blocked: ["Resume automatic continuation", "Edit objective", "Clear goal"],
@@ -1866,7 +1868,7 @@ test("goal panel actions match paused, blocked, and complete states", async () =
       data: { version: 1, event: status, state: {
         version: 1,
         revision: 1,
-        objective: `${status} objective`,
+        objective: `${status} ${unsafeObjective}`,
         status,
         createdAt: now,
         updatedAt: now,
@@ -1874,7 +1876,7 @@ test("goal panel actions match paused, blocked, and complete states", async () =
         turns: 3,
         blockedAuditStartTurn: 0,
         baselineTokens: 0,
-        result: status === "complete" ? "verified" : undefined,
+        result: status === "complete" ? unsafeResult : undefined,
       } },
     }];
     const { commands, handlers } = createHarness();
@@ -1882,6 +1884,9 @@ test("goal panel actions match paused, blocked, and complete states", async () =
     for (const handler of handlers.get("session_start")) await handler({}, ctx);
     await commands.get("goal").handler("", ctx);
     assert.deepEqual(captured.selection.options, options, status);
+    assert.match(captured.selection.title, new RegExp(`${status} objective`, "u"), status);
+    assert.doesNotMatch(captured.selection.title, /\x1b|\x07|\0/u, status);
+    if (status === "complete") assert.match(captured.selection.title, /verified/u);
   }
 });
 
