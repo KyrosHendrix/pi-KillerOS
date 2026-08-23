@@ -1211,6 +1211,171 @@ test("/handoff allows paused, blocked, and complete Goal truth", async () => {
   }
 });
 
+test("/handoff owns TUI input while generating the summary", async () => {
+  const { commands } = createHarness();
+  const summary = createCompleteHandoffSummary("Finish the release checks.");
+  let customViews = 0;
+  let completionSignal: AbortSignal | undefined;
+  let renderedLoader: TestRenderable | undefined;
+
+  await commands.get("handoff").handler("", {
+    mode: "tui",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => ({ ok: true }),
+      complete: async (_model: unknown, _context: unknown, options: { signal?: AbortSignal }) => {
+        completionSignal = options.signal;
+        return { content: [{ type: "text", text: summary }], stopReason: "stop" };
+      },
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      getSessionName: () => undefined,
+      buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async (options: {
+      setup?: (sessionManager: {
+        appendCustomMessageEntry(customType: string, content: string, display: boolean): void;
+        appendSessionInfo(name: string): void;
+      }) => Promise<void>;
+      withSession?: (destination: { ui: { notify(message: string, level?: string): void } }) => Promise<void>;
+    }) => {
+      await options.setup?.({ appendCustomMessageEntry() {}, appendSessionInfo() {} });
+      await options.withSession?.({ ui: { notify() {} } });
+      return { cancelled: false };
+    },
+    ui: {
+      custom: async <T>(factory: (...args: unknown[]) => unknown): Promise<T> => {
+        customViews += 1;
+        return await new Promise<T>((resolve) => {
+          const done = (result: T): void => {
+            renderedLoader?.dispose();
+            resolve(result);
+          };
+          renderedLoader = factory(
+            { requestRender() {} },
+            theme,
+            {},
+            done,
+          ) as TestRenderable;
+        });
+      },
+      notify() {},
+    },
+    getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+  });
+
+  assert.equal(customViews, 1);
+  assert.match(renderedLoader?.render(80).join("\n") ?? "", /Generating handoff/iu);
+  assert.ok(completionSignal instanceof AbortSignal);
+});
+
+test("/handoff cancels its TUI generation without replacing the session", async () => {
+  const { commands } = createHarness();
+  const notifications: TestNotification[] = [];
+  let completionSignal: AbortSignal | undefined;
+  let newSessions = 0;
+
+  await commands.get("handoff").handler("", {
+    mode: "tui",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => ({ ok: true }),
+      complete: async (_model: unknown, _context: unknown, options: { signal?: AbortSignal }) => {
+        completionSignal = options.signal;
+        return await new Promise((resolve) => {
+          options.signal?.addEventListener("abort", () => resolve({ content: [], stopReason: "aborted" }), { once: true });
+        });
+      },
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      getSessionName: () => undefined,
+      buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async () => {
+      newSessions += 1;
+      return { cancelled: false };
+    },
+    ui: {
+      custom: async <T>(factory: (...args: unknown[]) => unknown): Promise<T> => {
+        return await new Promise<T>((resolve) => {
+          let component: TestRenderable | undefined;
+          const done = (result: T): void => {
+            component?.dispose();
+            resolve(result);
+          };
+          component = factory({ requestRender() {} }, theme, {}, done) as TestRenderable;
+          setImmediate(() => component?.handleInput("\x1B"));
+        });
+      },
+      notify: (message: string, level?: string) => notifications.push({ message, level }),
+    },
+    getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+  });
+
+  assert.equal(completionSignal?.aborted, true);
+  assert.equal(newSessions, 0);
+  assert.deepEqual(notifications, [{ message: "Handoff cancelled", level: "info" }]);
+});
+
+test("/handoff cancellation during authentication never starts a completion", async () => {
+  const { commands } = createHarness();
+  let resolveAuth: ((auth: { ok: true }) => void) | undefined;
+  let completions = 0;
+  let newSessions = 0;
+  const auth = new Promise<{ ok: true }>((resolve) => {
+    resolveAuth = resolve;
+  });
+
+  await commands.get("handoff").handler("", {
+    mode: "tui",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => await auth,
+      complete: async () => {
+        completions += 1;
+        return { content: [], stopReason: "aborted" };
+      },
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      getSessionName: () => undefined,
+      buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async () => {
+      newSessions += 1;
+      return { cancelled: false };
+    },
+    ui: {
+      custom: async <T>(factory: (...args: unknown[]) => unknown): Promise<T> => {
+        return await new Promise<T>((resolve) => {
+          let component: TestRenderable | undefined;
+          const done = (result: T): void => {
+            component?.dispose();
+            resolve(result);
+          };
+          component = factory({ requestRender() {} }, theme, {}, done) as TestRenderable;
+          component.handleInput("\x1B");
+        });
+      },
+      notify() {},
+    },
+    getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+  });
+
+  resolveAuth?.({ ok: true });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(completions, 0);
+  assert.equal(newSessions, 0);
+});
+
 test("/handoff creates an idle child session with a visible summary", async () => {
   const { commands } = createHarness();
   const sourceName = "Release work with a name that is intentionally longer than sixty characters for session naming";

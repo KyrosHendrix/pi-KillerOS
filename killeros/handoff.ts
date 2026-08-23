@@ -1,5 +1,5 @@
 import { contentText } from "@earendil-works/pi-ai";
-import { convertToLlm, type ExtensionAPI, type ExtensionCommandContext, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, convertToLlm, type ExtensionAPI, type ExtensionCommandContext, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { GoalRuntime } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
@@ -25,6 +25,10 @@ const HANDOFF_SYSTEM_PROMPT = [
   "Keep active constraints and unfinished work even when the requested focus is narrower.",
   "Use exactly these second-level Markdown headings: Objective, Current state, Decisions, Constraints, Completed work, Relevant artifacts, Verification, Blockers or open questions, Exact next action, and Suggested skills.",
 ].join("\n");
+type HandoffGenerationResult =
+  | { kind: "summary"; summary: string }
+  | { kind: "cancelled" }
+  | { kind: "error"; error: unknown };
 
 /** Builds the one-off summary request from Pi's active context projection. */
 function createHandoffRequest(
@@ -83,6 +87,41 @@ function reportHandoffError(ctx: ExtensionCommandContext, error: unknown): void 
   ctx.ui.notify(`Handoff failed: ${message}`, "error");
 }
 
+/** Generates and validates a handoff summary with optional cancellation. */
+async function generateHandoffSummary(
+  ctx: ExtensionCommandContext,
+  conversation: string,
+  focus: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (!ctx.model) throw new Error("No current model is available");
+
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+  signal?.throwIfAborted();
+  if (!auth.ok) throw new Error(auth.error);
+
+  const response = await ctx.modelRegistry.complete(ctx.model, {
+    systemPrompt: HANDOFF_SYSTEM_PROMPT,
+    messages: [{
+      role: "user",
+      content: createHandoffRequest(conversation, focus, ctx.getSystemPromptOptions().skills ?? []),
+      timestamp: Date.now(),
+    }],
+  }, {
+    apiKey: auth.apiKey,
+    headers: auth.headers,
+    env: auth.env,
+    maxTokens: 2_048,
+    signal,
+  });
+  if (response.stopReason === "error") throw new Error(response.errorMessage || "Handoff summary failed");
+  if (response.stopReason !== "stop") throw new Error("The handoff summary did not finish");
+
+  const summary = safeTerminalText(contentText(response.content)).trim();
+  if (!summary) throw new Error("The handoff summary was empty");
+  return summary;
+}
+
 /** Registers the idle-only command that summarizes context into a child session. */
 export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime): void {
   pi.registerCommand("handoff", {
@@ -106,31 +145,30 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime): voi
         const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);
         const conversation = serializeConversation(convertToLlm(messages));
         if (!conversation.trim()) throw new Error("No usable session context is available");
-        if (!ctx.model) throw new Error("No current model is available");
-
-        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-        if (!auth.ok) throw new Error(auth.error);
-
         focus = safeTerminalText(args).trim();
-        const response = await ctx.modelRegistry.complete(ctx.model, {
-          systemPrompt: HANDOFF_SYSTEM_PROMPT,
-          messages: [{
-            role: "user",
-            content: createHandoffRequest(conversation, focus, ctx.getSystemPromptOptions().skills ?? []),
-            timestamp: Date.now(),
-          }],
-        }, {
-          apiKey: auth.apiKey,
-          headers: auth.headers,
-          env: auth.env,
-          maxTokens: 2_048,
-        });
-        if (response.stopReason === "error") throw new Error(response.errorMessage || "Handoff summary failed");
-        if (response.stopReason !== "stop") throw new Error("The handoff summary did not finish");
-        const summary = safeTerminalText(contentText(response.content)).trim();
-        if (!summary) throw new Error("The handoff summary was empty");
+        const generation = ctx.mode === "tui"
+          ? await ctx.ui.custom<HandoffGenerationResult>((tui, theme, _keybindings, done) => {
+            const loader = new BorderedLoader(tui, theme, "Generating handoff...");
+            let settled = false;
+            const finish = (result: HandoffGenerationResult): void => {
+              if (settled) return;
+              settled = true;
+              done(result);
+            };
+            loader.onAbort = () => finish({ kind: "cancelled" });
+            generateHandoffSummary(ctx, conversation, focus, loader.signal)
+              .then((summary) => finish({ kind: "summary", summary }))
+              .catch((error: unknown) => finish({ kind: "error", error }));
+            return loader;
+          })
+          : { kind: "summary", summary: await generateHandoffSummary(ctx, conversation, focus) } as const;
+        if (generation.kind === "cancelled") {
+          ctx.ui.notify("Handoff cancelled", "info");
+          return;
+        }
+        if (generation.kind === "error") throw generation.error;
 
-        document = handoffDocument(summary);
+        document = handoffDocument(generation.summary);
         if (!hasRequiredHandoffContent(document, focus)) {
           throw new Error("The handoff summary did not contain every required section");
         }

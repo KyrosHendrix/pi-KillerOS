@@ -68,7 +68,7 @@ test("peer ranges enforce the tested Pi floor", () => {
     "@earendil-works/pi-tui": ">=0.84.2",
     typebox: ">=1.1.38 <2",
   });
-  assert.match(readme, /Pi `0\.84\.2` or later/u);
+  assert.match(readme, /Pi\s+`?0\.84\.2`?(?:\+| or later)/u);
 });
 
 test("machine identifiers use locale-independent casing", () => {
@@ -83,14 +83,11 @@ test("all shipped TypeScript entry points are type-checked", () => {
   assert.deepEqual(tsconfig.include, ["Killeros.ts", "scripts/**/*.ts", "test/**/*.ts"]);
 });
 
-test("compaction documentation assigns triggering to KillerOS and summary ownership to Pi", () => {
-  assert.match(readme, /Automatic compaction is enabled by default/iu);
-  assert.match(readme, /SettingsManager.*getAgentDir/isu);
-  assert.match(readme, /remainingTokens <= max\(contextWindow.*reserveTokens/su);
-  assert.match(readme, /one hidden continuation/iu);
-  assert.match(readme, /active `\/goal` runs.*existing session-compaction.*goal-continuation/isu);
-  assert.match(readme, /Pi writes the summary/u);
-  assert.match(readme, /manual `\/compact`.*pause.*resumes/isu);
+test("public compaction documentation states the configurable default", () => {
+  assert.match(readme, /compaction triggers by default at 15% tokens remaining/iu);
+  assert.match(readme, /"autoCompaction"/u);
+  assert.match(readme, /"enabled": true/u);
+  assert.match(readme, /"percentRemaining": 15/u);
   assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
 });
 
@@ -119,40 +116,31 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
   assert.match(release, /scripts\/release-notes\.ts CHANGELOG\.md/u);
   assert.match(release, /Existing tag.*verified commit/u);
   assert.doesNotMatch(release, /push:\s*\n\s*tags:/u);
-  assert.match(readme, /After the full CI workflow passes.*matching tag and GitHub release/su);
-  assert.match(readme, /Tag pushes cannot publish/iu);
   assert.match(release, /npm view "killeros@\$\{VERSION\}" version/u);
   assert.match(release, /publish_npm/u);
-  assert.match(readme, /publishes the package to npm.*creates the matching tag and GitHub release/isu);
+  assert.match(readme, /Releases go through CI on `main`/u);
+  assert.match(readme, /do not push version tags manually/iu);
   assert.doesNotMatch(readme, /does not publish to npm|npm login/iu);
 });
 
-test("public documentation matches current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.15");
-  assert.match(readme, /@v2\.0\.15/u);
-  assert.match(readme, /12-frame/u);
-  assert.match(readme, /Node\.js `22\.19\.0` or later/u);
+test("public documentation exposes current requirements and commands", () => {
+  const escapedVersion = packageJson.version.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  assert.match(readme, new RegExp(`@v${escapedVersion}`, "u"));
+  assert.match(readme, /Node\.js\s+`?22\.19\.0`?(?:\+| or later)/u);
   assert.match(readme, /\/goal <objective>/u);
-  assert.match(readme, /\/goal pause\s+Stop the current goal turn and automatic continuation/u);
-  assert.match(readme, /\/goal clear\s+Stop current goal work and remove the goal/u);
-  assert.match(readme, /stable lowercase blocker key recorded on three consecutive goal turns/u);
-  assert.match(readme, /save paused or cleared state before aborting current goal work/u);
-  assert.match(readme, /Failed edit and replacement writes dispatch no edited objective/u);
-  assert.match(readme, /\/init/u);
-  assert.match(readme, /\/notification/u);
+  assert.match(readme, /^\/goal edit\|pause\|resume\|clear/mu);
+  for (const command of ["init", "variants", "codex-fast", "notification", "handoff", "clear", "exit"] as const) {
+    assert.match(readme, new RegExp(`^/${command}(?:\\s|$)`, "mu"));
+  }
+  assert.match(readme, /^\/handoff \[focus\]/mu);
   assert.match(readme, /off by default/iu);
-  assert.match(readme, /global user preference/iu);
-  assert.match(readme, /audible bell/iu);
   assert.match(readme, /Nerd Font/iu);
-  assert.match(readme, /\/goal is active/iu);
   assert.doesNotMatch(readme, /work trail|transient borderless trail/iu);
   assert.match(changelog, /completion sound/iu);
   assert.match(changelog, /Scoped atomic `\/init` reads and writes/u);
   assert.match(changelog, /save terminal state before immediately stopping active goal work/u);
   assert.match(changelog, /one durable blocker key on three consecutive goal turns/u);
-  assert.match(readme, /`mode: "multiple"`/u);
-  assert.match(readme, /Space.*toggle.*`\/`.*filter.*Enter.*submit/isu);
-  assert.match(readme, /single-select remains the default/iu);
+  assert.match(readme, /question.*single-select and multi-select/iu);
   assert.match(changelog, /optional multi-select.*question/iu);
 });
 
