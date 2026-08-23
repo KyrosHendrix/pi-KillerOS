@@ -48,10 +48,10 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerCodexFastMode(pi);
   registerInitCommand(pi, initRuntime, goalRuntime);
   registerLifecycleHooks(pi);
+  registerWorkedFor(pi);
   const goalCompaction = registerGoalSettlement(pi, goalRuntime, initRuntime);
   registerAutoCompaction(pi, { goal: goalCompaction });
   registerInitSettlement(pi, initRuntime);
   registerRequestActivity(pi);
   registerCompletionNotifications(pi, options.completionNotifications);
-  registerWorkedFor(pi);
 }

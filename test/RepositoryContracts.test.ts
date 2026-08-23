@@ -164,6 +164,7 @@ test("public documentation exposes current requirements and commands", () => {
   assert.match(changelog, /Scoped atomic `\/init` reads and writes/u);
   assert.match(changelog, /save terminal state before immediately stopping active goal work/u);
   assert.match(changelog, /one durable blocker key on three consecutive goal turns/u);
+  assert.match(readme, /settled.*token usage/iu);
   assert.match(readme, /question.*single-select and multi-select/iu);
   assert.match(changelog, /optional multi-select.*question/iu);
 });
@@ -175,8 +176,8 @@ test("request activity observes continuation scheduling before settlement cleanu
   const notifications = main.indexOf("registerCompletionNotifications(pi");
   const workedFor = main.indexOf("registerWorkedFor(pi");
 
+  assert.ok(workedFor < goalSettlement);
   assert.ok(goalSettlement < activity);
   assert.ok(initSettlement < activity);
   assert.ok(activity < notifications);
-  assert.ok(activity < workedFor);
 });

@@ -4,7 +4,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 
 ## What you get
 
-- A custom TUI: startup card with version, model, provider, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state.
+- A custom TUI: startup card with version, model, provider, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.
 - `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Pause, resume, edit, or clear it anytime.
 - `/init`: generates a root `AGENTS.md` from repository evidence, preserving compatible existing rules.
 - `/variants`: pick a reasoning level supported by the active model.

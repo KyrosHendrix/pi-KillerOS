@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added per-task token usage to settled TUI receipts for ordinary requests and individual goal turns.
+
 ### Changed
 
 - Limited push CI to `main` and `dev`; feature branches run through pull request CI without duplicate push runs.
