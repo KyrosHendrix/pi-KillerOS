@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Added
 
+- Added a real Pi SDK lifecycle test for package activation, shutdown-before-reload, fresh registration, and stale-context rejection.
 - Added per-task token usage to settled TUI receipts for ordinary requests and individual goal turns.
 
 ### Changed

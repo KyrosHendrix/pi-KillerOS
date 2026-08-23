@@ -62,3 +62,9 @@ None.
 - Reproduced OSC title injection, ANSI styling, BEL, and NUL bytes in both a failed `tool_call` hook's Pi notification and its blocking reason.
 - Added a public-seam regression through the registered lifecycle handler.
 - Sanitized the complete failure diagnostic at its construction boundary so the same safe text reaches every event path.
+
+### Pi extension lifecycle compatibility
+
+- Exercised the package manifest through Pi's public `DefaultResourceLoader` and `createAgentSession` APIs in an isolated project and agent home.
+- Verified activation has no loader or lifecycle errors, both lifecycle handlers exist, command registration is unique, reload replaces the runner, the old context becomes stale, and the fresh runner preserves the command contract without diagnostics.
+- Kept the test on public Pi exports so the existing pinned-floor/latest CI matrix now detects incompatible Pi lifecycle changes.
