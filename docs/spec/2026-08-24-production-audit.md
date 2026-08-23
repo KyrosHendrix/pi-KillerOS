@@ -139,3 +139,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced OSC title injection, ANSI styling, BEL, NUL, and line-feed bytes from custom provider/model identifiers in an unsupported-level notification.
 - Sanitized the combined model label once and enforced its single-line contract, covering both notification paths and the interactive selector row.
+
+### Variants argument errors
+
+- Reproduced OSC title injection, ANSI styling, BEL, NUL, and line-feed bytes from an unknown reasoning-level argument echoed into a Pi error notification.
+- Sanitized only the rejected display value, preserving the command's existing strict argument resolution while keeping error output single-line.

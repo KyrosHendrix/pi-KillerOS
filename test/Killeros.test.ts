@@ -641,7 +641,7 @@ test("/variants validates direct levels and model support", async () => {
 
   await variants.handler("deep", ctx);
   await variants.handler("xhigh", ctx);
-  await variants.handler("unknown", ctx);
+  await variants.handler("\x1b]2;owned\x07\x1b[31munknown\x1b[0m\nspoof\0", ctx);
 
   assert.deepEqual(selectedLevels, ["high"]);
   assert.match(notifications[0].message, /Thinking: High/u);
@@ -649,6 +649,8 @@ test("/variants validates direct levels and model support", async () => {
   assert.match(notifications[1].message, /test\/reasonerspoof/u);
   assert.doesNotMatch(notifications[1].message, /\x1b|\x07|\0|\n/u);
   assert.match(notifications[2].message, /Unknown reasoning level/u);
+  assert.match(notifications[2].message, /"unknownspoof"/u);
+  assert.doesNotMatch(notifications[2].message, /\x1b|\x07|\0|\n/u);
 
   await variants.handler("", { ...ctx, model: { provider: "test", id: "plain", reasoning: false } });
   assert.match(notifications[3].message, /does not support extended reasoning/u);

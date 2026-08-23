@@ -81,7 +81,7 @@ export function registerVariants(pi: ExtensionAPI): void {
       if (args.trim()) {
         const level = resolveThinkingLevel(args);
         if (!level) {
-          ctx.ui.notify(`Unknown reasoning level "${args.trim()}". Use: ${ALL_LEVELS.join(", ")}`, "error");
+          ctx.ui.notify(`Unknown reasoning level "${safeTerminalText(args.trim()).replaceAll("\n", "")}". Use: ${ALL_LEVELS.join(", ")}`, "error");
           return;
         }
         setLevel(ctx, level);

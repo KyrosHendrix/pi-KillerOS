@@ -18,6 +18,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Kept rejected `/variants` arguments terminal-safe and single-line in error notifications.
 - Kept provider and model identifiers terminal-safe and single-line throughout `/variants`.
 - Flushed partial UTF-8 lifecycle-hook output on process close instead of silently dropping final diagnostic bytes.
 - Contained synchronous lifecycle-hook process-start failures inside normal hook failure handling.
