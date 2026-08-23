@@ -53,7 +53,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 ## Attempts reverted or deferred
 
-None.
+- Deferred cross-process locking for `killeros.json`: completion sound is currently the only programmatic writer and all sessions update the same key, while auto-compaction is read-only. Add coordination when a second independently writable setting exists rather than shipping crash-recovery lock machinery speculatively.
 
 ## Verified changes
 
@@ -74,3 +74,9 @@ None.
 - Confirmed that both ordinary and goal-continuation prompt wrappers interpolated the resolved filesystem path into XML-like metadata.
 - Removed the undocumented source attribute and its data plumbing instead of maintaining a custom escaping layer.
 - Centralized the source-free block in `resolvePersonalInstructions`, preserving trust checks, imports, fallback content, and bounded UTF-8 reads for both callers.
+
+### Terminal title safety
+
+- Traced Pi 0.84.2's title implementation to a raw `OSC 0;...BEL` write with no host escaping.
+- Reproduced cwd and session-name injection of OSC, BEL, NUL, and line-feed bytes through `formatNotificationTitle`.
+- Reused the shared terminal sanitizer at the title formatter and removed the remaining line feeds before any title reaches Pi.

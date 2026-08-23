@@ -136,7 +136,7 @@ test("notification preference creates a missing nested directory", (t) => {
   assert.deepEqual(readdirSync(path.dirname(settingsPath)), ["killeros.json"]);
 });
 
-test("notification title follows Pi title shape and enabled suffix", () => {
+test("notification title follows Pi's shape and strips terminal controls", () => {
   assert.equal(COMPLETION_BELL_GLYPH.codePointAt(0), 0xF009A);
   assert.equal(formatNotificationTitle("/", undefined, false), "π - /");
   assert.equal(formatNotificationTitle("/work/pi-KillerOS", undefined, false), "π - pi-KillerOS");
@@ -144,6 +144,10 @@ test("notification title follows Pi title shape and enabled suffix", () => {
   assert.equal(
     formatNotificationTitle("/work/pi-KillerOS", "release check", true),
     `π - release check - pi-KillerOS ${COMPLETION_BELL_GLYPH}`,
+  );
+  assert.equal(
+    formatNotificationTitle("/work/\x1b]2;owned\x07repo\n", "release\x1b]0;owned\x07 check\0\n", false),
+    "π - release check - repo",
   );
 });
 
