@@ -3805,7 +3805,7 @@ test("oversized hook payloads remain valid JSON and report truncation", async ()
   }
 });
 
-test("hook output preserves UTF-8 characters split across stream chunks", async () => {
+test("hook output preserves split UTF-8 and flushes incomplete final bytes", async () => {
   class ChunkedHook extends EventEmitter {
     stdout = new PassThrough();
     stderr = new PassThrough();
@@ -3821,6 +3821,18 @@ test("hook output preserves UTF-8 characters split across stream chunks", async 
 
   const result = await resultPromise;
   assert.equal(result.stdout, "😀");
+
+  const incompleteChild = new ChunkedHook();
+  const incompleteResultPromise = executeHook(
+    "ignored",
+    process.cwd(),
+    {},
+    1_000,
+    (() => incompleteChild) as unknown as HookSpawner,
+  );
+  incompleteChild.stderr.write(Buffer.from([0xf0, 0x9f]));
+  incompleteChild.emit("close", 1);
+  assert.equal((await incompleteResultPromise).stderr, "�");
 });
 
 test("synchronous hook spawn failures become ordinary failed results", async () => {

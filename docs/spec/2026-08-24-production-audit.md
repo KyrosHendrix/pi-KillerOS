@@ -46,6 +46,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 8. Manual-compaction abort state retains raw provider diagnostics even though current goal renderers and status summaries sanitize their terminal output.
 9. Header and footer cwd formatting sends an unusual project path to Pi's terminal renderer without control-byte sanitization.
 10. A synchronous hook process-start exception rejects `executeHook` and bypasses the normal failure result, tool block, and Pi notification path.
+11. Hook output uses incremental UTF-8 decoders but never finalizes them, silently dropping an incomplete final byte sequence after close or forced settlement.
 
 ## Pi lifecycle contract observed
 
@@ -125,3 +126,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced a synchronous spawner exception escaping `executeHook` instead of becoming a nonzero hook result.
 - Moved process start ahead of the event-wait promise and converted start exceptions through the shared safe error formatter, preserving normal caller blocking and notification behavior.
+
+### Hook output finalization
+
+- Reproduced an incomplete final UTF-8 sequence disappearing from captured hook stderr when the process closed.
+- Finalized both incremental decoders exactly once during settlement, preserving complete split characters and representing incomplete trailing bytes without reading beyond the existing byte capture bound.

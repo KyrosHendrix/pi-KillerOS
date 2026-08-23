@@ -18,6 +18,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Flushed partial UTF-8 lifecycle-hook output on process close instead of silently dropping final diagnostic bytes.
 - Contained synchronous lifecycle-hook process-start failures inside normal hook failure handling.
 - Kept header and footer paths single-line and terminal-safe for unusual cwd or home-directory names.
 - Sanitized manual-compaction abort diagnostics before saving recovery-eligible goal state.

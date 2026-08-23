@@ -169,6 +169,8 @@ export function executeHook(
       if (forceTimer) clearTimeout(forceTimer);
       if (settleTimer) clearTimeout(settleTimer);
       signal?.removeEventListener("abort", abort);
+      stdout.text += stdout.decoder.end();
+      stderr.text += stderr.decoder.end();
       resolve({
         code,
         stdout: stdout.text,
