@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { StopReason } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
+import { errorMessage } from "./errors.ts";
 
 const WORKED_FOR_ENTRY_TYPE = "killeros-worked-for";
 
@@ -59,10 +60,6 @@ export function workedForOutcome(stopReason: StopReason | undefined): WorkedForO
   if (stopReason === "stop") return "done";
   if (stopReason === "aborted") return "stopped";
   return "failed";
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export function registerWorkedFor(

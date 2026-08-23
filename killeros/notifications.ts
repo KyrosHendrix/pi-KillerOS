@@ -4,6 +4,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { errorMessage } from "./errors.ts";
 import { createKillerosSettingsStore } from "./settings.ts";
 
 export interface NotificationPreferenceStore {
@@ -38,10 +39,6 @@ export function formatNotificationTitle(
   const directory = basename(cwd) || cwd;
   const base = sessionName ? `π - ${sessionName} - ${directory}` : `π - ${directory}`;
   return enabled ? `${base} ${COMPLETION_BELL_GLYPH}` : base;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export function registerCompletionNotifications(

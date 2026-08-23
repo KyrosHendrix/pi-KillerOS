@@ -45,6 +45,12 @@ const STARTUP_TIPS = [
   "Run /variants to tune the model's reasoning depth.",
   "Type / to browse every command available in this session.",
   "Run /notification to enable a terminal bell when work settles.",
+  "Run /goal <objective> to keep long-running work moving across turns.",
+  "Run /init to generate root AGENTS.md from bounded repository evidence.",
+  "Run /handoff [focus] to continue work in a fresh linked session.",
+  "Run /codex-fast to toggle priority requests for Codex models.",
+  "Run /clear to start a fresh session after confirmation.",
+  "Ask the agent to show a short choice list when you need to decide.",
 ] as const;
 
 const EDITOR_SUGGESTIONS = [
@@ -52,6 +58,12 @@ const EDITOR_SUGGESTIONS = [
   'Try "find edge cases in <filepath>"',
   'Try "simplify <filepath> without changing behavior"',
   'Try "write tests for <filepath>"',
+  'Try "trace this failure to its first bad state"',
+  'Try "review this diff against <spec>"',
+  'Try "explain why this test fails"',
+  'Try "find the smallest safe fix for <issue>"',
+  'Try "map the data flow through <feature>"',
+  'Try "draft an implementation plan for <feature>"',
 ] as const;
 
 export function resolveGitBranch(cwd: string): Promise<string | undefined> {
@@ -216,6 +228,7 @@ function extractTerminalSequence(text: string, position: number): { code: string
   return undefined;
 }
 
+/** Styles valid slash-command tokens while preserving embedded terminal control sequences. */
 export function highlightSlashCommands(
   line: string,
   isValidCommand: (name: string) => boolean,

@@ -4986,7 +4986,7 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
   Math.random = () => 0;
 
   try {
-    for (let index = 0; index < 4; index += 1) {
+    for (let index = 0; index < 10; index += 1) {
       const { api, handlers } = createHarness();
       registerShellUi(api);
       const { captured, ctx, tui } = createTuiContext();
@@ -5020,6 +5020,6 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
     Math.random = originalRandom;
   }
 
-  assert.equal(new Set(tips).size, 4);
-  assert.equal(new Set(suggestions).size, 4);
+  assert.equal(new Set(tips).size, 10);
+  assert.equal(new Set(suggestions).size, 10);
 });

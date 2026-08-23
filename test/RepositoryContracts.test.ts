@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -37,6 +38,28 @@ function repositoryFiles(directory: string = repositoryRoot): string[] {
   return files;
 }
 
+function repositoryContractFiles(): string[] {
+  return execFileSync(
+    "git",
+    ["-C", repositoryRoot, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    { encoding: "utf8" },
+  )
+    .split("\0")
+    .filter(Boolean)
+    .map((file) => path.join(repositoryRoot, file))
+    .filter(existsSync);
+}
+
+test("repository contract scan includes untracked non-ignored files", () => {
+  const probePath = path.join(repositoryRoot, `.killeros-contract-probe-${process.pid}.txt`);
+  writeFileSync(probePath, "contract probe", { flag: "wx" });
+  try {
+    assert.ok(repositoryContractFiles().includes(probePath));
+  } finally {
+    unlinkSync(probePath);
+  }
+});
+
 test("repository contains no retired feature references", () => {
   const retiredTerms = [
     "sub" + "agent",
@@ -45,7 +68,7 @@ test("repository contains no retired feature references", () => {
     "child" + " agent",
     "child" + " thread",
   ];
-  const matches = repositoryFiles().filter((file: string) => {
+  const matches = repositoryContractFiles().filter((file: string) => {
     const content = readFileSync(file, "utf8").toLowerCase();
     return retiredTerms.some((term) => content.includes(term));
   });

@@ -6,6 +6,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { errorMessage } from "./errors.ts";
 import { createKillerosSettingsStore } from "./settings.ts";
 
 export const DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING = 15;
@@ -71,6 +72,7 @@ function reserveTokens(settings: Pick<CompactionSettings, "reserveTokens">): num
     : 0;
 }
 
+/** Triggers at the stricter of the user's percentage and Pi's token reserve. */
 export function shouldTriggerAutoCompaction(
   usage: Pick<ContextUsage, "tokens" | "contextWindow"> | undefined,
   preference: AutoCompactionPreference,
@@ -88,10 +90,6 @@ export function shouldTriggerAutoCompaction(
     reserveTokens(compactionSettings),
   );
   return remainingTokens <= threshold;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function supportedMode(ctx: ExtensionContext): boolean {
