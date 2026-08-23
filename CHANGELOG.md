@@ -17,6 +17,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Sanitized provider and storage diagnostics before persisting or announcing an automatically paused goal.
 - Routed handoff generation and session-replacement failures through the shared terminal-safe error reporter.
 - Stripped terminal commands and unsafe control bytes from caught errors before showing KillerOS failure notifications.
 - Stripped terminal commands and control bytes from cwd and session names before emitting the KillerOS terminal title.

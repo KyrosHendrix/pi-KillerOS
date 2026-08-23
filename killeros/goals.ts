@@ -394,13 +394,14 @@ export function pauseGoalAfterFailure(
   notify = true,
 ): void {
   if (runtime.state?.status !== "active") return;
+  const safeReason = safeTerminalText(reason);
   try {
-    transitionGoal(pi, runtime, "error", "paused", reason);
+    transitionGoal(pi, runtime, "error", "paused", safeReason);
   } catch {
     runtime.state = runtime.state ? {
       ...stopGoalClock(runtime.state, Date.now()),
       status: "paused",
-      result: reason,
+      result: safeReason,
       resumeAfterManualCompaction: undefined,
     } : undefined;
     syncGoalUpdateTool(pi, runtime);
@@ -409,7 +410,7 @@ export function pauseGoalAfterFailure(
     runtime.automaticCompaction = undefined;
     runtime.requestRender?.();
   }
-  if (notify) ctx.ui.notify(`Goal paused: ${reason}\n${recoveryInstruction}`, "error");
+  if (notify) ctx.ui.notify(`Goal paused: ${safeReason}\n${recoveryInstruction}`, "error");
 }
 
 function pauseGoalForPossibleManualCompaction(

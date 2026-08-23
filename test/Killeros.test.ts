@@ -2051,16 +2051,22 @@ test("/goal pauses after an aborted or failed goal turn", async () => {
   const { appendedEntries, commands, handlers } = createHarness();
   const { ctx } = createTuiContext();
   await commands.get("goal").handler("Recover the deployment", ctx);
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
   for (const handler of handlers.get("before_agent_start")) {
     await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
   }
   await emitSequentially(handlers.get("agent_end"), {
-    messages: [{ role: "assistant", stopReason: "error", errorMessage: "provider unavailable" }],
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "\x1b]2;owned\x07\x1b[31mprovider\x1b[0m\0 unavailable" }],
   }, ctx);
   await emitSequentially(handlers.get("agent_settled"), {}, ctx);
   const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
   assert.equal(lastGoalEntry.data.state.status, "paused");
-  assert.match(lastGoalEntry.data.state.result, /provider unavailable/u);
+  assert.equal(lastGoalEntry.data.state.result, "provider unavailable");
+  assert.deepEqual(notifications, [{
+    message: "Goal paused: provider unavailable\nRun /goal resume after resolving the problem.",
+    level: "error",
+  }]);
 });
 
 test("/goal edit, pause, resume, and clear persist explicit transitions", async () => {

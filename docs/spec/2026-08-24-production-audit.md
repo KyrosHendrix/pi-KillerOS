@@ -43,7 +43,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 5. The packaged consumer boundary is not exercised. Unit tests import the source tree directly and therefore do not prove the npm tarball can be installed and loaded as a Pi extension.
 6. Documentation support-floor mismatch: `PRODUCT.md` says Pi 0.84.1+, while package metadata and README say 0.84.2+.
 7. Caught errors routed through the shared user-facing formatter retain terminal commands and unsafe control bytes.
-8. Goal failure paths bypass the shared error formatter and can surface raw provider or storage diagnostics.
+8. Goal status summaries interpolate raw objective and result text; manual-compaction abort state can also retain raw provider diagnostics.
 9. Header and footer cwd formatting sends an unusual project path to Pi's terminal renderer without control-byte sanitization.
 
 ## Pi lifecycle contract observed
@@ -93,3 +93,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced terminal-command injection from a provider exception during `/handoff` summary generation.
 - Deleted the command's duplicate raw-error reporter and routed summary, destination setup, and session replacement failures through the shared terminal-safe reporter.
+
+### Goal failure diagnostics
+
+- Reproduced OSC title injection, ANSI styling, BEL, and NUL bytes in a provider failure that automatically pauses an active goal.
+- Sanitized the reason once before both normal persistence and the in-memory persistence fallback, then reused the same safe value in the pause notification.
