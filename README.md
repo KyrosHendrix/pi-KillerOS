@@ -5,17 +5,16 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## What you get
 
 - A custom TUI: startup card with version, model, provider, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state.
-- `/goal` — set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Pause, resume, edit, or clear it anytime.
-- `/init` — generates a root `AGENTS.md` from repository evidence, preserving compatible existing rules.
-- `/variants` — pick a reasoning level supported by the active model.
-- `/codex-fast` — toggles the `priority` service tier on Codex requests.
-- `/handoff` — starts a fresh linked session carrying visible continuation context.
+- `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Pause, resume, edit, or clear it anytime.
+- `/init`: generates a root `AGENTS.md` from repository evidence, preserving compatible existing rules.
+- `/variants`: pick a reasoning level supported by the active model.
+- `/codex-fast`: toggles the `priority` service tier on Codex requests.
+- `/handoff`: starts a fresh linked session carrying visible continuation context.
 - Automatic context compaction when remaining tokens drop below 15% of the window (configurable).
 - A `question` tool with single-select and multi-select modes.
 - Lifecycle hooks (`tool_call`, `tool_result`, `agent_settled`) from `.pi/killeros-hooks.json`, plus `AGENTS.local.md` loading for trusted projects.
 - Optional completion sounds for settled requests.
 
-Full behavioral specs live in [CONTEXT.md](CONTEXT.md), design notes in [DESIGN.md](DESIGN.md).
 
 ## Requirements
 
