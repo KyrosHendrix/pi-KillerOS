@@ -1701,7 +1701,7 @@ test("/handoff leaves the source selected when summary or replacement fails", as
     { label: "empty required sections", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: emptyHandoffSections }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
     { label: "truncated model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary did not finish" },
     { label: "aborted model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "aborted" }, expected: "Handoff failed: The handoff summary did not finish" },
-    { label: "model failure", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: new Error("Provider failed"), expected: "Handoff failed: Provider failed" },
+    { label: "model failure", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: new Error("\x1b]2;owned\x07\x1b[31mProvider\x1b[0m\0 failed"), expected: "Handoff failed: Provider failed" },
   ] as const;
 
   for (const testCase of cases) {
