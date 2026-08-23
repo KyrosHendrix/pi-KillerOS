@@ -49,6 +49,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 11. Hook output uses incremental UTF-8 decoders but never finalizes them, silently dropping an incomplete final byte sequence after close or forced settlement.
 12. Custom provider and model identifiers reach `/variants` notifications and its selector model row without terminal-control sanitization.
 13. An unknown `/variants` argument is echoed into an error notification without terminal-control sanitization.
+14. The `/goal` action panel sends a stored objective directly into the clear-confirmation body even though its status title uses a safe formatter.
 
 ## Pi lifecycle contract observed
 
@@ -144,3 +145,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced OSC title injection, ANSI styling, BEL, NUL, and line-feed bytes from an unknown reasoning-level argument echoed into a Pi error notification.
 - Sanitized only the rejected display value, preserving the command's existing strict argument resolution while keeping error output single-line.
+
+### Goal clear confirmation
+
+- Reproduced OSC title injection, ANSI styling, BEL, and NUL bytes from a stored objective in the `/goal` clear-confirmation body.
+- Sanitized only the Pi confirmation sink so persisted objectives and model continuation semantics remain unchanged.

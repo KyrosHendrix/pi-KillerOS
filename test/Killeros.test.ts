@@ -1842,11 +1842,18 @@ test("goal panel confirms clear and leaves direct goal commands compatible", asy
   const { appendedEntries, commands } = createHarness();
   const { ctx } = createTuiContext();
   let abortCalls = 0;
+  let confirmation: { message: string; title: string } | undefined;
   ctx.abort = () => { abortCalls += 1; };
-  await commands.get("goal").handler("Keep this goal", ctx);
+  await commands.get("goal").handler("Keep \x1b]2;owned\x07\x1b[31mthis\x1b[0m\0 goal", ctx);
   ctx.ui.select = async () => "Clear goal";
-  ctx.ui.confirm = async () => false;
+  ctx.ui.confirm = async (title, message) => {
+    assert.ok(typeof title === "string");
+    assert.ok(typeof message === "string");
+    confirmation = { title, message };
+    return false;
+  };
   await commands.get("goal").handler("", ctx);
+  assert.deepEqual(confirmation, { title: "Clear goal?", message: "Keep this goal" });
   assert.notEqual(appendedEntries.at(-1).data.state, null);
   assert.equal(abortCalls, 0);
 

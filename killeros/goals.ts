@@ -795,7 +795,7 @@ export function registerGoal(
         const selected = await ctx.ui.select(goalStatusSummary(runtime.state, ctx), actions.map((action) => action.label));
         const action = actions.find((candidate) => candidate.label === selected);
         if (!action) return;
-        if (action.control === "clear" && !await ctx.ui.confirm("Clear goal?", runtime.state.objective)) return;
+        if (action.control === "clear" && !await ctx.ui.confirm("Clear goal?", safeTerminalText(runtime.state.objective))) return;
         await handleGoalCommand(action.control, ctx);
         return;
       }
