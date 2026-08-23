@@ -4483,6 +4483,10 @@ test("display formatters contain non-finite telemetry and honor Windows path cas
     assert.equal(formatTime(value), "0s");
     assert.equal(formatTokens(value), "0");
   }
+  assert.equal(
+    formatCwd("/__killeros_terminal_test__/\x1b]2;owned\x07\x1b[31mrepo\x1b[0m\nname\0"),
+    "/__killeros_terminal_test__/reponame",
+  );
 
   const platform = Object.getOwnPropertyDescriptor(process, "platform");
   assert.ok(platform);

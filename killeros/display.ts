@@ -1,18 +1,21 @@
 import os from "node:os";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
+/** Formats a terminal-safe, single-line project path with home abbreviation. */
 export function formatCwd(cwd: string): string {
-  const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
-  if (!home) return cwd;
+  const safeCwd = safeTerminalText(cwd).replaceAll("\n", "");
+  const home = safeTerminalText(process.env.HOME || process.env.USERPROFILE || os.homedir()).replaceAll("\n", "");
+  if (!home) return safeCwd;
   const normalizedHome = home.replace(/[\\/]+$/, "");
-  const normalizedCwd = cwd.replace(/[\\/]+$/, "");
+  const normalizedCwd = safeCwd.replace(/[\\/]+$/, "");
   const comparedHome = process.platform === "win32" ? normalizedHome.toLowerCase() : normalizedHome;
   const comparedCwd = process.platform === "win32" ? normalizedCwd.toLowerCase() : normalizedCwd;
   if (comparedCwd === comparedHome) return "~";
   const separator = normalizedCwd.slice(normalizedHome.length, normalizedHome.length + 1);
   return comparedCwd.startsWith(comparedHome) && (separator === "/" || separator === "\\")
     ? `~${normalizedCwd.slice(normalizedHome.length)}`
-    : cwd;
+    : safeCwd;
 }
 
 export function padRight(text: string, width: number): string {

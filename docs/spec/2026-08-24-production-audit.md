@@ -108,3 +108,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced OSC title injection, ANSI styling, BEL, and NUL bytes in recovery-eligible goal state after an aborted provider turn.
 - Sanitized the abort reason before normal or fallback persistence while leaving the static manual-compaction recovery notification unchanged.
+
+### Header and footer path safety
+
+- Reproduced OSC title injection, ANSI styling, BEL, NUL, and line-feed bytes through the shared cwd display formatter used by both shell header and footer.
+- Sanitized cwd and home values before abbreviation and removed line feeds to preserve the formatter's single-line layout contract.
