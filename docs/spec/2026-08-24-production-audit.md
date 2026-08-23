@@ -42,6 +42,9 @@ This journal records the solo production-readiness review requested on 2026-08-2
 4. Settings updates use independent read-modify-write cycles. Concurrent Pi sessions can preserve valid JSON yet silently lose unrelated updates.
 5. The packaged consumer boundary is not exercised. Unit tests import the source tree directly and therefore do not prove the npm tarball can be installed and loaded as a Pi extension.
 6. Documentation support-floor mismatch: `PRODUCT.md` says Pi 0.84.1+, while package metadata and README say 0.84.2+.
+7. Caught errors routed through the shared user-facing formatter retain terminal commands and unsafe control bytes.
+8. Handoff and goal failure paths bypass the shared error formatter and can surface raw provider or storage diagnostics.
+9. Header and footer cwd formatting sends an unusual project path to Pi's terminal renderer without control-byte sanitization.
 
 ## Pi lifecycle contract observed
 
@@ -80,3 +83,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 - Traced Pi 0.84.2's title implementation to a raw `OSC 0;...BEL` write with no host escaping.
 - Reproduced cwd and session-name injection of OSC, BEL, NUL, and line-feed bytes through `formatNotificationTitle`.
 - Reused the shared terminal sanitizer at the title formatter and removed the remaining line feeds before any title reaches Pi.
+
+### Caught-error terminal safety
+
+- Reproduced OSC title injection, ANSI styling, BEL, and NUL bytes in a completion-sound settings failure notification.
+- Sanitized unknown caught values once in the shared `errorMessage` formatter, covering auto-compaction, settings, notification playback, worked-for persistence, and general reported failures.

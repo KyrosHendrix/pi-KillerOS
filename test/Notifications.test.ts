@@ -400,7 +400,9 @@ test("default notification output is exactly one standard BEL byte", (t: TestCon
 });
 
 test("notification failures stay contained and preserve disabled state", async () => {
-  const loadFailure = createNotificationHarness({ loadError: new Error("invalid JSON") });
+  const loadFailure = createNotificationHarness({
+    loadError: new Error("\x1b]2;owned\x07\x1b[31minvalid\x1b[0m\0 JSON"),
+  });
   await loadFailure.emit("session_start");
   assert.deepEqual(loadFailure.titles, ["π - pi-KillerOS"]);
   assert.deepEqual(loadFailure.notices, [{
