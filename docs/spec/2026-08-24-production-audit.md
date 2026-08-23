@@ -114,3 +114,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced OSC title injection, ANSI styling, BEL, NUL, and line-feed bytes through the shared cwd display formatter used by both shell header and footer.
 - Sanitized cwd and home values before abbreviation and removed line feeds to preserve the formatter's single-line layout contract.
+
+### Packaged consumer lifecycle
+
+- Replaced source-directory activation in the Pi lifecycle contract with an actual `npm pack` tarball installed into an isolated local consumer without scripts, network access, or peer auto-installation.
+- Verified the installed tarball contains its TypeScript entry point and theme, then activates and reloads through Pi using the repository's pinned peer runtime.

@@ -11,6 +11,7 @@ All notable changes to KillerOS are documented here.
 
 ### Changed
 
+- Made Pi lifecycle compatibility coverage install the generated npm tarball offline before activation and reload.
 - Limited push CI to `main` and `dev`; feature branches run through pull request CI without duplicate push runs.
 - Removed obsolete Pi tool API casts, shared caught-error formatting, and expanded the non-repeating startup tip and editor suggestion banks.
 - Clarified that the README's pinned Git tag is an example rather than the current package version.

@@ -1,24 +1,72 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import os from "node:os";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
   DefaultResourceLoader,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
-test("the KillerOS package activates and reloads through Pi's public lifecycle", async () => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-pi-lifecycle-"));
+const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+
+/** Runs npm with isolated config and no implicit shell when npm exposes its entry point. */
+function runNpm(args: string[], cwd: string, userConfig: string): string {
+  const npmCli = process.env.npm_execpath;
+  const env = { ...process.env };
+  delete env.npm_config_allow_scripts;
+  delete env.NPM_CONFIG_ALLOW_SCRIPTS;
+  const npmArgs = ["--userconfig", userConfig, "--loglevel", "error", ...args];
+  const options = { cwd, encoding: "utf8" as const, env };
+  if (npmCli) return execFileSync(process.execPath, [npmCli, ...npmArgs], options);
+  if (process.platform === "win32") {
+    return execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "npm", ...npmArgs], options);
+  }
+  return execFileSync("npm", npmArgs, options);
+}
+
+test("the packed KillerOS package activates and reloads through Pi's public lifecycle", async () => {
+  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-pi-lifecycle-"));
   try {
+    const packDirectory = path.join(directory, "pack");
+    const consumerDirectory = path.join(directory, "consumer");
+    const userConfig = path.join(directory, "empty.npmrc");
+    mkdirSync(packDirectory);
+    mkdirSync(consumerDirectory);
+    writeFileSync(userConfig, "");
+    runNpm([
+      "pack",
+      "--pack-destination",
+      packDirectory,
+    ], repositoryRoot, userConfig);
+    const tarballs = readdirSync(packDirectory).filter((file) => file.endsWith(".tgz"));
+    assert.equal(tarballs.length, 1);
+    const tarball = path.join(packDirectory, tarballs[0]);
+    writeFileSync(path.join(consumerDirectory, "package.json"), JSON.stringify({ private: true, type: "module" }));
+    runNpm([
+      "install",
+      "--offline",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--no-package-lock",
+      "--no-save",
+      "--legacy-peer-deps",
+      tarball,
+    ], consumerDirectory, userConfig);
+    const installedPackage = path.join(consumerDirectory, "node_modules", "killeros");
+    assert.equal(existsSync(path.join(installedPackage, "Killeros.ts")), true);
+    assert.equal(existsSync(path.join(installedPackage, "themes", "killeros.json")), true);
+
     const cwd = path.join(directory, "project");
     const agentDir = path.join(directory, "agent");
     const lifecycle: string[] = [];
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir,
-      additionalExtensionPaths: [process.cwd()],
+      additionalExtensionPaths: [installedPackage],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
