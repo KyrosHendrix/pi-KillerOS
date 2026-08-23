@@ -16,6 +16,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Stripped terminal commands and unsafe control bytes from lifecycle hook failure notifications and tool block reasons.
 - Limited retired-feature repository checks to tracked and non-ignored files so ignored private notes cannot fail the suite.
 
 ## [2.0.16] - 2026-08-23

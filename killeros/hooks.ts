@@ -4,6 +4,7 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { reportError } from "./errors.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 type KillerosHookEvent = "tool_call" | "tool_result" | "agent_settled";
 
@@ -214,7 +215,7 @@ function hookEnvironment(event: KillerosHookEvent, toolName = "", payload: unkno
 
 function hookFailureMessage(hook: KillerosHook, result: HookExecutionResult): string {
   const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
-  return `Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}: ${hook.command}\n${detail}`;
+  return safeTerminalText(`Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}: ${hook.command}\n${detail}`);
 }
 
 export function registerLifecycleHooks(pi: ExtensionAPI): void {
