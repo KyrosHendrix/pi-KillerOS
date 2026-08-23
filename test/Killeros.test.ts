@@ -627,7 +627,11 @@ test("/variants validates direct levels and model support", async () => {
   api.setThinkingLevel = (level) => selectedLevels.push(level);
   const ctx = {
     mode: "tui",
-    model: { provider: "test", id: "reasoner", reasoning: true },
+    model: {
+      provider: "\x1b]2;owned\x07\x1b[31mtest\x1b[0m",
+      id: "reasoner\nspoof\0",
+      reasoning: true,
+    },
     ui: {
       custom: () => { throw new Error("direct variants must not open the selector"); },
       notify: (message: string, level?: string) => notifications.push({ message, level }),
@@ -642,6 +646,8 @@ test("/variants validates direct levels and model support", async () => {
   assert.deepEqual(selectedLevels, ["high"]);
   assert.match(notifications[0].message, /Thinking: High/u);
   assert.match(notifications[1].message, /Extra High is not supported/u);
+  assert.match(notifications[1].message, /test\/reasonerspoof/u);
+  assert.doesNotMatch(notifications[1].message, /\x1b|\x07|\0|\n/u);
   assert.match(notifications[2].message, /Unknown reasoning level/u);
 
   await variants.handler("", { ...ctx, model: { provider: "test", id: "plain", reasoning: false } });

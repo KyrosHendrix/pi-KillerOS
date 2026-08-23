@@ -47,6 +47,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 9. Header and footer cwd formatting sends an unusual project path to Pi's terminal renderer without control-byte sanitization.
 10. A synchronous hook process-start exception rejects `executeHook` and bypasses the normal failure result, tool block, and Pi notification path.
 11. Hook output uses incremental UTF-8 decoders but never finalizes them, silently dropping an incomplete final byte sequence after close or forced settlement.
+12. Custom provider and model identifiers reach `/variants` notifications and its selector model row without terminal-control sanitization.
+13. An unknown `/variants` argument is echoed into an error notification without terminal-control sanitization.
 
 ## Pi lifecycle contract observed
 
@@ -60,6 +62,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Deferred cross-process locking for `killeros.json`: completion sound is currently the only programmatic writer and all sessions update the same key, while auto-compaction is read-only. Add coordination when a second independently writable setting exists rather than shipping crash-recovery lock machinery speculatively.
 - Reverted a product-floor contract because `PRODUCT.md` is intentionally ignored and untracked; a test that reads it would pass locally but fail in clean checkouts. Keep shipped compatibility claims bound to tracked package metadata and README instead of adding a dependency on a private design document.
+- Deferred hook config-path warning coverage: Windows cannot create the control-byte path needed for the public seam, and exporting a display helper only for this test would add API surface. Keep the issue queued for platform-backed coverage rather than shipping an unproved patch.
 
 ## Verified changes
 
@@ -131,3 +134,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced an incomplete final UTF-8 sequence disappearing from captured hook stderr when the process closed.
 - Finalized both incremental decoders exactly once during settlement, preserving complete split characters and representing incomplete trailing bytes without reading beyond the existing byte capture bound.
+
+### Variants model metadata
+
+- Reproduced OSC title injection, ANSI styling, BEL, NUL, and line-feed bytes from custom provider/model identifiers in an unsupported-level notification.
+- Sanitized the combined model label once and enforced its single-line contract, covering both notification paths and the interactive selector row.

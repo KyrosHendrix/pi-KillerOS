@@ -1,5 +1,6 @@
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { SelectList, truncateToWidth } from "@earendil-works/pi-tui";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 export type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 
@@ -60,7 +61,7 @@ function supportedLevels(model: ExtensionContext["model"]): ThinkingLevel[] {
 }
 
 function modelLabel(model: ExtensionContext["model"]): string {
-  return model ? `${model.provider}/${model.id}` : "unknown model";
+  return model ? safeTerminalText(`${model.provider}/${model.id}`).replaceAll("\n", "") : "unknown model";
 }
 
 export function registerVariants(pi: ExtensionAPI): void {
