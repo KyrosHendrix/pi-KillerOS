@@ -57,6 +57,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 ## Attempts reverted or deferred
 
 - Deferred cross-process locking for `killeros.json`: completion sound is currently the only programmatic writer and all sessions update the same key, while auto-compaction is read-only. Add coordination when a second independently writable setting exists rather than shipping crash-recovery lock machinery speculatively.
+- Reverted a product-floor contract because `PRODUCT.md` is intentionally ignored and untracked; a test that reads it would pass locally but fail in clean checkouts. Keep shipped compatibility claims bound to tracked package metadata and README instead of adding a dependency on a private design document.
 
 ## Verified changes
 
