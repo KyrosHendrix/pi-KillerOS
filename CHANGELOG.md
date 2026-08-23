@@ -4,6 +4,14 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.16] - 2026-08-23
+
+### Fixed
+
+- Kept `/handoff` input inside a cancellable TUI loader so buffered editor text cannot cross the session boundary.
+- Prevented a cancelled handoff from starting provider completion when authentication resolves late.
+- Made repository contract tests validate README facts without depending on discarded prose.
+
 ## [2.0.15] - 2026-08-23
 
 ### Added

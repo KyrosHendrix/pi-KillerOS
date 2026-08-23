@@ -34,7 +34,7 @@ Or from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin a version with `@v2.0.15`, add `-l` to install only for the current project. Restart Pi after installing.
+Pin a version with `@v2.0.16`, add `-l` to install only for the current project. Restart Pi after installing.
 
 ## Commands
 
