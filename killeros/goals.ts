@@ -1,5 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { lstatSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, lstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -17,6 +18,7 @@ const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
 const GOAL_UPDATE_TOOL = "killeros_goal_update";
 const GOAL_OBJECTIVE_LIMIT = 4_000;
 const GOAL_VERSION = 1;
+const FILE_HASH_CHUNK_SIZE = 64 * 1024;
 
 type GoalEntryEvent = "set" | "replace" | "edit" | "turn" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
 interface GoalEntryData {
@@ -70,9 +72,14 @@ function finiteNonNegative(value: unknown): value is number {
 
 function isGoalFileBaseline(value: unknown): value is GoalFileBaseline {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as { exists?: unknown; size?: unknown; mtimeMs?: unknown };
-  if (candidate.exists === false) return candidate.size === undefined && candidate.mtimeMs === undefined;
-  return candidate.exists === true && finiteNonNegative(candidate.size) && finiteNonNegative(candidate.mtimeMs);
+  const candidate = value as { exists?: unknown; size?: unknown; mtimeMs?: unknown; contentHash?: unknown };
+  if (candidate.exists === false) return candidate.size === undefined && candidate.mtimeMs === undefined && candidate.contentHash === undefined;
+  return candidate.exists === true
+    && finiteNonNegative(candidate.size)
+    && finiteNonNegative(candidate.mtimeMs)
+    && (candidate.contentHash === undefined
+      || candidate.contentHash === null
+      || typeof candidate.contentHash === "string" && /^[a-f0-9]{64}$/u.test(candidate.contentHash));
 }
 
 function isGoalFileVerification(value: unknown): value is GoalFileVerification {
@@ -90,12 +97,37 @@ function isAbsoluteFilePath(value: string): boolean {
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
-function captureGoalFileBaseline(filePath: string): GoalFileBaseline {
+/** Hash a deliverable in bounded memory for baseline and completion checks. */
+function hashFileContent(filePath: string): string {
+  const descriptor = openSync(filePath, "r");
   try {
-    const artifact = lstatSync(filePath);
-    return { exists: true, size: artifact.size, mtimeMs: artifact.mtimeMs };
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(FILE_HASH_CHUNK_SIZE);
+    let position = 0;
+    while (true) {
+      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, position);
+      if (bytesRead === 0) return hash.digest("hex");
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function captureGoalFileBaseline(filePath: string): GoalFileBaseline {
+  let artifact: ReturnType<typeof lstatSync>;
+  try {
+    artifact = lstatSync(filePath);
   } catch {
     return { exists: false };
+  }
+  const baseline = { exists: true as const, size: artifact.size, mtimeMs: artifact.mtimeMs };
+  if (!artifact.isFile()) return baseline;
+  try {
+    return { ...baseline, contentHash: hashFileContent(filePath) };
+  } catch {
+    return { ...baseline, contentHash: null };
   }
 }
 
@@ -119,7 +151,22 @@ function verifyGoalDeliverable(verification: GoalFileVerification): void {
   if (!artifact.isFile()) {
     throw new Error(`Goal deliverable is not a regular file at the required path: ${verification.path}`);
   }
-  if (verification.baseline.exists
+  if (!verification.baseline.exists) return;
+  if (verification.baseline.contentHash === null) {
+    throw new Error(`Goal deliverable content cannot be verified: ${verification.path}`);
+  }
+  if (verification.baseline.contentHash !== undefined) {
+    let contentHash: string;
+    try {
+      contentHash = hashFileContent(verification.path);
+    } catch {
+      throw new Error(`Goal deliverable content cannot be verified: ${verification.path}`);
+    }
+    if (contentHash === verification.baseline.contentHash) {
+      throw new Error(`Goal deliverable has not changed since the goal started: ${verification.path}`);
+    }
+  }
+  if (verification.baseline.contentHash === undefined
     && artifact.size === verification.baseline.size
     && artifact.mtimeMs === verification.baseline.mtimeMs) {
     throw new Error(`Goal deliverable has not changed since the goal started: ${verification.path}`);

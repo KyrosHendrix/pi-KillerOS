@@ -4,6 +4,12 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Compared pre-existing goal deliverables by content instead of file size and modification time.
+- Made `/init` evidence directory listing follow case-insensitive Windows path semantics.
+- Kept the interactive question component within a zero-row terminal height.
+
 ## [2.0.14] - 2026-08-22
 
 ### Fixed

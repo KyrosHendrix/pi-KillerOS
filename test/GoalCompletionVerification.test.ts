@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -143,6 +143,62 @@ test("pre-existing file goals require a changed deliverable after restore", asyn
   assert.equal(result.details.verification, "file");
 });
 
+test("pre-existing file goals compare content instead of file metadata", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-content-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const unchanged = path.join(directory, "unchanged.md");
+  const changed = path.join(directory, "changed.md");
+  const baselineTime = new Date("2026-01-01T00:00:00.000Z");
+  const laterTime = new Date("2026-01-02T00:00:00.000Z");
+
+  writeFileSync(unchanged, "stale");
+  utimesSync(unchanged, baselineTime, baselineTime);
+  const unchangedHarness = createHarness();
+  const unchangedContext = createContext();
+  await startGoal(unchangedHarness, unchangedContext, `Write the Markdown file to \`${unchanged}\``);
+  utimesSync(unchanged, laterTime, laterTime);
+  await assert.rejects(complete(unchangedHarness, unchangedContext), /has not changed since the goal started/u);
+
+  writeFileSync(changed, "stale");
+  utimesSync(changed, baselineTime, baselineTime);
+  const changedHarness = createHarness();
+  const changedContext = createContext();
+  await startGoal(changedHarness, changedContext, `Write the Markdown file to \`${changed}\``);
+  writeFileSync(changed, "fresh");
+  utimesSync(changed, baselineTime, baselineTime);
+  const result = await complete(changedHarness, changedContext);
+  assert.equal(result.details.status, "complete");
+  assert.equal(result.details.verification, "file");
+});
+
+test("file goals fail closed when their current content baseline is unavailable", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-unavailable-content-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const requested = path.join(directory, "requested.md");
+  writeFileSync(requested, "stale");
+  const originalHarness = createHarness();
+  const originalContext = createContext();
+  const active = await startGoal(originalHarness, originalContext, `Write the Markdown file to \`${requested}\``);
+  const verification = active.verification as { kind: string; path: string; baseline: Record<string, unknown> };
+  const entries = [{
+    type: "custom",
+    customType: "killeros-goal",
+    data: {
+      version: 1,
+      event: "set",
+      state: {
+        ...active,
+        verification: { ...verification, baseline: { ...verification.baseline, contentHash: null } },
+      },
+    },
+  }];
+  const restoredHarness = createHarness(entries);
+  const restoredContext = createContext(entries);
+  for (const handler of restoredHarness.handlers.get("session_start") ?? []) await handler({}, restoredContext);
+
+  await assert.rejects(complete(restoredHarness, restoredContext), /content cannot be verified/u);
+});
+
 test("general natural-language goals retain model-reported completion", async () => {
   const harness = createHarness();
   const ctx = createContext();
@@ -212,6 +268,7 @@ test("old goal state restores, while malformed persisted verification fails clos
   };
 
   assert.equal((await restore(baseState)).sentMessages.length, 1);
+  assert.equal((await restore({ ...baseState, verification: { kind: "file", path: "C:\\out.md", baseline: { exists: true, size: 0, mtimeMs: 0 } } })).sentMessages.length, 1);
   assert.equal((await restore({ ...baseState, verification: { kind: "file", path: "relative.md", baseline: { exists: false } } })).sentMessages.length, 0);
   assert.equal((await restore({ ...baseState, verification: { kind: "file", path: "C:\\out.md" } })).sentMessages.length, 0);
   assert.equal((await restore({ ...baseState, verification: { kind: "url", path: "C:\\out.md", baseline: { exists: false } } })).sentMessages.length, 0);

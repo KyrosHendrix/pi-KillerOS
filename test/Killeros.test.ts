@@ -3532,6 +3532,16 @@ test("question renders nothing when no terminal width is available", async () =>
   await question.result;
 });
 
+test("question renders no rows when terminal height is zero", async () => {
+  const { tools } = createHarness();
+  const question = await startQuestion(tools.get("question"), undefined, "Choose", 0);
+  assert.deepEqual(question.component.render(80), []);
+  question.tui.terminal.rows = 3;
+  assert.deepEqual(question.component.render(80), ["Choose", "> 1. Alpha", "Option 1/2"]);
+  question.finish({ kind: "cancelled" });
+  await question.result;
+});
+
 test("question keeps a custom draft visible at the six-row layout boundary", async () => {
   const { tools } = createHarness();
   const question = await startQuestion(tools.get("question"), undefined, "Choose", 6);
