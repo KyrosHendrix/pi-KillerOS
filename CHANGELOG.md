@@ -18,6 +18,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Sanitized model-reported `/init` policy conflicts before returning, storing, or notifying with them.
 - Kept session-storage failure details terminal-safe when an explicit goal pause falls back to in-memory state.
 - Stripped terminal commands and unsafe controls from saved goal objectives before clear confirmations.
 - Kept rejected `/variants` arguments terminal-safe and single-line in error notifications.

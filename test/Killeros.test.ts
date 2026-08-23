@@ -3093,8 +3093,11 @@ test("/init reports a structured policy conflict without writing or reloading", 
     };
     const initRun = commands.get("init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
+    const unsafeReason = "Protected \x1b]2;owned\x07\x1b[31mrelease\x1b[0m\0 policy conflicts with repository evidence.";
     const reason = "Protected release policy conflicts with repository evidence.";
-    await tools.get("killeros_init_conflict").execute("conflict", { reason });
+    const conflict = await tools.get("killeros_init_conflict").execute("conflict", { reason: unsafeReason });
+    assert.equal(conflict.content[0].text, `Root AGENTS.md was left unchanged: ${reason}`);
+    assert.equal(conflict.details.reason, reason);
     await assert.rejects(
       tools.get("killeros_init_write").execute("write-after-conflict", { content: validGeneratedGuidance }),
       /exactly one write or policy-conflict/u,

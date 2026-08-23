@@ -51,6 +51,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 13. An unknown `/variants` argument is echoed into an error notification without terminal-control sanitization.
 14. The `/goal` action panel sends a stored objective directly into the clear-confirmation body even though its status title uses a safe formatter.
 15. Explicit goal-pause fallback sanitizes its stored failure reason but later notifies with the original unsafe storage-error message.
+16. The model-authored `/init` policy-conflict reason reaches tool output, runtime state, and a Pi warning without terminal-control sanitization.
 
 ## Pi lifecycle contract observed
 
@@ -156,3 +157,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced OSC title injection, ANSI styling, BEL, and NUL bytes from a session-storage exception in the deferred explicit-pause notification.
 - Sanitized the local fallback reason once so both in-memory state and its post-stop Pi notification use the same safe text.
+
+### Init policy-conflict output
+
+- Reproduced OSC title injection, ANSI styling, BEL, and NUL bytes from the model-authored conflict reason in `/init` tool output before settlement.
+- Sanitized once at tool ingestion so its result content, result details, stored outcome, and final Pi warning share the same safe text.
