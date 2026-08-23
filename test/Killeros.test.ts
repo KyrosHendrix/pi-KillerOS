@@ -31,6 +31,8 @@ import Killeros, {
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { resolvePersonalInstructions } from "../killeros/personal-instructions.ts";
+import { registerHandoff } from "../killeros/handoff.ts";
+import { createGoalRuntime, type GoalState, type GoalStatus } from "../killeros/runtime.ts";
 import { resolveGitBranch } from "../killeros/shell-ui.ts";
 import { BoundedText } from "../killeros/bounded-text.ts";
 
@@ -267,6 +269,57 @@ function usage(cost: number): TestUsage {
     cacheWrite: 0,
     totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+  };
+}
+
+/** Builds a valid handoff document for command-seam tests. */
+function createCompleteHandoffSummary(objective: string, focus = ""): string {
+  return [
+    "## Objective",
+    objective,
+    "",
+    "## Current state",
+    focus || "Resume the saved work.",
+    "",
+    "## Decisions",
+    "Keep the current approach.",
+    "",
+    "## Constraints",
+    "Keep the source session unchanged.",
+    "",
+    "## Completed work",
+    "Prior work is recorded in the source session.",
+    "",
+    "## Relevant artifacts",
+    "Reference the existing plan.",
+    "",
+    "## Verification",
+    "No new verification has run.",
+    "",
+    "## Blockers or open questions",
+    "None.",
+    "",
+    "## Exact next action",
+    "Inspect the existing plan.",
+    "",
+    "## Suggested skills",
+    "No installed skill is required.",
+  ].join("\n");
+}
+
+/** Creates the durable Goal truth needed to exercise a handoff availability check. */
+function createGoalState(status: GoalStatus): GoalState {
+  return {
+    version: 1,
+    revision: 1,
+    objective: "Test handoff availability",
+    status,
+    createdAt: 0,
+    updatedAt: 0,
+    activeMilliseconds: 0,
+    turns: 0,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
   };
 }
 
@@ -1070,6 +1123,476 @@ test("/clear confirms before aborting and waits before creating a session", asyn
     ui: { confirm: async () => false },
   });
   assert.deepEqual(calls, []);
+});
+
+test("/handoff refuses unavailable work without side effects", async () => {
+  const unavailable = [
+    { label: "running agent", isIdle: () => false, hasPendingMessages: () => false, goalStatus: "paused" },
+    { label: "queued message", isIdle: () => true, hasPendingMessages: () => true, goalStatus: "paused" },
+  ] as const;
+
+  for (const testCase of unavailable) {
+    const { commands } = createHarness();
+    const calls: string[] = [];
+    const notifications: TestNotification[] = [];
+    await commands.get("handoff").handler("finish verification", {
+      isIdle: testCase.isIdle,
+      hasPendingMessages: testCase.hasPendingMessages,
+      abort: () => calls.push("abort"),
+      waitForIdle: async () => calls.push("wait"),
+      compact: () => calls.push("compact"),
+      model: { id: "test-model", provider: "test" },
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => { calls.push("auth"); return { ok: true }; },
+        complete: async () => { calls.push("complete"); return { content: [] }; },
+      },
+      sessionManager: {
+        getSessionFile: () => "source.jsonl",
+        buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+      },
+      newSession: async () => { calls.push("new"); return { cancelled: false }; },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+      getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+    });
+    assert.deepEqual(notifications, [{
+      message: "/handoff is not available while an agent or /goal is running.",
+      level: "error",
+    }], testCase.label);
+    assert.deepEqual(calls, [], testCase.label);
+  }
+
+  const { commands } = createHarness();
+  await commands.get("goal").handler("Keep working", createTuiContext().ctx);
+  const calls: string[] = [];
+  const notifications: TestNotification[] = [];
+  await commands.get("handoff").handler("", {
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    abort: () => calls.push("abort"),
+    waitForIdle: async () => calls.push("wait"),
+    compact: () => calls.push("compact"),
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => { calls.push("auth"); return { ok: true }; },
+      complete: async () => { calls.push("complete"); return { content: [] }; },
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async () => { calls.push("new"); return { cancelled: false }; },
+    ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+    getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+  });
+  assert.deepEqual(notifications, [{
+    message: "/handoff is not available while an agent or /goal is running.",
+    level: "error",
+  }]);
+  assert.deepEqual(calls, []);
+});
+
+test("/handoff allows paused, blocked, and complete Goal truth", async () => {
+  for (const status of ["paused", "blocked", "complete"] as const) {
+    const commands = new Map<string, TestCommand>() as RequiredRegistry<TestCommand>;
+    const goalRuntime = createGoalRuntime();
+    goalRuntime.state = createGoalState(status);
+    registerHandoff({
+      registerCommand: (name: string, command: TestCommand) => commands.set(name, command),
+    } as unknown as ExtensionAPI, goalRuntime);
+
+    const notifications: TestNotification[] = [];
+    await commands.get("handoff").handler("", {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionFile: () => undefined },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+    });
+    assert.deepEqual(notifications, [{ message: "Handoff requires a saved session", level: "error" }], status);
+  }
+});
+
+test("/handoff creates an idle child session with a visible summary", async () => {
+  const { commands } = createHarness();
+  const sourceName = "Release work with a name that is intentionally longer than sixty characters for session naming";
+  const destinationNotifications: TestNotification[] = [];
+  const oldRawHistory = "OLD RAW HISTORY THAT MUST NOT REACH THE HANDOFF REQUEST";
+  const projectedEntries = [
+    {
+      type: "compaction",
+      id: "compaction",
+      parentId: "old-message",
+      timestamp: "2026-08-23T00:00:00.000Z",
+      summary: "Compaction projection: release validation is the current work.",
+      firstKeptEntryId: "retained-message",
+      tokensBefore: 4_000,
+    },
+    {
+      type: "branch_summary",
+      id: "branch-summary",
+      parentId: "compaction",
+      timestamp: "2026-08-23T00:01:00.000Z",
+      fromId: "other-branch",
+      summary: "Branch summary: retain the release specification decision.",
+    },
+    {
+      type: "message",
+      id: "retained-message",
+      parentId: "branch-summary",
+      timestamp: "2026-08-23T00:02:00.000Z",
+      message: { role: "user", content: "Implement the command", timestamp: 1 },
+    },
+  ];
+  const completionRequests: Array<{ context: { systemPrompt?: string; messages: unknown[] } }> = [];
+  const destinationEntries: Array<{ customType?: string; content?: string; display?: boolean; name?: string }> = [];
+  const calls: string[] = [];
+  let sourceActive = true;
+  let sentMessages = 0;
+  let sentUserMessages = 0;
+  const summary = createCompleteHandoffSummary("Finish the release checks.", "finish the release checks");
+
+  await commands.get("handoff").handler("finish the release checks", {
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    abort: () => calls.push("abort"),
+    waitForIdle: async () => calls.push("wait"),
+    compact: () => calls.push("compact"),
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => ({ ok: true }),
+      complete: async (_model: unknown, context: { systemPrompt?: string; messages: unknown[] }) => {
+        completionRequests.push({ context });
+        return { content: [{ type: "text", text: summary }], stopReason: "stop" };
+      },
+    },
+    sessionManager: {
+      getSessionFile: () => "C:/sessions/source.jsonl",
+      getSessionName: () => {
+        if (!sourceActive) throw new Error("source session is no longer active");
+        return sourceName;
+      },
+      getEntries: () => [{ type: "message", message: { role: "user", content: oldRawHistory, timestamp: 0 } }, ...projectedEntries],
+      buildContextEntries: () => projectedEntries,
+    },
+    newSession: async (options: {
+      parentSession?: string;
+      setup?: (sessionManager: {
+        appendCustomMessageEntry(customType: string, content: string, display: boolean): void;
+        appendSessionInfo(name: string): void;
+      }) => Promise<void>;
+      withSession?: (destination: {
+        sendMessage(): Promise<void>;
+        sendUserMessage(): Promise<void>;
+        ui: { notify(message: string, level?: string): void };
+      }) => Promise<void>;
+    }) => {
+      calls.push("new");
+      assert.equal(options.parentSession, "C:/sessions/source.jsonl");
+      sourceActive = false;
+      await options.setup?.({
+        appendCustomMessageEntry: (customType, content, display) => destinationEntries.push({ customType, content, display }),
+        appendSessionInfo: (name) => destinationEntries.push({ name }),
+      });
+      await options.withSession?.({
+        sendMessage: async () => { sentMessages += 1; },
+        sendUserMessage: async () => { sentUserMessages += 1; },
+        ui: { notify: (message, level) => destinationNotifications.push({ message, level }) },
+      });
+      return { cancelled: false };
+    },
+    ui: { notify: () => { throw new Error("source notifications are unavailable after replacement"); } },
+    getSystemPromptOptions: () => ({
+      cwd: process.cwd(),
+      skills: [{ name: "code-review", description: "Review a diff", filePath: "skill.md", baseDir: ".", sourceInfo: {} }],
+    }),
+  });
+
+  assert.equal(completionRequests.length, 1);
+  const request = completionRequests[0].context;
+  const requestMessage = request.messages[0] as { content: string };
+  assert.match(requestMessage.content, /Implement the command/u);
+  assert.match(requestMessage.content, /Compaction projection: release validation is the current work/u);
+  assert.match(requestMessage.content, /Branch summary: retain the release specification decision/u);
+  assert.doesNotMatch(requestMessage.content, /OLD RAW HISTORY THAT MUST NOT REACH THE HANDOFF REQUEST/u);
+  assert.match(requestMessage.content, /finish the release checks/u);
+  assert.match(requestMessage.content, /code-review: Review a diff/u);
+  assert.match(request.systemPrompt ?? "", /reference existing artifacts instead of duplicating them/iu);
+  assert.match(request.systemPrompt ?? "", /redact credentials, passwords, personally identifiable information, and other sensitive values/iu);
+  assert.deepEqual(calls, ["new"]);
+  assert.deepEqual(destinationNotifications, [{ message: "Handoff ready in a new session", level: "info" }]);
+  assert.equal(sentMessages, 0);
+  assert.equal(sentUserMessages, 0);
+  assert.deepEqual(destinationEntries, [
+    {
+      customType: "killeros-handoff",
+      content: `# Handoff\n\n${summary}`,
+      display: true,
+    },
+    { name: `${sourceName} · handoff` },
+  ]);
+});
+
+test("/handoff derives short unnamed focus and objective fallback names", async () => {
+  const longFocus = "Continue the release verification work after the new session has opened and preserve every active constraint";
+  const cases = [
+    { focus: longFocus, objective: "Recover release verification", expectedBase: [...longFocus].slice(0, 60).join("") },
+    { focus: "", objective: "Recover release verification", expectedBase: "Recover release verification" },
+  ];
+
+  for (const testCase of cases) {
+    const { commands } = createHarness();
+    const names: string[] = [];
+    const summary = createCompleteHandoffSummary(testCase.objective, testCase.focus);
+    await commands.get("handoff").handler(testCase.focus, {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: { id: "test-model", provider: "test" },
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => ({ ok: true }),
+        complete: async () => ({ content: [{ type: "text", text: summary }], stopReason: "stop" }),
+      },
+      sessionManager: {
+        getSessionFile: () => "source.jsonl",
+        getSessionName: () => undefined,
+        buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+      },
+      newSession: async (options: {
+        setup?: (sessionManager: {
+          appendCustomMessageEntry(customType: string, content: string, display: boolean): void;
+          appendSessionInfo(name: string): void;
+        }) => Promise<void>;
+        withSession?: (destination: { ui: { notify(message: string, level?: string): void } }) => Promise<void>;
+      }) => {
+        await options.setup?.({ appendCustomMessageEntry() {}, appendSessionInfo: (name) => names.push(name) });
+        await options.withSession?.({ ui: { notify() {} } });
+        return { cancelled: false };
+      },
+      ui: { notify() {} },
+      getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+    });
+    assert.deepEqual(names, [`${testCase.expectedBase} · handoff`]);
+  }
+});
+
+test("/handoff removes terminal controls from the document and derived session name", async () => {
+  const { commands } = createHarness();
+  const destinationEntries: Array<{ content?: string; name?: string }> = [];
+  const summary = createCompleteHandoffSummary("Recover \x1B[31mrelease\x1B[0m\u0001 verification");
+
+  await commands.get("handoff").handler("", {
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => ({ ok: true }),
+      complete: async () => ({ content: [{ type: "text", text: summary }], stopReason: "stop" }),
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      getSessionName: () => undefined,
+      buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async (options: {
+      setup?: (sessionManager: {
+        appendCustomMessageEntry(customType: string, content: string, display: boolean): void;
+        appendSessionInfo(name: string): void;
+      }) => Promise<void>;
+      withSession?: (destination: { ui: { notify(message: string, level?: string): void } }) => Promise<void>;
+    }) => {
+      await options.setup?.({
+        appendCustomMessageEntry: (_customType, content) => destinationEntries.push({ content }),
+        appendSessionInfo: (name) => destinationEntries.push({ name }),
+      });
+      await options.withSession?.({ ui: { notify() {} } });
+      return { cancelled: false };
+    },
+    ui: { notify() {} },
+    getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+  });
+
+  assert.equal(destinationEntries[0].content?.includes("\x1B"), false);
+  assert.equal(destinationEntries[0].content?.includes("\u0001"), false);
+  assert.match(destinationEntries[0].content ?? "", /Recover release verification/u);
+  assert.deepEqual(destinationEntries[1], { name: "Recover release verification · handoff" });
+});
+
+test("/handoff reports destination setup failure without reusing the stale source context", async () => {
+  const { commands } = createHarness();
+  const destinationNotifications: TestNotification[] = [];
+  const sourceNotifications: TestNotification[] = [];
+  const summary = createCompleteHandoffSummary("Recover release verification");
+  let sourceStale = false;
+
+  await commands.get("handoff").handler("", {
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => ({ ok: true }),
+      complete: async () => ({ content: [{ type: "text", text: summary }], stopReason: "stop" }),
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      getSessionName: () => undefined,
+      buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async (options: {
+      setup?: (sessionManager: {
+        appendCustomMessageEntry(customType: string, content: string, display: boolean): void;
+        appendSessionInfo(name: string): void;
+      }) => Promise<void>;
+      withSession?: (destination: { ui: { notify(message: string, level?: string): void } }) => Promise<void>;
+    }) => {
+      sourceStale = true;
+      await options.setup?.({
+        appendCustomMessageEntry: () => { throw new Error("Destination write failed"); },
+        appendSessionInfo() {},
+      });
+      await options.withSession?.({
+        ui: { notify: (message, level) => destinationNotifications.push({ message, level }) },
+      });
+      return { cancelled: false };
+    },
+    ui: {
+      notify: (message: string, level?: string) => {
+        if (sourceStale) throw new Error("stale source context");
+        sourceNotifications.push({ message, level });
+      },
+    },
+    getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+  });
+
+  assert.deepEqual(sourceNotifications, []);
+  assert.deepEqual(destinationNotifications, [{ message: "Handoff failed: Destination write failed", level: "error" }]);
+});
+
+test("/handoff reports session replacement failure while the source context remains valid", async () => {
+  const { commands } = createHarness();
+  const notifications: TestNotification[] = [];
+  const summary = createCompleteHandoffSummary("Recover release verification");
+
+  await commands.get("handoff").handler("", {
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => ({ ok: true }),
+      complete: async () => ({ content: [{ type: "text", text: summary }], stopReason: "stop" }),
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      getSessionName: () => undefined,
+      buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async () => { throw new Error("Replacement failed"); },
+    ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+    getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+  });
+
+  assert.deepEqual(notifications, [{ message: "Handoff failed: Replacement failed", level: "error" }]);
+});
+
+test("/handoff leaves the source selected when summary or replacement fails", async () => {
+  {
+    const { commands } = createHarness();
+    const notifications: TestNotification[] = [];
+    let summaries = 0;
+    let newSessions = 0;
+    await commands.get("handoff").handler("", {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: { id: "test-model", provider: "test" },
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => { summaries += 1; return { ok: true }; },
+        complete: async () => { summaries += 1; return { content: [] }; },
+      },
+      sessionManager: { getSessionFile: () => undefined },
+      newSession: async () => { newSessions += 1; return { cancelled: false }; },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+      getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+    });
+    assert.deepEqual(notifications, [{ message: "Handoff requires a saved session", level: "error" }]);
+    assert.equal(summaries, 0);
+    assert.equal(newSessions, 0);
+  }
+
+  const emptyHandoffSections = [
+    "## Objective",
+    "## Current state",
+    "## Decisions",
+    "## Constraints",
+    "## Completed work",
+    "## Relevant artifacts",
+    "## Verification",
+    "## Blockers or open questions",
+    "## Exact next action",
+    "## Suggested skills",
+  ].join("\n\n");
+  const cases = [
+    { label: "missing model", model: undefined, auth: { ok: true }, completion: undefined, expected: "Handoff failed: No current model is available" },
+    { label: "authentication failure", model: { id: "test-model", provider: "test" }, auth: { ok: false, error: "Sign in first" }, completion: undefined, expected: "Handoff failed: Sign in first" },
+    { label: "empty usable context", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: undefined, expected: "Handoff failed: No usable session context is available" },
+    { label: "empty model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [], stopReason: "stop" }, expected: "Handoff failed: The handoff summary was empty" },
+    { label: "incomplete model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: "## Objective\nFinish the release checks." }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
+    { label: "empty required sections", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: emptyHandoffSections }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
+    { label: "truncated model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary did not finish" },
+    { label: "aborted model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "aborted" }, expected: "Handoff failed: The handoff summary did not finish" },
+    { label: "model failure", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: new Error("Provider failed"), expected: "Handoff failed: Provider failed" },
+  ] as const;
+
+  for (const testCase of cases) {
+    const { commands } = createHarness();
+    const notifications: TestNotification[] = [];
+    let newSessions = 0;
+    let completions = 0;
+    await commands.get("handoff").handler("", {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: testCase.model,
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => testCase.auth,
+        complete: async () => {
+          completions += 1;
+          if (testCase.completion instanceof Error) throw testCase.completion;
+          return testCase.completion ?? { content: [], stopReason: "stop" };
+        },
+      },
+      sessionManager: {
+        getSessionFile: () => "source.jsonl",
+        getSessionName: () => undefined,
+        buildContextEntries: () => testCase.label === "empty usable context"
+          ? []
+          : [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+      },
+      newSession: async () => { newSessions += 1; return { cancelled: false }; },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+      getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+    });
+    assert.deepEqual(notifications, [{ message: testCase.expected, level: "error" }], testCase.label);
+    assert.equal(newSessions, 0, testCase.label);
+    assert.equal(completions, testCase.label === "authentication failure" || testCase.label === "missing model" || testCase.label === "empty usable context" ? 0 : 1, testCase.label);
+  }
+
+  const { commands } = createHarness();
+  const notifications: TestNotification[] = [];
+  const cancelledSummary = createCompleteHandoffSummary("Finish the release checks.");
+  await commands.get("handoff").handler("", {
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => ({ ok: true }),
+      complete: async () => ({ content: [{ type: "text", text: cancelledSummary }], stopReason: "stop" }),
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      getSessionName: () => undefined,
+      buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async () => ({ cancelled: true }),
+    ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+    getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+  });
+  assert.deepEqual(notifications, []);
 });
 
 test("registers /goal and completes only through the model goal tool", async () => {

@@ -128,8 +128,8 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
 });
 
 test("public documentation matches current runtime contracts", () => {
-  assert.equal(packageJson.version, "2.0.14");
-  assert.match(readme, /@v2\.0\.14/u);
+  assert.equal(packageJson.version, "2.0.15");
+  assert.match(readme, /@v2\.0\.15/u);
   assert.match(readme, /12-frame/u);
   assert.match(readme, /Node\.js `22\.19\.0` or later/u);
   assert.match(readme, /\/goal <objective>/u);

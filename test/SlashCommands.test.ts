@@ -57,6 +57,7 @@ test("resolver covers built-ins, aliases, extensions, prompts, skills, and refre
   let commands = [
     command("goal"),
     command("clear"),
+    command("handoff"),
     command("release", "prompt"),
     command("skill:review", "skill"),
   ];
@@ -65,6 +66,7 @@ test("resolver covers built-ins, aliases, extensions, prompts, skills, and refre
   assert.equal(resolver.isValidCommand("settings"), true);
   assert.equal(resolver.isValidCommand("goal"), true);
   assert.equal(resolver.isValidCommand("clear"), true);
+  assert.equal(resolver.isValidCommand("handoff"), true);
   assert.equal(resolver.isValidCommand("release"), true);
   assert.equal(resolver.isValidCommand("skill:review"), true);
   assert.equal(resolver.isValidCommand("go"), false);
@@ -185,7 +187,7 @@ test("editor render uses the shared resolver, mdLink theme role, multiline token
 });
 
 test("autocomplete uses the same resolver and falls back to current base suggestions", async () => {
-  let commands = [command("goal")];
+  let commands = [command("goal"), command("handoff")];
   const resolver = createSlashCommandResolver({ getCommands: () => commands });
   let providerFactory: TestProviderFactory | undefined;
   const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => void>>();
@@ -213,6 +215,10 @@ test("autocomplete uses the same resolver and falls back to current base suggest
   const provider = providerFactory(current);
   const suggestions = await provider.getSuggestions(["/"], 0, 1, {});
   assert.ok(suggestions.items.some((item: { label: string }) => item.label === "/goal"));
+  assert.equal(
+    suggestions.items.find((item: { label: string }) => item.label === "/handoff")?.description,
+    "[Extension] /handoff [next-session focus] —",
+  );
   assert.equal(
     suggestions.items.find((item: { label: string }) => item.label === "/fallback")?.description,
     "[Built-in] Fallback command",

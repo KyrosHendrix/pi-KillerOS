@@ -24,10 +24,10 @@ Install from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin an install to version `v2.0.14`:
+Pin an install to version `v2.0.15`:
 
 ```bash
-pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.14
+pi install git:github.com/KyrosHendrix/pi-KillerOS@v2.0.15
 ```
 
 Add `-l` to either command to install only for the current project. Restart Pi after installing.
@@ -65,6 +65,7 @@ Add `-l` to either command to install only for the current project. Restart Pi a
 /codex-fast               Toggle process-local Codex fast mode
 /notification             Configure the completion sound
 /clear                    Start a new session after confirmation
+/handoff [focus]          Create a fresh session with visible continuation context
 /exit                     Quit Pi gracefully
 ```
 
@@ -85,6 +86,10 @@ KillerOS marks a goal blocked only after a stable lowercase blocker key recorded
 Active goals replace the footer path with warning-yellow `/goal is active (...)` and keep the exact elapsed time visible.
 
 `/goal pause` and `/goal clear` save paused or cleared state before aborting current goal work, so settlement cannot restart it. Aborted turns, provider failures, and continuation failures pause safely. Failed edit and replacement writes dispatch no edited objective. Replacing unfinished work requires confirmation, and `/goal edit` works only in TUI mode.
+
+### Handoff
+
+`/handoff [focus]` requires a saved source session and is available only when Pi is idle, has no pending messages, and has no active `/goal`. It creates a fresh linked session with a visible handoff document that supplies context for the next turn. The source session stays unchanged, and handoff does not start an agent turn.
 
 ### Repository initialization
 

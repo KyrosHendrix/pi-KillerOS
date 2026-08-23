@@ -4,6 +4,12 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.15] - 2026-08-23
+
+### Added
+
+- Added `/handoff [focus]` for fresh linked sessions with visible continuation context.
+
 ### Fixed
 
 - Compared pre-existing goal deliverables by content instead of file size and modification time.

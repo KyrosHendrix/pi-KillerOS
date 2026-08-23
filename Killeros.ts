@@ -8,6 +8,7 @@ import {
 } from "./killeros/commands.ts";
 import { registerFooter } from "./killeros/footer.ts";
 import { registerGoal, registerGoalSettlement } from "./killeros/goals.ts";
+import { registerHandoff } from "./killeros/handoff.ts";
 import { registerLifecycleHooks } from "./killeros/hooks.ts";
 import { registerInitCommand, registerInitSettlement } from "./killeros/init.ts";
 import {
@@ -40,6 +41,7 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerPersonalInstructions(pi, initRuntime);
   registerQuestionTool(pi);
   registerAliases(pi);
+  registerHandoff(pi, goalRuntime);
   registerSlashAutocomplete(pi, commandResolver);
   registerFooter(pi, goalRuntime);
   registerVariants(pi);
