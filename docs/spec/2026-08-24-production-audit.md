@@ -52,6 +52,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 14. The `/goal` action panel sends a stored objective directly into the clear-confirmation body even though its status title uses a safe formatter.
 15. Explicit goal-pause fallback sanitizes its stored failure reason but later notifies with the original unsafe storage-error message.
 16. The model-authored `/init` policy-conflict reason reaches tool output, runtime state, and a Pi warning without terminal-control sanitization.
+17. Custom model names, IDs, and provider identifiers render raw in the shared shell header/footer formatter.
 
 ## Pi lifecycle contract observed
 
@@ -162,3 +163,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced OSC title injection, ANSI styling, BEL, and NUL bytes from the model-authored conflict reason in `/init` tool output before settlement.
 - Sanitized once at tool ingestion so its result content, result details, stored outcome, and final Pi warning share the same safe text.
+
+### Shell model metadata
+
+- Reproduced OSC title injection, ANSI styling, BEL, NUL, and line-feed bytes from custom model/provider metadata in a footer row.
+- Sanitized the shared model formatter so both shell header and footer receive single-line labels, retaining name-to-ID fallback and adding a safe empty-label fallback.

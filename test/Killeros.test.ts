@@ -4719,8 +4719,8 @@ test("footer uses model metadata and formats unknown provider names", () => {
   const { captured, ctx, tui } = createTuiContext();
   ctx.model = {
     id: "raw-model-v1",
-    name: "Professional Model",
-    provider: "my-private-ai",
+    name: "Pro\x1b]2;owned\x07\x1b[31mfessional\x1b[0m\0\n Model",
+    provider: "my-\x1b]2;owned\x07\x1b[31mprivate\x1b[0m\0\n-ai",
     reasoning: true,
   };
   for (const handler of handlers.get("session_start")) handler({}, ctx);
@@ -4740,7 +4740,12 @@ test("footer uses model metadata and formats unknown provider names", () => {
   assert.match(firstRender, /\x1B\[90mMy Private AI\x1B\[39m/u);
 
   for (const handler of handlers.get("model_select")) {
-    handler({ model: { ...ctx.model, id: "next", name: "Next Model", provider: "future_provider" } });
+    handler({ model: {
+      ...ctx.model,
+      id: "Next\x1b]2;owned\x07\x1b[31m Model\x1b[0m\0",
+      name: "\x1b]2;owned\x07\x1b[31m\x1b[0m\0",
+      provider: "future_provider",
+    } });
   }
   const updated = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   assert.match(updated, /Next Model Future Provider/u);
