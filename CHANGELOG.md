@@ -18,6 +18,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Contained synchronous lifecycle-hook process-start failures inside normal hook failure handling.
 - Kept header and footer paths single-line and terminal-safe for unusual cwd or home-directory names.
 - Sanitized manual-compaction abort diagnostics before saving recovery-eligible goal state.
 - Stripped terminal commands and unsafe controls from saved goal text before showing status panels or notifications.

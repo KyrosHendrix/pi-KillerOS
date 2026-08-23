@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { reportError } from "./errors.ts";
+import { errorMessage, reportError } from "./errors.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 type KillerosHookEvent = "tool_call" | "tool_result" | "agent_settled";
@@ -141,8 +141,9 @@ export function executeHook(
   if (signal?.aborted) {
     return Promise.resolve({ code: 130, stdout: "", stderr: "", timedOut: false, cancelled: true, exitUnconfirmed: false });
   }
-  return new Promise((resolve) => {
-    const child = spawnProcess(command, {
+  let child;
+  try {
+    child = spawnProcess(command, {
       cwd,
       env: { ...process.env, ...environment },
       detached: process.platform !== "win32",
@@ -150,6 +151,10 @@ export function executeHook(
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+  } catch (error) {
+    return Promise.resolve({ code: 1, stdout: "", stderr: errorMessage(error), timedOut: false, cancelled: false, exitUnconfirmed: false });
+  }
+  return new Promise((resolve) => {
     const stdout: HookOutputBuffer = { bytes: 0, decoder: new StringDecoder("utf8"), text: "" };
     const stderr: HookOutputBuffer = { bytes: 0, decoder: new StringDecoder("utf8"), text: "" };
     let completed = false;

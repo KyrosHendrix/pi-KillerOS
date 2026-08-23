@@ -45,6 +45,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 7. Caught errors routed through the shared user-facing formatter retain terminal commands and unsafe control bytes.
 8. Manual-compaction abort state retains raw provider diagnostics even though current goal renderers and status summaries sanitize their terminal output.
 9. Header and footer cwd formatting sends an unusual project path to Pi's terminal renderer without control-byte sanitization.
+10. A synchronous hook process-start exception rejects `executeHook` and bypasses the normal failure result, tool block, and Pi notification path.
 
 ## Pi lifecycle contract observed
 
@@ -119,3 +120,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Replaced source-directory activation in the Pi lifecycle contract with an actual `npm pack` tarball installed into an isolated local consumer without scripts, network access, or peer auto-installation.
 - Verified the installed tarball contains its TypeScript entry point and theme, then activates and reloads through Pi using the repository's pinned peer runtime.
+
+### Hook process-start failures
+
+- Reproduced a synchronous spawner exception escaping `executeHook` instead of becoming a nonzero hook result.
+- Moved process start ahead of the event-wait promise and converted start exceptions through the shared safe error formatter, preserving normal caller blocking and notification behavior.

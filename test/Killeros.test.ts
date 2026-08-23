@@ -3823,6 +3823,19 @@ test("hook output preserves UTF-8 characters split across stream chunks", async 
   assert.equal(result.stdout, "😀");
 });
 
+test("synchronous hook spawn failures become ordinary failed results", async () => {
+  const spawnFailure = (() => { throw new Error("process could not start"); }) as unknown as HookSpawner;
+  const result = await executeHook("ignored", process.cwd(), {}, 1_000, spawnFailure);
+  assert.deepEqual(result, {
+    code: 1,
+    stdout: "",
+    stderr: "process could not start",
+    timedOut: false,
+    cancelled: false,
+    exitUnconfirmed: false,
+  });
+});
+
 test("never-closing hooks report unconfirmed exit after bounded cleanup", async () => {
   class NeverClosingHook extends EventEmitter {
     stdout = new PassThrough();
