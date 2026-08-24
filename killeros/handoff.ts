@@ -1,5 +1,6 @@
 import { contentText } from "@earendil-works/pi-ai";
 import { BorderedLoader, convertToLlm, type ExtensionAPI, type ExtensionCommandContext, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
+import { reportError } from "./errors.ts";
 import type { GoalRuntime } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
@@ -81,12 +82,6 @@ function hasRequiredHandoffContent(document: string, focus: string): boolean {
   });
 }
 
-/** Reports a failed handoff through the session context that remains valid. */
-function reportHandoffError(ctx: ExtensionCommandContext, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  ctx.ui.notify(`Handoff failed: ${message}`, "error");
-}
-
 /** Generates and validates a handoff summary with optional cancellation. */
 async function generateHandoffSummary(
   ctx: ExtensionCommandContext,
@@ -96,9 +91,7 @@ async function generateHandoffSummary(
 ): Promise<string> {
   if (!ctx.model) throw new Error("No current model is available");
 
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
   signal?.throwIfAborted();
-  if (!auth.ok) throw new Error(auth.error);
 
   const response = await ctx.modelRegistry.complete(ctx.model, {
     systemPrompt: HANDOFF_SYSTEM_PROMPT,
@@ -108,9 +101,6 @@ async function generateHandoffSummary(
       timestamp: Date.now(),
     }],
   }, {
-    apiKey: auth.apiKey,
-    headers: auth.headers,
-    env: auth.env,
     maxTokens: 2_048,
     signal,
   });
@@ -173,7 +163,7 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime): voi
           throw new Error("The handoff summary did not contain every required section");
         }
       } catch (error) {
-        reportHandoffError(ctx, error);
+        reportError(ctx, "Handoff failed", error);
         return;
       }
 
@@ -191,7 +181,7 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime): voi
           },
           withSession: async (destination) => {
             if (setupFailure) {
-              reportHandoffError(destination, setupFailure.error);
+              reportError(destination, "Handoff failed", setupFailure.error);
               return;
             }
             destination.ui.notify("Handoff ready in a new session", "info");
@@ -199,7 +189,7 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime): voi
         });
       } catch (error) {
         try {
-          reportHandoffError(ctx, error);
+          reportError(ctx, "Handoff failed", error);
         } catch {
           throw error;
         }

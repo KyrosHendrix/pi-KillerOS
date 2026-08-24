@@ -9,9 +9,14 @@ import {
 } from "../killeros/commands.ts";
 import { highlightSlashCommands, registerShellUi } from "../killeros/shell-ui.ts";
 
-function command(name: string, source: "extension" | "prompt" | "skill" = "extension") {
+function command(
+  name: string,
+  source: "extension" | "prompt" | "skill" = "extension",
+  description?: string,
+) {
   return {
     name,
+    description,
     source,
     sourceInfo: { path: "test", source: "test", scope: "temporary" as const, origin: "top-level" as const, baseDir: "." },
   };
@@ -187,7 +192,11 @@ test("editor render uses the shared resolver, mdLink theme role, multiline token
 });
 
 test("autocomplete uses the same resolver and falls back to current base suggestions", async () => {
-  let commands = [command("goal"), command("handoff")];
+  let commands = [
+    command("goal"),
+    command("handoff", "extension", "Run \x1b]2;owned\x07\x1b[31msafely\x1b[0m\0\nnext"),
+    command("unsafe\x1b]2;owned\x07"),
+  ];
   const resolver = createSlashCommandResolver({ getCommands: () => commands });
   let providerFactory: TestProviderFactory | undefined;
   const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => void>>();
@@ -208,7 +217,11 @@ test("autocomplete uses the same resolver and falls back to current base suggest
   const current = {
     getSuggestions: async () => ({
       prefix: "/",
-      items: [{ value: "/fallback ", label: "/fallback", description: "Fallback command" }],
+      items: [{
+        value: "/fallback ",
+        label: "/fallback",
+        description: "Fallback \x1b]2;owned\x07\x1b[31mcommand\x1b[0m\0",
+      }],
     }),
     applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
   };
@@ -217,12 +230,13 @@ test("autocomplete uses the same resolver and falls back to current base suggest
   assert.ok(suggestions.items.some((item: { label: string }) => item.label === "/goal"));
   assert.equal(
     suggestions.items.find((item: { label: string }) => item.label === "/handoff")?.description,
-    "[Extension] /handoff [next-session focus] —",
+    "[Extension] /handoff [next-session focus] — Run safely next",
   );
   assert.equal(
     suggestions.items.find((item: { label: string }) => item.label === "/fallback")?.description,
     "[Built-in] Fallback command",
   );
+  assert.equal(suggestions.items.some((item: { label: string }) => stripTerminalSequences(item.label) === "/unsafe"), false);
   assert.equal(resolver.isValidCommand("fallback"), true);
 
   commands = [];

@@ -118,8 +118,9 @@ function captureGoalFileBaseline(filePath: string): GoalFileBaseline {
   let artifact: ReturnType<typeof lstatSync>;
   try {
     artifact = lstatSync(filePath);
-  } catch {
-    return { exists: false };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
+    throw error;
   }
   const baseline = { exists: true as const, size: artifact.size, mtimeMs: artifact.mtimeMs };
   if (!artifact.isFile()) return baseline;
@@ -382,7 +383,7 @@ function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
     state.objective,
   ];
   if (state.result) lines.push(state.result);
-  return lines.join("\n");
+  return safeTerminalText(lines.join("\n"));
 }
 
 export function pauseGoalAfterFailure(
@@ -394,13 +395,14 @@ export function pauseGoalAfterFailure(
   notify = true,
 ): void {
   if (runtime.state?.status !== "active") return;
+  const safeReason = safeTerminalText(reason);
   try {
-    transitionGoal(pi, runtime, "error", "paused", reason);
+    transitionGoal(pi, runtime, "error", "paused", safeReason);
   } catch {
     runtime.state = runtime.state ? {
       ...stopGoalClock(runtime.state, Date.now()),
       status: "paused",
-      result: reason,
+      result: safeReason,
       resumeAfterManualCompaction: undefined,
     } : undefined;
     syncGoalUpdateTool(pi, runtime);
@@ -409,7 +411,7 @@ export function pauseGoalAfterFailure(
     runtime.automaticCompaction = undefined;
     runtime.requestRender?.();
   }
-  if (notify) ctx.ui.notify(`Goal paused: ${reason}\n${recoveryInstruction}`, "error");
+  if (notify) ctx.ui.notify(`Goal paused: ${safeReason}\n${recoveryInstruction}`, "error");
 }
 
 function pauseGoalForPossibleManualCompaction(
@@ -419,15 +421,16 @@ function pauseGoalForPossibleManualCompaction(
   reason: string,
 ): void {
   if (runtime.state?.status !== "active") return;
+  const safeReason = safeTerminalText(reason);
   try {
-    transitionGoal(pi, runtime, "error", "paused", reason, {
+    transitionGoal(pi, runtime, "error", "paused", safeReason, {
       resumeAfterManualCompaction: true,
     });
   } catch {
     runtime.state = runtime.state ? {
       ...stopGoalClock(runtime.state, Date.now()),
       status: "paused",
-      result: reason,
+      result: safeReason,
       resumeAfterManualCompaction: true,
     } : undefined;
     syncGoalUpdateTool(pi, runtime);
@@ -587,7 +590,7 @@ function goalContinuationMessage(state: GoalState, ctx: ExtensionContext): strin
   if (ctx.isProjectTrusted()) {
     const personal = resolvePersonalInstructions(ctx.cwd);
     if (personal) {
-      sections.push(`<personal_instructions source=${JSON.stringify(personal.source)}>\n${personal.content}\n</personal_instructions>`);
+      sections.push(personal);
     }
   }
   return sections.join("\n\n");
@@ -793,7 +796,7 @@ export function registerGoal(
         const selected = await ctx.ui.select(goalStatusSummary(runtime.state, ctx), actions.map((action) => action.label));
         const action = actions.find((candidate) => candidate.label === selected);
         if (!action) return;
-        if (action.control === "clear" && !await ctx.ui.confirm("Clear goal?", runtime.state.objective)) return;
+        if (action.control === "clear" && !await ctx.ui.confirm("Clear goal?", safeTerminalText(runtime.state.objective))) return;
         await handleGoalCommand(action.control, ctx);
         return;
       }
@@ -878,7 +881,7 @@ export function registerGoal(
           transitionGoal(pi, runtime, "pause", "paused");
           saved = true;
         } catch (error) {
-          failureReason = `the requested pause could not be saved: ${error instanceof Error ? error.message : String(error)}`;
+          failureReason = safeTerminalText(`the requested pause could not be saved: ${error instanceof Error ? error.message : String(error)}`);
           pauseGoalAfterFailure(
             pi,
             runtime,
@@ -1038,21 +1041,21 @@ export function registerGoal(
         return;
       }
       const now = Date.now();
-      const state: GoalState = {
-        version: GOAL_VERSION,
-        revision: 1,
-        objective,
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-        activeMilliseconds: 0,
-        activeStartedAt: now,
-        turns: 0,
-        blockedAuditStartTurn: 0,
-        baselineTokens: sumGoalTokens(ctx),
-        verification: inferGoalVerification(objective),
-      };
       try {
+        const state: GoalState = {
+          version: GOAL_VERSION,
+          revision: 1,
+          objective,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+          activeMilliseconds: 0,
+          activeStartedAt: now,
+          turns: 0,
+          blockedAuditStartTurn: 0,
+          baselineTokens: sumGoalTokens(ctx),
+          verification: inferGoalVerification(objective),
+        };
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
         if (scheduleGoalContinuation(pi, runtime, initState, ctx)) {
           ctx.ui.notify("Goal active. KillerOS will continue until completion, a repeated blocker, or pause.", "info");

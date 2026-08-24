@@ -4,6 +4,7 @@ import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, formatTokens, padRight } from "./display.ts";
 import { goalElapsedMilliseconds } from "./goals.ts";
 import type { GoalRuntime, GoalState } from "./runtime.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
 
 const FOOTER_REFRESH_INTERVAL_MS = 1_000;
@@ -76,7 +77,7 @@ const PROVIDER_WORDS: Readonly<Record<string, string>> = {
 };
 
 function formatProviderName(provider: string): string {
-  const normalized = provider.trim();
+  const normalized = safeTerminalText(provider).replaceAll("\n", "").trim();
   const known = PROVIDER_LABELS[normalized.toLowerCase()];
   if (known) return known;
   return normalized
@@ -87,7 +88,8 @@ function formatProviderName(provider: string): string {
 }
 
 function modelDisplayName(model: NonNullable<ExtensionContext["model"]>): string {
-  return model.name?.trim() || model.id;
+  const name = safeTerminalText(model.name ?? "").replaceAll("\n", "").trim();
+  return name || safeTerminalText(model.id).replaceAll("\n", "").trim() || "Unknown model";
 }
 
 export function formatModel(

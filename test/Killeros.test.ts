@@ -571,6 +571,23 @@ test("/codex-fast state survives extension reloads and renders inline for Codex"
   resetCodexFastState();
 });
 
+test("/codex-fast reload repairs legacy process-global state", async () => {
+  const globalState = globalThis as typeof globalThis & { __killerosCodexFastState?: unknown };
+  const original = globalState.__killerosCodexFastState;
+  try {
+    globalState.__killerosCodexFastState = { enabled: true };
+    const moduleUrl = new URL("../killeros/codex-fast-state.ts", import.meta.url);
+    moduleUrl.searchParams.set("legacy", String(Date.now()));
+    const reloaded = await import(moduleUrl.href) as typeof import("../killeros/codex-fast-state.ts");
+
+    assert.equal(reloaded.isCodexFastEnabled(), true);
+    const unsubscribe = reloaded.subscribeCodexFast(() => {});
+    assert.doesNotThrow(unsubscribe);
+  } finally {
+    globalState.__killerosCodexFastState = original;
+  }
+});
+
 test("question exposes a Google-compatible optional selection mode", () => {
   const tool = getTool(createHarness(), "question");
   const schema = JSON.parse(JSON.stringify(tool.parameters));
@@ -627,7 +644,11 @@ test("/variants validates direct levels and model support", async () => {
   api.setThinkingLevel = (level) => selectedLevels.push(level);
   const ctx = {
     mode: "tui",
-    model: { provider: "test", id: "reasoner", reasoning: true },
+    model: {
+      provider: "\x1b]2;owned\x07\x1b[31mtest\x1b[0m",
+      id: "reasoner\nspoof\0",
+      reasoning: true,
+    },
     ui: {
       custom: () => { throw new Error("direct variants must not open the selector"); },
       notify: (message: string, level?: string) => notifications.push({ message, level }),
@@ -637,12 +658,16 @@ test("/variants validates direct levels and model support", async () => {
 
   await variants.handler("deep", ctx);
   await variants.handler("xhigh", ctx);
-  await variants.handler("unknown", ctx);
+  await variants.handler("\x1b]2;owned\x07\x1b[31munknown\x1b[0m\nspoof\0", ctx);
 
   assert.deepEqual(selectedLevels, ["high"]);
   assert.match(notifications[0].message, /Thinking: High/u);
   assert.match(notifications[1].message, /Extra High is not supported/u);
+  assert.match(notifications[1].message, /test\/reasonerspoof/u);
+  assert.doesNotMatch(notifications[1].message, /\x1b|\x07|\0|\n/u);
   assert.match(notifications[2].message, /Unknown reasoning level/u);
+  assert.match(notifications[2].message, /"unknownspoof"/u);
+  assert.doesNotMatch(notifications[2].message, /\x1b|\x07|\0|\n/u);
 
   await variants.handler("", { ...ctx, model: { provider: "test", id: "plain", reasoning: false } });
   assert.match(notifications[3].message, /does not support extended reasoning/u);
@@ -1323,13 +1348,13 @@ test("/handoff cancels its TUI generation without replacing the session", async 
   assert.deepEqual(notifications, [{ message: "Handoff cancelled", level: "info" }]);
 });
 
-test("/handoff cancellation during authentication never starts a completion", async () => {
+test("/handoff cancellation reaches provider-managed authentication", async () => {
   const { commands } = createHarness();
-  let resolveAuth: ((auth: { ok: true }) => void) | undefined;
-  let completions = 0;
+  let completionSignal: AbortSignal | undefined;
+  let resolveProviderSetup: (() => void) | undefined;
   let newSessions = 0;
-  const auth = new Promise<{ ok: true }>((resolve) => {
-    resolveAuth = resolve;
+  const providerSetup = new Promise<void>((resolve) => {
+    resolveProviderSetup = resolve;
   });
 
   await commands.get("handoff").handler("", {
@@ -1338,9 +1363,10 @@ test("/handoff cancellation during authentication never starts a completion", as
     hasPendingMessages: () => false,
     model: { id: "test-model", provider: "test" },
     modelRegistry: {
-      getApiKeyAndHeaders: async () => await auth,
-      complete: async () => {
-        completions += 1;
+      complete: async (_model: unknown, _context: unknown, options: { signal?: AbortSignal }) => {
+        completionSignal = options.signal;
+        await providerSetup;
+        options.signal?.throwIfAborted();
         return { content: [], stopReason: "aborted" };
       },
     },
@@ -1370,9 +1396,9 @@ test("/handoff cancellation during authentication never starts a completion", as
     getSystemPromptOptions: () => ({ cwd: process.cwd() }),
   });
 
-  resolveAuth?.({ ok: true });
+  resolveProviderSetup?.();
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(completions, 0);
+  assert.equal(completionSignal?.aborted, true);
   assert.equal(newSessions, 0);
 });
 
@@ -1380,6 +1406,7 @@ test("/handoff creates an idle child session with a visible summary", async () =
   const { commands } = createHarness();
   const sourceName = "Release work with a name that is intentionally longer than sixty characters for session naming";
   const destinationNotifications: TestNotification[] = [];
+  const sourceNotifications: TestNotification[] = [];
   const oldRawHistory = "OLD RAW HISTORY THAT MUST NOT REACH THE HANDOFF REQUEST";
   const projectedEntries = [
     {
@@ -1421,11 +1448,19 @@ test("/handoff creates an idle child session with a visible summary", async () =
     abort: () => calls.push("abort"),
     waitForIdle: async () => calls.push("wait"),
     compact: () => calls.push("compact"),
-    model: { id: "test-model", provider: "test" },
+    model: { id: "test-model", provider: "github-copilot" },
     modelRegistry: {
-      getApiKeyAndHeaders: async () => ({ ok: true }),
-      complete: async (_model: unknown, context: { systemPrompt?: string; messages: unknown[] }) => {
+      getApiKeyAndHeaders: async () => {
+        calls.push("manual-auth");
+        return { ok: true, apiKey: "copilot-oauth-token" };
+      },
+      complete: async (
+        _model: unknown,
+        context: { systemPrompt?: string; messages: unknown[] },
+        options: { apiKey?: string },
+      ) => {
         completionRequests.push({ context });
+        if (options.apiKey) throw new Error("OpenAI API error (421): 421 Misdirected Request");
         return { content: [{ type: "text", text: summary }], stopReason: "stop" };
       },
     },
@@ -1464,7 +1499,7 @@ test("/handoff creates an idle child session with a visible summary", async () =
       });
       return { cancelled: false };
     },
-    ui: { notify: () => { throw new Error("source notifications are unavailable after replacement"); } },
+    ui: { notify: (message: string, level?: string) => sourceNotifications.push({ message, level }) },
     getSystemPromptOptions: () => ({
       cwd: process.cwd(),
       skills: [{ name: "code-review", description: "Review a diff", filePath: "skill.md", baseDir: ".", sourceInfo: {} }],
@@ -1483,6 +1518,7 @@ test("/handoff creates an idle child session with a visible summary", async () =
   assert.match(request.systemPrompt ?? "", /reference existing artifacts instead of duplicating them/iu);
   assert.match(request.systemPrompt ?? "", /redact credentials, passwords, personally identifiable information, and other sensitive values/iu);
   assert.deepEqual(calls, ["new"]);
+  assert.deepEqual(sourceNotifications, []);
   assert.deepEqual(destinationNotifications, [{ message: "Handoff ready in a new session", level: "info" }]);
   assert.equal(sentMessages, 0);
   assert.equal(sentUserMessages, 0);
@@ -1693,15 +1729,15 @@ test("/handoff leaves the source selected when summary or replacement fails", as
     "## Suggested skills",
   ].join("\n\n");
   const cases = [
-    { label: "missing model", model: undefined, auth: { ok: true }, completion: undefined, expected: "Handoff failed: No current model is available" },
-    { label: "authentication failure", model: { id: "test-model", provider: "test" }, auth: { ok: false, error: "Sign in first" }, completion: undefined, expected: "Handoff failed: Sign in first" },
-    { label: "empty usable context", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: undefined, expected: "Handoff failed: No usable session context is available" },
-    { label: "empty model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [], stopReason: "stop" }, expected: "Handoff failed: The handoff summary was empty" },
-    { label: "incomplete model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: "## Objective\nFinish the release checks." }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
-    { label: "empty required sections", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: emptyHandoffSections }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
-    { label: "truncated model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary did not finish" },
-    { label: "aborted model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "aborted" }, expected: "Handoff failed: The handoff summary did not finish" },
-    { label: "model failure", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: new Error("Provider failed"), expected: "Handoff failed: Provider failed" },
+    { label: "missing model", model: undefined, completion: undefined, expected: "Handoff failed: No current model is available" },
+    { label: "authentication failure", model: { id: "test-model", provider: "test" }, completion: new Error("Sign in first"), expected: "Handoff failed: Sign in first" },
+    { label: "empty usable context", model: { id: "test-model", provider: "test" }, completion: undefined, expected: "Handoff failed: No usable session context is available" },
+    { label: "empty model response", model: { id: "test-model", provider: "test" }, completion: { content: [], stopReason: "stop" }, expected: "Handoff failed: The handoff summary was empty" },
+    { label: "incomplete model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: "## Objective\nFinish the release checks." }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
+    { label: "empty required sections", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: emptyHandoffSections }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
+    { label: "truncated model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary did not finish" },
+    { label: "aborted model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "aborted" }, expected: "Handoff failed: The handoff summary did not finish" },
+    { label: "model failure", model: { id: "test-model", provider: "test" }, completion: new Error("\x1b]2;owned\x07\x1b[31mProvider\x1b[0m\0 failed"), expected: "Handoff failed: Provider failed" },
   ] as const;
 
   for (const testCase of cases) {
@@ -1714,7 +1750,6 @@ test("/handoff leaves the source selected when summary or replacement fails", as
       hasPendingMessages: () => false,
       model: testCase.model,
       modelRegistry: {
-        getApiKeyAndHeaders: async () => testCase.auth,
         complete: async () => {
           completions += 1;
           if (testCase.completion instanceof Error) throw testCase.completion;
@@ -1734,7 +1769,7 @@ test("/handoff leaves the source selected when summary or replacement fails", as
     });
     assert.deepEqual(notifications, [{ message: testCase.expected, level: "error" }], testCase.label);
     assert.equal(newSessions, 0, testCase.label);
-    assert.equal(completions, testCase.label === "authentication failure" || testCase.label === "missing model" || testCase.label === "empty usable context" ? 0 : 1, testCase.label);
+    assert.equal(completions, testCase.label === "missing model" || testCase.label === "empty usable context" ? 0 : 1, testCase.label);
   }
 
   const { commands } = createHarness();
@@ -1834,11 +1869,18 @@ test("goal panel confirms clear and leaves direct goal commands compatible", asy
   const { appendedEntries, commands } = createHarness();
   const { ctx } = createTuiContext();
   let abortCalls = 0;
+  let confirmation: { message: string; title: string } | undefined;
   ctx.abort = () => { abortCalls += 1; };
-  await commands.get("goal").handler("Keep this goal", ctx);
+  await commands.get("goal").handler("Keep \x1b]2;owned\x07\x1b[31mthis\x1b[0m\0 goal", ctx);
   ctx.ui.select = async () => "Clear goal";
-  ctx.ui.confirm = async () => false;
+  ctx.ui.confirm = async (title, message) => {
+    assert.ok(typeof title === "string");
+    assert.ok(typeof message === "string");
+    confirmation = { title, message };
+    return false;
+  };
   await commands.get("goal").handler("", ctx);
+  assert.deepEqual(confirmation, { title: "Clear goal?", message: "Keep this goal" });
   assert.notEqual(appendedEntries.at(-1).data.state, null);
   assert.equal(abortCalls, 0);
 
@@ -1853,6 +1895,8 @@ test("goal panel confirms clear and leaves direct goal commands compatible", asy
 });
 
 test("goal panel actions match paused, blocked, and complete states", async () => {
+  const unsafeObjective = "\x1b]2;owned\x07\x1b[31mobjective\x1b[0m\0";
+  const unsafeResult = "\x1b]2;owned\x07\x1b[31mverified\x1b[0m\0";
   const expected = {
     paused: ["Resume automatic continuation", "Edit objective", "Clear goal"],
     blocked: ["Resume automatic continuation", "Edit objective", "Clear goal"],
@@ -1866,7 +1910,7 @@ test("goal panel actions match paused, blocked, and complete states", async () =
       data: { version: 1, event: status, state: {
         version: 1,
         revision: 1,
-        objective: `${status} objective`,
+        objective: `${status} ${unsafeObjective}`,
         status,
         createdAt: now,
         updatedAt: now,
@@ -1874,7 +1918,7 @@ test("goal panel actions match paused, blocked, and complete states", async () =
         turns: 3,
         blockedAuditStartTurn: 0,
         baselineTokens: 0,
-        result: status === "complete" ? "verified" : undefined,
+        result: status === "complete" ? unsafeResult : undefined,
       } },
     }];
     const { commands, handlers } = createHarness();
@@ -1882,6 +1926,9 @@ test("goal panel actions match paused, blocked, and complete states", async () =
     for (const handler of handlers.get("session_start")) await handler({}, ctx);
     await commands.get("goal").handler("", ctx);
     assert.deepEqual(captured.selection.options, options, status);
+    assert.match(captured.selection.title, new RegExp(`${status} objective`, "u"), status);
+    assert.doesNotMatch(captured.selection.title, /\x1b|\x07|\0/u, status);
+    if (status === "complete") assert.match(captured.selection.title, /verified/u);
   }
 });
 
@@ -2051,16 +2098,22 @@ test("/goal pauses after an aborted or failed goal turn", async () => {
   const { appendedEntries, commands, handlers } = createHarness();
   const { ctx } = createTuiContext();
   await commands.get("goal").handler("Recover the deployment", ctx);
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
   for (const handler of handlers.get("before_agent_start")) {
     await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
   }
   await emitSequentially(handlers.get("agent_end"), {
-    messages: [{ role: "assistant", stopReason: "error", errorMessage: "provider unavailable" }],
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "\x1b]2;owned\x07\x1b[31mprovider\x1b[0m\0 unavailable" }],
   }, ctx);
   await emitSequentially(handlers.get("agent_settled"), {}, ctx);
   const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
   assert.equal(lastGoalEntry.data.state.status, "paused");
-  assert.match(lastGoalEntry.data.state.result, /provider unavailable/u);
+  assert.equal(lastGoalEntry.data.state.result, "provider unavailable");
+  assert.deepEqual(notifications, [{
+    message: "Goal paused: provider unavailable\nRun /goal resume after resolving the problem.",
+    level: "error",
+  }]);
 });
 
 test("/goal edit, pause, resume, and clear persist explicit transitions", async () => {
@@ -2103,7 +2156,7 @@ test("/goal pause and clear stop continuation when their first session write fai
     api.appendEntry = (...args) => {
       if (!failed) {
         failed = true;
-        throw new Error("transient session write failure");
+        throw new Error("\x1b]2;owned\x07\x1b[31mtransient\x1b[0m\0 session write failure");
       }
       return appendEntry(...args);
     };
@@ -2111,8 +2164,10 @@ test("/goal pause and clear stop continuation when their first session write fai
     await commands.get("goal").handler(control, ctx);
     const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
     assert.equal(lastGoalEntry.data.state.status, "paused");
-    assert.match(lastGoalEntry.data.state.result, new RegExp(`requested ${control} could not be saved`, "u"));
-    assert.match(notifications.at(-1).message, /Automatic continuation is stopped/u);
+    assert.equal(lastGoalEntry.data.state.result, `the requested ${control} could not be saved: transient session write failure`);
+    assert.equal(notifications.at(-1).message, control === "pause"
+      ? "Goal paused: the requested pause could not be saved: transient session write failure\nAutomatic continuation is stopped. If session storage is still unavailable, retry /goal pause after it recovers."
+      : "Goal paused: the requested clear could not be saved\nAutomatic continuation is stopped. Retry /goal clear to remove the goal.");
 
     await emitSequentially(handlers.get("agent_end"), {
       messages: [{ role: "assistant", stopReason: "stop" }],
@@ -3065,8 +3120,11 @@ test("/init reports a structured policy conflict without writing or reloading", 
     };
     const initRun = commands.get("init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
+    const unsafeReason = "Protected \x1b]2;owned\x07\x1b[31mrelease\x1b[0m\0 policy conflicts with repository evidence.";
     const reason = "Protected release policy conflicts with repository evidence.";
-    await tools.get("killeros_init_conflict").execute("conflict", { reason });
+    const conflict = await tools.get("killeros_init_conflict").execute("conflict", { reason: unsafeReason });
+    assert.equal(conflict.content[0].text, `Root AGENTS.md was left unchanged: ${reason}`);
+    assert.equal(conflict.details.reason, reason);
     await assert.rejects(
       tools.get("killeros_init_write").execute("write-after-conflict", { content: validGeneratedGuidance }),
       /exactly one write or policy-conflict/u,
@@ -3616,7 +3674,7 @@ test("does not inject AGENTS.local.md into the /init generation turn", async () 
   }
 });
 
-test("injects trusted AGENTS.local.md imports after shared context", async () => {
+test("injects trusted AGENTS.local.md imports without source-path metadata", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-personal-"));
   try {
     writeFileSync(path.join(directory, "personal.md"), "Prefer concise tradeoff explanations.\n");
@@ -3629,7 +3687,8 @@ test("injects trusted AGENTS.local.md imports after shared context", async () =>
       if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
     }
     assert.match(event.systemPrompt, /shared AGENTS context/u);
-    assert.match(event.systemPrompt, /<personal_instructions/u);
+    assert.match(event.systemPrompt, /\n<personal_instructions>\n/u);
+    assert.doesNotMatch(event.systemPrompt, /source=/u);
     assert.match(event.systemPrompt, /Prefer concise tradeoff explanations\./u);
     assert.ok(event.systemPrompt.indexOf("shared AGENTS context") < event.systemPrompt.indexOf("<personal_instructions"));
 
@@ -3668,6 +3727,128 @@ test("does not load lifecycle hooks for untrusted projects", async () => {
     }, ctx);
     assert.equal(results.some((result) => result?.block), false);
     assert.match(notifications.at(-1)?.message, /Ignored untrusted project hooks/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("hook config warnings sanitize project paths", {
+  skip: process.platform === "win32" ? "control-byte paths are unavailable on Windows" : false,
+}, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-path-\x1b]2;owned\x07\nspoof"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const configPath = path.join(configDirectory, "killeros-hooks.json");
+    writeFileSync(configPath, JSON.stringify({ hooks: { tool_call: [{ command: "exit 0" }] } }));
+
+    const untrusted = createHarness();
+    const untrustedContext = createTuiContext().ctx;
+    const untrustedNotifications: TestNotification[] = [];
+    untrustedContext.cwd = directory;
+    untrustedContext.isProjectTrusted = () => false;
+    untrustedContext.ui.notify = (message, level) => untrustedNotifications.push({ message, level });
+    for (const handler of untrusted.handlers.get("session_start")) await handler({}, untrustedContext);
+
+    writeFileSync(configPath, JSON.stringify({ hooks: { tool_call: [{}] } }));
+    const invalid = createHarness();
+    const invalidContext = createTuiContext().ctx;
+    const invalidNotifications: TestNotification[] = [];
+    invalidContext.cwd = directory;
+    invalidContext.ui.notify = (message, level) => invalidNotifications.push({ message, level });
+    for (const handler of invalid.handlers.get("session_start")) await handler({}, invalidContext);
+
+    assert.match(untrustedNotifications.at(-1)?.message ?? "", /Ignored untrusted project hooks/u);
+    assert.match(invalidNotifications.at(-1)?.message ?? "", /Ignored invalid tool_call hook/u);
+    assert.doesNotMatch(untrustedNotifications.at(-1)?.message ?? "", /\x1b|\x07|\n/u);
+    assert.doesNotMatch(invalidNotifications.at(-1)?.message ?? "", /\x1b|\x07|\n/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects linked lifecycle hook configs before executing them", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-linked-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const source = path.join(directory, "shared-hooks.json");
+    const marker = path.join(directory, "marker.txt");
+    const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('marker.txt','ran')"`;
+    writeFileSync(source, JSON.stringify({ hooks: { tool_call: [{ command }] } }));
+    linkSync(source, path.join(configDirectory, "killeros-hooks.json"));
+
+    const { handlers } = createHarness();
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "linked-hook",
+      toolName: "write",
+      input: {},
+    }, ctx);
+
+    assert.equal(existsSync(marker), false);
+    assert.match(notifications.at(-1)?.message, /regular, non-linked file/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects lifecycle hook configs in a linked project directory", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-linked-directory-"));
+  try {
+    const sharedConfigDirectory = path.join(directory, "shared-pi");
+    mkdirSync(sharedConfigDirectory);
+    symlinkSync(sharedConfigDirectory, path.join(directory, ".pi"), "junction");
+    const marker = path.join(directory, "marker.txt");
+    const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('marker.txt','ran')"`;
+    writeFileSync(path.join(sharedConfigDirectory, "killeros-hooks.json"), JSON.stringify({ hooks: { tool_call: [{ command }] } }));
+
+    const { handlers } = createHarness();
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "linked-hook-directory",
+      toolName: "write",
+      input: {},
+    }, ctx);
+
+    assert.equal(existsSync(marker), false);
+    assert.match(notifications.at(-1)?.message, /real project \.pi directory/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects oversized lifecycle hook configs before executing them", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-large-config-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const marker = path.join(directory, "marker.txt");
+    const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('marker.txt','ran')"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), `${JSON.stringify({ hooks: { tool_call: [{ command }] } })}${" ".repeat(65_536)}`);
+
+    const { handlers } = createHarness();
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "oversized-hook-config",
+      toolName: "write",
+      input: {},
+    }, ctx);
+
+    assert.equal(existsSync(marker), false);
+    assert.match(notifications.at(-1)?.message, /exceeds 65536 bytes/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3735,12 +3916,13 @@ test("hook timeout validation accepts five minutes and rejects one millisecond m
   }
 });
 
-test("project tool_call hooks can deterministically block a tool", async () => {
+test("project tool_call hook failures block tools without exposing configured commands", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-"));
   try {
     const configDirectory = path.join(directory, ".pi");
     mkdirSync(configDirectory);
-    const command = `"${process.execPath}" -e "process.stderr.write('blocked');process.exit(7)"`;
+    const secret = "KILLEROS_INLINE_SECRET_9374";
+    const command = `"${process.execPath}" -e "const token='${secret}';process.stderr.write('\\u001b]2;owned\\u0007\\u001b[31mblocked\\u001b[0m\\u0000');process.exit(token?7:0)"`;
     writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
       hooks: { tool_call: [{ matcher: "^write$", command, timeoutMs: 5_000 }] },
     }));
@@ -3758,9 +3940,11 @@ test("project tool_call hooks can deterministically block a tool", async () => {
       input: { path: "example.txt", content: "test" },
     }, ctx);
     const blocked = results.find((result) => result?.block);
+    const expected = "Hook failed\nblocked";
     assert.equal(blocked?.block, true);
-    assert.match(resultReason(results), /blocked/u);
-    assert.equal(notifications.at(-1).level, "error");
+    assert.equal(resultReason(results), expected);
+    assert.deepEqual(notifications.at(-1), { message: expected, level: "error" });
+    assert.doesNotMatch(expected, new RegExp(secret, "u"));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3792,7 +3976,7 @@ test("oversized hook payloads remain valid JSON and report truncation", async ()
   }
 });
 
-test("hook output preserves UTF-8 characters split across stream chunks", async () => {
+test("hook output preserves split UTF-8 and flushes incomplete final bytes", async () => {
   class ChunkedHook extends EventEmitter {
     stdout = new PassThrough();
     stderr = new PassThrough();
@@ -3808,6 +3992,31 @@ test("hook output preserves UTF-8 characters split across stream chunks", async 
 
   const result = await resultPromise;
   assert.equal(result.stdout, "😀");
+
+  const incompleteChild = new ChunkedHook();
+  const incompleteResultPromise = executeHook(
+    "ignored",
+    process.cwd(),
+    {},
+    1_000,
+    (() => incompleteChild) as unknown as HookSpawner,
+  );
+  incompleteChild.stderr.write(Buffer.from([0xf0, 0x9f]));
+  incompleteChild.emit("close", 1);
+  assert.equal((await incompleteResultPromise).stderr, "�");
+});
+
+test("synchronous hook spawn failures become ordinary failed results", async () => {
+  const spawnFailure = (() => { throw new Error("process could not start"); }) as unknown as HookSpawner;
+  const result = await executeHook("ignored", process.cwd(), {}, 1_000, spawnFailure);
+  assert.deepEqual(result, {
+    code: 1,
+    stdout: "",
+    stderr: "process could not start",
+    timedOut: false,
+    cancelled: false,
+    exitUnconfirmed: false,
+  });
 });
 
 test("never-closing hooks report unconfirmed exit after bounded cleanup", async () => {
@@ -4470,6 +4679,10 @@ test("display formatters contain non-finite telemetry and honor Windows path cas
     assert.equal(formatTime(value), "0s");
     assert.equal(formatTokens(value), "0");
   }
+  assert.equal(
+    formatCwd("/__killeros_terminal_test__/\x1b]2;owned\x07\x1b[31mrepo\x1b[0m\nname\0"),
+    "/__killeros_terminal_test__/reponame",
+  );
 
   const platform = Object.getOwnPropertyDescriptor(process, "platform");
   assert.ok(platform);
@@ -4518,8 +4731,8 @@ test("personal instruction truncation preserves valid UTF-8", () => {
     writeFileSync(path.join(directory, "AGENTS.local.md"), `${"a".repeat(32_767)}é`, "utf8");
     const instructions = resolvePersonalInstructions(directory);
     assert.ok(instructions);
-    assert.doesNotMatch(instructions.content, /�/u);
-    assert.match(instructions.content, /truncated by KillerOS/u);
+    assert.doesNotMatch(instructions, /�/u);
+    assert.match(instructions, /truncated by KillerOS/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -4657,8 +4870,8 @@ test("footer uses model metadata and formats unknown provider names", () => {
   const { captured, ctx, tui } = createTuiContext();
   ctx.model = {
     id: "raw-model-v1",
-    name: "Professional Model",
-    provider: "my-private-ai",
+    name: "Pro\x1b]2;owned\x07\x1b[31mfessional\x1b[0m\0\n Model",
+    provider: "my-\x1b]2;owned\x07\x1b[31mprivate\x1b[0m\0\n-ai",
     reasoning: true,
   };
   for (const handler of handlers.get("session_start")) handler({}, ctx);
@@ -4678,7 +4891,12 @@ test("footer uses model metadata and formats unknown provider names", () => {
   assert.match(firstRender, /\x1B\[90mMy Private AI\x1B\[39m/u);
 
   for (const handler of handlers.get("model_select")) {
-    handler({ model: { ...ctx.model, id: "next", name: "Next Model", provider: "future_provider" } });
+    handler({ model: {
+      ...ctx.model,
+      id: "Next\x1b]2;owned\x07\x1b[31m Model\x1b[0m\0",
+      name: "\x1b]2;owned\x07\x1b[31m\x1b[0m\0",
+      provider: "future_provider",
+    } });
   }
   const updated = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   assert.match(updated, /Next Model Future Provider/u);

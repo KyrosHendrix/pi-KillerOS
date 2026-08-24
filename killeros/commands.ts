@@ -1,5 +1,6 @@
 import { type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 async function confirmNewSession(ctx: ExtensionCommandContext): Promise<boolean> {
   if (!ctx.hasUI) return true;
@@ -87,6 +88,11 @@ interface TaggedAutocompleteItem extends AutocompleteItem {
 const SLASH_COMMAND_PREFIX_PATTERN = /(?:^|[ \t])\/([^\s/]*)$/u;
 const SLASH_COMMAND_TOKEN_PATTERN = /(?:^|[ \t])\/([^\s/]+)(?=$|[ \t])/gu;
 
+function safeCommandName(name: string): string | undefined {
+  const safe = safeTerminalText(name).replaceAll("\n", "").trim();
+  return safe === name && safe && !/[\s/]/u.test(safe) ? safe : undefined;
+}
+
 export function getSlashCommandPrefix(line: string): { prefix: string; slashIndex: number } | undefined {
   const match = SLASH_COMMAND_PREFIX_PATTERN.exec(line);
   if (!match || match.index === undefined) return undefined;
@@ -107,7 +113,8 @@ export function findSlashCommandTokens(line: string): SlashCommandToken[] {
 }
 
 function commandNameFromAutocompleteItem(item: AutocompleteItem): string {
-  return (item.value || item.label).replace(/^\//u, "").trim().split(/\s+/u)[0] ?? "";
+  const name = (item.value || item.label).replace(/^\//u, "").trim().split(/\s+/u)[0] ?? "";
+  return safeCommandName(name) ?? "";
 }
 
 export function createSlashCommandResolver(
@@ -124,16 +131,20 @@ export function createSlashCommandResolver(
     }));
 
     for (const command of pi.getCommands()) {
+      const name = safeCommandName(command.name);
+      if (!name) continue;
       const category: CommandInfo["category"] = command.source === "skill"
         ? "Skill"
         : command.source === "prompt"
           ? "Prompt"
           : "Extension";
-      commands.set(command.name, {
-        name: command.name,
-        description: command.description,
+      commands.set(name, {
+        name,
+        description: command.description === undefined
+          ? undefined
+          : safeTerminalText(command.description).replaceAll("\n", " "),
         category,
-        syntaxHint: COMMAND_SYNTAX_HINTS[command.name],
+        syntaxHint: COMMAND_SYNTAX_HINTS[name],
       });
     }
 
@@ -142,7 +153,11 @@ export function createSlashCommandResolver(
       : fallbackCommands;
     for (const [name, description] of baseCommands) {
       if (name && !commands.has(name)) {
-        commands.set(name, { name, description, category: "Built-in" });
+        commands.set(name, {
+          name,
+          description: description === undefined ? undefined : safeTerminalText(description).replaceAll("\n", " "),
+          category: "Built-in",
+        });
       }
     }
     return commands;

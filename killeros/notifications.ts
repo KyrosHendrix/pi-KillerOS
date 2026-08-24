@@ -5,6 +5,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { errorMessage } from "./errors.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 import { createKillerosSettingsStore } from "./settings.ts";
 
 export interface NotificationPreferenceStore {
@@ -38,7 +39,7 @@ export function formatNotificationTitle(
 ): string {
   const directory = basename(cwd) || cwd;
   const base = sessionName ? `π - ${sessionName} - ${directory}` : `π - ${directory}`;
-  return enabled ? `${base} ${COMPLETION_BELL_GLYPH}` : base;
+  return safeTerminalText(enabled ? `${base} ${COMPLETION_BELL_GLYPH}` : base).replaceAll("\n", "");
 }
 
 export function registerCompletionNotifications(

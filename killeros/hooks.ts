@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { reportError } from "./errors.ts";
+import { errorMessage, reportError } from "./errors.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 type KillerosHookEvent = "tool_call" | "tool_result" | "agent_settled";
 
@@ -27,20 +28,67 @@ interface HookExecutionResult {
 }
 
 const HOOK_EVENTS: readonly KillerosHookEvent[] = ["tool_call", "tool_result", "agent_settled"];
+const HOOK_CONFIG_LIMIT = 64 * 1024;
 const HOOK_OUTPUT_LIMIT = 16 * 1024;
 const HOOK_PAYLOAD_LIMIT = 8_000;
 const HOOK_TIMEOUT_MAX_MS = 300_000;
 
+// Reads executable project configuration through a bounded, project-local file descriptor.
+function readHookConfig(configPath: string, projectRoot: string): string {
+  const actualPath = realpathSync(configPath);
+  const expectedPath = path.join(realpathSync(projectRoot), CONFIG_DIR_NAME, "killeros-hooks.json");
+  const samePath = process.platform === "win32"
+    ? actualPath.toLowerCase() === expectedPath.toLowerCase()
+    : actualPath === expectedPath;
+  if (!samePath) {
+    throw new Error("Hook config must be stored in the real project .pi directory");
+  }
+
+  const linkedFile = lstatSync(configPath);
+  if (!linkedFile.isFile() || linkedFile.nlink !== 1) {
+    throw new Error("Hook config must be a regular, non-linked file");
+  }
+  if (linkedFile.size > HOOK_CONFIG_LIMIT) {
+    throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
+  }
+
+  const descriptor = openSync(configPath, "r");
+  try {
+    const openedFile = fstatSync(descriptor);
+    if (!openedFile.isFile() || openedFile.nlink !== 1) {
+      throw new Error("Hook config must be a regular, non-linked file");
+    }
+    if (openedFile.dev !== linkedFile.dev || openedFile.ino !== linkedFile.ino) {
+      throw new Error("Hook config changed while being opened");
+    }
+
+    const contents = Buffer.alloc(HOOK_CONFIG_LIMIT + 1);
+    let bytesRead = 0;
+    while (bytesRead < contents.length) {
+      const count = readSync(descriptor, contents, bytesRead, contents.length - bytesRead, null);
+      if (count === 0) break;
+      bytesRead += count;
+    }
+    if (bytesRead > HOOK_CONFIG_LIMIT) {
+      throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
+    }
+    return contents.toString("utf8", 0, bytesRead);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
   const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "killeros-hooks.json");
   if (!existsSync(configPath)) return {};
+  const displayPath = safeTerminalText(configPath).replaceAll("\n", "");
   if (!ctx.isProjectTrusted()) {
-    ctx.ui.notify(`Ignored untrusted project hooks in ${configPath}`, "warning");
+    ctx.ui.notify(`Ignored untrusted project hooks in ${displayPath}`, "warning");
     return {};
   }
 
   try {
-    const parsed = JSON.parse(readFileSync(configPath, "utf8")) as KillerosHookConfig;
+    const parsed = JSON.parse(readHookConfig(configPath, ctx.cwd)) as KillerosHookConfig;
     const hooks: KillerosHookConfig["hooks"] = {};
     for (const event of HOOK_EVENTS) {
       const candidates = parsed.hooks?.[event];
@@ -59,7 +107,7 @@ function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
           && hook.command.trim().length > 0
           && (hook.matcher === undefined || typeof hook.matcher === "string");
         if (!valid) {
-          ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${configPath}`, "warning");
+          ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${displayPath}`, "warning");
           return false;
         }
         if (hook.matcher && hook.matcher !== "*") {
@@ -140,8 +188,9 @@ export function executeHook(
   if (signal?.aborted) {
     return Promise.resolve({ code: 130, stdout: "", stderr: "", timedOut: false, cancelled: true, exitUnconfirmed: false });
   }
-  return new Promise((resolve) => {
-    const child = spawnProcess(command, {
+  let child;
+  try {
+    child = spawnProcess(command, {
       cwd,
       env: { ...process.env, ...environment },
       detached: process.platform !== "win32",
@@ -149,6 +198,10 @@ export function executeHook(
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+  } catch (error) {
+    return Promise.resolve({ code: 1, stdout: "", stderr: errorMessage(error), timedOut: false, cancelled: false, exitUnconfirmed: false });
+  }
+  return new Promise((resolve) => {
     const stdout: HookOutputBuffer = { bytes: 0, decoder: new StringDecoder("utf8"), text: "" };
     const stderr: HookOutputBuffer = { bytes: 0, decoder: new StringDecoder("utf8"), text: "" };
     let completed = false;
@@ -163,6 +216,8 @@ export function executeHook(
       if (forceTimer) clearTimeout(forceTimer);
       if (settleTimer) clearTimeout(settleTimer);
       signal?.removeEventListener("abort", abort);
+      stdout.text += stdout.decoder.end();
+      stderr.text += stderr.decoder.end();
       resolve({
         code,
         stdout: stdout.text,
@@ -212,9 +267,9 @@ function hookEnvironment(event: KillerosHookEvent, toolName = "", payload: unkno
   };
 }
 
-function hookFailureMessage(hook: KillerosHook, result: HookExecutionResult): string {
+function hookFailureMessage(result: HookExecutionResult): string {
   const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
-  return `Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}: ${hook.command}\n${detail}`;
+  return safeTerminalText(`Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}\n${detail}`);
 }
 
 export function registerLifecycleHooks(pi: ExtensionAPI): void {
@@ -234,7 +289,7 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
       );
       if (result.cancelled) return { block: true, reason: "Hook cancelled because the parent request was aborted" };
       if (result.code !== 0) {
-        const reason = hookFailureMessage(hook, result);
+        const reason = hookFailureMessage(result);
         ctx.ui.notify(reason, "error");
         return { block: true, reason };
       }
@@ -256,7 +311,7 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
         ctx.signal,
       );
       if (result.cancelled) break;
-      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(hook, result), "error");
+      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(result), "error");
     }
   });
 
@@ -271,7 +326,7 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
         ctx.signal,
       );
       if (result.cancelled) break;
-      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(hook, result), "error");
+      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(result), "error");
     }
   });
 }

@@ -8,16 +8,43 @@ All notable changes to KillerOS are documented here.
 
 ### Added
 
+- Added a real Pi SDK lifecycle test for package activation, shutdown-before-reload, fresh registration, and stale-context rejection.
 - Added per-task token usage to settled TUI receipts for ordinary requests and individual goal turns.
 
 ### Changed
 
+- Raised the locked Pi development packages and minimum supported Pi peer version to 0.84.3.
+- Made Pi lifecycle compatibility coverage install the generated npm tarball offline before activation and reload.
 - Limited push CI to `main` and `dev`; feature branches run through pull request CI without duplicate push runs.
 - Removed obsolete Pi tool API casts, shared caught-error formatting, and expanded the non-repeating startup tip and editor suggestion banks.
 - Clarified that the README's pinned Git tag is an example rather than the current package version.
 
 ### Fixed
 
+- Preserved provider-managed OAuth routing during `/handoff`, fixing GitHub Copilot `421 Misdirected Request` failures.
+- Repaired incompatible process-global `/codex-fast` state during extension updates while preserving a valid saved enabled flag.
+- Stopped lifecycle-hook failures from echoing configured shell commands, which could expose inline credentials in Pi diagnostics.
+- Kept lifecycle-hook configuration paths terminal-safe and single-line in warnings.
+- Limited trusted lifecycle-hook configuration to a 64 KiB regular, non-linked file in the project's real `.pi` directory and verified the opened file identity before parsing it.
+- Sanitized dynamic slash-command descriptions and omitted unsafe command names from KillerOS autocomplete.
+- Rejected explicit file goals when their starting filesystem baseline cannot be inspected instead of treating every error as a missing file.
+- Kept custom model and provider labels single-line and terminal-safe in the shell header and footer.
+- Sanitized model-reported `/init` policy conflicts before returning, storing, or notifying with them.
+- Kept session-storage failure details terminal-safe when an explicit goal pause falls back to in-memory state.
+- Stripped terminal commands and unsafe controls from saved goal objectives before clear confirmations.
+- Kept rejected `/variants` arguments terminal-safe and single-line in error notifications.
+- Kept provider and model identifiers terminal-safe and single-line throughout `/variants`.
+- Flushed partial UTF-8 lifecycle-hook output on process close instead of silently dropping final diagnostic bytes.
+- Contained synchronous lifecycle-hook process-start failures inside normal hook failure handling.
+- Kept header and footer paths single-line and terminal-safe for unusual cwd or home-directory names.
+- Sanitized manual-compaction abort diagnostics before saving recovery-eligible goal state.
+- Stripped terminal commands and unsafe controls from saved goal text before showing status panels or notifications.
+- Sanitized provider and storage diagnostics before persisting or announcing an automatically paused goal.
+- Routed handoff generation and session-replacement failures through the shared terminal-safe error reporter.
+- Stripped terminal commands and unsafe control bytes from caught errors before showing KillerOS failure notifications.
+- Stripped terminal commands and control bytes from cwd and session names before emitting the KillerOS terminal title.
+- Removed filesystem source paths from personal-instruction prompt wrappers so unusual project paths cannot alter prompt structure.
+- Stripped terminal commands and unsafe control bytes from lifecycle hook failure notifications and tool block reasons.
 - Limited retired-feature repository checks to tracked and non-ignored files so ignored private notes cannot fail the suite.
 
 ## [2.0.16] - 2026-08-23

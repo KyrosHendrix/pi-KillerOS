@@ -34,20 +34,21 @@ function readBoundedText(filePath: string, limit = PERSONAL_INSTRUCTIONS_LIMIT):
   }
 }
 
-export function resolvePersonalInstructions(cwd: string): { content: string; source: string } | undefined {
+export function resolvePersonalInstructions(cwd: string): string | undefined {
   const localPath = path.join(cwd, PERSONAL_INSTRUCTIONS_FILE);
   const local = readBoundedText(localPath);
   if (!local) return undefined;
 
   const importMatch = local.trim().match(/^@(.+)$/u);
-  if (!importMatch) return { content: local, source: localPath };
-
-  const requestedPath = importMatch[1]!.trim();
-  const importedPath = requestedPath.startsWith("~/") || requestedPath.startsWith("~\\")
-    ? path.join(os.homedir(), requestedPath.slice(2))
-    : path.resolve(cwd, requestedPath);
-  const imported = readBoundedText(importedPath);
-  return imported ? { content: imported, source: importedPath } : { content: local, source: localPath };
+  let content = local;
+  if (importMatch) {
+    const requestedPath = importMatch[1]!.trim();
+    const importedPath = requestedPath.startsWith("~/") || requestedPath.startsWith("~\\")
+      ? path.join(os.homedir(), requestedPath.slice(2))
+      : path.resolve(cwd, requestedPath);
+    content = readBoundedText(importedPath) ?? local;
+  }
+  return `<personal_instructions>\n${content}\n</personal_instructions>`;
 }
 
 export function registerPersonalInstructions(pi: ExtensionAPI, initState: InitRuntime): void {
@@ -59,9 +60,7 @@ export function registerPersonalInstructions(pi: ExtensionAPI, initState: InitRu
       systemPrompt: [
         event.systemPrompt,
         "",
-        `<personal_instructions source="${personal.source}">`,
-        personal.content,
-        "</personal_instructions>",
+        personal,
       ].join("\n"),
     };
   });

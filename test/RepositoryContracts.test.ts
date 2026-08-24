@@ -86,12 +86,12 @@ test("skill-specific workflow gating is no longer part of KillerOS", () => {
 
 test("peer ranges enforce the tested Pi floor", () => {
   assert.deepEqual(packageJson.peerDependencies, {
-    "@earendil-works/pi-ai": ">=0.84.2",
-    "@earendil-works/pi-coding-agent": ">=0.84.2",
-    "@earendil-works/pi-tui": ">=0.84.2",
+    "@earendil-works/pi-ai": ">=0.84.3",
+    "@earendil-works/pi-coding-agent": ">=0.84.3",
+    "@earendil-works/pi-tui": ">=0.84.3",
     typebox: ">=1.1.38 <2",
   });
-  assert.match(readme, /Pi\s+`?0\.84\.2`?(?:\+| or later)/u);
+  assert.match(readme, /Pi\s+`?0\.84\.3`?(?:\+| or later)/u);
 });
 
 test("machine identifiers use locale-independent casing", () => {
@@ -124,10 +124,10 @@ test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.match(ci, /@earendil-works\/pi-coding-agent@\$PI_VERSION/u);
   assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
   assert.match(ci, /--package-lock=false/u);
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "0.84.2");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.84.2");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "0.84.2");
-  assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.84.2");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "0.84.3");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.84.3");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "0.84.3");
+  assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.84.3");
 });
 
 test("GitHub releases require a green CI version bump and consistent metadata", () => {

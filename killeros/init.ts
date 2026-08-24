@@ -17,6 +17,7 @@ import {
   validateGeneratedGuidance,
 } from "./init-target.ts";
 import { resetInitRuntime, type GoalRuntime, type InitOutcome, type InitRuntime } from "./runtime.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const INIT_WRITE_TOOL = "killeros_init_write";
 const INIT_CONFLICT_TOOL = "killeros_init_conflict";
@@ -124,8 +125,9 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
     executionMode: "sequential",
     async execute(_toolCallId, { reason }) {
       requirePending(initState);
-      initState.outcome = { kind: "policy-conflict", reason };
-      return { content: [{ type: "text" as const, text: `Root AGENTS.md was left unchanged: ${reason}` }], details: { reason } };
+      const safeReason = safeTerminalText(reason);
+      initState.outcome = { kind: "policy-conflict", reason: safeReason };
+      return { content: [{ type: "text" as const, text: `Root AGENTS.md was left unchanged: ${safeReason}` }], details: { reason: safeReason } };
     },
   });
 
