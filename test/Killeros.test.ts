@@ -1348,13 +1348,13 @@ test("/handoff cancels its TUI generation without replacing the session", async 
   assert.deepEqual(notifications, [{ message: "Handoff cancelled", level: "info" }]);
 });
 
-test("/handoff cancellation during authentication never starts a completion", async () => {
+test("/handoff cancellation reaches provider-managed authentication", async () => {
   const { commands } = createHarness();
-  let resolveAuth: ((auth: { ok: true }) => void) | undefined;
-  let completions = 0;
+  let completionSignal: AbortSignal | undefined;
+  let resolveProviderSetup: (() => void) | undefined;
   let newSessions = 0;
-  const auth = new Promise<{ ok: true }>((resolve) => {
-    resolveAuth = resolve;
+  const providerSetup = new Promise<void>((resolve) => {
+    resolveProviderSetup = resolve;
   });
 
   await commands.get("handoff").handler("", {
@@ -1363,9 +1363,10 @@ test("/handoff cancellation during authentication never starts a completion", as
     hasPendingMessages: () => false,
     model: { id: "test-model", provider: "test" },
     modelRegistry: {
-      getApiKeyAndHeaders: async () => await auth,
-      complete: async () => {
-        completions += 1;
+      complete: async (_model: unknown, _context: unknown, options: { signal?: AbortSignal }) => {
+        completionSignal = options.signal;
+        await providerSetup;
+        options.signal?.throwIfAborted();
         return { content: [], stopReason: "aborted" };
       },
     },
@@ -1395,9 +1396,9 @@ test("/handoff cancellation during authentication never starts a completion", as
     getSystemPromptOptions: () => ({ cwd: process.cwd() }),
   });
 
-  resolveAuth?.({ ok: true });
+  resolveProviderSetup?.();
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(completions, 0);
+  assert.equal(completionSignal?.aborted, true);
   assert.equal(newSessions, 0);
 });
 
@@ -1405,6 +1406,7 @@ test("/handoff creates an idle child session with a visible summary", async () =
   const { commands } = createHarness();
   const sourceName = "Release work with a name that is intentionally longer than sixty characters for session naming";
   const destinationNotifications: TestNotification[] = [];
+  const sourceNotifications: TestNotification[] = [];
   const oldRawHistory = "OLD RAW HISTORY THAT MUST NOT REACH THE HANDOFF REQUEST";
   const projectedEntries = [
     {
@@ -1446,11 +1448,19 @@ test("/handoff creates an idle child session with a visible summary", async () =
     abort: () => calls.push("abort"),
     waitForIdle: async () => calls.push("wait"),
     compact: () => calls.push("compact"),
-    model: { id: "test-model", provider: "test" },
+    model: { id: "test-model", provider: "github-copilot" },
     modelRegistry: {
-      getApiKeyAndHeaders: async () => ({ ok: true }),
-      complete: async (_model: unknown, context: { systemPrompt?: string; messages: unknown[] }) => {
+      getApiKeyAndHeaders: async () => {
+        calls.push("manual-auth");
+        return { ok: true, apiKey: "copilot-oauth-token" };
+      },
+      complete: async (
+        _model: unknown,
+        context: { systemPrompt?: string; messages: unknown[] },
+        options: { apiKey?: string },
+      ) => {
         completionRequests.push({ context });
+        if (options.apiKey) throw new Error("OpenAI API error (421): 421 Misdirected Request");
         return { content: [{ type: "text", text: summary }], stopReason: "stop" };
       },
     },
@@ -1489,7 +1499,7 @@ test("/handoff creates an idle child session with a visible summary", async () =
       });
       return { cancelled: false };
     },
-    ui: { notify: () => { throw new Error("source notifications are unavailable after replacement"); } },
+    ui: { notify: (message: string, level?: string) => sourceNotifications.push({ message, level }) },
     getSystemPromptOptions: () => ({
       cwd: process.cwd(),
       skills: [{ name: "code-review", description: "Review a diff", filePath: "skill.md", baseDir: ".", sourceInfo: {} }],
@@ -1508,6 +1518,7 @@ test("/handoff creates an idle child session with a visible summary", async () =
   assert.match(request.systemPrompt ?? "", /reference existing artifacts instead of duplicating them/iu);
   assert.match(request.systemPrompt ?? "", /redact credentials, passwords, personally identifiable information, and other sensitive values/iu);
   assert.deepEqual(calls, ["new"]);
+  assert.deepEqual(sourceNotifications, []);
   assert.deepEqual(destinationNotifications, [{ message: "Handoff ready in a new session", level: "info" }]);
   assert.equal(sentMessages, 0);
   assert.equal(sentUserMessages, 0);
@@ -1718,15 +1729,15 @@ test("/handoff leaves the source selected when summary or replacement fails", as
     "## Suggested skills",
   ].join("\n\n");
   const cases = [
-    { label: "missing model", model: undefined, auth: { ok: true }, completion: undefined, expected: "Handoff failed: No current model is available" },
-    { label: "authentication failure", model: { id: "test-model", provider: "test" }, auth: { ok: false, error: "Sign in first" }, completion: undefined, expected: "Handoff failed: Sign in first" },
-    { label: "empty usable context", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: undefined, expected: "Handoff failed: No usable session context is available" },
-    { label: "empty model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [], stopReason: "stop" }, expected: "Handoff failed: The handoff summary was empty" },
-    { label: "incomplete model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: "## Objective\nFinish the release checks." }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
-    { label: "empty required sections", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: emptyHandoffSections }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
-    { label: "truncated model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary did not finish" },
-    { label: "aborted model response", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "aborted" }, expected: "Handoff failed: The handoff summary did not finish" },
-    { label: "model failure", model: { id: "test-model", provider: "test" }, auth: { ok: true }, completion: new Error("\x1b]2;owned\x07\x1b[31mProvider\x1b[0m\0 failed"), expected: "Handoff failed: Provider failed" },
+    { label: "missing model", model: undefined, completion: undefined, expected: "Handoff failed: No current model is available" },
+    { label: "authentication failure", model: { id: "test-model", provider: "test" }, completion: new Error("Sign in first"), expected: "Handoff failed: Sign in first" },
+    { label: "empty usable context", model: { id: "test-model", provider: "test" }, completion: undefined, expected: "Handoff failed: No usable session context is available" },
+    { label: "empty model response", model: { id: "test-model", provider: "test" }, completion: { content: [], stopReason: "stop" }, expected: "Handoff failed: The handoff summary was empty" },
+    { label: "incomplete model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: "## Objective\nFinish the release checks." }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
+    { label: "empty required sections", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: emptyHandoffSections }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
+    { label: "truncated model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary did not finish" },
+    { label: "aborted model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "aborted" }, expected: "Handoff failed: The handoff summary did not finish" },
+    { label: "model failure", model: { id: "test-model", provider: "test" }, completion: new Error("\x1b]2;owned\x07\x1b[31mProvider\x1b[0m\0 failed"), expected: "Handoff failed: Provider failed" },
   ] as const;
 
   for (const testCase of cases) {
@@ -1739,7 +1750,6 @@ test("/handoff leaves the source selected when summary or replacement fails", as
       hasPendingMessages: () => false,
       model: testCase.model,
       modelRegistry: {
-        getApiKeyAndHeaders: async () => testCase.auth,
         complete: async () => {
           completions += 1;
           if (testCase.completion instanceof Error) throw testCase.completion;
@@ -1759,7 +1769,7 @@ test("/handoff leaves the source selected when summary or replacement fails", as
     });
     assert.deepEqual(notifications, [{ message: testCase.expected, level: "error" }], testCase.label);
     assert.equal(newSessions, 0, testCase.label);
-    assert.equal(completions, testCase.label === "authentication failure" || testCase.label === "missing model" || testCase.label === "empty usable context" ? 0 : 1, testCase.label);
+    assert.equal(completions, testCase.label === "missing model" || testCase.label === "empty usable context" ? 0 : 1, testCase.label);
   }
 
   const { commands } = createHarness();

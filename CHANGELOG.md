@@ -19,6 +19,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Preserved provider-managed OAuth routing during `/handoff`, fixing GitHub Copilot `421 Misdirected Request` failures.
 - Repaired incompatible process-global `/codex-fast` state during extension updates while preserving a valid saved enabled flag.
 - Stopped lifecycle-hook failures from echoing configured shell commands, which could expose inline credentials in Pi diagnostics.
 - Limited trusted lifecycle-hook configuration to a 64 KiB regular, non-linked file in the project's real `.pi` directory and verified the opened file identity before parsing it.

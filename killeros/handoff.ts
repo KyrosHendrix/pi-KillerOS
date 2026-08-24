@@ -91,9 +91,7 @@ async function generateHandoffSummary(
 ): Promise<string> {
   if (!ctx.model) throw new Error("No current model is available");
 
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
   signal?.throwIfAborted();
-  if (!auth.ok) throw new Error(auth.error);
 
   const response = await ctx.modelRegistry.complete(ctx.model, {
     systemPrompt: HANDOFF_SYSTEM_PROMPT,
@@ -103,9 +101,6 @@ async function generateHandoffSummary(
       timestamp: Date.now(),
     }],
   }, {
-    apiKey: auth.apiKey,
-    headers: auth.headers,
-    env: auth.env,
     maxTokens: 2_048,
     signal,
   });
