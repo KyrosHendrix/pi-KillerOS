@@ -68,7 +68,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Deferred cross-process locking for `killeros.json`: completion sound is currently the only programmatic writer and all sessions update the same key, while auto-compaction is read-only. Add coordination when a second independently writable setting exists rather than shipping crash-recovery lock machinery speculatively.
 - Reverted a product-floor contract because `PRODUCT.md` is intentionally ignored and untracked; a test that reads it would pass locally but fail in clean checkouts. Keep shipped compatibility claims bound to tracked package metadata and README instead of adding a dependency on a private design document.
-- Deferred hook config-path warning coverage: Windows cannot create the control-byte path needed for the public seam, and exporting a display helper only for this test would add API surface. Keep the issue queued for platform-backed coverage rather than shipping an unproved patch.
+- Initially deferred hook config-path warning coverage because Windows cannot create the control-byte path needed for the public seam. The post-audit follow-up added POSIX coverage without exporting an implementation-only helper.
 
 ## Verified changes
 
@@ -222,3 +222,10 @@ This journal records the solo production-readiness review requested on 2026-08-2
 - Final result: 257 tests passed and 2 platform-specific symlink tests skipped on both the declared Pi floor and current Pi release. The worktree was clean on `dev`; nothing was pushed.
 
 No known material correctness, security, persistence, or Pi lifecycle defect remains from this audit. Explicit hook-output truncation labels and multi-writer settings locking were not added: the first is diagnostic polish and the second has no second writer, so both would be speculative machinery rather than production hardening.
+
+## Post-audit follow-up
+
+- Raised the locked and declared Pi floor from 0.84.2 to 0.84.3 after the full suite and installed-package lifecycle contract passed on 0.84.3.
+- Removed `/handoff`'s manual auth forwarding so Pi 0.84.3 retains provider-managed OAuth routing, including GitHub Copilot routing.
+- Sanitized lifecycle-hook configuration paths before warning output and added a POSIX public-lifecycle regression for untrusted and invalid hook configurations.
+- Re-ran strict type checking and all 260 tests: 257 passed on Windows with 3 filesystem-specific skips, and the new path regression passed under Node.js 22 on Linux.

@@ -81,8 +81,9 @@ function readHookConfig(configPath: string, projectRoot: string): string {
 function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
   const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "killeros-hooks.json");
   if (!existsSync(configPath)) return {};
+  const displayPath = safeTerminalText(configPath).replaceAll("\n", "");
   if (!ctx.isProjectTrusted()) {
-    ctx.ui.notify(`Ignored untrusted project hooks in ${configPath}`, "warning");
+    ctx.ui.notify(`Ignored untrusted project hooks in ${displayPath}`, "warning");
     return {};
   }
 
@@ -106,7 +107,7 @@ function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
           && hook.command.trim().length > 0
           && (hook.matcher === undefined || typeof hook.matcher === "string");
         if (!valid) {
-          ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${configPath}`, "warning");
+          ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${displayPath}`, "warning");
           return false;
         }
         if (hook.matcher && hook.matcher !== "*") {

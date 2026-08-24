@@ -3732,6 +3732,41 @@ test("does not load lifecycle hooks for untrusted projects", async () => {
   }
 });
 
+test("hook config warnings sanitize project paths", {
+  skip: process.platform === "win32" ? "control-byte paths are unavailable on Windows" : false,
+}, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-path-\x1b]2;owned\x07\nspoof"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const configPath = path.join(configDirectory, "killeros-hooks.json");
+    writeFileSync(configPath, JSON.stringify({ hooks: { tool_call: [{ command: "exit 0" }] } }));
+
+    const untrusted = createHarness();
+    const untrustedContext = createTuiContext().ctx;
+    const untrustedNotifications: TestNotification[] = [];
+    untrustedContext.cwd = directory;
+    untrustedContext.isProjectTrusted = () => false;
+    untrustedContext.ui.notify = (message, level) => untrustedNotifications.push({ message, level });
+    for (const handler of untrusted.handlers.get("session_start")) await handler({}, untrustedContext);
+
+    writeFileSync(configPath, JSON.stringify({ hooks: { tool_call: [{}] } }));
+    const invalid = createHarness();
+    const invalidContext = createTuiContext().ctx;
+    const invalidNotifications: TestNotification[] = [];
+    invalidContext.cwd = directory;
+    invalidContext.ui.notify = (message, level) => invalidNotifications.push({ message, level });
+    for (const handler of invalid.handlers.get("session_start")) await handler({}, invalidContext);
+
+    assert.match(untrustedNotifications.at(-1)?.message ?? "", /Ignored untrusted project hooks/u);
+    assert.match(invalidNotifications.at(-1)?.message ?? "", /Ignored invalid tool_call hook/u);
+    assert.doesNotMatch(untrustedNotifications.at(-1)?.message ?? "", /\x1b|\x07|\n/u);
+    assert.doesNotMatch(invalidNotifications.at(-1)?.message ?? "", /\x1b|\x07|\n/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("rejects linked lifecycle hook configs before executing them", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-linked-"));
   try {
