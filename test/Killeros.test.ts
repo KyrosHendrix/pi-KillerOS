@@ -3705,6 +3705,93 @@ test("does not load lifecycle hooks for untrusted projects", async () => {
   }
 });
 
+test("rejects linked lifecycle hook configs before executing them", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-linked-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const source = path.join(directory, "shared-hooks.json");
+    const marker = path.join(directory, "marker.txt");
+    const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('marker.txt','ran')"`;
+    writeFileSync(source, JSON.stringify({ hooks: { tool_call: [{ command }] } }));
+    linkSync(source, path.join(configDirectory, "killeros-hooks.json"));
+
+    const { handlers } = createHarness();
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "linked-hook",
+      toolName: "write",
+      input: {},
+    }, ctx);
+
+    assert.equal(existsSync(marker), false);
+    assert.match(notifications.at(-1)?.message, /regular, non-linked file/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects lifecycle hook configs in a linked project directory", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-linked-directory-"));
+  try {
+    const sharedConfigDirectory = path.join(directory, "shared-pi");
+    mkdirSync(sharedConfigDirectory);
+    symlinkSync(sharedConfigDirectory, path.join(directory, ".pi"), "junction");
+    const marker = path.join(directory, "marker.txt");
+    const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('marker.txt','ran')"`;
+    writeFileSync(path.join(sharedConfigDirectory, "killeros-hooks.json"), JSON.stringify({ hooks: { tool_call: [{ command }] } }));
+
+    const { handlers } = createHarness();
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "linked-hook-directory",
+      toolName: "write",
+      input: {},
+    }, ctx);
+
+    assert.equal(existsSync(marker), false);
+    assert.match(notifications.at(-1)?.message, /real project \.pi directory/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects oversized lifecycle hook configs before executing them", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-large-config-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const marker = path.join(directory, "marker.txt");
+    const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('marker.txt','ran')"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), `${JSON.stringify({ hooks: { tool_call: [{ command }] } })}${" ".repeat(65_536)}`);
+
+    const { handlers } = createHarness();
+    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    await emitSequentially(handlers.get("tool_call"), {
+      toolCallId: "oversized-hook-config",
+      toolName: "write",
+      input: {},
+    }, ctx);
+
+    assert.equal(existsSync(marker), false);
+    assert.match(notifications.at(-1)?.message, /exceeds 65536 bytes/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("rejects agent_settled matchers without executing their commands", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-settled-matcher-"));
   try {

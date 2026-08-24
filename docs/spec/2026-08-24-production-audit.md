@@ -180,3 +180,15 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Confirmed Pi accepts extension command names without validation and reproduced terminal controls in extension and fallback descriptions returned by KillerOS autocomplete.
 - Rejected names whose safe form differs or cannot be invoked as one slash token, and sanitized descriptions once when building the shared command catalog.
+
+### 20. Executable hook configuration followed links and had no size bound
+
+- `loadKillerosHooks` passed `.pi/killeros-hooks.json` directly to `readFileSync`, following symbolic or hard links and allowing an arbitrarily large file to be read before parsing.
+- This file is a code-execution boundary: accepted commands run in the real Pi session with the user's permissions after project trust is granted.
+- A linked config can make the reviewed project-local path refer to separately managed content, while an unbounded read creates avoidable memory exposure during session activation.
+
+### Hook configuration file boundary
+
+- Added regressions proving that a hard-linked config, a config reached through a linked `.pi` directory, and a valid JSON config larger than 64 KiB cannot execute their commands.
+- Replaced the unbounded path read with a fixed-size descriptor read, requiring the canonical project-local path, a regular file with one link, and matching device/inode identity after opening.
+- Documented the public 64 KiB regular, non-linked configuration contract in the README.

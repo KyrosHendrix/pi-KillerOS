@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -28,9 +28,55 @@ interface HookExecutionResult {
 }
 
 const HOOK_EVENTS: readonly KillerosHookEvent[] = ["tool_call", "tool_result", "agent_settled"];
+const HOOK_CONFIG_LIMIT = 64 * 1024;
 const HOOK_OUTPUT_LIMIT = 16 * 1024;
 const HOOK_PAYLOAD_LIMIT = 8_000;
 const HOOK_TIMEOUT_MAX_MS = 300_000;
+
+// Reads executable project configuration through a bounded, project-local file descriptor.
+function readHookConfig(configPath: string, projectRoot: string): string {
+  const actualPath = realpathSync(configPath);
+  const expectedPath = path.join(realpathSync(projectRoot), CONFIG_DIR_NAME, "killeros-hooks.json");
+  const samePath = process.platform === "win32"
+    ? actualPath.toLowerCase() === expectedPath.toLowerCase()
+    : actualPath === expectedPath;
+  if (!samePath) {
+    throw new Error("Hook config must be stored in the real project .pi directory");
+  }
+
+  const linkedFile = lstatSync(configPath);
+  if (!linkedFile.isFile() || linkedFile.nlink !== 1) {
+    throw new Error("Hook config must be a regular, non-linked file");
+  }
+  if (linkedFile.size > HOOK_CONFIG_LIMIT) {
+    throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
+  }
+
+  const descriptor = openSync(configPath, "r");
+  try {
+    const openedFile = fstatSync(descriptor);
+    if (!openedFile.isFile() || openedFile.nlink !== 1) {
+      throw new Error("Hook config must be a regular, non-linked file");
+    }
+    if (openedFile.dev !== linkedFile.dev || openedFile.ino !== linkedFile.ino) {
+      throw new Error("Hook config changed while being opened");
+    }
+
+    const contents = Buffer.alloc(HOOK_CONFIG_LIMIT + 1);
+    let bytesRead = 0;
+    while (bytesRead < contents.length) {
+      const count = readSync(descriptor, contents, bytesRead, contents.length - bytesRead, null);
+      if (count === 0) break;
+      bytesRead += count;
+    }
+    if (bytesRead > HOOK_CONFIG_LIMIT) {
+      throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
+    }
+    return contents.toString("utf8", 0, bytesRead);
+  } finally {
+    closeSync(descriptor);
+  }
+}
 
 function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
   const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "killeros-hooks.json");
@@ -41,7 +87,7 @@ function loadKillerosHooks(ctx: ExtensionContext): KillerosHookConfig {
   }
 
   try {
-    const parsed = JSON.parse(readFileSync(configPath, "utf8")) as KillerosHookConfig;
+    const parsed = JSON.parse(readHookConfig(configPath, ctx.cwd)) as KillerosHookConfig;
     const hooks: KillerosHookConfig["hooks"] = {};
     for (const event of HOOK_EVENTS) {
       const candidates = parsed.hooks?.[event];
