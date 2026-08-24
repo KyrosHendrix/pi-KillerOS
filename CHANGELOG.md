@@ -18,6 +18,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Stopped lifecycle-hook failures from echoing configured shell commands, which could expose inline credentials in Pi diagnostics.
 - Limited trusted lifecycle-hook configuration to a 64 KiB regular, non-linked file in the project's real `.pi` directory and verified the opened file identity before parsing it.
 - Sanitized dynamic slash-command descriptions and omitted unsafe command names from KillerOS autocomplete.
 - Rejected explicit file goals when their starting filesystem baseline cannot be inspected instead of treating every error as a missing file.

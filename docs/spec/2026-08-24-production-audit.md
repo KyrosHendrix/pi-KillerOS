@@ -192,3 +192,13 @@ This journal records the solo production-readiness review requested on 2026-08-2
 - Added regressions proving that a hard-linked config, a config reached through a linked `.pi` directory, and a valid JSON config larger than 64 KiB cannot execute their commands.
 - Replaced the unbounded path read with a fixed-size descriptor read, requiring the canonical project-local path, a regular file with one link, and matching device/inode identity after opening.
 - Documented the public 64 KiB regular, non-linked configuration contract in the README.
+
+### 21. Hook failures exposed configured shell commands
+
+- `hookFailureMessage` copied the complete configured command into tool-block reasons and Pi error notifications.
+- Commands can contain inline credentials or other private values, so a failing hook could unnecessarily disclose them to the model transcript and terminal history.
+
+### Hook command confidentiality
+
+- Added a regression with an inline secret proving the failure still blocks the tool and reports sanitized stderr without returning the configured command.
+- Removed command text from the shared failure formatter while preserving timeout, uncertain-exit, stderr/stdout, and exit-code diagnostics.

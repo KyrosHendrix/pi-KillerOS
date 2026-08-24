@@ -3854,12 +3854,13 @@ test("hook timeout validation accepts five minutes and rejects one millisecond m
   }
 });
 
-test("project tool_call hook failures block tools with terminal-safe diagnostics", async () => {
+test("project tool_call hook failures block tools without exposing configured commands", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-"));
   try {
     const configDirectory = path.join(directory, ".pi");
     mkdirSync(configDirectory);
-    const command = `"${process.execPath}" -e "process.stderr.write('\\u001b]2;owned\\u0007\\u001b[31mblocked\\u001b[0m\\u0000');process.exit(7)"`;
+    const secret = "KILLEROS_INLINE_SECRET_9374";
+    const command = `"${process.execPath}" -e "const token='${secret}';process.stderr.write('\\u001b]2;owned\\u0007\\u001b[31mblocked\\u001b[0m\\u0000');process.exit(token?7:0)"`;
     writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
       hooks: { tool_call: [{ matcher: "^write$", command, timeoutMs: 5_000 }] },
     }));
@@ -3877,10 +3878,11 @@ test("project tool_call hook failures block tools with terminal-safe diagnostics
       input: { path: "example.txt", content: "test" },
     }, ctx);
     const blocked = results.find((result) => result?.block);
-    const expected = `Hook failed: ${command}\nblocked`;
+    const expected = "Hook failed\nblocked";
     assert.equal(blocked?.block, true);
     assert.equal(resultReason(results), expected);
     assert.deepEqual(notifications.at(-1), { message: expected, level: "error" });
+    assert.doesNotMatch(expected, new RegExp(secret, "u"));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

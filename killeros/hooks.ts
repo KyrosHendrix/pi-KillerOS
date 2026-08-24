@@ -266,9 +266,9 @@ function hookEnvironment(event: KillerosHookEvent, toolName = "", payload: unkno
   };
 }
 
-function hookFailureMessage(hook: KillerosHook, result: HookExecutionResult): string {
+function hookFailureMessage(result: HookExecutionResult): string {
   const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
-  return safeTerminalText(`Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}: ${hook.command}\n${detail}`);
+  return safeTerminalText(`Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}\n${detail}`);
 }
 
 export function registerLifecycleHooks(pi: ExtensionAPI): void {
@@ -288,7 +288,7 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
       );
       if (result.cancelled) return { block: true, reason: "Hook cancelled because the parent request was aborted" };
       if (result.code !== 0) {
-        const reason = hookFailureMessage(hook, result);
+        const reason = hookFailureMessage(result);
         ctx.ui.notify(reason, "error");
         return { block: true, reason };
       }
@@ -310,7 +310,7 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
         ctx.signal,
       );
       if (result.cancelled) break;
-      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(hook, result), "error");
+      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(result), "error");
     }
   });
 
@@ -325,7 +325,7 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
         ctx.signal,
       );
       if (result.cancelled) break;
-      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(hook, result), "error");
+      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(result), "error");
     }
   });
 }
