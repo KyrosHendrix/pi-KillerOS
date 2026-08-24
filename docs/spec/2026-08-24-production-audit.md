@@ -54,6 +54,7 @@ This journal records the solo production-readiness review requested on 2026-08-2
 16. The model-authored `/init` policy-conflict reason reaches tool output, runtime state, and a Pi warning without terminal-control sanitization.
 17. Custom model names, IDs, and provider identifiers render raw in the shared shell header/footer formatter.
 18. Goal file-baseline capture treats every `lstat` failure as a missing deliverable, allowing unverifiable starts and bypassing the command's error boundary.
+19. Slash-command names and descriptions from other extensions, prompts, skills, and fallback providers are re-rendered raw by KillerOS autocomplete.
 
 ## Pi lifecycle contract observed
 
@@ -174,3 +175,8 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Reproduced a non-I/O path failure being persisted as an absent-file baseline and immediately dispatching the first goal turn.
 - Classified only `ENOENT` as absent and moved baseline inference inside the existing start/replacement error boundary, so other filesystem failures are contained without dispatch.
+
+### Slash autocomplete metadata
+
+- Confirmed Pi accepts extension command names without validation and reproduced terminal controls in extension and fallback descriptions returned by KillerOS autocomplete.
+- Rejected names whose safe form differs or cannot be invoked as one slash token, and sanitized descriptions once when building the shared command catalog.
