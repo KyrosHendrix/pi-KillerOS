@@ -372,6 +372,7 @@ function persistGoalState(
   state: GoalState | undefined,
 ): void {
   const data: GoalEntryData = { version: GOAL_VERSION, event, state: state ?? null };
+  runtime.automaticCompaction = undefined;
   pi.appendEntry(GOAL_ENTRY_TYPE, data);
   runtime.state = state;
   syncGoalUpdateTool(pi, runtime);
@@ -623,38 +624,81 @@ function scheduleGoalContinuation(
   }
 }
 
+/** Resumes the revision paused by automatic compaction after both host callbacks settle. */
+function finalizeAutomaticCompaction(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  initState: InitRuntime,
+  ctx: ExtensionContext,
+): void {
+  const recovery = runtime.automaticCompaction;
+  if (!recovery?.compactionSucceeded || !recovery.turnSettled) return;
+  runtime.automaticCompaction = undefined;
+  if (runtime.state?.status !== "paused"
+    || runtime.state.revision !== recovery.pausedRevision
+    || initState.active) return;
+  try {
+    transitionGoal(pi, runtime, "resume", "active", undefined, { resetBlockedAudit: true });
+  } catch (error) {
+    runtime.persistenceRetryNeeded = true;
+    reportError(ctx, "Automatic compaction succeeded, but the goal could not be resumed", error);
+    return;
+  }
+  runtime.continuationScheduled = false;
+  setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+}
+
+/** Records Pi's successful compaction callback and attempts guarded recovery. */
 function completeAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   initState: InitRuntime,
   ctx: ExtensionContext,
 ): void {
-  if (runtime.automaticCompaction === undefined) return;
-  if (runtime.state?.status !== "active" || initState.active) {
-    runtime.automaticCompaction = undefined;
-    return;
-  }
-  runtime.automaticCompaction = undefined;
-  setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+  if (!runtime.automaticCompaction) return;
+  runtime.automaticCompaction.compactionSucceeded = true;
+  finalizeAutomaticCompaction(pi, runtime, initState, ctx);
 }
 
+/** Consumes automatic recovery and records its failure on the eligible paused goal. */
+function stopAutomaticCompactionRecovery(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  ctx: ExtensionContext,
+  reason: string,
+): void {
+  const recovery = runtime.automaticCompaction;
+  runtime.automaticCompaction = undefined;
+  const safeReason = safeTerminalText(reason);
+  if (runtime.state?.status !== "paused" || runtime.state.revision !== recovery?.pausedRevision) return;
+  try {
+    transitionGoal(pi, runtime, "error", "paused", safeReason);
+  } catch {
+    runtime.state = { ...runtime.state, result: safeReason };
+    runtime.persistenceRetryNeeded = true;
+    runtime.requestRender?.();
+  }
+  ctx.ui.notify(
+    `Goal paused: ${safeReason}\nAutomatic continuation is stopped. Run /goal resume after resolving the compaction problem.`,
+    "error",
+  );
+}
+
+/** Leaves the goal paused when Pi rejects automatic compaction. */
 function failAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   ctx: ExtensionContext,
   error: unknown,
 ): void {
-  if (runtime.automaticCompaction === undefined) return;
-  runtime.automaticCompaction = undefined;
-  if (runtime.state?.status !== "active") return;
   const reason = error instanceof Error ? error.message : String(error);
-  pauseGoalAfterFailure(
-    pi,
-    runtime,
-    ctx,
-    `automatic compaction failed: ${reason}`,
-    "Automatic continuation is stopped. Run /goal resume after resolving the compaction problem.",
-  );
+  if (!runtime.automaticCompaction) {
+    if (runtime.persistenceRetryNeeded) {
+      ctx.ui.notify(`Automatic compaction did not start: ${safeTerminalText(reason)}`, "error");
+    }
+    return;
+  }
+  stopAutomaticCompactionRecovery(pi, runtime, ctx, `automatic compaction failed: ${reason}`);
 }
 
 function goalInstructions(state: GoalState, heading: string): string {
@@ -943,7 +987,9 @@ export function registerGoal(
           return;
         }
         if (runtime.state.status === "paused") {
-          if (!runtime.persistenceRetryNeeded && runtime.state.resumeAfterManualCompaction !== true) {
+          if (!runtime.persistenceRetryNeeded
+            && runtime.state.resumeAfterManualCompaction !== true
+            && runtime.automaticCompaction === undefined) {
             ctx.ui.notify("Goal is already paused", "info");
             return;
           }
@@ -1209,6 +1255,32 @@ export function registerGoalSettlement(
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
     runtime.continuationScheduled = false;
+
+    if (runtime.automaticCompaction) {
+      const stopReason = runtime.lastStopReason;
+      const error = safeTerminalText(runtime.lastError ?? "");
+      runtime.lastStopReason = undefined;
+      runtime.lastError = undefined;
+      const expectedInterruption = stopReason === "aborted"
+        || stopReason === "error" && error === "This operation was aborted";
+      if (!wasGoalTurn || !agentEndObserved) {
+        stopAutomaticCompactionRecovery(pi, runtime, ctx, "the goal turn ended without an agent result");
+        return;
+      }
+      if ((stopReason === "error" || stopReason === "aborted") && !expectedInterruption) {
+        stopAutomaticCompactionRecovery(
+          pi,
+          runtime,
+          ctx,
+          error || "the agent turn failed",
+        );
+        return;
+      }
+      runtime.automaticCompaction.turnSettled = true;
+      finalizeAutomaticCompaction(pi, runtime, initState, ctx);
+      return;
+    }
+
     if (!wasGoalTurn || runtime.state?.status !== "active" || initState.active) {
       if (continuationWasScheduled && runtime.state?.status === "active" && !initState.active) {
         pauseGoalAfterFailure(pi, runtime, ctx, "the goal continuation ended before an agent turn started");
@@ -1218,7 +1290,6 @@ export function registerGoalSettlement(
       return;
     }
     if (!agentEndObserved) {
-      if (runtime.automaticCompaction !== undefined) return;
       pauseGoalAfterFailure(pi, runtime, ctx, "the goal turn ended without an agent result");
       return;
     }
@@ -1226,7 +1297,6 @@ export function registerGoalSettlement(
       const reason = runtime.lastError || "the agent turn was aborted";
       runtime.lastStopReason = undefined;
       runtime.lastError = undefined;
-      if (runtime.automaticCompaction !== undefined) return;
       pauseGoalForPossibleManualCompaction(pi, runtime, ctx, reason);
       return;
     }
@@ -1248,13 +1318,40 @@ export function registerGoalSettlement(
     recoverGoalAfterManualCompaction(pi, runtime, initState, ctx);
   });
 
+  const resetAutomaticRecovery = (): void => { runtime.automaticCompaction = undefined; };
+  pi.on("session_before_switch", resetAutomaticRecovery);
+  pi.on("session_before_fork", resetAutomaticRecovery);
+
   return {
     isActive: (ctx: ExtensionContext): boolean => isGoalModeSupported(ctx)
       && isSavedSession(ctx)
       && runtime.state?.status === "active"
       && !initState.active,
     onRequested: (): void => {
-      if (runtime.state?.status === "active") runtime.automaticCompaction = "pending";
+      if (runtime.state?.status !== "active") return;
+      try {
+        const paused = transitionGoal(pi, runtime, "pause", "paused");
+        runtime.automaticCompaction = {
+          pausedRevision: paused.revision,
+          compactionSucceeded: false,
+          turnSettled: false,
+        };
+      } catch (error) {
+        const current = runtime.state;
+        const reason = safeTerminalText(`automatic compaction pause could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+        runtime.state = current ? {
+          ...stopGoalClock(current, Date.now()),
+          status: "paused",
+          result: reason,
+          ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
+        } : undefined;
+        syncGoalUpdateTool(pi, runtime);
+        runtime.persistenceRetryNeeded = true;
+        runtime.continuationScheduled = false;
+        runtime.automaticCompaction = undefined;
+        runtime.requestRender?.();
+        throw error;
+      }
     },
     onCompleted: (ctx: ExtensionContext): void => completeAutomaticCompaction(pi, runtime, initState, ctx),
     onFailed: (ctx: ExtensionContext, error: unknown): void => failAutomaticCompaction(pi, runtime, ctx, error),

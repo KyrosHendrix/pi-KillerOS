@@ -102,10 +102,15 @@ function compactResult(): { summary: string; firstKeptEntryId: string; tokensBef
   return { summary: "summary", firstKeptEntryId: "entry-1", tokensBefore: 90_000 };
 }
 
-function createGoalHarness(): {
+function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
   compactCalls: CompactOptions[];
+  notifications: Array<{ message: string; type?: string }>;
+  persistedStatuses: string[];
   sentMessages: Array<{ message: unknown; options: unknown }>;
   state(): ReturnType<typeof createGoalRuntime>;
+  failCompactionSynchronously(error?: Error): void;
+  failPersistence(error?: Error): void;
+  runGoalCommand(command: string): Promise<void>;
   startGoal(objective: string): Promise<void>;
   emit(eventName: string, event?: unknown): Promise<unknown>;
 } {
@@ -115,9 +120,19 @@ function createGoalHarness(): {
   const activeTools: string[] = [];
   const compactCalls: CompactOptions[] = [];
   const sentMessages: Array<{ message: unknown; options: unknown }> = [];
+  const notifications: Array<{ message: string; type?: string }> = [];
   const entries: unknown[] = [];
+  const persistedStatuses: string[] = [];
+  let compactError: Error | undefined;
+  let persistenceError: Error | undefined;
   const api = extensionApiTestAdapter({
-    appendEntry: (customType: string, data: unknown) => entries.push({ customType, data }),
+    appendEntry: (customType: string, data: unknown) => {
+      if (persistenceError) throw persistenceError;
+      entries.push({ customType, data });
+      if (isUnknownRecord(data) && isUnknownRecord(data.state) && typeof data.state.status === "string") {
+        persistedStatuses.push(data.state.status);
+      }
+    },
     getActiveTools: () => [...activeTools],
     on(eventName: string, handler: Handler): void {
       const current = handlers.get(eventName) ?? [];
@@ -146,15 +161,18 @@ function createGoalHarness(): {
     hasUI: true,
     isIdle: () => true,
     isProjectTrusted: () => true,
-    mode: "rpc",
-    compact: (options?: CompactOptions) => { if (options) compactCalls.push(options); },
+    mode,
+    compact: (options?: CompactOptions) => {
+      if (compactError) throw compactError;
+      if (options) compactCalls.push(options);
+    },
     sessionManager: {
       getBranch: () => [],
       getEntries: () => [],
       getSessionFile: () => `${process.cwd()}\session.jsonl`,
     },
     ui: {
-      notify: () => {},
+      notify: (message: string, type?: string) => notifications.push({ message, type }),
     },
     waitForIdle: async () => {},
   });
@@ -165,8 +183,13 @@ function createGoalHarness(): {
   };
   return {
     compactCalls,
+    notifications,
+    persistedStatuses,
     sentMessages,
     state: () => runtime,
+    failCompactionSynchronously: (error) => { compactError = error ?? new Error("compaction unavailable"); },
+    failPersistence: (error) => { persistenceError = error ?? new Error("session storage unavailable"); },
+    runGoalCommand: (command) => requiredMapValue(commands, "goal").handler(command, ctx),
     startGoal: (objective) => requiredMapValue(commands, "goal").handler(objective, ctx),
     emit,
   };
@@ -300,35 +323,106 @@ test("a successful goal compaction uses the goal continuation callback without a
   assert.equal(harness.sentMessages.length, 0);
 });
 
-test("an active goal resumes once after Pi completes automatic compaction", async () => {
+test("an active goal pauses for automatic compaction and resumes once after settlement", async () => {
+  for (const mode of ["tui", "rpc"] as const) {
+    const harness = createGoalHarness(mode);
+    await harness.startGoal("Continue this goal after compaction");
+    assert.equal(harness.sentMessages.length, 1, mode);
+
+    await harness.emit("turn_end");
+    assert.equal(harness.state().state?.status, "paused", mode);
+
+    await harness.emit("agent_end", {
+      type: "agent_end",
+      messages: [{
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "This operation was aborted",
+      }],
+    });
+    await harness.emit("agent_settled");
+    assert.equal(harness.state().state?.status, "paused", mode);
+    assert.equal(harness.sentMessages.length, 1, mode);
+
+    harness.compactCalls[0]?.onComplete?.(compactResult());
+    harness.compactCalls[0]?.onComplete?.(compactResult());
+    await harness.emit("agent_settled");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.state().state?.status, "active", mode);
+    assert.equal(harness.sentMessages.length, 2, mode);
+    assert.deepEqual(harness.persistedStatuses.slice(0, 4), ["active", "active", "paused", "active"], mode);
+    const continuation = harness.sentMessages[1]?.message;
+    assert.ok(isUnknownRecord(continuation));
+    assert.equal(continuation.customType, "killeros-goal-continuation");
+  }
+});
+
+test("automatic goal compaction also resumes once when completion precedes settlement", async () => {
   const harness = createGoalHarness();
-  await harness.startGoal("Continue this goal after compaction");
+  await harness.startGoal("Resume after both boundaries");
+  await harness.emit("turn_end");
+
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  assert.equal(harness.state().state?.status, "paused");
   assert.equal(harness.sentMessages.length, 1);
 
-  await harness.emit("turn_end");
   await harness.emit("agent_end", {
     type: "agent_end",
     messages: [{ role: "assistant", stopReason: "aborted" }],
   });
   await harness.emit("agent_settled");
+  await new Promise((resolve) => setImmediate(resolve));
+
   assert.equal(harness.state().state?.status, "active");
+  assert.equal(harness.sentMessages.length, 2);
+});
+
+test("explicit /goal pause during automatic compaction prevents recovery", async () => {
+  const harness = createGoalHarness();
+  await harness.startGoal("Keep this goal paused");
+  await harness.emit("turn_end");
+  await harness.runGoalCommand("pause");
+
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "aborted" }],
+  });
+  await harness.emit("agent_settled");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.state().state?.status, "paused");
   assert.equal(harness.sentMessages.length, 1);
+});
 
-  await harness.emit("session_compact", { type: "session_compact", reason: "manual" });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(harness.state().state?.status, "active");
-  assert.equal(harness.sentMessages.length, 1, "the compaction event precedes Pi's completion callback");
+test("session switch and fork reset automatic goal recovery", async () => {
+  for (const event of ["session_before_switch", "session_before_fork"] as const) {
+    const harness = createGoalHarness();
+    await harness.startGoal(`Stay paused after ${event}`);
+    await harness.emit("turn_end");
+
+    await harness.emit(event);
+
+    assert.equal(harness.state().automaticCompaction, undefined, event);
+    assert.equal(harness.state().state?.status, "paused", event);
+  }
+});
+
+test("a genuine provider error cannot recover after automatic compaction succeeds", async () => {
+  const harness = createGoalHarness();
+  await harness.startGoal("Fail closed on provider errors");
+  await harness.emit("turn_end");
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "This operation was aborted unexpectedly" }],
+  });
+  await harness.emit("agent_settled");
 
   harness.compactCalls[0]?.onComplete?.(compactResult());
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(harness.sentMessages.length, 2);
-  const continuation = harness.sentMessages[1]?.message;
-  assert.ok(isUnknownRecord(continuation));
-  assert.equal(continuation.customType, "killeros-goal-continuation");
-
-  harness.compactCalls[0]?.onComplete?.(compactResult());
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(harness.sentMessages.length, 2);
+  assert.equal(harness.state().state?.status, "paused");
+  assert.match(harness.state().state?.result ?? "", /aborted unexpectedly/u);
+  assert.equal(harness.sentMessages.length, 1);
 });
 
 test("a failed automatic goal compaction pauses without scheduling a retry", async () => {
@@ -340,7 +434,53 @@ test("a failed automatic goal compaction pauses without scheduling a retry", asy
     messages: [{ role: "assistant", stopReason: "aborted" }],
   });
   await harness.emit("agent_settled");
+  assert.equal(harness.state().state?.status, "paused");
   harness.compactCalls[0]?.onError?.(new Error("compaction unavailable"));
+  assert.equal(harness.state().state?.status, "paused");
+  assert.match(harness.state().state?.result ?? "", /automatic compaction failed: compaction unavailable/u);
+  assert.equal(harness.sentMessages.length, 1);
+});
+
+test("automatic compaction does not start when its goal pause cannot be saved", async () => {
+  const harness = createGoalHarness();
+  await harness.startGoal("Fail closed before compaction");
+  harness.failPersistence();
+
+  await harness.emit("turn_end");
+
+  assert.equal(harness.compactCalls.length, 0);
+  assert.equal(harness.state().state?.status, "paused");
+  assert.equal(harness.state().persistenceRetryNeeded, true);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.notifications.at(-1)?.message ?? "", /did not start/u);
+});
+
+test("a successful compaction does not continue when its goal resume cannot be saved", async () => {
+  const harness = createGoalHarness();
+  await harness.startGoal("Fail closed after compaction");
+  await harness.emit("turn_end");
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "aborted" }],
+  });
+  await harness.emit("agent_settled");
+  harness.failPersistence();
+
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.state().state?.status, "paused");
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.notifications.at(-1)?.message ?? "", /could not be resumed/u);
+});
+
+test("a synchronous automatic goal compaction failure stays paused", async () => {
+  const harness = createGoalHarness();
+  await harness.startGoal("Pause after synchronous compaction failure");
+  harness.failCompactionSynchronously();
+
+  await harness.emit("turn_end");
+
   assert.equal(harness.state().state?.status, "paused");
   assert.match(harness.state().state?.result ?? "", /automatic compaction failed: compaction unavailable/u);
   assert.equal(harness.sentMessages.length, 1);

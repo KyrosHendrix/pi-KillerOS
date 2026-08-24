@@ -11,6 +11,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Paused active goals during automatic compaction and resumed the exact paused revision once after compaction and turn settlement succeed.
 - Restored active goals saved by v2.0.18 shutdown checkpoints that omitted their stopped clock timestamp.
 
 ## [2.0.18] - 2026-08-24

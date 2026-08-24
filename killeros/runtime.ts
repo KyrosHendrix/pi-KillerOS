@@ -82,13 +82,19 @@ export type GoalState = GoalStateCommon & (
     }
 );
 
+export interface AutomaticGoalCompaction {
+  pausedRevision: number;
+  compactionSucceeded: boolean;
+  turnSettled: boolean;
+}
+
 export interface GoalRuntime {
   state?: GoalState;
   continuationScheduled: boolean;
   continuationHeld: boolean;
   goalTurnInFlight: boolean;
   agentEndObserved: boolean;
-  automaticCompaction?: "pending";
+  automaticCompaction?: AutomaticGoalCompaction;
   persistenceRetryNeeded: boolean;
   lastStopReason?: string;
   lastError?: string;
