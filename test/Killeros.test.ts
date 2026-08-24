@@ -571,6 +571,23 @@ test("/codex-fast state survives extension reloads and renders inline for Codex"
   resetCodexFastState();
 });
 
+test("/codex-fast reload repairs legacy process-global state", async () => {
+  const globalState = globalThis as typeof globalThis & { __killerosCodexFastState?: unknown };
+  const original = globalState.__killerosCodexFastState;
+  try {
+    globalState.__killerosCodexFastState = { enabled: true };
+    const moduleUrl = new URL("../killeros/codex-fast-state.ts", import.meta.url);
+    moduleUrl.searchParams.set("legacy", String(Date.now()));
+    const reloaded = await import(moduleUrl.href) as typeof import("../killeros/codex-fast-state.ts");
+
+    assert.equal(reloaded.isCodexFastEnabled(), true);
+    const unsubscribe = reloaded.subscribeCodexFast(() => {});
+    assert.doesNotThrow(unsubscribe);
+  } finally {
+    globalState.__killerosCodexFastState = original;
+  }
+});
+
 test("question exposes a Google-compatible optional selection mode", () => {
   const tool = getTool(createHarness(), "question");
   const schema = JSON.parse(JSON.stringify(tool.parameters));

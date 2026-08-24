@@ -202,3 +202,13 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Added a regression with an inline secret proving the failure still blocks the tool and reports sanitized stderr without returning the configured command.
 - Removed command text from the shared failure formatter while preserving timeout, uncertain-exit, stderr/stdout, and exit-code diagnostics.
+
+### 22. Process-global fast-mode state assumed one module shape forever
+
+- `/codex-fast` intentionally stores its enabled flag and listeners on `globalThis` so the setting survives a Pi extension reload.
+- Module initialization reused any value at that key without validation, so an older extension version with a different state shape could make the new footer fail during subscription.
+
+### Fast-mode update compatibility
+
+- Added an isolated cache-busted module reload regression with legacy process-global state missing its listener set.
+- The initializer now reuses only a boolean enabled flag plus a set containing functions; incompatible state gets a fresh listener set while a valid saved enabled flag survives.
