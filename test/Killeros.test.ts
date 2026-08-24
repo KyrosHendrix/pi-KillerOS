@@ -6,7 +6,7 @@ import os from "node:os";
 import { PassThrough } from "node:stream";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import {
@@ -35,8 +35,9 @@ import { registerHandoff } from "../killeros/handoff.ts";
 import { createGoalRuntime, type GoalState, type GoalStatus } from "../killeros/runtime.ts";
 import { resolveGitBranch } from "../killeros/shell-ui.ts";
 import { BoundedText } from "../killeros/bounded-text.ts";
+import type { HookSpawnProcess } from "../killeros/hooks.ts";
+import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 
-type PackageJson = { version: string };
 type ThemeJson = { colors: Record<string, string>; vars: Record<string, string> };
 type QuestionOption = { label: string; description?: string; preview?: string; [key: string]: unknown };
 type TestStyle = {
@@ -78,9 +79,13 @@ type TestHandlerResult = {
 type TestHandler = (event: TestEvent, ctx?: unknown) => TestHandlerResult | Promise<TestHandlerResult>;
 type TestRenderable = {
   render(width: number): string[];
+  dispose?(): void;
+};
+type TestInteractive = TestRenderable & {
   handleInput(input: string): void;
+};
+type TestEditor = TestInteractive & {
   setAutocompleteProvider(provider: unknown): void;
-  dispose(): void;
   focused: boolean;
   setText(text: string): void;
   getText(): string;
@@ -120,13 +125,18 @@ type TestEntryData = {
   [key: string]: unknown;
 };
 type TestAppendedEntry = { type: string; customType: string; data: TestEntryData };
-type RequiredArray<T> = Omit<T[], "at"> & { at(index: number): T };
 type TestSentMessage = {
   message: { customType: string; content: string; display?: boolean; [key: string]: unknown };
   options: unknown;
 };
 type TestRenderer = (...args: unknown[]) => TestRenderable;
 type TestCapturedFactory = (...args: unknown[]) => TestRenderable;
+type TestCustomFactory<T> = (
+  tui: TestTui,
+  theme: Theme,
+  keybindings: ReturnType<typeof getKeybindings>,
+  done: (value: T) => void,
+) => unknown;
 type CompletionItem = { label: string; description: string; [key: string]: unknown };
 type CompletionResult = { prefix: string; items: CompletionItem[] };
 type TestProvider = {
@@ -146,11 +156,10 @@ type TestProvider = {
   shouldTriggerFileCompletion(): boolean;
   [key: string]: unknown;
 };
-type RequiredRegistry<T> = Omit<Map<string, T>, "get"> & { get(key: string): T };
 type Captured = {
   autocompleteFactory: (current: unknown) => TestProvider;
   currentEditorFactory: unknown;
-  editorFactory: TestCapturedFactory;
+  editorFactory?: TestCapturedFactory;
   footerFactory: TestCapturedFactory;
   goalPanel: { title: string; options: unknown };
   headerFactory: TestCapturedFactory;
@@ -162,7 +171,7 @@ type Captured = {
   widgetComponent?: unknown;
   widgets?: Array<{ key: string; content: unknown; options: unknown }>;
   workingIndicator?: unknown;
-  workingMessages: RequiredArray<string | undefined>;
+  workingMessages: Array<string | undefined>;
 };
 type TestTui = { requestRender(): void; terminal: { rows: number } };
 type TestModel = {
@@ -192,13 +201,13 @@ type TestTuiContext = {
   reload(): Promise<void>;
   sessionManager: TestSessionManager;
   ui: {
-    addAutocompleteProvider(factory: unknown): void;
+    addAutocompleteProvider(factory: (current: unknown) => TestProvider): void;
     confirm(...args: unknown[]): Promise<boolean>;
     editor(title: string, prefill?: string): Promise<string | undefined>;
     getEditorComponent(): unknown;
     notify(message: string, level?: string): void;
     select(title: string, options: string[]): Promise<string | undefined>;
-    setEditorComponent(factory: unknown): void;
+    setEditorComponent(factory: TestCapturedFactory): void;
     setFooter(factory: TestCapturedFactory): void;
     setHeader(factory: TestCapturedFactory): void;
     setStatus(key: string, text?: string): void;
@@ -216,7 +225,7 @@ type VariantsContext = {
   mode: "tui";
   model: TestModel;
   ui: {
-    custom(factory: (...args: unknown[]) => unknown): Promise<unknown>;
+    custom<T>(factory: TestCustomFactory<T>): Promise<T>;
     notify(message: string, level?: string): void;
   };
 };
@@ -236,30 +245,60 @@ type TestAPI = {
   getActiveTools(): string[];
   setActiveTools(names: string[]): void;
 };
-type HookSpawner = Parameters<typeof executeHook>[4];
 type Harness = {
   api: TestAPI;
   activeTools: string[];
-  appendedEntries: RequiredArray<TestAppendedEntry>;
+  appendedEntries: TestAppendedEntry[];
   commandRegistrations: string[];
-  commands: RequiredRegistry<TestCommand>;
-  entryRenderers: RequiredRegistry<TestRenderer>;
-  handlers: RequiredRegistry<TestHandler[]>;
+  commands: Map<string, TestCommand>;
+  entryRenderers: Map<string, TestRenderer>;
+  handlers: Map<string, TestHandler[]>;
   sentMessages: TestSentMessage[];
   sentUserMessages: Array<{ message: unknown; options: unknown }>;
-  tools: RequiredRegistry<TestTool>;
+  tools: Map<string, TestTool>;
 };
 
-const PACKAGE_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as PackageJson).version;
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readPackageVersion(): string {
+  const value: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.ok(isUnknownRecord(value) && typeof value.version === "string");
+  return value.version;
+}
+
+function isTestSentMessage(value: unknown): value is TestSentMessage["message"] {
+  return isUnknownRecord(value)
+    && typeof value.customType === "string"
+    && typeof value.content === "string";
+}
+
+function requireTestSentMessage(value: unknown): TestSentMessage["message"] {
+  assert.ok(isTestSentMessage(value), "expected a KillerOS custom message");
+  return value;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isUnknownRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function readThemeFixture(): ThemeJson {
+  const value: unknown = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8"));
+  assert.ok(isUnknownRecord(value) && isStringRecord(value.colors) && isStringRecord(value.vars));
+  return { colors: value.colors, vars: value.vars };
+}
+
+const PACKAGE_VERSION = readPackageVersion();
 initTheme("dark", false);
 
-const theme = {
+const theme = themeTestAdapter({
   bold(text: string): string { return text; },
   fg(_color: string, text: string): string { return text; },
   italic(text: string): string { return text; },
   strikethrough(text: string): string { return text; },
   underline(text: string): string { return text; },
-} as unknown as Theme;
+});
 
 function usage(cost: number): TestUsage {
   return {
@@ -309,11 +348,10 @@ function createCompleteHandoffSummary(objective: string, focus = ""): string {
 
 /** Creates the durable Goal truth needed to exercise a handoff availability check. */
 function createGoalState(status: GoalStatus): GoalState {
-  return {
-    version: 1,
+  const common = {
+    version: 1 as const,
     revision: 1,
     objective: "Test handoff availability",
-    status,
     createdAt: 0,
     updatedAt: 0,
     activeMilliseconds: 0,
@@ -321,15 +359,25 @@ function createGoalState(status: GoalStatus): GoalState {
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
   };
+  switch (status) {
+    case "active": return { ...common, status, activeStartedAt: 0 };
+    case "paused": return { ...common, status };
+    case "blocked": return { ...common, status, result: "Blocked" };
+    case "complete": return { ...common, status, result: "Complete" };
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
 }
 
 function createHarness(): Harness {
-  const commands = new Map<string, TestCommand>() as RequiredRegistry<TestCommand>;
+  const commands = new Map<string, TestCommand>();
   const commandRegistrations: string[] = [];
-  const handlers = new Map<string, TestHandler[]>() as RequiredRegistry<TestHandler[]>;
-  const tools = new Map<string, TestTool>() as RequiredRegistry<TestTool>;
-  const entryRenderers = new Map<string, TestRenderer>() as RequiredRegistry<TestRenderer>;
-  const appendedEntries = [] as unknown as RequiredArray<TestAppendedEntry>;
+  const handlers = new Map<string, TestHandler[]>();
+  const tools = new Map<string, TestTool>();
+  const entryRenderers = new Map<string, TestRenderer>();
+  const appendedEntries: TestAppendedEntry[] = [];
   const sentMessages: TestSentMessage[] = [];
   const sentUserMessages: Array<{ message: unknown; options: unknown }> = [];
   const activeTools: string[] = [];
@@ -366,7 +414,7 @@ function createHarness(): Harness {
     registerEntryRenderer: (customType: string, renderer: TestRenderer) => { entryRenderers.set(customType, renderer); },
     registerTool: (tool: TestTool) => { tools.set(tool.name, tool); },
     sendMessage: (message: unknown, options?: unknown) => sentMessages.push({
-      message: message as TestSentMessage["message"],
+      message: requireTestSentMessage(message),
       options,
     }),
     sendUserMessage: (message: unknown, options?: unknown) => sentUserMessages.push({ message, options }),
@@ -374,7 +422,7 @@ function createHarness(): Harness {
     getActiveTools: () => [...activeTools],
     setActiveTools: (names: string[]) => { activeTools.splice(0, activeTools.length, ...names); },
   };
-  Killeros(api as unknown as ExtensionAPI, {
+  Killeros(extensionApiTestAdapter(api), {
     completionNotifications: {
       store: { load: () => false, save: () => {} },
       ring: () => {},
@@ -384,16 +432,77 @@ function createHarness(): Harness {
   return { api, activeTools, appendedEntries, commandRegistrations, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
 }
 
-function getCommand(harness: Harness, name: string): TestCommand {
-  const command = harness.commands.get(name);
+function getCommand(source: Pick<Harness, "commands"> | ReadonlyMap<string, TestCommand>, name: string): TestCommand {
+  const commands = "commands" in source ? source.commands : source;
+  const command = commands.get(name);
   assert.ok(command);
   return command;
 }
 
-function getTool(harness: Harness, name: string): TestTool {
-  const tool = harness.tools.get(name);
+function getTool(source: Pick<Harness, "tools"> | ReadonlyMap<string, TestTool>, name: string): TestTool {
+  const tools = "tools" in source ? source.tools : source;
+  const tool = tools.get(name);
   assert.ok(tool);
   return tool;
+}
+
+function getRenderer(source: Pick<Harness, "entryRenderers"> | ReadonlyMap<string, TestRenderer>, name: string): TestRenderer {
+  const renderers = "entryRenderers" in source ? source.entryRenderers : source;
+  const renderer = renderers.get(name);
+  assert.ok(renderer);
+  return renderer;
+}
+
+function getHandlers(source: Pick<Harness, "handlers"> | ReadonlyMap<string, TestHandler[]>, event: string): TestHandler[] {
+  const handlers = "handlers" in source ? source.handlers : source;
+  const eventHandlers = handlers.get(event);
+  assert.ok(eventHandlers);
+  return eventHandlers;
+}
+
+function isTestRenderable(value: unknown): value is TestRenderable {
+  return isUnknownRecord(value) && typeof value.render === "function";
+}
+
+function requireRenderable(value: unknown): TestRenderable {
+  assert.ok(isTestRenderable(value), "expected a renderable Pi component");
+  return value;
+}
+
+function isTestInteractive(value: unknown): value is TestInteractive {
+  return isUnknownRecord(value)
+    && typeof value.render === "function"
+    && typeof value.handleInput === "function";
+}
+
+function requireInteractive(value: unknown): TestInteractive {
+  assert.ok(isTestInteractive(value), "expected an interactive Pi component");
+  return value;
+}
+
+function isTestEditor(value: unknown): value is TestEditor {
+  return isUnknownRecord(value)
+    && typeof value.render === "function"
+    && typeof value.handleInput === "function"
+    && typeof value.setAutocompleteProvider === "function"
+    && typeof value.focused === "boolean"
+    && typeof value.setText === "function"
+    && typeof value.getText === "function";
+}
+
+function requireEditor(value: unknown): TestEditor {
+  assert.ok(isTestEditor(value), "expected a Pi editor component");
+  return value;
+}
+
+function disposeTestComponent(component: TestRenderable): void {
+  assert.ok(component.dispose, "expected a disposable Pi component");
+  component.dispose();
+}
+
+function requiredFactory(factory: TestCapturedFactory | undefined, name: string): TestCapturedFactory {
+  assert.ok(factory, `expected Pi to register the ${name} factory`);
+  return factory;
 }
 
 function last<T>(values: T[]): T {
@@ -415,7 +524,7 @@ async function startVariants({
   const selectedLevels: string[] = [];
   const notifications: Array<{ message: string; level?: string }> = [];
   const tui: TestTui = { requestRender() {}, terminal: { rows: terminalRows } };
-  let component: TestRenderable | undefined;
+  let component: TestInteractive | undefined;
   harness.api.getThinkingLevel = () => current;
   harness.api.setThinkingLevel = (level: string) => { selectedLevels.push(level); };
   const ctx: VariantsContext = {
@@ -427,8 +536,8 @@ async function startVariants({
       thinkingLevelMap: { xhigh: "xhigh", max: "max" },
     },
     ui: {
-      custom: (factory: (...args: unknown[]) => unknown) => new Promise((resolve) => {
-        component = factory(tui, theme, keybindings, resolve) as TestRenderable;
+      custom: <T>(factory: TestCustomFactory<T>) => new Promise<T>((resolve) => {
+        component = requireInteractive(factory(tui, theme, keybindings, resolve));
       }),
       notify: (message: string, level?: string) => { notifications.push({ message, level }); },
     },
@@ -455,21 +564,21 @@ test("/codex-fast is registered once and toggles Codex priority requests", async
   const harness = createHarness();
   assert.equal(harness.commandRegistrations.filter((name) => name === "codex-fast").length, 1);
 
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   const { ctx } = createTuiContext();
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
-  const command = harness.commands.get("codex-fast");
+  const command = getCommand(harness, "codex-fast");
   assert.ok(command);
   assert.equal(command.getArgumentCompletions, undefined);
 
-  const requestHandler = harness.handlers.get("before_provider_request")?.at(-1);
+  const requestHandler = last(getHandlers(harness, "before_provider_request"));
   assert.ok(requestHandler);
   const payload = { model: "gpt-5.5", input: [] };
   const codexContext = { ...ctx, model: { ...ctx.model, provider: "openai-codex" } };
   assert.strictEqual(await requestHandler({ type: "before_provider_request", payload }, codexContext), payload);
 
   await command.handler("", ctx);
-  assert.deepEqual(notifications.at(-1), { message: "Fast enabled", level: "info" });
+  assert.deepEqual(last(notifications), { message: "Fast enabled", level: "info" });
   assert.deepEqual(
     await requestHandler({ type: "before_provider_request", payload }, codexContext),
     { model: "gpt-5.5", input: [], service_tier: "priority" },
@@ -485,22 +594,22 @@ test("/codex-fast is registered once and toggles Codex priority requests", async
   );
 
   await command.handler("", ctx);
-  assert.deepEqual(notifications.at(-1), { message: "Fast disabled", level: "info" });
+  assert.deepEqual(last(notifications), { message: "Fast disabled", level: "info" });
   assert.strictEqual(await requestHandler({ type: "before_provider_request", payload }, codexContext), payload);
 
   ctx.mode = "rpc";
   await command.handler("", ctx);
-  assert.deepEqual(notifications.at(-1), { message: "Fast enabled", level: "info" });
+  assert.deepEqual(last(notifications), { message: "Fast enabled", level: "info" });
 });
 
 test("/codex-fast rejects arguments without changing its state", async () => {
   resetCodexFastState();
   const harness = createHarness();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   const { ctx } = createTuiContext();
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
-  const command = harness.commands.get("codex-fast");
-  const requestHandler = harness.handlers.get("before_provider_request")?.at(-1);
+  const command = getCommand(harness, "codex-fast");
+  const requestHandler = last(getHandlers(harness, "before_provider_request"));
   assert.ok(command);
   assert.ok(requestHandler);
 
@@ -508,14 +617,14 @@ test("/codex-fast rejects arguments without changing its state", async () => {
   const codexContext = { ...ctx, model: { ...ctx.model, provider: "openai-codex" } };
   await command.handler("", ctx);
   await command.handler("status", ctx);
-  assert.deepEqual(notifications.at(-1), { message: "Usage: /codex-fast", level: "error" });
+  assert.deepEqual(last(notifications), { message: "Usage: /codex-fast", level: "error" });
   assert.deepEqual(
     await requestHandler({ type: "before_provider_request", payload }, codexContext),
     { model: "gpt-5.5", input: [], service_tier: "priority" },
   );
 
   await command.handler("off now", ctx);
-  assert.deepEqual(notifications.at(-1), { message: "Usage: /codex-fast", level: "error" });
+  assert.deepEqual(last(notifications), { message: "Usage: /codex-fast", level: "error" });
   assert.deepEqual(
     await requestHandler({ type: "before_provider_request", payload }, codexContext),
     { model: "gpt-5.5", input: [], service_tier: "priority" },
@@ -528,12 +637,12 @@ test("/codex-fast state survives extension reloads and renders inline for Codex"
   const firstContext = createTuiContext().ctx;
   const sessionManager = firstContext.sessionManager;
   firstContext.model = { ...firstContext.model, provider: "openai-codex" };
-  await first.commands.get("codex-fast").handler("", firstContext);
+  await getCommand(first, "codex-fast").handler("", firstContext);
 
   const second = createHarness();
   const { captured, ctx, tui } = createTuiContext([], theme, sessionManager);
   ctx.model = { ...ctx.model, provider: "openai-codex" };
-  const requestHandler = second.handlers.get("before_provider_request")?.at(-1);
+  const requestHandler = last(getHandlers(second, "before_provider_request"));
   assert.ok(requestHandler);
   const payload = { model: "gpt-5.5", input: [] };
   assert.deepEqual(
@@ -541,13 +650,13 @@ test("/codex-fast state survives extension reloads and renders inline for Codex"
     { model: "gpt-5.5", input: [], service_tier: "priority" },
   );
 
-  for (const handler of second.handlers.get("session_start") ?? []) await handler({}, ctx);
+  for (const handler of getHandlers(second, "session_start") ?? []) await handler({}, ctx);
   assert.equal(captured.statuses?.size ?? 0, 0);
-  const semanticTheme: TestStyle = {
+  const semanticTheme = themeTestAdapter({
     ...theme,
     bold: (text: string) => `<bold>${text}</bold>`,
     fg: (color: string, text: string) => color === "accent" ? `<accent>${text}</accent>` : text,
-  } as unknown as Theme;
+  });
   const footer = captured.footerFactory(tui, semanticTheme, {
     getGitBranch: () => undefined,
     getExtensionStatuses: () => new Map(),
@@ -558,33 +667,32 @@ test("/codex-fast state survives extension reloads and renders inline for Codex"
   assert.match(enabledRender, /<accent><bold>Fast<\/bold><\/accent>/u);
   assert.equal(footer.render(120).length, 3);
 
-  for (const handler of second.handlers.get("model_select") ?? []) {
+  for (const handler of getHandlers(second, "model_select") ?? []) {
     handler({ model: { ...ctx.model, provider: "openai" } });
   }
   assert.doesNotMatch(footer.render(120).join("\n"), /Fast/u);
 
-  for (const handler of second.handlers.get("model_select") ?? []) {
+  for (const handler of getHandlers(second, "model_select") ?? []) {
     handler({ model: { ...ctx.model, provider: "openai-codex" } });
   }
   assert.match(footer.render(120).join("\n"), /Test model.*Fast.*OpenAI/u);
-  footer.dispose();
+  disposeTestComponent(footer);
   resetCodexFastState();
 });
 
 test("/codex-fast reload repairs legacy process-global state", async () => {
-  const globalState = globalThis as typeof globalThis & { __killerosCodexFastState?: unknown };
-  const original = globalState.__killerosCodexFastState;
+  const original = globalThis.__killerosCodexFastState;
   try {
-    globalState.__killerosCodexFastState = { enabled: true };
+    globalThis.__killerosCodexFastState = { enabled: true };
     const moduleUrl = new URL("../killeros/codex-fast-state.ts", import.meta.url);
     moduleUrl.searchParams.set("legacy", String(Date.now()));
-    const reloaded = await import(moduleUrl.href) as typeof import("../killeros/codex-fast-state.ts");
+    const reloaded = await import(moduleUrl.href);
 
     assert.equal(reloaded.isCodexFastEnabled(), true);
     const unsubscribe = reloaded.subscribeCodexFast(() => {});
     assert.doesNotThrow(unsubscribe);
   } finally {
-    globalState.__killerosCodexFastState = original;
+    globalThis.__killerosCodexFastState = original;
   }
 });
 
@@ -640,7 +748,7 @@ test("question accepts omitted or explicit 1/1 single-select bounds before rende
 test("/variants validates direct levels and model support", async () => {
   const { api, commands } = createHarness();
   const selectedLevels: string[] = [];
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   api.setThinkingLevel = (level) => selectedLevels.push(level);
   const ctx = {
     mode: "tui",
@@ -654,7 +762,7 @@ test("/variants validates direct levels and model support", async () => {
       notify: (message: string, level?: string) => notifications.push({ message, level }),
     },
   };
-  const variants = commands.get("variants");
+  const variants = getCommand(commands, "variants");
 
   await variants.handler("deep", ctx);
   await variants.handler("xhigh", ctx);
@@ -701,7 +809,7 @@ test("/variants stays within terminal bounds and preserves focus across resizes"
   const fullLayout = variants.component.render(24);
   assert.equal(fullLayout.length, 12);
   assert.match(fullLayout.join("\n"), /→ Extra High/u);
-  assert.match(fullLayout.at(-1) ?? "", /^─+$/u);
+  assert.match(last(fullLayout) ?? "", /^─+$/u);
   assert.deepEqual(variants.component.render(0), []);
   variants.component.handleInput("\r");
   await variants.result;
@@ -734,7 +842,7 @@ test("/variants follows remapped selector bindings and cancellation", async () =
 });
 
 test("question rejects every other single-select bound before rendering and execution", async () => {
-  const tool = createHarness().tools.get("question");
+  const tool = getTool(createHarness(), "question");
   const invalidBounds = [
     { minSelections: 1 },
     { maxSelections: 1 },
@@ -768,7 +876,7 @@ test("question rejects every other single-select bound before rendering and exec
 });
 
 test("question retains multiple-select bound validation before rendering and execution", async () => {
-  const tool = createHarness().tools.get("question");
+  const tool = getTool(createHarness(), "question");
   const ctx = { mode: "tui", ui: { custom: () => { throw new Error("UI must not open for invalid bounds"); }, notify: () => {} } };
   const invalidBounds = [
     { mode: "multiple", minSelections: 2, maxSelections: 1, error: /minimum.*maximum/iu },
@@ -786,7 +894,7 @@ test("question retains multiple-select bound validation before rendering and exe
 });
 
 test("goal updates use a Google-compatible status enum", () => {
-  const tool = createHarness().tools.get("killeros_goal_update");
+  const tool = getTool(createHarness(), "killeros_goal_update");
   const schema = JSON.parse(JSON.stringify(tool.parameters));
 
   assert.deepEqual(schema.properties.status, {
@@ -840,13 +948,13 @@ Define and run exact verification.
 
 async function emitSuccessfulInitWrite(
   handlers: Map<string, TestHandler[]>,
-  tools: RequiredRegistry<TestTool>,
+  tools: Map<string, TestTool>,
   ctx: unknown,
   content: string = validGeneratedGuidance,
   toolCallId = "init-write",
 ): Promise<void> {
   const input = { content };
-  const callResults = await emitSequentially(handlers.get("tool_call"), {
+  const callResults = await emitSequentially(getHandlers(handlers, "tool_call"), {
     toolCallId,
     toolName: "killeros_init_write",
     input,
@@ -854,7 +962,7 @@ async function emitSuccessfulInitWrite(
   assert.equal(callResults.some((result) => (
     typeof result === "object" && result !== null && "block" in result && result.block === true
   )), false);
-  await getTool({ tools } as Harness, "killeros_init_write").execute(
+  await getTool(tools, "killeros_init_write").execute(
     toolCallId,
     input,
     new AbortController().signal,
@@ -885,7 +993,7 @@ async function removeDirectoryEventually(directory: string): Promise<void> {
 }
 
 async function emitGoalStart(handlers: Map<string, TestHandler[]>, ctx: unknown): Promise<void> {
-  for (const handler of handlers.get("before_agent_start") ?? []) {
+  for (const handler of getHandlers(handlers, "before_agent_start") ?? []) {
     await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
   }
 }
@@ -912,7 +1020,16 @@ function createTuiContext(
   getSessionFile: () => path.join(process.cwd(), "session.jsonl"),
   },
 ): { captured: Captured; ctx: TestTuiContext; tui: TestTui } {
-  const captured = {} as Captured;
+  const missingFactory = (): never => assert.fail("expected Pi to register the component factory");
+  const captured: Captured = {
+    autocompleteFactory: missingFactory,
+    currentEditorFactory: undefined,
+    footerFactory: missingFactory,
+    goalPanel: { title: "", options: [] },
+    headerFactory: missingFactory,
+    selection: { title: "", options: [] },
+    workingMessages: [],
+  };
   const tui: TestTui = { requestRender() {}, terminal: { rows: 40 } };
   const ctx: TestTuiContext = {
     abort() {},
@@ -932,8 +1049,8 @@ function createTuiContext(
     reload: async () => {},
     sessionManager,
     ui: {
-      addAutocompleteProvider: (factory: unknown) => {
-        captured.autocompleteFactory = factory as (current: unknown) => TestProvider;
+      addAutocompleteProvider: (factory: (current: unknown) => TestProvider) => {
+        captured.autocompleteFactory = factory;
       },
       confirm: async () => true,
       editor: async (_title: string, prefill?: string) => prefill,
@@ -943,8 +1060,8 @@ function createTuiContext(
         return undefined;
       },
       getEditorComponent: () => captured.currentEditorFactory,
-      setEditorComponent: (factory: unknown) => {
-        captured.editorFactory = factory as TestCapturedFactory;
+      setEditorComponent: (factory: TestCapturedFactory) => {
+        captured.editorFactory = factory;
         captured.currentEditorFactory = factory;
       },
       setFooter: (factory: TestCapturedFactory) => { captured.footerFactory = factory; },
@@ -965,14 +1082,14 @@ function createTuiContext(
       setHiddenThinkingLabel: (label: string) => { captured.hiddenThinkingLabel = label; },
       setWorkingIndicator: (options: unknown) => { captured.workingIndicator = options; },
       setWorkingMessage: (message?: string) => {
-        captured.workingMessages ??= [] as unknown as RequiredArray<string | undefined>;
+        captured.workingMessages ??= [];
         captured.workingMessages.push(message);
       },
       setWidget: (key: string, content?: unknown, options?: unknown) => {
         captured.widgets ??= [];
         captured.widgets.push({ key, content, options });
         if (typeof content === "function") {
-          captured.widgetComponent = (content as (tui: TestTui, theme: Theme) => unknown)(tui, uiTheme);
+          captured.widgetComponent = content(tui, uiTheme);
         }
         if (content === undefined) captured.widgetComponent = undefined;
       },
@@ -1000,11 +1117,11 @@ test("BoundedText limits collapsed rows and preserves full expanded text", () =>
   const source = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
   const collapsed = new BoundedText(source, 3).render(20);
   assert.equal(collapsed.length, 3);
-  assert.match(collapsed.at(-1) ?? "", /…/u);
+  assert.match(last(collapsed) ?? "", /…/u);
 
   const expanded = new BoundedText(source).render(20);
   assert.equal(expanded.length, 20);
-  assert.match(expanded.at(-1) ?? "", /line 20/u);
+  assert.match(last(expanded) ?? "", /line 20/u);
 });
 
 function startQuestion(
@@ -1015,22 +1132,22 @@ function startQuestion(
   keybindings = getKeybindings(),
   extraParams: Record<string, unknown> = {},
 ): {
-  component: TestRenderable;
+  component: TestInteractive;
   finish: (value: unknown) => void;
   result: Promise<TestResult>;
-  notifications: RequiredArray<TestNotification>;
+  notifications: TestNotification[];
   tui: TestTui;
 } {
-  let component: TestRenderable | undefined;
+  let component: TestInteractive | undefined;
   let finish: ((value: unknown) => void) | undefined;
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   const tui: TestTui = { requestRender() {}, terminal: { rows: terminalRows } };
   const ctx = {
     mode: "tui" as const,
     ui: {
-      custom: (factory: (...args: unknown[]) => unknown) => new Promise((resolve) => {
+      custom: (factory: (...args: unknown[]) => unknown) => new Promise<unknown>((resolve) => {
         finish = resolve;
-        component = factory(tui, theme, keybindings, resolve) as TestRenderable;
+        component = requireInteractive(factory(tui, theme, keybindings, resolve));
       }),
       notify: (message: string, level?: string) => notifications.push({ message, level }),
     },
@@ -1048,14 +1165,14 @@ function startQuestion(
 }
 
 test("uses one neutral background for every tool state", () => {
-  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8")) as ThemeJson;
+  const killerosTheme = readThemeFixture();
   assert.equal(killerosTheme.colors.toolPendingBg, "surface");
   assert.equal(killerosTheme.colors.toolSuccessBg, "surface");
   assert.equal(killerosTheme.colors.toolErrorBg, "surface");
 });
 
 test("uses achromatic neutrals without changing the coral accent", () => {
-  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8")) as ThemeJson;
+  const killerosTheme = readThemeFixture();
   assert.equal(killerosTheme.vars.coral, "#d77757");
   assert.equal(killerosTheme.vars.coralBright, "#e58b6d");
 
@@ -1081,7 +1198,7 @@ function contrastRatio(foreground: string, background: string): number {
 }
 
 test("reasoning text meets normal-text contrast on KillerOS surfaces", () => {
-  const killerosTheme = JSON.parse(readFileSync(new URL("../themes/killeros.json", import.meta.url), "utf8")) as ThemeJson;
+  const killerosTheme = readThemeFixture();
   for (const role of ["thinkingMinimal", "thinkingLow"]) {
     const foreground = killerosTheme.colors[role].startsWith("#")
       ? killerosTheme.colors[role]
@@ -1103,7 +1220,7 @@ test("registers /exit without conflicting with Pi's /quit", async () => {
   assert.equal(commands.has("quit"), false);
 
   const calls: string[] = [];
-  await commands.get("exit").handler("", {
+  await getCommand(commands, "exit").handler("", {
     isIdle: () => false,
     abort: () => calls.push("abort"),
     shutdown: () => calls.push("shutdown"),
@@ -1111,7 +1228,7 @@ test("registers /exit without conflicting with Pi's /quit", async () => {
   assert.deepEqual(calls, ["abort", "shutdown"]);
 
   calls.length = 0;
-  await commands.get("exit").handler("", {
+  await getCommand(commands, "exit").handler("", {
     isIdle: () => true,
     abort: () => calls.push("abort"),
     shutdown: () => calls.push("shutdown"),
@@ -1124,7 +1241,7 @@ test("/clear confirms before aborting and waits before creating a session", asyn
   const calls: string[] = [];
   let releaseIdle: () => void = () => {};
   const idle = new Promise<void>((resolve) => { releaseIdle = resolve; });
-  const run = commands.get("clear").handler("", {
+  const run = getCommand(commands, "clear").handler("", {
     hasUI: true,
     isIdle: () => false,
     abort: () => calls.push("abort"),
@@ -1139,7 +1256,7 @@ test("/clear confirms before aborting and waits before creating a session", asyn
   assert.deepEqual(calls, ["confirm", "abort", "wait", "new"]);
 
   calls.length = 0;
-  await commands.get("clear").handler("", {
+  await getCommand(commands, "clear").handler("", {
     hasUI: true,
     isIdle: () => false,
     abort: () => calls.push("abort"),
@@ -1160,7 +1277,7 @@ test("/handoff refuses unavailable work without side effects", async () => {
     const { commands } = createHarness();
     const calls: string[] = [];
     const notifications: TestNotification[] = [];
-    await commands.get("handoff").handler("finish verification", {
+    await getCommand(commands, "handoff").handler("finish verification", {
       isIdle: testCase.isIdle,
       hasPendingMessages: testCase.hasPendingMessages,
       abort: () => calls.push("abort"),
@@ -1187,10 +1304,10 @@ test("/handoff refuses unavailable work without side effects", async () => {
   }
 
   const { commands } = createHarness();
-  await commands.get("goal").handler("Keep working", createTuiContext().ctx);
+  await getCommand(commands, "goal").handler("Keep working", createTuiContext().ctx);
   const calls: string[] = [];
   const notifications: TestNotification[] = [];
-  await commands.get("handoff").handler("", {
+  await getCommand(commands, "handoff").handler("", {
     isIdle: () => true,
     hasPendingMessages: () => false,
     abort: () => calls.push("abort"),
@@ -1218,15 +1335,15 @@ test("/handoff refuses unavailable work without side effects", async () => {
 
 test("/handoff allows paused, blocked, and complete Goal truth", async () => {
   for (const status of ["paused", "blocked", "complete"] as const) {
-    const commands = new Map<string, TestCommand>() as RequiredRegistry<TestCommand>;
+    const commands = new Map<string, TestCommand>();
     const goalRuntime = createGoalRuntime();
     goalRuntime.state = createGoalState(status);
-    registerHandoff({
+    registerHandoff(extensionApiTestAdapter({
       registerCommand: (name: string, command: TestCommand) => commands.set(name, command),
-    } as unknown as ExtensionAPI, goalRuntime);
+    }), goalRuntime);
 
     const notifications: TestNotification[] = [];
-    await commands.get("handoff").handler("", {
+    await getCommand(commands, "handoff").handler("", {
       isIdle: () => true,
       hasPendingMessages: () => false,
       sessionManager: { getSessionFile: () => undefined },
@@ -1243,7 +1360,7 @@ test("/handoff owns TUI input while generating the summary", async () => {
   let completionSignal: AbortSignal | undefined;
   let renderedLoader: TestRenderable | undefined;
 
-  await commands.get("handoff").handler("", {
+  await getCommand(commands, "handoff").handler("", {
     mode: "tui",
     isIdle: () => true,
     hasPendingMessages: () => false,
@@ -1272,19 +1389,19 @@ test("/handoff owns TUI input while generating the summary", async () => {
       return { cancelled: false };
     },
     ui: {
-      custom: async <T>(factory: (...args: unknown[]) => unknown): Promise<T> => {
+      custom: async <T>(factory: TestCustomFactory<T>): Promise<T> => {
         customViews += 1;
         return await new Promise<T>((resolve) => {
           const done = (result: T): void => {
-            renderedLoader?.dispose();
+            if (renderedLoader) disposeTestComponent(renderedLoader);
             resolve(result);
           };
-          renderedLoader = factory(
-            { requestRender() {} },
+          renderedLoader = requireRenderable(factory(
+            { requestRender() {}, terminal: { rows: 40 } },
             theme,
-            {},
+            getKeybindings(),
             done,
-          ) as TestRenderable;
+          ));
         });
       },
       notify() {},
@@ -1303,7 +1420,7 @@ test("/handoff cancels its TUI generation without replacing the session", async 
   let completionSignal: AbortSignal | undefined;
   let newSessions = 0;
 
-  await commands.get("handoff").handler("", {
+  await getCommand(commands, "handoff").handler("", {
     mode: "tui",
     isIdle: () => true,
     hasPendingMessages: () => false,
@@ -1327,14 +1444,14 @@ test("/handoff cancels its TUI generation without replacing the session", async 
       return { cancelled: false };
     },
     ui: {
-      custom: async <T>(factory: (...args: unknown[]) => unknown): Promise<T> => {
+      custom: async <T>(factory: TestCustomFactory<T>): Promise<T> => {
         return await new Promise<T>((resolve) => {
-          let component: TestRenderable | undefined;
+          let component: TestInteractive | undefined;
           const done = (result: T): void => {
-            component?.dispose();
+            if (component) disposeTestComponent(component);
             resolve(result);
           };
-          component = factory({ requestRender() {} }, theme, {}, done) as TestRenderable;
+          component = requireInteractive(factory({ requestRender() {}, terminal: { rows: 40 } }, theme, getKeybindings(), done));
           setImmediate(() => component?.handleInput("\x1B"));
         });
       },
@@ -1357,7 +1474,7 @@ test("/handoff cancellation reaches provider-managed authentication", async () =
     resolveProviderSetup = resolve;
   });
 
-  await commands.get("handoff").handler("", {
+  await getCommand(commands, "handoff").handler("", {
     mode: "tui",
     isIdle: () => true,
     hasPendingMessages: () => false,
@@ -1380,14 +1497,14 @@ test("/handoff cancellation reaches provider-managed authentication", async () =
       return { cancelled: false };
     },
     ui: {
-      custom: async <T>(factory: (...args: unknown[]) => unknown): Promise<T> => {
+      custom: async <T>(factory: TestCustomFactory<T>): Promise<T> => {
         return await new Promise<T>((resolve) => {
-          let component: TestRenderable | undefined;
+          let component: TestInteractive | undefined;
           const done = (result: T): void => {
-            component?.dispose();
+            if (component) disposeTestComponent(component);
             resolve(result);
           };
-          component = factory({ requestRender() {} }, theme, {}, done) as TestRenderable;
+          component = requireInteractive(factory({ requestRender() {}, terminal: { rows: 40 } }, theme, getKeybindings(), done));
           component.handleInput("\x1B");
         });
       },
@@ -1442,7 +1559,7 @@ test("/handoff creates an idle child session with a visible summary", async () =
   let sentUserMessages = 0;
   const summary = createCompleteHandoffSummary("Finish the release checks.", "finish the release checks");
 
-  await commands.get("handoff").handler("finish the release checks", {
+  await getCommand(commands, "handoff").handler("finish the release checks", {
     isIdle: () => true,
     hasPendingMessages: () => false,
     abort: () => calls.push("abort"),
@@ -1508,7 +1625,8 @@ test("/handoff creates an idle child session with a visible summary", async () =
 
   assert.equal(completionRequests.length, 1);
   const request = completionRequests[0].context;
-  const requestMessage = request.messages[0] as { content: string };
+  const requestMessage = request.messages[0];
+  assert.ok(isUnknownRecord(requestMessage) && typeof requestMessage.content === "string");
   assert.match(requestMessage.content, /Implement the command/u);
   assert.match(requestMessage.content, /Compaction projection: release validation is the current work/u);
   assert.match(requestMessage.content, /Branch summary: retain the release specification decision/u);
@@ -1543,7 +1661,7 @@ test("/handoff derives short unnamed focus and objective fallback names", async 
     const { commands } = createHarness();
     const names: string[] = [];
     const summary = createCompleteHandoffSummary(testCase.objective, testCase.focus);
-    await commands.get("handoff").handler(testCase.focus, {
+    await getCommand(commands, "handoff").handler(testCase.focus, {
       isIdle: () => true,
       hasPendingMessages: () => false,
       model: { id: "test-model", provider: "test" },
@@ -1579,7 +1697,7 @@ test("/handoff removes terminal controls from the document and derived session n
   const destinationEntries: Array<{ content?: string; name?: string }> = [];
   const summary = createCompleteHandoffSummary("Recover \x1B[31mrelease\x1B[0m\u0001 verification");
 
-  await commands.get("handoff").handler("", {
+  await getCommand(commands, "handoff").handler("", {
     isIdle: () => true,
     hasPendingMessages: () => false,
     model: { id: "test-model", provider: "test" },
@@ -1623,7 +1741,7 @@ test("/handoff reports destination setup failure without reusing the stale sourc
   const summary = createCompleteHandoffSummary("Recover release verification");
   let sourceStale = false;
 
-  await commands.get("handoff").handler("", {
+  await getCommand(commands, "handoff").handler("", {
     isIdle: () => true,
     hasPendingMessages: () => false,
     model: { id: "test-model", provider: "test" },
@@ -1671,7 +1789,7 @@ test("/handoff reports session replacement failure while the source context rema
   const notifications: TestNotification[] = [];
   const summary = createCompleteHandoffSummary("Recover release verification");
 
-  await commands.get("handoff").handler("", {
+  await getCommand(commands, "handoff").handler("", {
     isIdle: () => true,
     hasPendingMessages: () => false,
     model: { id: "test-model", provider: "test" },
@@ -1698,7 +1816,7 @@ test("/handoff leaves the source selected when summary or replacement fails", as
     const notifications: TestNotification[] = [];
     let summaries = 0;
     let newSessions = 0;
-    await commands.get("handoff").handler("", {
+    await getCommand(commands, "handoff").handler("", {
       isIdle: () => true,
       hasPendingMessages: () => false,
       model: { id: "test-model", provider: "test" },
@@ -1745,7 +1863,7 @@ test("/handoff leaves the source selected when summary or replacement fails", as
     const notifications: TestNotification[] = [];
     let newSessions = 0;
     let completions = 0;
-    await commands.get("handoff").handler("", {
+    await getCommand(commands, "handoff").handler("", {
       isIdle: () => true,
       hasPendingMessages: () => false,
       model: testCase.model,
@@ -1775,7 +1893,7 @@ test("/handoff leaves the source selected when summary or replacement fails", as
   const { commands } = createHarness();
   const notifications: TestNotification[] = [];
   const cancelledSummary = createCompleteHandoffSummary("Finish the release checks.");
-  await commands.get("handoff").handler("", {
+  await getCommand(commands, "handoff").handler("", {
     isIdle: () => true,
     hasPendingMessages: () => false,
     model: { id: "test-model", provider: "test" },
@@ -1798,13 +1916,13 @@ test("/handoff leaves the source selected when summary or replacement fails", as
 test("registers /goal and completes only through the model goal tool", async () => {
   const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
 
   assert.equal(commands.has("goal"), true);
   assert.equal(tools.has("killeros_goal_update"), true);
 
-  await commands.get("goal").handler("Ship only after every release check passes", ctx);
+  await getCommand(commands, "goal").handler("Ship only after every release check passes", ctx);
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].message.customType, "killeros-goal-continuation");
   assert.match(sentMessages[0].message.content, /Ship only after every release check passes/u);
@@ -1814,11 +1932,11 @@ test("registers /goal and completes only through the model goal tool", async () 
   assert.match(sentMessages[0].message.content, /checking the current repository state/u);
   assert.doesNotMatch(sentMessages[0].message.content, /hidden handoff|stored progress copy/u);
   assert.deepEqual(sentMessages[0].options, { triggerTurn: true, deliverAs: "followUp" });
-  assert.equal(appendedEntries.at(-1).customType, "killeros-goal");
-  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+  assert.equal(last(appendedEntries).customType, "killeros-goal");
+  assert.equal(last(appendedEntries).data.state.status, "active");
 
   let systemPrompt = "base";
-  for (const handler of handlers.get("before_agent_start")) {
+  for (const handler of getHandlers(handlers, "before_agent_start")) {
     const result = await handler({ prompt: "", systemPrompt, systemPromptOptions: {} }, ctx);
     if (result?.systemPrompt) systemPrompt = result.systemPrompt;
   }
@@ -1826,7 +1944,7 @@ test("registers /goal and completes only through the model goal tool", async () 
   assert.match(systemPrompt, /Ship only after every release check passes/u);
   assert.match(systemPrompt, /killeros_goal_update/u);
 
-  const update = await tools.get("killeros_goal_update").execute(
+  const update = await getTool(tools, "killeros_goal_update").execute(
     "goal-complete",
     { status: "complete", evidence: "npm test and npm run check passed" },
     new AbortController().signal,
@@ -1834,27 +1952,27 @@ test("registers /goal and completes only through the model goal tool", async () 
     ctx,
   );
   assert.match(update.content[0].text, /marked complete/u);
-  assert.equal(appendedEntries.at(-1).data.state.status, "complete");
+  assert.equal(last(appendedEntries).data.state.status, "complete");
 
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   assert.equal(sentMessages.length, 1, "completed goals must not continue");
 
   ctx.mode = "rpc";
-  await commands.get("goal").handler("", ctx);
-  assert.match(notifications.at(-1).message, /Goal complete/u);
-  assert.match(notifications.at(-1).message, /npm test and npm run check passed/u);
+  await getCommand(commands, "goal").handler("", ctx);
+  assert.match(last(notifications).message, /Goal complete/u);
+  assert.match(last(notifications).message, /npm test and npm run check passed/u);
 });
 
 test("bare /goal opens a context-valid action panel in TUI mode", async () => {
   const { appendedEntries, commands } = createHarness();
   const { captured, ctx } = createTuiContext();
-  await commands.get("goal").handler("Ship the release", ctx);
+  await getCommand(commands, "goal").handler("Ship the release", ctx);
   ctx.ui.select = async (title, options) => {
     captured.goalPanel = { title, options };
     return "Pause automatic continuation";
   };
 
-  await commands.get("goal").handler("", ctx);
+  await getCommand(commands, "goal").handler("", ctx);
   assert.match(captured.goalPanel.title, /Goal active/u);
   assert.match(captured.goalPanel.title, /Ship the release/u);
   assert.deepEqual(captured.goalPanel.options, [
@@ -1862,7 +1980,7 @@ test("bare /goal opens a context-valid action panel in TUI mode", async () => {
     "Edit objective",
     "Clear goal",
   ]);
-  assert.equal(appendedEntries.at(-1).data.state.status, "paused");
+  assert.equal(last(appendedEntries).data.state.status, "paused");
 });
 
 test("goal panel confirms clear and leaves direct goal commands compatible", async () => {
@@ -1871,7 +1989,7 @@ test("goal panel confirms clear and leaves direct goal commands compatible", asy
   let abortCalls = 0;
   let confirmation: { message: string; title: string } | undefined;
   ctx.abort = () => { abortCalls += 1; };
-  await commands.get("goal").handler("Keep \x1b]2;owned\x07\x1b[31mthis\x1b[0m\0 goal", ctx);
+  await getCommand(commands, "goal").handler("Keep \x1b]2;owned\x07\x1b[31mthis\x1b[0m\0 goal", ctx);
   ctx.ui.select = async () => "Clear goal";
   ctx.ui.confirm = async (title, message) => {
     assert.ok(typeof title === "string");
@@ -1879,19 +1997,19 @@ test("goal panel confirms clear and leaves direct goal commands compatible", asy
     confirmation = { title, message };
     return false;
   };
-  await commands.get("goal").handler("", ctx);
+  await getCommand(commands, "goal").handler("", ctx);
   assert.deepEqual(confirmation, { title: "Clear goal?", message: "Keep this goal" });
-  assert.notEqual(appendedEntries.at(-1).data.state, null);
+  assert.notEqual(last(appendedEntries).data.state, null);
   assert.equal(abortCalls, 0);
 
   ctx.ui.confirm = async () => true;
-  await commands.get("goal").handler("", ctx);
-  assert.equal(appendedEntries.at(-1).data.state, null);
+  await getCommand(commands, "goal").handler("", ctx);
+  assert.equal(last(appendedEntries).data.state, null);
   assert.equal(abortCalls, 1);
 
-  await commands.get("goal").handler("Direct clear", ctx);
-  await commands.get("goal").handler("clear", ctx);
-  assert.equal(appendedEntries.at(-1).data.state, null);
+  await getCommand(commands, "goal").handler("Direct clear", ctx);
+  await getCommand(commands, "goal").handler("clear", ctx);
+  assert.equal(last(appendedEntries).data.state, null);
 });
 
 test("goal panel actions match paused, blocked, and complete states", async () => {
@@ -1918,13 +2036,13 @@ test("goal panel actions match paused, blocked, and complete states", async () =
         turns: 3,
         blockedAuditStartTurn: 0,
         baselineTokens: 0,
-        result: status === "complete" ? unsafeResult : undefined,
+        ...(status === "blocked" || status === "complete" ? { result: unsafeResult } : {}),
       } },
     }];
     const { commands, handlers } = createHarness();
     const { captured, ctx } = createTuiContext(entries);
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
-    await commands.get("goal").handler("", ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+    await getCommand(commands, "goal").handler("", ctx);
     assert.deepEqual(captured.selection.options, options, status);
     assert.match(captured.selection.title, new RegExp(`${status} objective`, "u"), status);
     assert.doesNotMatch(captured.selection.title, /\x1b|\x07|\0/u, status);
@@ -1936,18 +2054,18 @@ test("/goal custom-message continuations enter goal turns without before_agent_s
   const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness();
   const { ctx } = createTuiContext();
 
-  await commands.get("goal").handler("Audit the host continuation lifecycle", ctx);
+  await getCommand(commands, "goal").handler("Audit the host continuation lifecycle", ctx);
 
   assert.match(sentMessages[0].message.content, /Status: active · Turn: 1/u);
   assert.equal(last(appendedEntries.filter((entry) => entry.data.event === "turn")).data.state.turns, 1);
-  const first = await tools.get("killeros_goal_update").execute(
+  const first = await getTool(tools, "killeros_goal_update").execute(
     "first-host-turn",
     { status: "blocked", blockerKey: "host-lifecycle", evidence: "The same external blocker remains" },
     new AbortController().signal,
     () => {},
     ctx,
   );
-  const duplicate = await tools.get("killeros_goal_update").execute(
+  const duplicate = await getTool(tools, "killeros_goal_update").execute(
     "duplicate-host-turn",
     { status: "blocked", blockerKey: "host-lifecycle", evidence: "Duplicate audit in the same turn" },
     new AbortController().signal,
@@ -1957,14 +2075,14 @@ test("/goal custom-message continuations enter goal turns without before_agent_s
   assert.equal(first.details.streak, 1);
   assert.equal(duplicate.details.streak, 1);
 
-  await emitSequentially(handlers.get("agent_end"), {
+  await emitSequentially(getHandlers(handlers, "agent_end"), {
     messages: [{ role: "assistant", stopReason: "stop" }],
   }, ctx);
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
 
   assert.match(sentMessages[1].message.content, /Status: active · Turn: 2/u);
   assert.equal(last(appendedEntries.filter((entry) => entry.data.event === "turn")).data.state.turns, 2);
-  const second = await tools.get("killeros_goal_update").execute(
+  const second = await getTool(tools, "killeros_goal_update").execute(
     "second-host-turn",
     { status: "blocked", blockerKey: "host-lifecycle", evidence: "The blocker remains on the next turn" },
     new AbortController().signal,
@@ -1977,30 +2095,30 @@ test("/goal custom-message continuations enter goal turns without before_agent_s
 test("/goal continues one turn at a time and pause stops future turns", async () => {
   const { commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  await commands.get("goal").handler("Finish the migration", ctx);
+  await getCommand(commands, "goal").handler("Finish the migration", ctx);
   assert.equal(sentMessages.length, 1);
 
   await emitGoalStart(handlers, ctx);
-  await emitSequentially(handlers.get("agent_end"), {
+  await emitSequentially(getHandlers(handlers, "agent_end"), {
     messages: [{ role: "assistant", stopReason: "stop" }],
   }, ctx);
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   assert.equal(sentMessages.length, 2);
   assert.match(sentMessages[1].message.content, /Finish the migration/u);
 
-  await commands.get("goal").handler("pause", ctx);
-  await emitSequentially(handlers.get("agent_end"), {
+  await getCommand(commands, "goal").handler("pause", ctx);
+  await emitSequentially(getHandlers(handlers, "agent_end"), {
     messages: [{ role: "assistant", stopReason: "stop" }],
   }, ctx);
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   assert.equal(sentMessages.length, 2, "a paused goal must not enqueue another continuation");
 });
 
 test("/goal pauses when a dispatched continuation settles without an agent result", async () => {
   const { appendedEntries, commands, handlers } = createHarness();
   const { ctx } = createTuiContext();
-  await commands.get("goal").handler("Start reliably", ctx);
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await getCommand(commands, "goal").handler("Start reliably", ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
   assert.equal(lastGoalEntry.data.state.status, "paused");
   assert.match(lastGoalEntry.data.state.result, /without an agent result/u);
@@ -2011,27 +2129,27 @@ test("/goal does not report start, resume, or edit success after dispatch failur
   for (const control of ["start", "resume", "edit"]) {
     const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     ctx.ui.notify = (message: string, level?: string) => notifications.push({ message, level });
 
     if (control === "start") {
       api.sendMessage = () => { throw new Error("provider unavailable"); };
-      await commands.get("goal").handler("Start reliably", ctx);
+      await getCommand(commands, "goal").handler("Start reliably", ctx);
     } else {
-      await commands.get("goal").handler("Original objective", ctx);
+      await getCommand(commands, "goal").handler("Original objective", ctx);
       api.sendMessage = () => { throw new Error("provider unavailable"); };
       if (control === "resume") {
-        await commands.get("goal").handler("pause", ctx);
-        await commands.get("goal").handler("resume", ctx);
+        await getCommand(commands, "goal").handler("pause", ctx);
+        await getCommand(commands, "goal").handler("resume", ctx);
       } else {
         ctx.waitForIdle = async () => {
-          await emitSequentially(handlers.get("agent_end"), {
+          await emitSequentially(getHandlers(handlers, "agent_end"), {
             messages: [{ role: "assistant", stopReason: "stop" }],
           }, ctx);
-          await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+          await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
         };
         ctx.ui.editor = async () => "Edited objective";
-        await commands.get("goal").handler("edit", ctx);
+        await getCommand(commands, "goal").handler("edit", ctx);
       }
     }
 
@@ -2040,30 +2158,30 @@ test("/goal does not report start, resume, or edit success after dispatch failur
     assert.match(state.result, /continuation could not start: provider unavailable/u);
     assert.equal(sentMessages.length, control === "start" ? 0 : 1);
     assert.equal(notifications.some(({ message }) => new RegExp(control === "start" ? "Goal active" : control === "resume" ? "Goal resumed" : "Goal updated and active", "u").test(message)), false);
-    assert.equal(notifications.at(-1).level, "error");
+    assert.equal(last(notifications).level, "error");
   }
 });
 
 test("/goal reports start, resume, and edit success after dispatch", async () => {
   const { commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
 
-  await commands.get("goal").handler("Original objective", ctx);
-  assert.match(notifications.at(-1).message, /Goal active/u);
-  await commands.get("goal").handler("pause", ctx);
-  await commands.get("goal").handler("resume", ctx);
-  assert.match(notifications.at(-1).message, /Goal resumed/u);
+  await getCommand(commands, "goal").handler("Original objective", ctx);
+  assert.match(last(notifications).message, /Goal active/u);
+  await getCommand(commands, "goal").handler("pause", ctx);
+  await getCommand(commands, "goal").handler("resume", ctx);
+  assert.match(last(notifications).message, /Goal resumed/u);
   ctx.waitForIdle = async () => {
-    await emitSequentially(handlers.get("agent_end"), {
+    await emitSequentially(getHandlers(handlers, "agent_end"), {
       messages: [{ role: "assistant", stopReason: "stop" }],
     }, ctx);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   };
   ctx.ui.editor = async () => "Edited objective";
-  await commands.get("goal").handler("edit", ctx);
-  assert.match(notifications.at(-1).message, /Goal updated and active/u);
+  await getCommand(commands, "goal").handler("edit", ctx);
+  assert.match(last(notifications).message, /Goal updated and active/u);
   assert.equal(sentMessages.length, 3);
 });
 
@@ -2073,10 +2191,10 @@ test("/goal waits for an unrelated active run to settle before dispatch", async 
   let idle = false;
   ctx.isIdle = () => idle;
 
-  await commands.get("goal").handler("Start after unrelated work", ctx);
+  await getCommand(commands, "goal").handler("Start after unrelated work", ctx);
   assert.equal(sentMessages.length, 0);
   idle = true;
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   assert.equal(sentMessages.length, 1);
   assert.match(sentMessages[0].message.content, /Start after unrelated work/u);
 });
@@ -2084,29 +2202,29 @@ test("/goal waits for an unrelated active run to settle before dispatch", async 
 test("/goal does not claim success when a pending message defers dispatch", async () => {
   const { appendedEntries, commands, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   ctx.hasPendingMessages = () => true;
 
-  await commands.get("goal").handler("Wait for the pending message", ctx);
+  await getCommand(commands, "goal").handler("Wait for the pending message", ctx);
   assert.equal(sentMessages.length, 0);
-  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+  assert.equal(last(appendedEntries).data.state.status, "active");
   assert.equal(notifications.some(({ message }) => /Goal active/u.test(message)), false);
 });
 
 test("/goal pauses after an aborted or failed goal turn", async () => {
   const { appendedEntries, commands, handlers } = createHarness();
   const { ctx } = createTuiContext();
-  await commands.get("goal").handler("Recover the deployment", ctx);
+  await getCommand(commands, "goal").handler("Recover the deployment", ctx);
   const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
-  for (const handler of handlers.get("before_agent_start")) {
+  for (const handler of getHandlers(handlers, "before_agent_start")) {
     await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
   }
-  await emitSequentially(handlers.get("agent_end"), {
+  await emitSequentially(getHandlers(handlers, "agent_end"), {
     messages: [{ role: "assistant", stopReason: "error", errorMessage: "\x1b]2;owned\x07\x1b[31mprovider\x1b[0m\0 unavailable" }],
   }, ctx);
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
   assert.equal(lastGoalEntry.data.state.status, "paused");
   assert.equal(lastGoalEntry.data.state.result, "provider unavailable");
@@ -2119,36 +2237,36 @@ test("/goal pauses after an aborted or failed goal turn", async () => {
 test("/goal edit, pause, resume, and clear persist explicit transitions", async () => {
   const { appendedEntries, commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  await commands.get("goal").handler("Original objective", ctx);
+  await getCommand(commands, "goal").handler("Original objective", ctx);
 
-  await commands.get("goal").handler("pause", ctx);
-  assert.equal(appendedEntries.at(-1).data.state.status, "paused");
+  await getCommand(commands, "goal").handler("pause", ctx);
+  assert.equal(last(appendedEntries).data.state.status, "paused");
 
-  await commands.get("goal").handler("resume", ctx);
-  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+  await getCommand(commands, "goal").handler("resume", ctx);
+  assert.equal(last(appendedEntries).data.state.status, "active");
   assert.equal(sentMessages.length, 2);
 
-  for (const handler of handlers.get("before_agent_start")) {
+  for (const handler of getHandlers(handlers, "before_agent_start")) {
     await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
   }
   ctx.ui.editor = async () => "Edited objective";
-  await commands.get("goal").handler("edit", ctx);
+  await getCommand(commands, "goal").handler("edit", ctx);
   const editEntry = last(appendedEntries.filter((entry) => entry.data.event === "edit"));
   assert.equal(editEntry.data.state.objective, "Edited objective");
-  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+  assert.equal(last(appendedEntries).data.state.status, "active");
 
-  await commands.get("goal").handler("clear", ctx);
-  assert.equal(appendedEntries.at(-1).data.event, "clear");
-  assert.equal(appendedEntries.at(-1).data.state, null);
+  await getCommand(commands, "goal").handler("clear", ctx);
+  assert.equal(last(appendedEntries).data.event, "clear");
+  assert.equal(last(appendedEntries).data.state, null);
 });
 
 test("/goal pause and clear stop continuation when their first session write fails", async () => {
   for (const control of ["pause", "clear"]) {
     const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     ctx.ui.notify = (message: string, level?: string) => notifications.push({ message, level });
-    await commands.get("goal").handler(`Safely ${control} this goal`, ctx);
+    await getCommand(commands, "goal").handler(`Safely ${control} this goal`, ctx);
     assert.equal(sentMessages.length, 1);
 
     const appendEntry = api.appendEntry;
@@ -2161,18 +2279,18 @@ test("/goal pause and clear stop continuation when their first session write fai
       return appendEntry(...args);
     };
 
-    await commands.get("goal").handler(control, ctx);
+    await getCommand(commands, "goal").handler(control, ctx);
     const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
     assert.equal(lastGoalEntry.data.state.status, "paused");
     assert.equal(lastGoalEntry.data.state.result, `the requested ${control} could not be saved: transient session write failure`);
-    assert.equal(notifications.at(-1).message, control === "pause"
+    assert.equal(last(notifications).message, control === "pause"
       ? "Goal paused: the requested pause could not be saved: transient session write failure\nAutomatic continuation is stopped. If session storage is still unavailable, retry /goal pause after it recovers."
       : "Goal paused: the requested clear could not be saved\nAutomatic continuation is stopped. Retry /goal clear to remove the goal.");
 
-    await emitSequentially(handlers.get("agent_end"), {
+    await emitSequentially(getHandlers(handlers, "agent_end"), {
       messages: [{ role: "assistant", stopReason: "stop" }],
     }, ctx);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     assert.equal(sentMessages.length, 1, `${control} failure must not schedule another continuation`);
   }
 });
@@ -2180,38 +2298,38 @@ test("/goal pause and clear stop continuation when their first session write fai
 test("/goal pause can save an in-memory fallback after persistence recovers", async () => {
   const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
-  await commands.get("goal").handler("Pause even if storage fails", ctx);
+  await getCommand(commands, "goal").handler("Pause even if storage fails", ctx);
 
   const appendEntry = api.appendEntry;
   api.appendEntry = () => { throw new Error("persistent session write failure"); };
-  await commands.get("goal").handler("pause", ctx);
-  assert.match(notifications.at(-1).message, /Automatic continuation is stopped/u);
+  await getCommand(commands, "goal").handler("pause", ctx);
+  assert.match(last(notifications).message, /Automatic continuation is stopped/u);
 
   api.appendEntry = appendEntry;
-  await commands.get("goal").handler("pause", ctx);
+  await getCommand(commands, "goal").handler("pause", ctx);
     const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
   assert.equal(lastGoalEntry.data.event, "pause");
   assert.equal(lastGoalEntry.data.state.status, "paused");
-  assert.match(notifications.at(-1).message, /Goal pause saved/u);
+  assert.match(last(notifications).message, /Goal pause saved/u);
 
-  await emitSequentially(handlers.get("agent_end"), {
+  await emitSequentially(getHandlers(handlers, "agent_end"), {
     messages: [{ role: "assistant", stopReason: "stop" }],
   }, ctx);
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   assert.equal(sentMessages.length, 1);
 });
 
 test("an active goal blocks /init before repository work starts", async () => {
   const { commands, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
-  await commands.get("goal").handler("Finish this first", ctx);
-  await commands.get("init").handler("", ctx);
+  await getCommand(commands, "goal").handler("Finish this first", ctx);
+  await getCommand(commands, "init").handler("", ctx);
   assert.equal(sentMessages.length, 1);
-  assert.match(notifications.at(-1).message, /Pause or clear the active goal/u);
+  assert.match(last(notifications).message, /Pause or clear the active goal/u);
 });
 
 test("/goal restores only the current branch and resumes active saved work", async () => {
@@ -2235,16 +2353,84 @@ test("/goal restores only the current branch and resumes active saved work", asy
   }];
   const { commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext(branchEntries);
-  for (const handler of handlers.get("session_start")) await handler({ reason: "resume" }, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "resume" }, ctx);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(sentMessages.length, 1);
 
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   ctx.mode = "rpc";
-  await commands.get("goal").handler("", ctx);
-  assert.match(notifications.at(-1).message, /Goal active/u);
-  assert.match(notifications.at(-1).message, /Finish the saved task/u);
+  await getCommand(commands, "goal").handler("", ctx);
+  assert.match(last(notifications).message, /Goal active/u);
+  assert.match(last(notifications).message, /Finish the saved task/u);
+});
+
+test("/goal restores v2.0.18 active shutdown checkpoints", async () => {
+  const now = Date.now();
+  const checkpoint = {
+    version: 1,
+    revision: 3,
+    objective: "Resume the checkpointed task",
+    status: "active",
+    createdAt: now - 60_000,
+    updatedAt: now - 10_000,
+    activeMilliseconds: 50_000,
+    turns: 2,
+    baselineTokens: 0,
+  };
+  const branchEntries = [{
+    type: "custom",
+    customType: "killeros-goal",
+    data: { version: 1, event: "checkpoint", state: checkpoint },
+  }];
+  const { commands, handlers, sentMessages } = createHarness();
+  const { ctx } = createTuiContext(branchEntries);
+
+  await emitSequentially(getHandlers(handlers, "session_start"), { reason: "resume" }, ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(sentMessages.length, 1);
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  ctx.mode = "rpc";
+  await getCommand(commands, "goal").handler("", ctx);
+  assert.match(last(notifications).message, /Resume the checkpointed task/u);
+});
+
+test("/goal restore rejects contradictory status-specific fields", async () => {
+  const now = Date.now();
+  const common = {
+    version: 1,
+    revision: 1,
+    objective: "Reject contradictory state",
+    createdAt: now,
+    updatedAt: now,
+    activeMilliseconds: 0,
+    turns: 1,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+  };
+  const invalidStates = [
+    { ...common, status: "active", activeStartedAt: -1 },
+    { ...common, status: "paused", activeStartedAt: now },
+    { ...common, status: "blocked", activeStartedAt: now, result: "blocked" },
+    { ...common, status: "complete", result: "done", blockerAudit: { key: "blocked", streak: 1, lastTurn: 1 } },
+  ];
+
+  for (const state of invalidStates) {
+    const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: "checkpoint", state } }];
+    const { commands, handlers, sentMessages } = createHarness();
+    const { ctx } = createTuiContext(entries);
+    const notifications: TestNotification[] = [];
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    await emitSequentially(getHandlers(handlers, "session_start"), { reason: "resume" }, ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+    ctx.mode = "rpc";
+    await getCommand(commands, "goal").handler("", ctx);
+
+    assert.equal(sentMessages.length, 0, state.status);
+    assert.match(last(notifications)?.message ?? "", /No goal is set/u, state.status);
+  }
 });
 
 test("goal update is active only while a goal is active", async () => {
@@ -2252,16 +2438,16 @@ test("goal update is active only while a goal is active", async () => {
   const { ctx } = createTuiContext();
 
   assert.equal(activeTools.includes("killeros_goal_update"), true);
-  await emitSequentially(handlers.get("session_start"), { reason: "startup" }, ctx);
+  await emitSequentially(getHandlers(handlers, "session_start"), { reason: "startup" }, ctx);
   assert.equal(activeTools.includes("killeros_goal_update"), false);
 
-  await commands.get("goal").handler("Finish only after explicit activation", ctx);
+  await getCommand(commands, "goal").handler("Finish only after explicit activation", ctx);
   assert.equal(activeTools.includes("killeros_goal_update"), true);
-  await commands.get("goal").handler("pause", ctx);
+  await getCommand(commands, "goal").handler("pause", ctx);
   assert.equal(activeTools.includes("killeros_goal_update"), false);
-  await commands.get("goal").handler("resume", ctx);
+  await getCommand(commands, "goal").handler("resume", ctx);
   assert.equal(activeTools.includes("killeros_goal_update"), true);
-  await tools.get("killeros_goal_update").execute(
+  await getTool(tools, "killeros_goal_update").execute(
     "complete-explicit-goal",
     { status: "complete", evidence: "Verified complete" },
     new AbortController().signal,
@@ -2274,7 +2460,7 @@ test("goal update is active only while a goal is active", async () => {
 test("question and goal renderers strip terminal controls while preserving line breaks", () => {
   const { entryRenderers, tools } = createHarness();
   const unsafe = "safe\x1B[2Jspoof\u0007\nnext";
-  const question = tools.get("question");
+  const question = getTool(tools, "question");
   const questionCall = question.renderCall({
     question: unsafe,
     options: [{ label: unsafe, description: unsafe, preview: unsafe }],
@@ -2283,7 +2469,7 @@ test("question and goal renderers strip terminal controls while preserving line 
     content: [{ type: "text", text: unsafe }],
     details: { question: unsafe, options: [unsafe], answer: unsafe, wasCustom: true },
   }, { expanded: true }, theme).render(80).join("\n");
-  const goalEntry = entryRenderers.get("killeros-goal")({ data: { version: 1, event: "complete", state: {
+  const goalEntry = getRenderer(entryRenderers, "killeros-goal")({ data: { version: 1, event: "complete", state: {
     version: 1,
     revision: 1,
     objective: unsafe,
@@ -2296,7 +2482,7 @@ test("question and goal renderers strip terminal controls while preserving line 
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
   } } }, { expanded: true }, theme).render(80).join("\n");
-  const goalResult = tools.get("killeros_goal_update").renderResult({
+  const goalResult = getTool(tools, "killeros_goal_update").renderResult({
     content: [], details: { status: "complete", evidence: unsafe },
   }, { expanded: true }, theme, {}).render(80).join("\n");
 
@@ -2307,7 +2493,7 @@ test("question and goal renderers strip terminal controls while preserving line 
 });
 
 test("goal update renders the real tool error instead of an undefined blocker audit", () => {
-  const tool = createHarness().tools.get("killeros_goal_update");
+  const tool = getTool(createHarness(), "killeros_goal_update");
   const call = tool.renderCall({ status: "complete" }, theme, {}).render(80).join("\n");
   const result = tool.renderResult(
     {
@@ -2327,18 +2513,18 @@ test("goal update renders the real tool error instead of an undefined blocker au
 test("/goal validates objectives, reserves control words, and requires blocker audits during goal turns", async () => {
   const { commands, handlers, tools } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
 
-  await commands.get("goal").handler("x".repeat(4_001), ctx);
-  assert.match(notifications.at(-1).message, /4,000 characters/u);
-  await commands.get("goal").handler("CLEAR", ctx);
-  assert.match(notifications.at(-1).message, /No goal is set/u);
+  await getCommand(commands, "goal").handler("x".repeat(4_001), ctx);
+  assert.match(last(notifications).message, /4,000 characters/u);
+  await getCommand(commands, "goal").handler("CLEAR", ctx);
+  assert.match(last(notifications).message, /No goal is set/u);
 
   ctx.hasPendingMessages = () => true;
-  await commands.get("goal").handler("Resolve the blocker", ctx);
+  await getCommand(commands, "goal").handler("Resolve the blocker", ctx);
   await assert.rejects(
-    tools.get("killeros_goal_update").execute(
+    getTool(tools, "killeros_goal_update").execute(
       "goal-blocked-outside-turn",
       { status: "blocked", blockerKey: "missing-credential", evidence: "Credentials are unavailable" },
       new AbortController().signal,
@@ -2352,7 +2538,7 @@ test("/goal validates objectives, reserves control words, and requires blocker a
   await emitGoalStart(handlers, ctx);
   for (const blockerKey of [undefined, "", "UPPERCASE", "contains whitespace", `x${"y".repeat(120)}`]) {
     await assert.rejects(
-      tools.get("killeros_goal_update").execute(
+      getTool(tools, "killeros_goal_update").execute(
         `invalid-${blockerKey}`,
         { status: "blocked", blockerKey, evidence: "Still blocked" },
         new AbortController().signal,
@@ -2367,7 +2553,7 @@ test("/goal validates objectives, reserves control words, and requires blocker a
 test("a goal blocks only after the same blocker is recorded on three consecutive turns", async () => {
   const { appendedEntries, commands, handlers, tools } = createHarness();
   const { ctx } = createTuiContext();
-  const blocked = (id: string, blockerKey = "missing-credential"): Promise<TestResult> => tools.get("killeros_goal_update").execute(
+  const blocked = (id: string, blockerKey = "missing-credential"): Promise<TestResult> => getTool(tools, "killeros_goal_update").execute(
     id,
     { status: "blocked", blockerKey, evidence: `Evidence for ${blockerKey}` },
     new AbortController().signal,
@@ -2375,16 +2561,16 @@ test("a goal blocks only after the same blocker is recorded on three consecutive
     ctx,
   );
   const finishTurn = async () => {
-    await emitSequentially(handlers.get("agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   };
 
-  await commands.get("goal").handler("Resolve one stable blocker", ctx);
+  await getCommand(commands, "goal").handler("Resolve one stable blocker", ctx);
   await emitGoalStart(handlers, ctx);
   const first = await blocked("first");
   assert.equal(first.details.status, "blocker-audit");
   assert.equal(first.details.streak, 1);
-  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+  assert.equal(last(appendedEntries).data.state.status, "active");
 
   const duplicate = await blocked("duplicate");
   assert.equal(duplicate.details.streak, 1, "duplicate calls in one turn must not advance the streak");
@@ -2399,8 +2585,8 @@ test("a goal blocks only after the same blocker is recorded on three consecutive
   const third = await blocked("third");
   assert.equal(third.details.status, "blocked");
   assert.equal(third.details.streak, 3);
-  assert.equal(appendedEntries.at(-1).data.state.status, "blocked");
-  assert.deepEqual(appendedEntries.at(-1).data.state.blockerAudit, {
+  assert.equal(last(appendedEntries).data.state.status, "blocked");
+  assert.deepEqual(last(appendedEntries).data.state.blockerAudit, {
     key: "missing-credential",
     streak: 3,
     lastTurn: 3,
@@ -2411,9 +2597,9 @@ test("resume, edit, and completion clear blocker audit progress", async () => {
   for (const transition of ["resume", "edit", "complete"]) {
     const { appendedEntries, commands, handlers, tools } = createHarness();
     const { ctx } = createTuiContext();
-    await commands.get("goal").handler(`Reset audit on ${transition}`, ctx);
+    await getCommand(commands, "goal").handler(`Reset audit on ${transition}`, ctx);
     await emitGoalStart(handlers, ctx);
-    await tools.get("killeros_goal_update").execute(
+    await getTool(tools, "killeros_goal_update").execute(
       `audit-before-${transition}`,
       { status: "blocked", blockerKey: "stable-blocker", evidence: "First attempt" },
       new AbortController().signal,
@@ -2421,13 +2607,13 @@ test("resume, edit, and completion clear blocker audit progress", async () => {
       ctx,
     );
     if (transition === "resume") {
-      await commands.get("goal").handler("pause", ctx);
-      await commands.get("goal").handler("resume", ctx);
+      await getCommand(commands, "goal").handler("pause", ctx);
+      await getCommand(commands, "goal").handler("resume", ctx);
     } else if (transition === "edit") {
       ctx.ui.editor = async () => "Edited objective";
-      await commands.get("goal").handler("edit", ctx);
+      await getCommand(commands, "goal").handler("edit", ctx);
     } else {
-      await tools.get("killeros_goal_update").execute(
+      await getTool(tools, "killeros_goal_update").execute(
         "complete-after-audit",
         { status: "complete", evidence: "Verified complete" },
         new AbortController().signal,
@@ -2435,14 +2621,14 @@ test("resume, edit, and completion clear blocker audit progress", async () => {
         ctx,
       );
     }
-    assert.equal(appendedEntries.at(-1).data.state.blockerAudit, undefined, transition);
+    assert.equal(last(appendedEntries).data.state.blockerAudit, undefined, transition);
   }
 });
 
 test("changed and skipped blocker turns reset the blocker streak", async () => {
   const { appendedEntries, commands, handlers, tools } = createHarness();
   const { ctx } = createTuiContext();
-  const blocked = (blockerKey: string): Promise<TestResult> => tools.get("killeros_goal_update").execute(
+  const blocked = (blockerKey: string): Promise<TestResult> => getTool(tools, "killeros_goal_update").execute(
     blockerKey,
     { status: "blocked", blockerKey, evidence: "Repeated evidence" },
     new AbortController().signal,
@@ -2450,11 +2636,11 @@ test("changed and skipped blocker turns reset the blocker streak", async () => {
     ctx,
   );
   const finishTurn = async () => {
-    await emitSequentially(handlers.get("agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   };
 
-  await commands.get("goal").handler("Audit blocker resets", ctx);
+  await getCommand(commands, "goal").handler("Audit blocker resets", ctx);
   await emitGoalStart(handlers, ctx);
   await blocked("first-blocker");
   await finishTurn();
@@ -2465,7 +2651,7 @@ test("changed and skipped blocker turns reset the blocker streak", async () => {
   await finishTurn();
   await emitGoalStart(handlers, ctx);
   assert.equal((await blocked("changed-blocker")).details.streak, 1);
-  assert.equal(appendedEntries.at(-1).data.state.status, "active");
+  assert.equal(last(appendedEntries).data.state.status, "active");
 });
 
 test("/goal fails closed when the current branch cannot be read", async () => {
@@ -2493,7 +2679,7 @@ test("/goal fails closed when the current branch cannot be read", async () => {
   const { handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext(staleEntries);
   ctx.sessionManager.getBranch = () => { throw new Error("branch unavailable"); };
-  for (const handler of handlers.get("session_start")) await handler({ reason: "resume" }, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "resume" }, ctx);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(sentMessages.length, 0);
 });
@@ -2524,22 +2710,22 @@ test("saved goals stay inactive in print and JSON modes", async () => {
     const { activeTools, appendedEntries, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext(entries);
     ctx.mode = mode;
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of handlers.get("session_start")) await handler({ reason: "resume" }, ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "resume" }, ctx);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(sentMessages.length, 0);
     assert.equal(activeTools.includes("killeros_goal_update"), false);
 
     let systemPrompt = "base";
-    for (const handler of handlers.get("before_agent_start")) {
+    for (const handler of getHandlers(handlers, "before_agent_start")) {
       const result = await handler({ prompt: "", systemPrompt, systemPromptOptions: {} }, ctx);
       if (result?.systemPrompt) systemPrompt = result.systemPrompt;
     }
     assert.doesNotMatch(systemPrompt, /Active KillerOS goal/u);
-    await commands.get("goal").handler("", ctx);
-    assert.match(notifications.at(-1).message, /requires TUI or RPC mode/u);
-    for (const handler of handlers.get("session_shutdown")) await handler({}, ctx);
+    await getCommand(commands, "goal").handler("", ctx);
+    assert.match(last(notifications).message, /requires TUI or RPC mode/u);
+    for (const handler of getHandlers(handlers, "session_shutdown")) await handler({}, ctx);
     assert.equal(appendedEntries.length, 0, `${mode} must not checkpoint an inactive saved goal`);
   }
 });
@@ -2547,29 +2733,29 @@ test("saved goals stay inactive in print and JSON modes", async () => {
 test("/goal edit resumes after invalid input and pauses after persistence failure", async () => {
   const { api, appendedEntries, commands, handlers, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
-  await commands.get("goal").handler("Keep the original objective", ctx);
-  for (const handler of handlers.get("before_agent_start")) {
+  await getCommand(commands, "goal").handler("Keep the original objective", ctx);
+  for (const handler of getHandlers(handlers, "before_agent_start")) {
     await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
   }
 
   ctx.ui.editor = async () => "";
-  await commands.get("goal").handler("edit", ctx);
+  await getCommand(commands, "goal").handler("edit", ctx);
   assert.equal(sentMessages.length, 1, "invalid edits must not strand an active goal");
 
-  for (const handler of handlers.get("before_agent_start")) {
+  for (const handler of getHandlers(handlers, "before_agent_start")) {
     await handler({ prompt: "", systemPrompt: "base", systemPromptOptions: {} }, ctx);
   }
   ctx.ui.editor = async () => "Changed objective";
   api.appendEntry = () => { throw new Error("session write failed"); };
-  await commands.get("goal").handler("edit", ctx);
+  await getCommand(commands, "goal").handler("edit", ctx);
   assert.equal(sentMessages.length, 1, "an unsaved continuation must not start");
   ctx.mode = "rpc";
-  await commands.get("goal").handler("", ctx);
-  assert.match(notifications.at(-1).message, /Goal paused/u);
-  assert.match(notifications.at(-1).message, /session write failed/u);
-  assert.equal(appendedEntries.at(-1).data.state.objective, "Keep the original objective");
+  await getCommand(commands, "goal").handler("", ctx);
+  assert.match(last(notifications).message, /Goal paused/u);
+  assert.match(last(notifications).message, /session write failed/u);
+  assert.equal(last(appendedEntries).data.state.objective, "Keep the original objective");
 });
 
 test("/goal pause and clear persist terminal state before stopping an active goal run", async () => {
@@ -2588,14 +2774,14 @@ test("/goal pause and clear persist terminal state before stopping an active goa
       ctx.waitForIdle = async () => { calls.push("waitForIdle"); };
       ctx.ui.notify = () => calls.push("notify");
 
-      await commands.get("goal").handler(`Immediately ${control} active work`, ctx);
+      await getCommand(commands, "goal").handler(`Immediately ${control} active work`, ctx);
       calls.length = 0;
       await emitGoalStart(handlers, ctx);
-      await commands.get("goal").handler(control, ctx);
+      await getCommand(commands, "goal").handler(control, ctx);
 
       assert.deepEqual(calls, [`persist:${control === "pause" ? "paused" : "clear"}`, "abort", "waitForIdle", "notify"], `${mode} ${control}`);
-      await emitSequentially(handlers.get("agent_end"), { messages: [{ role: "assistant", stopReason: "aborted" }] }, ctx);
-      await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+      await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "aborted" }] }, ctx);
+      await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
       assert.equal(sentMessages.length, 1, `${mode} ${control} must not continue after explicit cancellation`);
     }
   }
@@ -2607,10 +2793,10 @@ test("/goal pause stops a scheduled continuation before its goal turn starts", a
   const calls: string[] = [];
   ctx.abort = () => calls.push("abort");
   ctx.waitForIdle = async () => { calls.push("waitForIdle"); };
-  await commands.get("goal").handler("Pause scheduled work", ctx);
+  await getCommand(commands, "goal").handler("Pause scheduled work", ctx);
   assert.equal(sentMessages.length, 1);
   calls.length = 0;
-  await commands.get("goal").handler("pause", ctx);
+  await getCommand(commands, "goal").handler("pause", ctx);
   assert.deepEqual(calls, ["abort", "waitForIdle"]);
 });
 
@@ -2634,8 +2820,8 @@ test("/goal does not abort unrelated work when clearing an inactive goal", async
     const { ctx } = createTuiContext(entries);
     let abortCalls = 0;
     ctx.abort = () => { abortCalls += 1; };
-    await emitSequentially(handlers.get("session_start"), { reason: "resume" }, ctx);
-    await commands.get("goal").handler("clear", ctx);
+    await emitSequentially(getHandlers(handlers, "session_start"), { reason: "resume" }, ctx);
+    await getCommand(commands, "goal").handler("clear", ctx);
     assert.equal(abortCalls, 0, status);
   }
 });
@@ -2644,16 +2830,16 @@ test("saved goal cancellation remains terminal when host stopping fails", async 
   for (const control of ["pause", "clear"]) {
     const { appendedEntries, commands, handlers } = createHarness();
     const { ctx } = createTuiContext();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    await commands.get("goal").handler(`Persist ${control} before abort`, ctx);
+    await getCommand(commands, "goal").handler(`Persist ${control} before abort`, ctx);
     await emitGoalStart(handlers, ctx);
     ctx.abort = () => { throw new Error("abort unavailable"); };
-    await commands.get("goal").handler(control, ctx);
-    const state = appendedEntries.at(-1).data.state;
+    await getCommand(commands, "goal").handler(control, ctx);
+    const state = last(appendedEntries).data.state;
     assert.equal(control === "pause" ? state.status : state, control === "pause" ? "paused" : null);
-    assert.match(notifications.at(-1).message, /could not be confirmed stopped/u);
-    assert.match(notifications.at(-1).message, /abort unavailable/u);
+    assert.match(last(notifications).message, /could not be confirmed stopped/u);
+    assert.match(last(notifications).message, /abort unavailable/u);
   }
 });
 
@@ -2667,6 +2853,7 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
     createdAt: now,
     updatedAt: now,
     activeMilliseconds: 0,
+    activeStartedAt: now,
     turns: 2,
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
@@ -2679,7 +2866,7 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
     }];
     const harness = createHarness();
     const { ctx } = createTuiContext(entries);
-    await emitSequentially(harness.handlers.get("session_start"), { reason: "resume" }, ctx);
+    await emitSequentially(getHandlers(harness, "session_start"), { reason: "resume" }, ctx);
     await new Promise((resolve) => setImmediate(resolve));
     return { ...harness, ctx };
   };
@@ -2687,14 +2874,14 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
   const valid = await restore({ key: "missing-credential", streak: 2, lastTurn: 2 });
   assert.equal(valid.sentMessages.length, 1);
   await emitGoalStart(valid.handlers, valid.ctx);
-  await valid.tools.get("killeros_goal_update").execute(
+  await getTool(valid, "killeros_goal_update").execute(
     "restored-third-attempt",
     { status: "blocked", blockerKey: "missing-credential", evidence: "Still unavailable" },
     new AbortController().signal,
     () => {},
     valid.ctx,
   );
-  assert.equal(valid.appendedEntries.at(-1).data.state.status, "blocked");
+  assert.equal(last(valid.appendedEntries).data.state.status, "blocked");
 
   const malformed = [
     { key: "", streak: 1, lastTurn: 1 },
@@ -2723,45 +2910,46 @@ test("/goal edit reports persistence failure for every goal status", async () =>
       createdAt: now,
       updatedAt: now,
       activeMilliseconds: 0,
-      activeStartedAt: status === "active" ? now : undefined,
+      ...(status === "active" ? { activeStartedAt: now } : {}),
       turns: 3,
       blockedAuditStartTurn: 0,
       baselineTokens: 0,
+      ...(status === "blocked" || status === "complete" ? { result: `${status} result` } : {}),
     };
     const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: status, state } }];
     const { api, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext(entries);
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
     ctx.ui.editor = async () => "Edited objective";
-    await emitSequentially(handlers.get("session_start"), { reason: "resume" }, ctx);
+    await emitSequentially(getHandlers(handlers, "session_start"), { reason: "resume" }, ctx);
     await new Promise((resolve) => setImmediate(resolve));
     const sentBeforeEdit = sentMessages.length;
     api.appendEntry = () => { throw new Error(`write failed from ${status}`); };
-    await commands.get("goal").handler("edit", ctx);
-    assert.match(notifications.at(-1).message, new RegExp(`write failed from ${status}`, "u"));
+    await getCommand(commands, "goal").handler("edit", ctx);
+    assert.match(last(notifications).message, new RegExp(`write failed from ${status}`, "u"));
     assert.equal(sentMessages.length, sentBeforeEdit, status);
     ctx.mode = "rpc";
-    await commands.get("goal").handler("", ctx);
-    assert.match(notifications.at(-1).message, /Original objective/u);
-    assert.match(notifications.at(-1).message, new RegExp(`Goal ${status === "active" ? "paused" : status}`, "u"));
+    await getCommand(commands, "goal").handler("", ctx);
+    assert.match(last(notifications).message, /Original objective/u);
+    assert.match(last(notifications).message, new RegExp(`Goal ${status === "active" ? "paused" : status}`, "u"));
   }
 });
 
 test("failed goal replacement pauses the old active goal and dispatches neither objective", async () => {
   const { api, commands, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
-  await commands.get("goal").handler("Old objective", ctx);
+  await getCommand(commands, "goal").handler("Old objective", ctx);
   api.appendEntry = () => { throw new Error("replacement write failed"); };
-  await commands.get("goal").handler("New objective", ctx);
+  await getCommand(commands, "goal").handler("New objective", ctx);
   assert.equal(sentMessages.length, 1);
-  assert.match(notifications.at(-1).message, /Goal could not be replaced: replacement write failed/u);
+  assert.match(last(notifications).message, /Goal could not be replaced: replacement write failed/u);
   ctx.mode = "rpc";
-  await commands.get("goal").handler("", ctx);
-  assert.match(notifications.at(-1).message, /Goal paused/u);
-  assert.match(notifications.at(-1).message, /Old objective/u);
+  await getCommand(commands, "goal").handler("", ctx);
+  assert.match(last(notifications).message, /Goal paused/u);
+  assert.match(last(notifications).message, /Old objective/u);
 });
 
 test("failed replacement preserves paused and blocked goals", async () => {
@@ -2778,44 +2966,45 @@ test("failed replacement preserves paused and blocked goals", async () => {
       turns: 3,
       blockedAuditStartTurn: 0,
       baselineTokens: 0,
+      ...(status === "blocked" ? { result: "Blocked result" } : {}),
     };
     const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: status, state } }];
     const { api, commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext(entries);
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    await emitSequentially(handlers.get("session_start"), { reason: "resume" }, ctx);
+    await emitSequentially(getHandlers(handlers, "session_start"), { reason: "resume" }, ctx);
     api.appendEntry = () => { throw new Error(`${status} replacement failed`); };
-    await commands.get("goal").handler("Replacement objective", ctx);
+    await getCommand(commands, "goal").handler("Replacement objective", ctx);
     assert.equal(sentMessages.length, 0);
-    assert.match(notifications.at(-1).message, new RegExp(`${status} replacement failed`, "u"));
+    assert.match(last(notifications).message, new RegExp(`${status} replacement failed`, "u"));
     ctx.mode = "rpc";
-    await commands.get("goal").handler("", ctx);
-    assert.match(notifications.at(-1).message, new RegExp(`Goal ${status}`, "u"));
-    assert.match(notifications.at(-1).message, new RegExp(`Original ${status} objective`, "u"));
+    await getCommand(commands, "goal").handler("", ctx);
+    assert.match(last(notifications).message, new RegExp(`Goal ${status}`, "u"));
+    assert.match(last(notifications).message, new RegExp(`Original ${status} objective`, "u"));
   }
 });
 
 test("first goal write failure reports the error and dispatches nothing", async () => {
   const { api, commands, sentMessages } = createHarness();
   const { ctx } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   api.appendEntry = () => { throw new Error("first write failed"); };
-  await commands.get("goal").handler("New objective", ctx);
+  await getCommand(commands, "goal").handler("New objective", ctx);
   assert.equal(sentMessages.length, 0);
-  assert.match(notifications.at(-1).message, /Goal could not be started: first write failed/u);
+  assert.match(last(notifications).message, /Goal could not be started: first write failed/u);
 });
 
 test("completed goals leave the footer but remain available through /goal", async () => {
   const { commands, handlers, tools } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
-  for (const handler of handlers.get("session_start")) await handler({}, ctx);
-  await commands.get("goal").handler("Finish cleanly", ctx);
+  for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+  await getCommand(commands, "goal").handler("Finish cleanly", ctx);
   await emitGoalStart(handlers, ctx);
-  await tools.get("killeros_goal_update").execute(
+  await getTool(tools, "killeros_goal_update").execute(
     "complete",
     { status: "complete", evidence: "All checks passed" },
     new AbortController().signal,
@@ -2829,10 +3018,10 @@ test("completed goals leave the footer but remain available through /goal", asyn
   });
   assert.doesNotMatch(footer.render(120).join("\n"), /goal complete/u);
   ctx.mode = "rpc";
-  await commands.get("goal").handler("", ctx);
-  assert.match(notifications.at(-1).message, /Goal complete/u);
-  assert.match(notifications.at(-1).message, /All checks passed/u);
-  footer.dispose();
+  await getCommand(commands, "goal").handler("", ctx);
+  assert.match(last(notifications).message, /Goal complete/u);
+  assert.match(last(notifications).message, /All checks passed/u);
+  disposeTestComponent(footer);
 });
 
 test("goal transcript rows are compact until expanded", () => {
@@ -2846,29 +3035,30 @@ test("goal transcript rows are compact until expanded", () => {
     createdAt: 1,
     updatedAt: 1,
     activeMilliseconds: 0,
+    activeStartedAt: 1,
     turns: 0,
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
   } } };
-  assert.ok(entryRenderers.get("killeros-goal")(entry, { expanded: false }, theme).render(40).length <= 3);
-  assert.match(entryRenderers.get("killeros-goal")(entry, { expanded: true }, theme).render(40).join("\n"), /Objective Objective/u);
+  assert.ok(getRenderer(entryRenderers, "killeros-goal")(entry, { expanded: false }, theme).render(40).length <= 3);
+  assert.match(getRenderer(entryRenderers, "killeros-goal")(entry, { expanded: true }, theme).render(40).join("\n"), /Objective Objective/u);
 
   const result = { content: [], details: { status: "complete", evidence: "E".repeat(2_000) } };
-  assert.ok(tools.get("killeros_goal_update").renderResult(result, { expanded: false }, theme).render(40).length <= 3);
-  const expandedEvidence = tools.get("killeros_goal_update").renderResult(result, { expanded: true }, theme).render(40).join("\n");
+  assert.ok(getTool(tools, "killeros_goal_update").renderResult(result, { expanded: false }, theme).render(40).length <= 3);
+  const expandedEvidence = getTool(tools, "killeros_goal_update").renderResult(result, { expanded: true }, theme).render(40).join("\n");
   assert.equal((expandedEvidence.match(/E/gu) ?? []).length, 2_000);
 });
 
 test("active, paused, and blocked goals replace the footer path with exact status text", async () => {
   const { appendedEntries, commands, handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
-  for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
-  await commands.get("goal").handler("Keep working", ctx);
-  const state = appendedEntries.at(-1).data.state;
-  const yellowTheme = {
+  for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "startup" }, ctx);
+  await getCommand(commands, "goal").handler("Keep working", ctx);
+  const state = last(appendedEntries).data.state;
+  const yellowTheme = themeTestAdapter({
     ...theme,
     fg: (color: string, text: string) => color === "warning" ? `\x1B[33m${text}\x1B[39m` : text,
-  } as unknown as Theme;
+  });
   const footer = captured.footerFactory(tui, yellowTheme, {
     getGitBranch: () => "main",
     onBranchChange: () => () => {},
@@ -2906,7 +3096,7 @@ test("active, paused, and blocked goals replace the footer path with exact statu
   const blocked = stripAnsi(footer.render(160)[2] ?? "");
   assert.ok(blocked.trimEnd().endsWith("/goal is blocked"));
   assert.doesNotMatch(blocked, /! goal blocked/u);
-  footer.dispose();
+  disposeTestComponent(footer);
 });
 
 test("registers /init as a native command and runs the hidden generation workflow", async () => {
@@ -2917,7 +3107,7 @@ test("registers /init as a native command and runs the hidden generation workflo
     assert.equal(tools.has("init"), false);
     assert.equal(tools.has("init_survey"), false);
 
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     let reloadCalls = 0;
     const ctx = {
       cwd: directory,
@@ -2927,7 +3117,7 @@ test("registers /init as a native command and runs the hidden generation workflo
       ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
       waitForIdle: async () => {},
     };
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
 
     assert.equal(sentMessages.length, 1);
@@ -2944,16 +3134,16 @@ test("registers /init as a native command and runs the hidden generation workflo
     assert.match(INIT_WORKFLOW_PROMPT, /at most 2 repository-specific lines per section/u);
     assert.doesNotMatch(INIT_WORKFLOW_PROMPT, /C:\\Users|writing-great-guidelines\/SKILL\.md/u);
 
-    await commands.get("init").handler("", ctx);
+    await getCommand(commands, "init").handler("", ctx);
     assert.equal(sentMessages.length, 1);
-    assert.deepEqual(notifications.at(-1), { message: "/init is already running", level: "warning" });
+    assert.deepEqual(last(notifications), { message: "/init is already running", level: "warning" });
 
     await emitSuccessfulInitWrite(handlers, tools, ctx);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
     assert.equal(reloadCalls, 1);
     assert.deepEqual(sentUserMessages, []);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     assert.equal(reloadCalls, 1);
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -2964,7 +3154,7 @@ test("/init rejects re-entry while the first invocation waits for idle", async (
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-starting-"));
   try {
     const { commands, handlers, sentMessages } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     let releaseIdle: () => void = () => {};
     let waitCalls = 0;
     const idle = new Promise<void>((resolve) => { releaseIdle = resolve; });
@@ -2977,15 +3167,15 @@ test("/init rejects re-entry while the first invocation waits for idle", async (
       waitForIdle: async () => { waitCalls += 1; await idle; },
     };
 
-    const first = commands.get("init").handler("", ctx);
+    const first = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => waitCalls === 1);
-    await commands.get("init").handler("", ctx);
+    await getCommand(commands, "init").handler("", ctx);
     assert.equal(waitCalls, 1);
-    assert.deepEqual(notifications.at(-1), { message: "/init is already running", level: "warning" });
+    assert.deepEqual(last(notifications), { message: "/init is already running", level: "warning" });
 
     releaseIdle();
     await waitFor(() => sentMessages.length === 1);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await first;
     assert.equal(sentMessages.length, 1);
   } finally {
@@ -3005,9 +3195,9 @@ test("/init cancels preflight when its session shuts down", async () => {
     ctx.reload = async () => {};
     ctx.waitForIdle = async () => { waiting = true; await idle; };
 
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => waiting);
-    await emitSequentially(handlers.get("session_shutdown"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "session_shutdown"), {}, ctx);
     releaseIdle();
     await initRun;
     assert.equal(sentMessages.length, 0);
@@ -3034,18 +3224,18 @@ test("cancelled /init preflight cannot overwrite a newer session", { timeout: 10
       ctx.reload = async () => {};
       return ctx;
     };
-    const slow = commands.get("init").handler("", context(slowDirectory));
+    const slow = getCommand(commands, "init").handler("", context(slowDirectory));
     await new Promise((resolve) => setTimeout(resolve, 5));
-    await emitSequentially(handlers.get("session_shutdown"), {}, context(slowDirectory));
+    await emitSequentially(getHandlers(handlers, "session_shutdown"), {}, context(slowDirectory));
 
     const fastContext = context(fastDirectory);
-    const fast = commands.get("init").handler("", fastContext);
+    const fast = getCommand(commands, "init").handler("", fastContext);
     await waitFor(() => sentMessages.length === 1);
     await slow;
 
-    const result = await tools.get("killeros_init_read").execute("new-session-read", { path: "package.json" });
+    const result = await getTool(tools, "killeros_init_read").execute("new-session-read", { path: "package.json" });
     assert.match(result.content[0].text, /new-session/u);
-    await emitSequentially(handlers.get("agent_settled"), {}, fastContext);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, fastContext);
     await fast;
   } finally {
     rmSync(slowDirectory, { recursive: true, force: true });
@@ -3058,14 +3248,14 @@ test("/init settles its command handler when the session shuts down", { timeout:
   try {
     const { commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     ctx.cwd = directory;
     ctx.reload = async () => {};
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
 
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
-    await emitSequentially(handlers.get("session_shutdown"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "session_shutdown"), {}, ctx);
     await initRun;
     assert.deepEqual(notifications, []);
   } finally {
@@ -3077,7 +3267,7 @@ test("/init reports failure instead of reloading when the model does not write",
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-no-write-"));
   try {
     const { commands, handlers, sentMessages } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     let reloadCalls = 0;
     const ctx = {
       cwd: directory,
@@ -3087,13 +3277,13 @@ test("/init reports failure instead of reloading when the model does not write",
       ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
       waitForIdle: async () => {},
     };
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
 
     assert.equal(reloadCalls, 0);
-    assert.deepEqual(notifications.at(-1), {
+    assert.deepEqual(last(notifications), {
       message: "/init did not generate AGENTS.md: the model completed without a write or policy-conflict outcome",
       level: "error",
     });
@@ -3108,7 +3298,7 @@ test("/init reports a structured policy conflict without writing or reloading", 
     const target = path.join(directory, "AGENTS.md");
     writeFileSync(target, "# AGENTS.md\n\nProtected policy.\n");
     const { commands, handlers, sentMessages, tools } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     let reloadCalls = 0;
     const ctx = {
       cwd: directory,
@@ -3118,22 +3308,22 @@ test("/init reports a structured policy conflict without writing or reloading", 
       ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
       waitForIdle: async () => {},
     };
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
     const unsafeReason = "Protected \x1b]2;owned\x07\x1b[31mrelease\x1b[0m\0 policy conflicts with repository evidence.";
     const reason = "Protected release policy conflicts with repository evidence.";
-    const conflict = await tools.get("killeros_init_conflict").execute("conflict", { reason: unsafeReason });
+    const conflict = await getTool(tools, "killeros_init_conflict").execute("conflict", { reason: unsafeReason });
     assert.equal(conflict.content[0].text, `Root AGENTS.md was left unchanged: ${reason}`);
     assert.equal(conflict.details.reason, reason);
     await assert.rejects(
-      tools.get("killeros_init_write").execute("write-after-conflict", { content: validGeneratedGuidance }),
+      getTool(tools, "killeros_init_write").execute("write-after-conflict", { content: validGeneratedGuidance }),
       /exactly one write or policy-conflict/u,
     );
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
     assert.equal(readFileSync(target, "utf8"), "# AGENTS.md\n\nProtected policy.\n");
     assert.equal(reloadCalls, 0);
-    assert.deepEqual(notifications.at(-1), { message: `/init left AGENTS.md unchanged: ${reason}`, level: "warning" });
+    assert.deepEqual(last(notifications), { message: `/init left AGENTS.md unchanged: ${reason}`, level: "warning" });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3154,49 +3344,49 @@ test("/init preserves compatible protected policy and blocks every other mutatio
       ui: { notify() {} },
       waitForIdle: async () => {},
     };
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
 
-    const readOnly = await emitSequentially(handlers.get("tool_call"), {
+    const readOnly = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "inspect-source",
       toolName: "killeros_init_read",
       input: { path: "src-index.ts" },
     }, ctx);
     assert.equal(readOnly.some((result) => result?.block), false);
-    assert.match((await tools.get("killeros_init_read").execute("inspect-source", { path: "src-index.ts" })).content[0].text, /value = 1/u);
+    assert.match((await getTool(tools, "killeros_init_read").execute("inspect-source", { path: "src-index.ts" })).content[0].text, /value = 1/u);
 
     const generated = validGeneratedGuidance.replace("Check facts before changing code.", "Check facts before changing code.\nPreserve this workflow.");
-    const replacement = await emitSequentially(handlers.get("tool_call"), {
+    const replacement = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "replace-existing",
       toolName: "killeros_init_write",
       input: { content: generated },
     }, ctx);
     assert.equal(replacement.some((result) => result?.block), false);
-    await tools.get("killeros_init_write").execute("replace-existing", { content: generated }, new AbortController().signal, () => {}, ctx);
+    await getTool(tools, "killeros_init_write").execute("replace-existing", { content: generated }, new AbortController().signal, () => {}, ctx);
     assert.equal(readFileSync(path.join(directory, "AGENTS.md"), "utf8"), generated);
 
-    const secondWrite = await emitSequentially(handlers.get("tool_call"), {
+    const secondWrite = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "replace-again",
       toolName: "killeros_init_write",
       input: { content: "replacement" },
     }, ctx);
     assert.match(resultReason(secondWrite), /exactly one write or policy-conflict/u);
 
-    const editTarget = await emitSequentially(handlers.get("tool_call"), {
+    const editTarget = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "edit-existing",
       toolName: "edit",
       input: { path: "AGENTS.md", edits: [{ oldText: "Generated", newText: "Changed" }] },
     }, ctx);
     assert.match(resultReason(editTarget), /bounded evidence and terminal tools/u);
 
-    const otherFile = await emitSequentially(handlers.get("tool_call"), {
+    const otherFile = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "write-other",
       toolName: "write",
       input: { path: "README.md", content: "replacement" },
     }, ctx);
     assert.match(resultReason(otherFile), /bounded evidence and terminal tools/u);
 
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3321,9 +3511,9 @@ test("/init rejects a target swapped after tool-call validation", async () => {
     const { commands, handlers, sentMessages, tools } = createHarness();
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
-    handlers.get("tool_call").push((event) => {
+    getHandlers(handlers, "tool_call").push((event) => {
       if (event.toolName !== "killeros_init_write") return;
       rmSync(target);
       try {
@@ -3333,18 +3523,18 @@ test("/init rejects a target swapped after tool-call validation", async () => {
       }
       return undefined;
     });
-    const callResults = await emitSequentially(handlers.get("tool_call"), {
+    const callResults = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "swap-target",
       toolName: "killeros_init_write",
       input: { content: "replacement" },
     }, ctx);
     assert.equal(callResults.some((result) => result?.block), false);
     await assert.rejects(
-      tools.get("killeros_init_write").execute("swap-target", { content: validGeneratedGuidance }, new AbortController().signal, () => {}, ctx),
+      getTool(tools, "killeros_init_write").execute("swap-target", { content: validGeneratedGuidance }, new AbortController().signal, () => {}, ctx),
       /changed while \/init was generating|regular, non-linked file/u,
     );
     assert.equal(readFileSync(shared, "utf8"), "shared guidance\n");
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3370,7 +3560,7 @@ test("/init preserves a target created after an absent baseline", async () => {
 
 test("/init recovers when its agent workflow cannot start", async () => {
   const { api, commands, handlers, sentMessages } = createHarness();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
+  const notifications: TestNotification[] = [];
   const ctx = {
     cwd: process.cwd(),
     isProjectTrusted: () => true,
@@ -3380,30 +3570,30 @@ test("/init recovers when its agent workflow cannot start", async () => {
     waitForIdle: async () => {},
   };
   api.sendMessage = () => { throw new Error("no active model"); };
-  await commands.get("init").handler("", ctx);
-  assert.deepEqual(notifications.at(-1), { message: "/init failed to start: no active model", level: "error" });
+  await getCommand(commands, "init").handler("", ctx);
+  assert.deepEqual(last(notifications), { message: "/init failed to start: no active model", level: "error" });
 
   api.sendMessage = (message, options) => {
-    sentMessages.push({ message: message as TestSentMessage["message"], options });
+    sentMessages.push({ message: requireTestSentMessage(message), options });
   };
-  const retry = commands.get("init").handler("", ctx);
+  const retry = getCommand(commands, "init").handler("", ctx);
   await waitFor(() => sentMessages.length === 1);
   assert.equal(sentMessages.length, 1);
-  await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   await retry;
 });
 
 test("/init refuses untrusted projects before scanning or starting the model", async () => {
   const { commands, sentMessages } = createHarness();
-  const notifications = [] as unknown as RequiredArray<TestNotification>;
-  await commands.get("init").handler("", {
+  const notifications: TestNotification[] = [];
+  await getCommand(commands, "init").handler("", {
     cwd: process.cwd(),
     isProjectTrusted: () => false,
     mode: "tui",
       ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
     waitForIdle: async () => {},
   });
-  assert.deepEqual(notifications.at(-1), { message: "Trust this project before running /init", level: "error" });
+  assert.deepEqual(last(notifications), { message: "Trust this project before running /init", level: "error" });
   assert.equal(sentMessages.length, 0);
 });
 
@@ -3426,7 +3616,7 @@ test("/init attaches a bounded project snapshot without reading existing guidanc
 
     const { commands, handlers, sentMessages } = createHarness();
     const startedAt = Date.now();
-    const initRun = commands.get("init").handler("", {
+    const initRun = getCommand(commands, "init").handler("", {
       cwd: directory,
       isProjectTrusted: () => true,
       mode: "tui",
@@ -3445,7 +3635,7 @@ test("/init attaches a bounded project snapshot without reading existing guidanc
     assert.ok(snapshot.length <= 40 * 1024);
     assert.ok(Date.now() - startedAt < 6_000);
 
-    await emitSequentially(handlers.get("agent_settled"), {}, {});
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, {});
     await initRun;
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3460,7 +3650,7 @@ test("/init snapshot does not follow linked manifest files", async (t) => {
     if (!createFileSymlinkOrSkip(t, "private-manifest.txt", path.join(directory, "package.json"))) return;
 
     const { commands, handlers, sentMessages } = createHarness();
-    const initRun = commands.get("init").handler("", {
+    const initRun = getCommand(commands, "init").handler("", {
       cwd: directory,
       isProjectTrusted: () => true,
       mode: "tui",
@@ -3471,7 +3661,7 @@ test("/init snapshot does not follow linked manifest files", async (t) => {
     await waitFor(() => sentMessages.length === 1);
     assert.doesNotMatch(sentMessages[0].message.content, /PRIVATE-LINKED-CONTENT/u);
 
-    await emitSequentially(handlers.get("agent_settled"), {}, {});
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, {});
     await initRun;
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3574,12 +3764,12 @@ test("/init tool scoping never exposes killeros_init_write outside /init", async
     ctx.cwd = directory;
     ctx.ui.notify = () => {};
 
-    for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "startup" }, ctx);
     assert.ok(activeTools.length > 0);
     assert.equal(activeTools.includes("killeros_init_write"), false);
     const fullSet = [...activeTools];
 
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
     assert.deepEqual(activeTools, [
       "killeros_init_read",
@@ -3588,11 +3778,11 @@ test("/init tool scoping never exposes killeros_init_write outside /init", async
       "killeros_init_conflict",
     ]);
 
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
     assert.deepEqual(activeTools, fullSet);
 
-    for (const handler of handlers.get("session_start")) await handler({ reason: "new" }, ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "new" }, ctx);
     assert.deepEqual(activeTools, fullSet);
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3607,15 +3797,15 @@ test("/init tool middleware does not freeze or redefine shared event input", asy
     const { commands, handlers, sentMessages } = createHarness();
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
     const input = { path: "safe.ts" };
     const event = { toolCallId: "mutable", toolName: "killeros_init_read", input };
-    await emitSequentially(handlers.get("tool_call"), event, ctx);
+    await emitSequentially(getHandlers(handlers, "tool_call"), event, ctx);
     assert.equal(Object.isFrozen(input), false);
     input.path = "changed-by-another-extension.ts";
     assert.equal(event.input.path, "changed-by-another-extension.ts");
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3628,7 +3818,7 @@ test("question options render bounded markdown proposal previews before selectio
     { length: 20 },
     (_, index) => `- **AGENTS.md** — run \`check-${index + 1}\``,
   ).join("\n");
-  const question = await startQuestion(tools.get("question"), [{
+  const question = await startQuestion(getTool(tools, "question"), [{
     label: "Looks good",
     description: "Apply the proposal",
     preview,
@@ -3657,17 +3847,17 @@ test("does not inject AGENTS.local.md into the /init generation turn", async () 
       ui: { notify() {} },
       waitForIdle: async () => {},
     };
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
 
     let event = { systemPrompt: "shared AGENTS context" };
-    for (const handler of handlers.get("before_agent_start")) {
+    for (const handler of getHandlers(handlers, "before_agent_start")) {
       const update = await handler(event, ctx);
       if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
     }
     assert.doesNotMatch(event.systemPrompt, /PRIVATE-INIT-GUIDANCE|personal_instructions/u);
 
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3682,7 +3872,7 @@ test("injects trusted AGENTS.local.md imports without source-path metadata", asy
     const { handlers } = createHarness();
     let event = { systemPrompt: "shared AGENTS context" };
     const ctx = { cwd: directory, isProjectTrusted: () => true };
-    for (const handler of handlers.get("before_agent_start")) {
+    for (const handler of getHandlers(handlers, "before_agent_start")) {
       const update = await handler(event, ctx);
       if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
     }
@@ -3693,11 +3883,78 @@ test("injects trusted AGENTS.local.md imports without source-path metadata", asy
     assert.ok(event.systemPrompt.indexOf("shared AGENTS context") < event.systemPrompt.indexOf("<personal_instructions"));
 
     event = { systemPrompt: "shared" };
-    for (const handler of handlers.get("before_agent_start")) {
+    for (const handler of getHandlers(handlers, "before_agent_start")) {
       const update = await handler(event, { cwd: directory, isProjectTrusted: () => false });
       if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
     }
     assert.doesNotMatch(event.systemPrompt, /personal_instructions/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("hook config rejects malformed roots without executing hooks", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-malformed-root-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const configPath = path.join(configDirectory, "killeros-hooks.json");
+
+    for (const root of [null, [], "hooks", 1, true]) {
+      writeFileSync(configPath, JSON.stringify(root));
+      const { handlers } = createHarness();
+      const notifications: TestNotification[] = [];
+      const { ctx } = createTuiContext();
+      ctx.cwd = directory;
+      ctx.ui.notify = (message, level) => notifications.push({ message, level });
+      for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+
+      assert.match(last(notifications)?.message ?? "", /Invalid \.pi\/killeros-hooks\.json/u);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("hook config validates entries and ignores unknown fields", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-boundary-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const marker = path.join(directory, "accepted");
+    const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('accepted','ran')"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      unknownRootField: true,
+      hooks: {
+        unknown_event: [{ command: "exit 7" }],
+        tool_call: [
+          null,
+          [],
+          "hook",
+          1,
+          { command: null },
+          { command: "exit 7", matcher: 1 },
+          { command: "exit 7", timeoutMs: "1000" },
+          { command, unknownHookField: { future: true } },
+        ],
+      },
+    }));
+
+    const { handlers } = createHarness();
+    const notifications: TestNotification[] = [];
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+    await emitSequentially(getHandlers(handlers, "tool_call"), {
+      toolCallId: "hook-boundary",
+      toolName: "write",
+      input: {},
+    }, ctx);
+
+    assert.equal(readFileSync(marker, "utf8"), "ran");
+    assert.equal(notifications.length, 7);
+    assert.ok(notifications.every(({ message }) => /Ignored invalid tool_call hook|timeoutMs/u.test(message)));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3713,20 +3970,20 @@ test("does not load lifecycle hooks for untrusted projects", async () => {
     }));
 
     const { handlers } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.isProjectTrusted = () => false;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
 
-    const results = await emitSequentially(handlers.get("tool_call"), {
+    const results = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "untrusted-hook",
       toolName: "write",
       input: { path: "example.txt", content: "test" },
     }, ctx);
     assert.equal(results.some((result) => result?.block), false);
-    assert.match(notifications.at(-1)?.message, /Ignored untrusted project hooks/u);
+    assert.match(last(notifications)?.message, /Ignored untrusted project hooks/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3748,7 +4005,7 @@ test("hook config warnings sanitize project paths", {
     untrustedContext.cwd = directory;
     untrustedContext.isProjectTrusted = () => false;
     untrustedContext.ui.notify = (message, level) => untrustedNotifications.push({ message, level });
-    for (const handler of untrusted.handlers.get("session_start")) await handler({}, untrustedContext);
+    for (const handler of getHandlers(untrusted, "session_start")) await handler({}, untrustedContext);
 
     writeFileSync(configPath, JSON.stringify({ hooks: { tool_call: [{}] } }));
     const invalid = createHarness();
@@ -3756,12 +4013,12 @@ test("hook config warnings sanitize project paths", {
     const invalidNotifications: TestNotification[] = [];
     invalidContext.cwd = directory;
     invalidContext.ui.notify = (message, level) => invalidNotifications.push({ message, level });
-    for (const handler of invalid.handlers.get("session_start")) await handler({}, invalidContext);
+    for (const handler of getHandlers(invalid, "session_start")) await handler({}, invalidContext);
 
-    assert.match(untrustedNotifications.at(-1)?.message ?? "", /Ignored untrusted project hooks/u);
-    assert.match(invalidNotifications.at(-1)?.message ?? "", /Ignored invalid tool_call hook/u);
-    assert.doesNotMatch(untrustedNotifications.at(-1)?.message ?? "", /\x1b|\x07|\n/u);
-    assert.doesNotMatch(invalidNotifications.at(-1)?.message ?? "", /\x1b|\x07|\n/u);
+    assert.match(last(untrustedNotifications)?.message ?? "", /Ignored untrusted project hooks/u);
+    assert.match(last(invalidNotifications)?.message ?? "", /Ignored invalid tool_call hook/u);
+    assert.doesNotMatch(last(untrustedNotifications)?.message ?? "", /\x1b|\x07|\n/u);
+    assert.doesNotMatch(last(invalidNotifications)?.message ?? "", /\x1b|\x07|\n/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3779,19 +4036,19 @@ test("rejects linked lifecycle hook configs before executing them", async () => 
     linkSync(source, path.join(configDirectory, "killeros-hooks.json"));
 
     const { handlers } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
-    await emitSequentially(handlers.get("tool_call"), {
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+    await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "linked-hook",
       toolName: "write",
       input: {},
     }, ctx);
 
     assert.equal(existsSync(marker), false);
-    assert.match(notifications.at(-1)?.message, /regular, non-linked file/u);
+    assert.match(last(notifications)?.message, /regular, non-linked file/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3808,19 +4065,19 @@ test("rejects lifecycle hook configs in a linked project directory", async () =>
     writeFileSync(path.join(sharedConfigDirectory, "killeros-hooks.json"), JSON.stringify({ hooks: { tool_call: [{ command }] } }));
 
     const { handlers } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
-    await emitSequentially(handlers.get("tool_call"), {
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+    await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "linked-hook-directory",
       toolName: "write",
       input: {},
     }, ctx);
 
     assert.equal(existsSync(marker), false);
-    assert.match(notifications.at(-1)?.message, /real project \.pi directory/u);
+    assert.match(last(notifications)?.message, /real project \.pi directory/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3836,19 +4093,19 @@ test("rejects oversized lifecycle hook configs before executing them", async () 
     writeFileSync(path.join(configDirectory, "killeros-hooks.json"), `${JSON.stringify({ hooks: { tool_call: [{ command }] } })}${" ".repeat(65_536)}`);
 
     const { handlers } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
-    await emitSequentially(handlers.get("tool_call"), {
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+    await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "oversized-hook-config",
       toolName: "write",
       input: {},
     }, ctx);
 
     assert.equal(existsSync(marker), false);
-    assert.match(notifications.at(-1)?.message, /exceeds 65536 bytes/u);
+    assert.match(last(notifications)?.message, /exceeds 65536 bytes/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3866,12 +4123,12 @@ test("rejects agent_settled matchers without executing their commands", async ()
     }));
 
     const { handlers } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
 
     assert.equal(existsSync(marker), false);
     assert.deepEqual(notifications, [{
@@ -3897,12 +4154,12 @@ test("hook timeout validation accepts five minutes and rejects one millisecond m
     }));
 
     const { handlers } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
-    await emitSequentially(handlers.get("tool_call"), {
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+    await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "hook-timeout-boundary",
       toolName: "write",
       input: {},
@@ -3910,7 +4167,7 @@ test("hook timeout validation accepts five minutes and rejects one millisecond m
 
     assert.equal(existsSync(path.join(directory, "accepted")), true);
     assert.equal(existsSync(path.join(directory, "rejected")), false);
-    assert.match(notifications.at(-1)?.message, /Ignored tool_call hook 2: timeoutMs must be an integer from 1 to 300000/u);
+    assert.match(last(notifications)?.message, /Ignored tool_call hook 2: timeoutMs must be an integer from 1 to 300000/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3928,13 +4185,13 @@ test("project tool_call hook failures block tools without exposing configured co
     }));
 
     const { handlers } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
 
-    const results = await emitSequentially(handlers.get("tool_call"), {
+    const results = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "hook-test",
       toolName: "write",
       input: { path: "example.txt", content: "test" },
@@ -3943,7 +4200,7 @@ test("project tool_call hook failures block tools without exposing configured co
     const expected = "Hook failed\nblocked";
     assert.equal(blocked?.block, true);
     assert.equal(resultReason(results), expected);
-    assert.deepEqual(notifications.at(-1), { message: expected, level: "error" });
+    assert.deepEqual(last(notifications), { message: expected, level: "error" });
     assert.doesNotMatch(expected, new RegExp(secret, "u"));
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3963,9 +4220,9 @@ test("oversized hook payloads remain valid JSON and report truncation", async ()
     const { handlers } = createHarness();
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
 
-    const results = await emitSequentially(handlers.get("tool_call"), {
+    const results = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "large-hook-payload",
       toolName: "write",
       input: { path: "example.txt", content: "x".repeat(9_000) },
@@ -3984,8 +4241,8 @@ test("hook output preserves split UTF-8 and flushes incomplete final bytes", asy
     kill() { return true; }
   }
   const child = new ChunkedHook();
-  const spawnChild = (() => child) as unknown as HookSpawner;
-  const resultPromise = executeHook("ignored", process.cwd(), {}, 1_000, spawnChild);
+  const spawnChild: HookSpawnProcess = () => child;
+  const resultPromise = executeHook({ command: "ignored", cwd: process.cwd(), environment: {}, timeoutMs: 1_000, spawnProcess: spawnChild });
   child.stdout.write(Buffer.from([0xf0, 0x9f]));
   child.stdout.write(Buffer.from([0x98, 0x80]));
   child.emit("close", 0);
@@ -3994,20 +4251,20 @@ test("hook output preserves split UTF-8 and flushes incomplete final bytes", asy
   assert.equal(result.stdout, "😀");
 
   const incompleteChild = new ChunkedHook();
-  const incompleteResultPromise = executeHook(
-    "ignored",
-    process.cwd(),
-    {},
-    1_000,
-    (() => incompleteChild) as unknown as HookSpawner,
-  );
+  const incompleteResultPromise = executeHook({
+    command: "ignored",
+    cwd: process.cwd(),
+    environment: {},
+    timeoutMs: 1_000,
+    spawnProcess: () => incompleteChild,
+  });
   incompleteChild.stderr.write(Buffer.from([0xf0, 0x9f]));
   incompleteChild.emit("close", 1);
   assert.equal((await incompleteResultPromise).stderr, "�");
 });
 
-test("synchronous hook spawn failures become ordinary failed results", async () => {
-  const spawnFailure = (() => { throw new Error("process could not start"); }) as unknown as HookSpawner;
+test("the positional executeHook adapter preserves synchronous spawn failures", async () => {
+  const spawnFailure: HookSpawnProcess = () => { throw new Error("process could not start"); };
   const result = await executeHook("ignored", process.cwd(), {}, 1_000, spawnFailure);
   assert.deepEqual(result, {
     code: 1,
@@ -4032,8 +4289,8 @@ test("never-closing hooks report unconfirmed exit after bounded cleanup", async 
     }
   }
   const child = new NeverClosingHook();
-  const spawnChild = (() => child) as unknown as HookSpawner;
-  const result = await executeHook("ignored", process.cwd(), {}, 1_000, spawnChild);
+  const spawnChild: HookSpawnProcess = () => child;
+  const result = await executeHook({ command: "ignored", cwd: process.cwd(), environment: {}, timeoutMs: 1_000, spawnProcess: spawnChild });
   assert.equal(result.code, 124);
   assert.equal(result.timedOut, true);
   assert.equal(result.exitUnconfirmed, true);
@@ -4050,8 +4307,8 @@ test("aborting a running hook terminates it and reports cancellation", async () 
   }
   const controller = new AbortController();
   const child = new NeverClosingChild();
-  const spawnChild = (() => child) as unknown as HookSpawner;
-  const resultPromise = executeHook("ignored", process.cwd(), {}, 30_000, spawnChild, controller.signal);
+  const spawnChild: HookSpawnProcess = () => child;
+  const resultPromise = executeHook({ command: "ignored", cwd: process.cwd(), environment: {}, spawnProcess: spawnChild, signal: controller.signal });
   controller.abort();
   const result = await resultPromise;
   assert.equal(result.cancelled, true);
@@ -4062,8 +4319,8 @@ test("aborting a running hook terminates it and reports cancellation", async () 
   let spawned = false;
   const alreadyAborted = new AbortController();
   alreadyAborted.abort();
-  const neverSpawn = (() => { spawned = true; return undefined; }) as unknown as HookSpawner;
-  const preResult = await executeHook("ignored", process.cwd(), {}, 30_000, neverSpawn, alreadyAborted.signal);
+  const neverSpawn: HookSpawnProcess = () => { spawned = true; throw new Error("aborted hook spawned"); };
+  const preResult = await executeHook({ command: "ignored", cwd: process.cwd(), environment: {}, spawnProcess: neverSpawn, signal: alreadyAborted.signal });
   assert.equal(spawned, false);
   assert.equal(preResult.cancelled, true);
   assert.equal(preResult.code, 130);
@@ -4074,14 +4331,18 @@ test("aborting a running hook terminates it and reports cancellation", async () 
     queueMicrotask(() => this.emit("close", null));
     return true;
   };
-  let abortedReads = 0;
-  const racingSignal = {
-    get aborted() { abortedReads += 1; return abortedReads > 1; },
-    addEventListener() {},
-    removeEventListener() {},
-  } as unknown as AbortSignal;
-  const racingSpawn = (() => racingChild) as unknown as HookSpawner;
-  const racingResult = await executeHook("ignored", process.cwd(), {}, 30_000, racingSpawn, racingSignal);
+  const racingController = new AbortController();
+  const racingSpawn: HookSpawnProcess = () => {
+    racingController.abort();
+    return racingChild;
+  };
+  const racingResult = await executeHook({
+    command: "ignored",
+    cwd: process.cwd(),
+    environment: {},
+    spawnProcess: racingSpawn,
+    signal: racingController.signal,
+  });
   assert.equal(racingResult.cancelled, true);
   assert.equal(racingResult.timedOut, false);
   assert.deepEqual(racingChild.signals, ["SIGTERM"]);
@@ -4106,20 +4367,20 @@ test("timed-out hooks terminate the process tree or report bounded uncertainty",
     }));
 
     const { handlers } = createHarness();
-    const notifications = [] as unknown as RequiredArray<TestNotification>;
+    const notifications: TestNotification[] = [];
     const { ctx } = createTuiContext();
     ctx.cwd = directory;
     ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
     const started = Date.now();
-    const results = await emitSequentially(handlers.get("tool_call"), {
+    const results = await emitSequentially(getHandlers(handlers, "tool_call"), {
       toolCallId: "tree-timeout",
       toolName: "write",
       input: { path: "example.txt", content: "test" },
     }, ctx);
     assert.equal(results.find((result) => result?.block)?.block, true);
     assert.ok(Date.now() - started >= 1_000);
-    assert.match(notifications.at(-1).message, /Hook failed \(timed out\)/u);
+    assert.match(last(notifications).message, /Hook failed \(timed out\)/u);
     await new Promise((resolve) => setTimeout(resolve, 6_000));
     assert.equal(existsSync(marker), false);
   } finally {
@@ -4146,12 +4407,12 @@ test("/init reloads only after existing agent-settled hooks complete", async () 
       assert.equal(readFileSync(path.join(directory, "hook.done"), "utf8"), "done");
       reloadCalls += 1;
     };
-    for (const handler of handlers.get("session_start")) await handler({}, ctx);
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
 
-    const initRun = commands.get("init").handler("", ctx);
+    const initRun = getCommand(commands, "init").handler("", ctx);
     await waitFor(() => sentMessages.length === 1);
     await emitSuccessfulInitWrite(handlers, tools, ctx);
-    await emitSequentially(handlers.get("agent_settled"), {}, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
     assert.equal(reloadCalls, 1);
   } finally {
@@ -4160,7 +4421,7 @@ test("/init reloads only after existing agent-settled hooks complete", async () 
 });
 
 test("question keeps single-select as the unchanged default", async () => {
-  const question = await startQuestion(createHarness().tools.get("question"), [{ label: "Alpha" }, { label: "Beta" }]);
+  const question = await startQuestion(getTool(createHarness(), "question"), [{ label: "Alpha" }, { label: "Beta" }]);
   question.component.handleInput("\x1B[B");
   question.component.handleInput("\r");
   assert.deepEqual((await question.result).details, {
@@ -4170,7 +4431,7 @@ test("question keeps single-select as the unchanged default", async () => {
 
 test("multi-select toggles choices and returns original option order", async () => {
   const question = await startQuestion(
-    createHarness().tools.get("question"),
+    getTool(createHarness(), "question"),
     [{ label: "Alpha" }, { label: "Beta" }, { label: "Gamma" }],
     "Choose all", 10, getKeybindings(), { mode: "multiple", minSelections: 2, maxSelections: 3 },
   );
@@ -4188,7 +4449,7 @@ test("multi-select toggles choices and returns original option order", async () 
 
 test("multi-select toggles with digits and supports one editable custom answer", async () => {
   const question = await startQuestion(
-    createHarness().tools.get("question"), [{ label: "Alpha" }, { label: "Beta" }],
+    getTool(createHarness(), "question"), [{ label: "Alpha" }, { label: "Beta" }],
     "Choose all", 10, getKeybindings(), { mode: "multiple", maxSelections: 3 },
   );
   question.component.handleInput("2");
@@ -4208,29 +4469,29 @@ test("multi-select toggles with digits and supports one editable custom answer",
 
 test("multi-select enforces bounds without replacing choices", async () => {
   const question = await startQuestion(
-    createHarness().tools.get("question"), [{ label: "Alpha" }, { label: "Beta" }],
+    getTool(createHarness(), "question"), [{ label: "Alpha" }, { label: "Beta" }],
     "Choose all", 10, getKeybindings(), { mode: "multiple", minSelections: 1, maxSelections: 1 },
   );
   question.component.handleInput("\r");
-  assert.match(question.notifications.at(-1).message, /Select at least 1/u);
+  assert.match(last(question.notifications).message, /Select at least 1/u);
   question.component.handleInput(" ");
   question.component.handleInput("\x1B[B");
   question.component.handleInput(" ");
-  assert.match(question.notifications.at(-1).message, /Select at most 1/u);
+  assert.match(last(question.notifications).message, /Select at most 1/u);
   question.component.handleInput("\r");
   assert.deepEqual((await question.result).details.answers, ["Alpha"]);
 });
 
 test("multi-select custom controls preserve selections and drafts", async () => {
   const question = await startQuestion(
-    createHarness().tools.get("question"), [{ label: "Alpha" }],
+    getTool(createHarness(), "question"), [{ label: "Alpha" }],
     "Choose all", 10, getKeybindings(), { mode: "multiple", maxSelections: 1 },
   );
   question.component.handleInput(" ");
   question.component.handleInput("2");
   question.component.handleInput("blocked draft");
   question.component.handleInput("\r");
-  assert.match(question.notifications.at(-1).message, /Select at most 1/u);
+  assert.match(last(question.notifications).message, /Select at most 1/u);
   assert.match(question.component.render(60).join("\n"), /blocked draft/u);
   question.component.handleInput("\x1B");
   question.component.handleInput("\x1B[A");
@@ -4248,7 +4509,7 @@ test("multi-select custom controls preserve selections and drafts", async () => 
 
 test("multi-select cancellation returns empty arrays", async () => {
   const question = await startQuestion(
-    createHarness().tools.get("question"), [{ label: "Alpha" }],
+    getTool(createHarness(), "question"), [{ label: "Alpha" }],
     "Choose all", 10, getKeybindings(), { mode: "multiple" },
   );
   question.component.handleInput("\x1B");
@@ -4259,7 +4520,7 @@ test("multi-select cancellation returns empty arrays", async () => {
 
 test("multi-select uses slash filter mode, accepts spaces, and keeps hidden checks", async () => {
   const question = await startQuestion(
-    createHarness().tools.get("question"), [{ label: "Alpha one" }, { label: "Beta two" }],
+    getTool(createHarness(), "question"), [{ label: "Alpha one" }, { label: "Beta two" }],
     "Choose all", 10, getKeybindings(), { mode: "multiple", minSelections: 2 },
   );
   question.component.handleInput(" ");
@@ -4279,7 +4540,7 @@ test("multi-select uses slash filter mode, accepts spaces, and keeps hidden chec
 
 test("multi-select filter edits can be discarded, cleared, pasted, and bounded", async () => {
   const question = await startQuestion(
-    createHarness().tools.get("question"), [{ label: "Alpha" }, { label: "Beta two" }],
+    getTool(createHarness(), "question"), [{ label: "Alpha" }, { label: "Beta two" }],
     "Choose all", 10, getKeybindings(), { mode: "multiple" },
   );
   question.component.handleInput("/");
@@ -4301,7 +4562,7 @@ test("multi-select filter edits can be discarded, cleared, pasted, and bounded",
   assert.match(question.component.render(60).join("\n"), /Alpha/u);
   question.component.handleInput("/");
   question.component.handleInput(`\x1B[200~${"😀".repeat(4_001)}\x1B[201~`);
-  assert.match(question.notifications.at(-1).message, /4,000 characters.*16,000 bytes/u);
+  assert.match(last(question.notifications).message, /4,000 characters.*16,000 bytes/u);
   question.component.handleInput("\x1B");
   question.component.handleInput("\x1B");
   await question.result;
@@ -4309,7 +4570,7 @@ test("multi-select filter edits can be discarded, cleared, pasted, and bounded",
 
 test("multi-select renders checked state, controls, and bounded compact layouts", async () => {
   const question = await startQuestion(
-    createHarness().tools.get("question"),
+    getTool(createHarness(), "question"),
     Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1} ${"L".repeat(180)}` })),
     `Choose ${"Q".repeat(990)}`, 12, getKeybindings(), { mode: "multiple", minSelections: 1, maxSelections: 10 },
   );
@@ -4332,7 +4593,7 @@ test("multi-select renders checked state, controls, and bounded compact layouts"
 });
 
 test("multi-select transcript shows range, exact overflow, and every expanded answer", () => {
-  const tool = createHarness().tools.get("question");
+  const tool = getTool(createHarness(), "question");
   const args = { question: "Choose all", options: [{ label: "Alpha" }, { label: "Beta" }], mode: "multiple", minSelections: 1, maxSelections: 2 };
   assert.match(tool.renderCall(args, theme, { expanded: false }).render(40).join("\n"), /multi-select.*choose 1–2/isu);
   assert.match(tool.renderCall(args, theme, { expanded: true }).render(40).join("\n"), /\[ \].*Alpha/isu);
@@ -4349,7 +4610,7 @@ test("multi-select transcript shows range, exact overflow, and every expanded an
 
 test("question shows option, filter, and answer progress", async () => {
   const { tools } = createHarness();
-  const question = await startQuestion(tools.get("question"), [{ label: "Alpha" }], "Choose", 8);
+  const question = await startQuestion(getTool(tools, "question"), [{ label: "Alpha" }], "Choose", 8);
   assert.match(question.component.render(40).join("\n"), /Option 1\/2/u);
   question.component.handleInput("abc");
   assert.match(question.component.render(40).join("\n"), /Filter 3\/4,000/u);
@@ -4363,7 +4624,7 @@ test("question shows option, filter, and answer progress", async () => {
 
 test("question transcript is three rows collapsed and complete when expanded", () => {
   const { tools } = createHarness();
-  const tool = tools.get("question");
+  const tool = getTool(tools, "question");
   const args = {
     question: "Q".repeat(1_000),
     options: Array.from({ length: 9 }, (_, index) => ({
@@ -4402,7 +4663,7 @@ test("question follows remapped selector bindings exactly", async () => {
   try {
     const { tools } = createHarness();
     const question = await startQuestion(
-      tools.get("question"),
+      getTool(tools, "question"),
       [{ label: "Alpha" }, { label: "Beta" }],
       "Choose",
       8,
@@ -4422,7 +4683,7 @@ test("question follows remapped selector bindings exactly", async () => {
 
 test("question renders nothing when no terminal width is available", async () => {
   const { tools } = createHarness();
-  const question = await startQuestion(tools.get("question"), undefined, "Choose", 3);
+  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 3);
   assert.deepEqual(question.component.render(0), []);
   assert.deepEqual(question.component.render(-1), []);
   question.finish({ kind: "cancelled" });
@@ -4431,7 +4692,7 @@ test("question renders nothing when no terminal width is available", async () =>
 
 test("question renders no rows when terminal height is zero", async () => {
   const { tools } = createHarness();
-  const question = await startQuestion(tools.get("question"), undefined, "Choose", 0);
+  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 0);
   assert.deepEqual(question.component.render(80), []);
   question.tui.terminal.rows = 3;
   assert.deepEqual(question.component.render(80), ["Choose", "> 1. Alpha", "Option 1/2"]);
@@ -4441,7 +4702,7 @@ test("question renders no rows when terminal height is zero", async () => {
 
 test("question keeps a custom draft visible at the six-row layout boundary", async () => {
   const { tools } = createHarness();
-  const question = await startQuestion(tools.get("question"), undefined, "Choose", 6);
+  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 6);
   question.component.handleInput("2");
   question.component.handleInput("visible draft");
   assert.match(question.component.render(40).join("\n"), /visible draft/u);
@@ -4452,7 +4713,7 @@ test("question keeps a custom draft visible at the six-row layout boundary", asy
 test("question wraps its full prompt when terminal width narrows", async () => {
   const { tools } = createHarness();
   const prompt = "Which deployment strategy should we use for this application now that the terminal is narrower than full screen?";
-  const question = await startQuestion(tools.get("question"), undefined, prompt, 12);
+  const question = await startQuestion(getTool(tools, "question"), undefined, prompt, 12);
 
   assert.match(question.component.render(80).join("\n"), /narrower than full screen\?/u);
   const narrowed = question.component.render(40);
@@ -4474,7 +4735,7 @@ test("question rendering never exceeds terminal height for valid maximum content
 
   for (const rows of [1, 2, 3, 5, 6, 12]) {
     for (const width of [20, 40, 80]) {
-      const question = await startQuestion(tools.get("question"), options, `Question ${"Q".repeat(990)}`, rows);
+      const question = await startQuestion(getTool(tools, "question"), options, `Question ${"Q".repeat(990)}`, rows);
       const rendered = question.component.render(width);
       assert.ok(rendered.length <= rows, `${width} columns rendered ${rendered.length}/${rows} rows`);
       if (rows >= 3) assert.match(rendered.join("\n"), /Question/u);
@@ -4487,7 +4748,7 @@ test("question rendering never exceeds terminal height for valid maximum content
 
 test("multiline custom answers stay within tiny terminal row and width limits", async () => {
   const { tools } = createHarness();
-  const question = await startQuestion(tools.get("question"), undefined, "Choose", 3);
+  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 3);
   question.component.handleInput("2");
   question.component.handleInput("first 😀界");
   question.component.handleInput("\x1B[13;2u");
@@ -4509,7 +4770,7 @@ test("multiline custom answers stay within tiny terminal row and width limits", 
 test("question invalidates cached rows when terminal height changes at the same width", async () => {
   const { tools } = createHarness();
   const question = await startQuestion(
-    tools.get("question"),
+    getTool(tools, "question"),
     Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1}` })),
     "Choose one",
     12,
@@ -4527,7 +4788,7 @@ test("question invalidates cached rows when terminal height changes at the same 
 test("question keeps the selected option visible while its window moves", async () => {
   const { tools } = createHarness();
   const question = await startQuestion(
-    tools.get("question"),
+    getTool(tools, "question"),
     Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1}` })),
     "Choose one",
     7,
@@ -4542,7 +4803,7 @@ test("question keeps the selected option visible while its window moves", async 
 
 test("maximum filter text stays on one bounded status row", async () => {
   const { tools } = createHarness();
-  const question = await startQuestion(tools.get("question"), undefined, "Choose", 8);
+  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 8);
   question.component.handleInput(`\x1B[200~${"Z".repeat(4_000)}\x1B[201~`);
   const rendered = question.component.render(20);
   assert.ok(rendered.length <= 8);
@@ -4554,7 +4815,7 @@ test("maximum filter text stays on one bounded status row", async () => {
 
 test("question filtering decodes Kitty input, paste, and grapheme backspace", async () => {
   const { tools } = createHarness();
-  const question = await startQuestion(tools.get("question"));
+  const question = await startQuestion(getTool(tools, "question"));
 
   question.component.handleInput("\x1B[97u");
   assert.match(question.component.render(80).join("\n"), /Filter 1\/4,000/u);
@@ -4581,16 +4842,16 @@ test("question filtering decodes Kitty input, paste, and grapheme backspace", as
 
 test("question filter bounds character and byte input", async () => {
   const { tools } = createHarness();
-  assert.match(tools.get("question").description, /4,000 characters and 16,000 bytes/u);
+  assert.match(getTool(tools, "question").description, /4,000 characters and 16,000 bytes/u);
 
-  const huge = await startQuestion(tools.get("question"));
+  const huge = await startQuestion(getTool(tools, "question"));
   huge.component.handleInput(`\x1B[200~${"Q".repeat(1_000_000)}\x1B[201~`);
-  assert.match(huge.notifications.at(-1).message, /4,000 characters/u);
+  assert.match(last(huge.notifications).message, /4,000 characters/u);
   assert.ok(huge.component.render(80).join("\n").length < 20_000);
   huge.finish({ kind: "cancelled" });
   await huge.result;
 
-  const question = await startQuestion(tools.get("question"));
+  const question = await startQuestion(getTool(tools, "question"));
   const boundary = "Z".repeat(4_000);
   question.component.handleInput(`\x1B[200~${boundary}\x1B[201~`);
   const boundaryRender = question.component.render(80).join("\n");
@@ -4598,17 +4859,17 @@ test("question filter bounds character and byte input", async () => {
   assert.ok(boundaryRender.length < 500);
 
   question.component.handleInput("\x1B[200~Z\x1B[201~");
-  assert.match(question.notifications.at(-1).message, /4,000 characters/u);
+  assert.match(last(question.notifications).message, /4,000 characters/u);
   assert.match(question.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
   question.finish({ kind: "cancelled" });
   await question.result;
 
-  const unicode = await startQuestion(tools.get("question"));
+  const unicode = await startQuestion(getTool(tools, "question"));
   const emojiBoundary = "😀".repeat(4_000);
   unicode.component.handleInput(`\x1B[200~${emojiBoundary}\x1B[201~`);
   assert.match(unicode.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
   unicode.component.handleInput("\x1B[200~😀\x1B[201~");
-  assert.match(unicode.notifications.at(-1).message, /4,000 characters|16,000 bytes/u);
+  assert.match(last(unicode.notifications).message, /4,000 characters|16,000 bytes/u);
   assert.match(unicode.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
   unicode.finish({ kind: "cancelled" });
   await unicode.result;
@@ -4616,7 +4877,7 @@ test("question filter bounds character and byte input", async () => {
 
 test("custom-answer history does not replace a multiline draft on Up", async () => {
   const { tools } = createHarness();
-  const tool = tools.get("question");
+  const tool = getTool(tools, "question");
   const first = await startQuestion(tool);
   first.component.handleInput("2");
   first.component.handleInput("old answer");
@@ -4640,24 +4901,24 @@ test("custom-answer history does not replace a multiline draft on Up", async () 
 
 test("custom-answer history enforces Unicode character and byte limits", async () => {
   const { tools, handlers } = createHarness();
-  const first = await startQuestion(tools.get("question"));
+  const first = await startQuestion(getTool(tools, "question"));
   first.component.handleInput("2");
   const boundary = "😀".repeat(4_000);
   first.component.handleInput(`\x1B[200~${boundary}\x1B[201~`);
   assert.equal(first.notifications.length, 0);
   first.component.handleInput("\x1B[200~😀\x1B[201~");
-  assert.match(first.notifications.at(-1).message, /4000 characters/u);
+  assert.match(last(first.notifications).message, /4000 characters/u);
   first.component.handleInput("\r");
   await first.result;
 
   for (let index = 0; index < 5; index += 1) {
-    const answer = await startQuestion(tools.get("question"));
+    const answer = await startQuestion(getTool(tools, "question"));
     answer.component.handleInput("2");
     answer.component.handleInput(`\x1B[200~answer-${index}-${"😀".repeat(3_991)}\x1B[201~`);
     answer.component.handleInput("\r");
     await answer.result;
   }
-  const historyProbe = await startQuestion(tools.get("question"));
+  const historyProbe = await startQuestion(getTool(tools, "question"));
   historyProbe.component.handleInput("2");
   for (let index = 0; index < 5; index += 1) historyProbe.component.handleInput("\x1B[A");
   assert.doesNotMatch(historyProbe.component.render(80).join("\n"), /answer-0-/u);
@@ -4665,8 +4926,8 @@ test("custom-answer history enforces Unicode character and byte limits", async (
   await historyProbe.result;
 
   const session = createTuiContext();
-  for (const handler of handlers.get("session_start")) await handler({ reason: "new" }, session.ctx);
-  const afterNewSession = await startQuestion(tools.get("question"));
+  for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "new" }, session.ctx);
+  const afterNewSession = await startQuestion(getTool(tools, "question"));
   afterNewSession.component.handleInput("2");
   afterNewSession.component.handleInput("\x1B[A");
   assert.doesNotMatch(afterNewSession.component.render(80).join("\n"), /😀/u);
@@ -4714,7 +4975,7 @@ test("footer survives unavailable context telemetry", () => {
   const { handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
   ctx.getContextUsage = () => { throw new Error("usage unavailable"); };
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   const footer = captured.footerFactory(tui, theme, {
     getGitBranch: () => undefined,
@@ -4722,7 +4983,7 @@ test("footer survives unavailable context telemetry", () => {
   });
   assert.doesNotThrow(() => footer.render(80));
   assert.match(footer.render(80).join("\n"), /—% left \(—\)/u);
-  footer.dispose();
+  disposeTestComponent(footer);
 });
 
 test("personal instruction truncation preserves valid UTF-8", () => {
@@ -4747,7 +5008,7 @@ test("footer scans session cost once until session content changes", async () =>
     entryReads += 1;
     return entries;
   };
-  for (const handler of handlers.get("session_start")) await handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
   const footer = captured.footerFactory(tui, theme, {
     getGitBranch: () => undefined,
     onBranchChange: () => () => {},
@@ -4759,22 +5020,22 @@ test("footer scans session cost once until session content changes", async () =>
   assert.equal(entryReads, 1);
 
   entries.push({ type: "message", message: { role: "toolResult", usage: usage(2) } });
-  for (const handler of handlers.get("turn_end") ?? []) {
+  for (const handler of getHandlers(handlers, "turn_end") ?? []) {
     await handler({ turnIndex: 0, message: {}, toolResults: [] }, ctx);
   }
   assert.match(footer.render(120).join("\n"), /\$3\.00/u);
   assert.equal(entryReads, 2);
 
-  for (const handler of handlers.get("session_compact") ?? []) {
+  for (const handler of getHandlers(handlers, "session_compact") ?? []) {
     await handler({ compactionEntry: { details: {} } }, ctx);
   }
   footer.render(120);
   assert.equal(entryReads, 3);
 
-  for (const handler of handlers.get("session_tree") ?? []) await handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_tree") ?? []) await handler({}, ctx);
   footer.render(120);
   assert.equal(entryReads, 4);
-  footer.dispose();
+  disposeTestComponent(footer);
 });
 
 test("footer includes assistant, tool, compaction, and branch-summary costs", () => {
@@ -4786,14 +5047,14 @@ test("footer includes assistant, tool, compaction, and branch-summary costs", ()
     { type: "branch_summary", usage: usage(4) },
   ];
   const { captured, ctx, tui } = createTuiContext(entries);
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   const footer = captured.footerFactory(tui, theme, {
     getGitBranch: () => undefined,
     onBranchChange: () => () => {},
   });
   assert.match(footer.render(160).join("\n"), /\$10\.00/);
-  footer.dispose();
+  disposeTestComponent(footer);
 });
 
 test("footer cuts down by priority while preserving model and context", () => {
@@ -4809,7 +5070,7 @@ test("footer cuts down by priority while preserving model and context", () => {
     contextWindow: 1_050_000,
   };
   ctx.getContextUsage = () => ({ tokens: 50_000, contextWindow: 1_050_000 });
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   const quietTheme: { fg(color: string, text: string): string } = {
     ...theme,
@@ -4862,7 +5123,7 @@ test("footer cuts down by priority while preserving model and context", () => {
     assert.equal(lines[0], `<borderMuted>${"─".repeat(width)}</borderMuted>`);
     assert.ok(lines.slice(1).every((line) => [...line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "")].length === width), `footer width mismatch at ${width}`);
   }
-  footer.dispose();
+  disposeTestComponent(footer);
 });
 
 test("footer uses model metadata and formats unknown provider names", () => {
@@ -4874,7 +5135,7 @@ test("footer uses model metadata and formats unknown provider names", () => {
     provider: "my-\x1b]2;owned\x07\x1b[31mprivate\x1b[0m\0\n-ai",
     reasoning: true,
   };
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   const semanticTheme: TestStyle = {
     bold: (text) => `\x1B[1m${text}\x1B[22m`,
@@ -4890,7 +5151,7 @@ test("footer uses model metadata and formats unknown provider names", () => {
   assert.match(firstRender, /\x1B\[37m\x1B\[1mProfessional Model\x1B\[22m\x1B\[39m/u);
   assert.match(firstRender, /\x1B\[90mMy Private AI\x1B\[39m/u);
 
-  for (const handler of handlers.get("model_select")) {
+  for (const handler of getHandlers(handlers, "model_select")) {
     handler({ model: {
       ...ctx.model,
       id: "Next\x1b]2;owned\x07\x1b[31m Model\x1b[0m\0",
@@ -4901,12 +5162,12 @@ test("footer uses model metadata and formats unknown provider names", () => {
   const updated = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   assert.match(updated, /Next Model Future Provider/u);
 
-  for (const handler of handlers.get("model_select")) {
+  for (const handler of getHandlers(handlers, "model_select")) {
     handler({ model: { ...ctx.model, id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", provider: "deepseek" } });
   }
   const deepSeek = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   assert.match(deepSeek, /DeepSeek V4 Flash DeepSeek/u);
-  footer.dispose();
+  disposeTestComponent(footer);
 });
 
 test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", async () => {
@@ -4916,7 +5177,7 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
 
   const { handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
-  for (const handler of handlers.get("session_start")) await handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
   const editorTheme: TestEditorTheme = {
     borderColor: (text) => text,
     selectList: {
@@ -4927,7 +5188,7 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
       noMatch: (text) => text,
     },
   };
-  const editor = captured.editorFactory(tui, editorTheme, getKeybindings());
+  const editor = requireEditor(requiredFactory(captured.editorFactory, "editor")(tui, editorTheme, getKeybindings()));
   editor.focused = true;
   const emptyRender = editor.render(40);
   const emptyLines = emptyRender.map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
@@ -4971,7 +5232,7 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
   assert.doesNotMatch(wrapped.join("\n"), /─/u);
   editor.handleInput("\x1B[5~");
   const scrolledUp = editor.render(24).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  assert.match(scrolledUp.at(-1) ?? "", /^  ↓ \d+ more/u);
+  assert.match(last(scrolledUp) ?? "", /^  ↓ \d+ more/u);
 });
 
 test("editor arrow alone carries focus color", async () => {
@@ -4983,9 +5244,9 @@ test("editor arrow alone carries focus color", async () => {
     underline: (text) => text,
   };
   const { handlers } = createHarness();
-  const { captured, ctx, tui } = createTuiContext([], styledTheme as unknown as Theme);
-  for (const handler of handlers.get("session_start")) await handler({}, ctx);
-  const editor = captured.editorFactory(tui, createEditorTheme(), getKeybindings());
+  const { captured, ctx, tui } = createTuiContext([], themeTestAdapter(styledTheme));
+  for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+  const editor = requireEditor(requiredFactory(captured.editorFactory, "editor")(tui, createEditorTheme(), getKeybindings()));
 
   editor.setText("hello");
   editor.focused = false;
@@ -4999,7 +5260,7 @@ test("shell UI preserves an existing custom editor factory", async () => {
   const { captured, ctx } = createTuiContext();
   const existingFactory = () => ({ render: () => [], handleInput() {}, getText: () => "", setText() {} });
   captured.currentEditorFactory = existingFactory;
-  for (const handler of handlers.get("session_start")) await handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
   assert.equal(captured.editorFactory, undefined);
   assert.equal(captured.currentEditorFactory, existingFactory);
 });
@@ -5007,7 +5268,7 @@ test("shell UI preserves an existing custom editor factory", async () => {
 test("autocomplete omits unsupported argument hints", async () => {
   const { handlers } = createHarness();
   const { captured, ctx } = createTuiContext();
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   const current = {
     applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
@@ -5027,13 +5288,13 @@ test("autocomplete omits unsupported argument hints", async () => {
 test("frameless editor keeps autocomplete rows aligned below the prompt", async () => {
   const { handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
   const current = {
     applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
     getSuggestions: async () => ({ prefix: "/", items: [] }),
     shouldTriggerFileCompletion: () => true,
   };
-  const editor = captured.editorFactory(tui, createEditorTheme(), getKeybindings());
+  const editor = requireEditor(requiredFactory(captured.editorFactory, "editor")(tui, createEditorTheme(), getKeybindings()));
   editor.focused = true;
   editor.setAutocompleteProvider(captured.autocompleteFactory(current));
   editor.handleInput("/");
@@ -5050,7 +5311,7 @@ test("frameless editor keeps autocomplete rows aligned below the prompt", async 
 test("autocomplete preserves text and horizontal whitespace after the cursor", async () => {
   const { handlers } = createHarness();
   const { captured, ctx } = createTuiContext();
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   const current = {
     applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
@@ -5082,15 +5343,15 @@ test("autocomplete preserves text and horizontal whitespace after the cursor", a
 test("activity keeps the animated orange glyph loop and uses contextual request copy", () => {
   const { handlers } = createHarness();
   const { captured, ctx } = createTuiContext();
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   assert.deepEqual(captured.workingIndicator, {
     frames: ["·", "✢", "✱", "✶", "✻", "✽", "✽", "✻", "✶", "✱", "✢", "·"],
     intervalMs: 120,
   });
   assert.equal(captured.hiddenThinkingLabel, "└ Thinking…");
-  for (const handler of handlers.get("agent_start")) handler({}, ctx);
-  assert.equal(captured.workingMessages.at(-1), "Mapping… (esc to interrupt · understanding request)");
+  for (const handler of getHandlers(handlers, "agent_start")) handler({}, ctx);
+  assert.equal(last(captured.workingMessages), "Mapping… (esc to interrupt · understanding request)");
   assert.equal(captured.widgetComponent, undefined);
 });
 
@@ -5103,8 +5364,8 @@ test("activity styles the glyph and causal verb orange with a gray bold interrup
     underline: (text) => text,
   };
   const { handlers } = createHarness();
-  const { captured, ctx } = createTuiContext([], styledTheme as unknown as Theme);
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  const { captured, ctx } = createTuiContext([], themeTestAdapter(styledTheme));
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   assert.deepEqual(captured.workingIndicator, {
     frames: [
@@ -5114,10 +5375,10 @@ test("activity styles the glyph and causal verb orange with a gray bold interrup
     ],
     intervalMs: 120,
   });
-  for (const handler of handlers.get("agent_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "agent_start")) handler({}, ctx);
 
   assert.match(
-    captured.workingMessages.at(-1) ?? "",
+    last(captured.workingMessages) ?? "",
     /^<accent>Mapping…<\/accent> <dim>\(<bold>esc<\/bold> to interrupt · understanding request\)<\/dim>$/u,
   );
 });
@@ -5134,10 +5395,10 @@ test("disposed startup headers ignore late Git results", async () => {
   const { captured, ctx } = createTuiContext();
   let renders = 0;
   const tui = { requestRender: () => { renders += 1; }, terminal: { rows: 40 } };
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
   const header = captured.headerFactory(tui);
   header.render(80);
-  for (const handler of handlers.get("session_shutdown")) handler({}, ctx);
+  for (const handler of getHandlers(handlers, "session_shutdown")) handler({}, ctx);
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(renders, 0);
 });
@@ -5159,8 +5420,8 @@ test("header renders the compact KillerOS card", () => {
         ? `\x1B[90m${text}\x1B[39m`
         : color === "mdLink" ? `\x1B[34m${text}\x1B[39m` : text,
   };
-  ctx.ui.theme = { ...theme, ...headerTheme } as unknown as Theme;
-  for (const handler of handlers.get("session_start")) handler({}, ctx);
+  ctx.ui.theme = themeTestAdapter({ ...theme, ...headerTheme });
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
   assert.equal(captured.themeName, "killeros");
 
   const header = captured.headerFactory(tui);
@@ -5190,7 +5451,7 @@ test("header renders the compact KillerOS card", () => {
   }
   assert.deepEqual(header.render(4).map(strip), ["Kill"]);
   assert.deepEqual(header.render(0), []);
-  header.dispose();
+  disposeTestComponent(header);
 });
 
 test("startup tips and editor suggestions stay fixed per session and exhaust their shuffled decks", async () => {
@@ -5208,7 +5469,7 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
       const { api, handlers } = createHarness();
       registerShellUi(api);
       const { captured, ctx, tui } = createTuiContext();
-      last(handlers.get("session_start"))({}, ctx);
+      last(getHandlers(handlers, "session_start"))({}, ctx);
       const first = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
       const second = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));
       assert.equal(first, second);
@@ -5225,14 +5486,14 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
           noMatch: (text) => text,
         },
       };
-      const firstEditor = captured.editorFactory(tui, editorTheme, getKeybindings());
-      const secondEditor = captured.editorFactory(tui, editorTheme, getKeybindings());
+      const firstEditor = requireEditor(requiredFactory(captured.editorFactory, "editor")(tui, editorTheme, getKeybindings()));
+      const secondEditor = requireEditor(requiredFactory(captured.editorFactory, "editor")(tui, editorTheme, getKeybindings()));
       const firstSuggestion = strip(firstEditor.render(76)[1] ?? "");
       const secondSuggestion = strip(secondEditor.render(76)[1] ?? "");
       assert.equal(firstSuggestion, secondSuggestion);
       assert.match(firstSuggestion, /^❯\u00A0Try "/u);
       suggestions.push(firstSuggestion);
-      last(handlers.get("session_shutdown"))({}, ctx);
+      last(getHandlers(handlers, "session_shutdown"))({}, ctx);
     }
   } finally {
     Math.random = originalRandom;

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { hasErrorCode } from "./errors.ts";
 
 export type KillerosSettings = Record<string, unknown>;
 
@@ -10,15 +11,17 @@ export interface KillerosSettingsStore {
   update(patch: Readonly<Record<string, unknown>>): void;
 }
 
+function isSettings(value: unknown): value is KillerosSettings {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function readStoredSettings(settingsPath: string): KillerosSettings {
   try {
     const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("KillerOS settings must contain a JSON object");
-    }
-    return parsed as KillerosSettings;
+    if (!isSettings(parsed)) throw new Error("KillerOS settings must contain a JSON object");
+    return parsed;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    if (hasErrorCode(error, "ENOENT")) return {};
     throw error;
   }
 }

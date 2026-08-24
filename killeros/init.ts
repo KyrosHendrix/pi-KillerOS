@@ -22,6 +22,7 @@ import { safeTerminalText } from "./safe-terminal-text.ts";
 const INIT_WRITE_TOOL = "killeros_init_write";
 const INIT_CONFLICT_TOOL = "killeros_init_conflict";
 const INIT_SCOPED_TOOLS = [INIT_READ_TOOL, INIT_LIST_TOOL, INIT_WRITE_TOOL, INIT_CONFLICT_TOOL] as const;
+const INIT_SCOPED_TOOL_NAMES: ReadonlySet<string> = new Set(INIT_SCOPED_TOOLS);
 const INIT_GENERATED_CONTENT_LIMIT = 128 * 1024;
 
 export const INIT_WORKFLOW_PROMPT = `
@@ -49,13 +50,13 @@ After a successful write, read generated AGENTS.md once through killeros_init_re
 
 function setInitTools(pi: ExtensionAPI, initState: InitRuntime, active: boolean): void {
   if (active) {
-    initState.activeTools ??= pi.getActiveTools().filter((name) => !INIT_SCOPED_TOOLS.includes(name as (typeof INIT_SCOPED_TOOLS)[number]));
+    initState.activeTools ??= pi.getActiveTools().filter((name) => !INIT_SCOPED_TOOL_NAMES.has(name));
     pi.setActiveTools([...INIT_SCOPED_TOOLS]);
   } else if (initState.activeTools) {
     pi.setActiveTools(initState.activeTools);
     initState.activeTools = undefined;
   } else {
-    pi.setActiveTools(pi.getActiveTools().filter((name) => !INIT_SCOPED_TOOLS.includes(name as (typeof INIT_SCOPED_TOOLS)[number])));
+    pi.setActiveTools(pi.getActiveTools().filter((name) => !INIT_SCOPED_TOOL_NAMES.has(name)));
   }
 }
 
@@ -143,7 +144,7 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
   });
   pi.on("tool_call", (event) => {
     if (!initState.active) return;
-    if (!INIT_SCOPED_TOOLS.includes(event.toolName as (typeof INIT_SCOPED_TOOLS)[number])) {
+    if (!INIT_SCOPED_TOOL_NAMES.has(event.toolName)) {
       return { block: true, reason: "/init may use only its bounded evidence and terminal tools" };
     }
     if ((event.toolName === INIT_WRITE_TOOL || event.toolName === INIT_CONFLICT_TOOL) && initState.outcome.kind !== "pending") {
@@ -229,7 +230,7 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
             JSON.stringify(initState.evidence.snapshot),
             "",
             "## Existing root AGENTS.md (protected policy; not untrusted evidence)",
-            JSON.stringify(initState.baseline.content ?? null),
+            JSON.stringify(initState.baseline.exists ? initState.baseline.content : null),
           ].join("\n"),
           display: false,
         }, { triggerTurn: true });
@@ -255,8 +256,14 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
           break;
         case "cancelled":
           break;
-        default:
+        case "pending":
+        case "no-outcome":
           reportError(ctx, "/init did not generate AGENTS.md", "the model completed without a write or policy-conflict outcome");
+          break;
+        default: {
+          const exhaustive: never = outcome;
+          return exhaustive;
+        }
       }
     },
   });

@@ -7,9 +7,9 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { BoundedText } from "./bounded-text.ts";
 import { formatTime, formatTokens } from "./display.ts";
-import { reportError } from "./errors.ts";
+import { hasErrorCode, reportError } from "./errors.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
-import type { GoalBlockerAudit, GoalFileBaseline, GoalFileVerification, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import type { GoalBlockerAudit, GoalFileBaseline, GoalFileVerification, GoalRuntime, GoalState, GoalStateCommon, GoalStatus, InitRuntime } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
@@ -69,26 +69,30 @@ function finiteNonNegative(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function isGoalFileBaseline(value: unknown): value is GoalFileBaseline {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as { exists?: unknown; size?: unknown; mtimeMs?: unknown; contentHash?: unknown };
-  if (candidate.exists === false) return candidate.size === undefined && candidate.mtimeMs === undefined && candidate.contentHash === undefined;
-  return candidate.exists === true
-    && finiteNonNegative(candidate.size)
-    && finiteNonNegative(candidate.mtimeMs)
-    && (candidate.contentHash === undefined
-      || candidate.contentHash === null
-      || typeof candidate.contentHash === "string" && /^[a-f0-9]{64}$/u.test(candidate.contentHash));
+  if (!isUnknownRecord(value)) return false;
+  if (value.exists === false) {
+    return value.size === undefined && value.mtimeMs === undefined && value.contentHash === undefined;
+  }
+  return value.exists === true
+    && finiteNonNegative(value.size)
+    && finiteNonNegative(value.mtimeMs)
+    && (value.contentHash === undefined
+      || value.contentHash === null
+      || typeof value.contentHash === "string" && /^[a-f0-9]{64}$/u.test(value.contentHash));
 }
 
 function isGoalFileVerification(value: unknown): value is GoalFileVerification {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<GoalFileVerification>;
-  return candidate.kind === "file"
-    && typeof candidate.path === "string"
-    && candidate.path === candidate.path.trim()
-    && isAbsoluteFilePath(candidate.path)
-    && isGoalFileBaseline(candidate.baseline);
+  return isUnknownRecord(value)
+    && value.kind === "file"
+    && typeof value.path === "string"
+    && value.path === value.path.trim()
+    && isAbsoluteFilePath(value.path)
+    && isGoalFileBaseline(value.baseline);
 }
 
 function isAbsoluteFilePath(value: string): boolean {
@@ -119,7 +123,7 @@ function captureGoalFileBaseline(filePath: string): GoalFileBaseline {
   try {
     artifact = lstatSync(filePath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
+    if (hasErrorCode(error, "ENOENT")) return { exists: false };
     throw error;
   }
   const baseline = { exists: true as const, size: artifact.size, mtimeMs: artifact.mtimeMs };
@@ -175,56 +179,98 @@ function verifyGoalDeliverable(verification: GoalFileVerification): void {
 }
 
 function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): value is GoalBlockerAudit {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<GoalBlockerAudit>;
-  if (typeof candidate.key !== "string"
-    || !/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(candidate.key)
-    || !Number.isInteger(candidate.streak) || (candidate.streak ?? 0) < 1 || (candidate.streak ?? 0) > 3
-    || !Number.isInteger(candidate.lastTurn) || (candidate.lastTurn ?? 0) < 1 || (candidate.lastTurn ?? 0) > turns) return false;
+  if (!isUnknownRecord(value)
+    || typeof value.key !== "string"
+    || !/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.key)
+    || typeof value.streak !== "number" || !Number.isInteger(value.streak) || value.streak < 1 || value.streak > 3
+    || typeof value.lastTurn !== "number" || !Number.isInteger(value.lastTurn) || value.lastTurn < 1 || value.lastTurn > turns) {
+    return false;
+  }
   if (status === "complete") return false;
-  return status === "blocked" ? candidate.streak === 3 : candidate.streak! < 3;
+  return status === "blocked" ? value.streak === 3 : value.streak < 3;
 }
 
 function parseGoalState(value: unknown): GoalState | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Partial<GoalState>;
-  if (candidate.version !== GOAL_VERSION
-    || !Number.isInteger(candidate.revision) || (candidate.revision ?? 0) < 1
-    || typeof candidate.objective !== "string" || !candidate.objective.trim()
-    || [...candidate.objective].length > GOAL_OBJECTIVE_LIMIT
-    || !isGoalStatus(candidate.status)
-    || !finiteNonNegative(candidate.createdAt)
-    || !finiteNonNegative(candidate.updatedAt)
-    || !finiteNonNegative(candidate.activeMilliseconds)
-    || !Number.isInteger(candidate.turns) || (candidate.turns ?? -1) < 0
-    || candidate.blockedAuditStartTurn !== undefined
-      && (!Number.isInteger(candidate.blockedAuditStartTurn) || candidate.blockedAuditStartTurn < 0 || candidate.blockedAuditStartTurn > candidate.turns!)
-    || !finiteNonNegative(candidate.baselineTokens)
-    || candidate.activeStartedAt !== undefined && !finiteNonNegative(candidate.activeStartedAt)
-    || candidate.result !== undefined && typeof candidate.result !== "string"
-    || candidate.verification !== undefined && !isGoalFileVerification(candidate.verification)
-    || candidate.blockerAudit !== undefined && !isGoalBlockerAudit(candidate.blockerAudit, candidate.turns!, candidate.status)
-    || candidate.resumeAfterManualCompaction !== undefined && candidate.resumeAfterManualCompaction !== true
-    || candidate.resumeAfterManualCompaction === true && candidate.status !== "paused") {
+  if (!isUnknownRecord(value)) return undefined;
+  const {
+    version,
+    revision,
+    objective,
+    status,
+    createdAt,
+    updatedAt,
+    activeMilliseconds,
+    activeStartedAt,
+    turns,
+    blockedAuditStartTurn,
+    baselineTokens,
+    result,
+    resumeAfterManualCompaction,
+    blockerAudit,
+    verification,
+  } = value;
+  if (version !== GOAL_VERSION
+    || typeof revision !== "number" || !Number.isInteger(revision) || revision < 1
+    || typeof objective !== "string" || !objective.trim() || [...objective].length > GOAL_OBJECTIVE_LIMIT
+    || !isGoalStatus(status)
+    || !finiteNonNegative(createdAt)
+    || !finiteNonNegative(updatedAt)
+    || !finiteNonNegative(activeMilliseconds)
+    || typeof turns !== "number" || !Number.isInteger(turns) || turns < 0
+    || blockedAuditStartTurn !== undefined
+      && (typeof blockedAuditStartTurn !== "number" || !Number.isInteger(blockedAuditStartTurn)
+        || blockedAuditStartTurn < 0 || blockedAuditStartTurn > turns)
+    || !finiteNonNegative(baselineTokens)
+    || result !== undefined && typeof result !== "string"
+    || verification !== undefined && !isGoalFileVerification(verification)
+    || resumeAfterManualCompaction !== undefined && resumeAfterManualCompaction !== true
+    || blockerAudit !== undefined && !isGoalBlockerAudit(blockerAudit, turns, status)) {
     return undefined;
   }
-  return {
+
+  const common: GoalStateCommon = {
     version: GOAL_VERSION,
-    revision: candidate.revision!,
-    objective: candidate.objective.trim(),
-    status: candidate.status,
-    createdAt: candidate.createdAt,
-    updatedAt: candidate.updatedAt,
-    activeMilliseconds: candidate.activeMilliseconds,
-    activeStartedAt: candidate.activeStartedAt,
-    turns: candidate.turns!,
-    blockedAuditStartTurn: candidate.blockedAuditStartTurn ?? 0,
-    baselineTokens: candidate.baselineTokens,
-    result: candidate.result,
-    resumeAfterManualCompaction: candidate.resumeAfterManualCompaction,
-    blockerAudit: candidate.blockerAudit,
-    verification: candidate.verification,
+    revision,
+    objective: objective.trim(),
+    createdAt,
+    updatedAt,
+    activeMilliseconds,
+    turns,
+    blockedAuditStartTurn: blockedAuditStartTurn ?? 0,
+    baselineTokens,
+    ...(verification === undefined ? {} : { verification }),
   };
+  switch (status) {
+    case "active":
+      if (!finiteNonNegative(activeStartedAt) || resumeAfterManualCompaction !== undefined) return undefined;
+      return {
+        ...common,
+        status,
+        activeStartedAt,
+        ...(result === undefined ? {} : { result }),
+        ...(blockerAudit === undefined ? {} : { blockerAudit }),
+      };
+    case "paused":
+      if (activeStartedAt !== undefined) return undefined;
+      return {
+        ...common,
+        status,
+        ...(result === undefined ? {} : { result }),
+        ...(blockerAudit === undefined ? {} : { blockerAudit }),
+        ...(resumeAfterManualCompaction === undefined ? {} : { resumeAfterManualCompaction }),
+      };
+    case "blocked":
+      if (activeStartedAt !== undefined || resumeAfterManualCompaction !== undefined || typeof result !== "string") return undefined;
+      return { ...common, status, result, ...(blockerAudit === undefined ? {} : { blockerAudit }) };
+    case "complete":
+      if (activeStartedAt !== undefined || resumeAfterManualCompaction !== undefined
+        || typeof result !== "string" || blockerAudit !== undefined) return undefined;
+      return { ...common, status, result };
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
 }
 
 function goalBranchEntries(ctx: ExtensionContext): ReturnType<ExtensionContext["sessionManager"]["getEntries"]> {
@@ -240,35 +286,58 @@ function restoreGoalState(ctx: ExtensionContext): RestoredGoalState {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry?.type !== "custom" || entry.customType !== GOAL_ENTRY_TYPE) continue;
-    const data = entry.data as Partial<GoalEntryData> | undefined;
-    if (!data || data.version !== GOAL_VERSION || data.state === null) {
+    const data: unknown = entry.data;
+    if (!isUnknownRecord(data) || data.version !== GOAL_VERSION || data.state === null) {
       return { state: undefined };
     }
-    const restored = parseGoalState(data.state);
+    // v2.0.18 shutdown checkpoints stopped active clocks by omitting activeStartedAt.
+    const savedState = data.event === "checkpoint"
+      && isUnknownRecord(data.state)
+      && data.state.status === "active"
+      && data.state.activeStartedAt === undefined
+      ? { ...data.state, activeStartedAt: Date.now() }
+      : data.state;
+    const restored = parseGoalState(savedState);
     if (!restored) return { state: undefined };
-    const state = restored.status === "active"
-      ? { ...restored, activeStartedAt: Date.now() }
-      : { ...restored, activeStartedAt: undefined };
-    if (state.status === "paused") state.resumeAfterManualCompaction = undefined;
-    return { state };
+    if (restored.status === "active") {
+      return { state: { ...restored, activeStartedAt: Date.now() } };
+    }
+    if (restored.status === "paused") {
+      const { resumeAfterManualCompaction: _resume, ...state } = restored;
+      return { state };
+    }
+    return { state: restored };
   }
   return { state: undefined };
 }
 
 export function goalElapsedMilliseconds(state: GoalState, now = Date.now()): number {
-  const activeInterval = state.status === "active" && state.activeStartedAt !== undefined
+  const activeInterval = state.status === "active"
     ? Math.max(0, now - state.activeStartedAt)
     : 0;
   return state.activeMilliseconds + activeInterval;
 }
 
-function stopGoalClock(state: GoalState, now: number): GoalState {
-  if (state.status !== "active" || state.activeStartedAt === undefined) return state;
+function commonGoalState(state: GoalState): GoalStateCommon {
   return {
-    ...state,
-    activeMilliseconds: state.activeMilliseconds + Math.max(0, now - state.activeStartedAt),
-    activeStartedAt: undefined,
+    version: state.version,
+    revision: state.revision,
+    objective: state.objective,
+    createdAt: state.createdAt,
+    updatedAt: state.updatedAt,
+    activeMilliseconds: state.activeMilliseconds,
+    turns: state.turns,
+    blockedAuditStartTurn: state.blockedAuditStartTurn,
+    baselineTokens: state.baselineTokens,
+    ...(state.verification === undefined ? {} : { verification: state.verification }),
   };
+}
+
+function stopGoalClock(state: GoalState, now: number): GoalStateCommon {
+  const common = commonGoalState(state);
+  return state.status === "active"
+    ? { ...common, activeMilliseconds: common.activeMilliseconds + Math.max(0, now - state.activeStartedAt) }
+    : common;
 }
 
 function sumGoalTokens(ctx: ExtensionContext): number {
@@ -303,6 +372,7 @@ function persistGoalState(
   state: GoalState | undefined,
 ): void {
   const data: GoalEntryData = { version: GOAL_VERSION, event, state: state ?? null };
+  runtime.automaticCompaction = undefined;
   pi.appendEntry(GOAL_ENTRY_TYPE, data);
   runtime.state = state;
   syncGoalUpdateTool(pi, runtime);
@@ -322,17 +392,40 @@ function transitionGoal(
   if (!current) throw new Error("No goal is set");
   const now = Date.now();
   const stopped = stopGoalClock(current, now);
-  const next: GoalState = {
+  const common: GoalStateCommon = {
     ...stopped,
     revision: stopped.revision + 1,
-    status,
     updatedAt: now,
-    activeStartedAt: status === "active" ? now : undefined,
     blockedAuditStartTurn: options.resetBlockedAudit ? stopped.turns : stopped.blockedAuditStartTurn,
-    blockerAudit: options.resetBlockedAudit ? undefined : options.blockerAudit ?? stopped.blockerAudit,
-    result,
-    resumeAfterManualCompaction: options.resumeAfterManualCompaction,
   };
+  const blockerAudit = options.resetBlockedAudit ? undefined : options.blockerAudit ?? current.blockerAudit;
+  let next: GoalState;
+  switch (status) {
+    case "active":
+      next = { ...common, status, activeStartedAt: now, ...(blockerAudit === undefined ? {} : { blockerAudit }) };
+      break;
+    case "paused":
+      next = {
+        ...common,
+        status,
+        ...(result === undefined ? {} : { result }),
+        ...(blockerAudit === undefined ? {} : { blockerAudit }),
+        ...(options.resumeAfterManualCompaction === undefined ? {} : { resumeAfterManualCompaction: true }),
+      };
+      break;
+    case "blocked":
+      if (result === undefined) throw new Error("A blocked goal requires a result");
+      next = { ...common, status, result, ...(blockerAudit === undefined ? {} : { blockerAudit }) };
+      break;
+    case "complete":
+      if (result === undefined) throw new Error("A complete goal requires a result");
+      next = { ...common, status, result };
+      break;
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
   persistGoalState(pi, runtime, event, next);
   if (status !== "active") {
     runtime.continuationScheduled = false;
@@ -399,11 +492,12 @@ export function pauseGoalAfterFailure(
   try {
     transitionGoal(pi, runtime, "error", "paused", safeReason);
   } catch {
-    runtime.state = runtime.state ? {
-      ...stopGoalClock(runtime.state, Date.now()),
+    const current = runtime.state;
+    runtime.state = current ? {
+      ...stopGoalClock(current, Date.now()),
       status: "paused",
       result: safeReason,
-      resumeAfterManualCompaction: undefined,
+      ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
     } : undefined;
     syncGoalUpdateTool(pi, runtime);
     runtime.persistenceRetryNeeded = true;
@@ -427,11 +521,13 @@ function pauseGoalForPossibleManualCompaction(
       resumeAfterManualCompaction: true,
     });
   } catch {
-    runtime.state = runtime.state ? {
-      ...stopGoalClock(runtime.state, Date.now()),
+    const current = runtime.state;
+    runtime.state = current ? {
+      ...stopGoalClock(current, Date.now()),
       status: "paused",
       result: safeReason,
       resumeAfterManualCompaction: true,
+      ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
     } : undefined;
     syncGoalUpdateTool(pi, runtime);
     runtime.persistenceRetryNeeded = true;
@@ -472,7 +568,7 @@ function beginGoalTurn(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   ctx: ExtensionContext,
-  current: GoalState,
+  current: Extract<GoalState, { status: "active" }>,
 ): GoalState | undefined {
   const now = Date.now();
   const next: GoalState = {
@@ -480,8 +576,6 @@ function beginGoalTurn(
     revision: current.revision + 1,
     turns: current.turns + 1,
     updatedAt: now,
-    activeStartedAt: current.activeStartedAt ?? now,
-    resumeAfterManualCompaction: undefined,
   };
   try {
     persistGoalState(pi, runtime, "turn", next);
@@ -530,38 +624,81 @@ function scheduleGoalContinuation(
   }
 }
 
+/** Resumes the revision paused by automatic compaction after both host callbacks settle. */
+function finalizeAutomaticCompaction(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  initState: InitRuntime,
+  ctx: ExtensionContext,
+): void {
+  const recovery = runtime.automaticCompaction;
+  if (!recovery?.compactionSucceeded || !recovery.turnSettled) return;
+  runtime.automaticCompaction = undefined;
+  if (runtime.state?.status !== "paused"
+    || runtime.state.revision !== recovery.pausedRevision
+    || initState.active) return;
+  try {
+    transitionGoal(pi, runtime, "resume", "active", undefined, { resetBlockedAudit: true });
+  } catch (error) {
+    runtime.persistenceRetryNeeded = true;
+    reportError(ctx, "Automatic compaction succeeded, but the goal could not be resumed", error);
+    return;
+  }
+  runtime.continuationScheduled = false;
+  setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+}
+
+/** Records Pi's successful compaction callback and attempts guarded recovery. */
 function completeAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   initState: InitRuntime,
   ctx: ExtensionContext,
 ): void {
-  if (runtime.automaticCompaction === undefined) return;
-  if (runtime.state?.status !== "active" || initState.active) {
-    runtime.automaticCompaction = undefined;
-    return;
-  }
-  runtime.automaticCompaction = undefined;
-  setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+  if (!runtime.automaticCompaction) return;
+  runtime.automaticCompaction.compactionSucceeded = true;
+  finalizeAutomaticCompaction(pi, runtime, initState, ctx);
 }
 
+/** Consumes automatic recovery and records its failure on the eligible paused goal. */
+function stopAutomaticCompactionRecovery(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  ctx: ExtensionContext,
+  reason: string,
+): void {
+  const recovery = runtime.automaticCompaction;
+  runtime.automaticCompaction = undefined;
+  const safeReason = safeTerminalText(reason);
+  if (runtime.state?.status !== "paused" || runtime.state.revision !== recovery?.pausedRevision) return;
+  try {
+    transitionGoal(pi, runtime, "error", "paused", safeReason);
+  } catch {
+    runtime.state = { ...runtime.state, result: safeReason };
+    runtime.persistenceRetryNeeded = true;
+    runtime.requestRender?.();
+  }
+  ctx.ui.notify(
+    `Goal paused: ${safeReason}\nAutomatic continuation is stopped. Run /goal resume after resolving the compaction problem.`,
+    "error",
+  );
+}
+
+/** Leaves the goal paused when Pi rejects automatic compaction. */
 function failAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   ctx: ExtensionContext,
   error: unknown,
 ): void {
-  if (runtime.automaticCompaction === undefined) return;
-  runtime.automaticCompaction = undefined;
-  if (runtime.state?.status !== "active") return;
   const reason = error instanceof Error ? error.message : String(error);
-  pauseGoalAfterFailure(
-    pi,
-    runtime,
-    ctx,
-    `automatic compaction failed: ${reason}`,
-    "Automatic continuation is stopped. Run /goal resume after resolving the compaction problem.",
-  );
+  if (!runtime.automaticCompaction) {
+    if (runtime.persistenceRetryNeeded) {
+      ctx.ui.notify(`Automatic compaction did not start: ${safeTerminalText(reason)}`, "error");
+    }
+    return;
+  }
+  stopAutomaticCompactionRecovery(pi, runtime, ctx, `automatic compaction failed: ${reason}`);
 }
 
 function goalInstructions(state: GoalState, heading: string): string {
@@ -732,7 +869,11 @@ export function registerGoal(
       const checkpoint: GoalState = {
         ...stopGoalClock(runtime.state, now),
         revision: runtime.state.revision + 1,
+        status: "active",
         updatedAt: now,
+        activeStartedAt: now,
+        ...(runtime.state.result === undefined ? {} : { result: runtime.state.result }),
+        ...(runtime.state.blockerAudit === undefined ? {} : { blockerAudit: runtime.state.blockerAudit }),
       };
       try {
         persistGoalState(pi, runtime, "checkpoint", checkpoint);
@@ -846,16 +987,18 @@ export function registerGoal(
           return;
         }
         if (runtime.state.status === "paused") {
-          if (!runtime.persistenceRetryNeeded && runtime.state.resumeAfterManualCompaction !== true) {
+          if (!runtime.persistenceRetryNeeded
+            && runtime.state.resumeAfterManualCompaction !== true
+            && runtime.automaticCompaction === undefined) {
             ctx.ui.notify("Goal is already paused", "info");
             return;
           }
           const now = Date.now();
+          const { resumeAfterManualCompaction: _resume, ...paused } = runtime.state;
           const checkpoint: GoalState = {
-            ...runtime.state,
-            revision: runtime.state.revision + 1,
+            ...paused,
+            revision: paused.revision + 1,
             updatedAt: now,
-            resumeAfterManualCompaction: undefined,
           };
           try {
             persistGoalState(pi, runtime, "pause", checkpoint);
@@ -972,18 +1115,17 @@ export function registerGoal(
         }
         const now = Date.now();
         const current = stopGoalClock(runtime.state, now);
+        const { verification: _previousVerification, ...currentWithoutVerification } = current;
+        const verification = inferGoalVerification(objective);
         const next: GoalState = {
-          ...current,
+          ...currentWithoutVerification,
           revision: current.revision + 1,
           objective,
           status: "active",
           updatedAt: now,
           activeStartedAt: now,
           blockedAuditStartTurn: current.turns,
-          blockerAudit: undefined,
-          verification: inferGoalVerification(objective),
-          result: undefined,
-          resumeAfterManualCompaction: undefined,
+          ...(verification === undefined ? {} : { verification }),
         };
         try {
           persistGoalState(pi, runtime, "edit", next);
@@ -1113,6 +1255,32 @@ export function registerGoalSettlement(
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
     runtime.continuationScheduled = false;
+
+    if (runtime.automaticCompaction) {
+      const stopReason = runtime.lastStopReason;
+      const error = safeTerminalText(runtime.lastError ?? "");
+      runtime.lastStopReason = undefined;
+      runtime.lastError = undefined;
+      const expectedInterruption = stopReason === "aborted"
+        || stopReason === "error" && error === "This operation was aborted";
+      if (!wasGoalTurn || !agentEndObserved) {
+        stopAutomaticCompactionRecovery(pi, runtime, ctx, "the goal turn ended without an agent result");
+        return;
+      }
+      if ((stopReason === "error" || stopReason === "aborted") && !expectedInterruption) {
+        stopAutomaticCompactionRecovery(
+          pi,
+          runtime,
+          ctx,
+          error || "the agent turn failed",
+        );
+        return;
+      }
+      runtime.automaticCompaction.turnSettled = true;
+      finalizeAutomaticCompaction(pi, runtime, initState, ctx);
+      return;
+    }
+
     if (!wasGoalTurn || runtime.state?.status !== "active" || initState.active) {
       if (continuationWasScheduled && runtime.state?.status === "active" && !initState.active) {
         pauseGoalAfterFailure(pi, runtime, ctx, "the goal continuation ended before an agent turn started");
@@ -1122,7 +1290,6 @@ export function registerGoalSettlement(
       return;
     }
     if (!agentEndObserved) {
-      if (runtime.automaticCompaction !== undefined) return;
       pauseGoalAfterFailure(pi, runtime, ctx, "the goal turn ended without an agent result");
       return;
     }
@@ -1130,7 +1297,6 @@ export function registerGoalSettlement(
       const reason = runtime.lastError || "the agent turn was aborted";
       runtime.lastStopReason = undefined;
       runtime.lastError = undefined;
-      if (runtime.automaticCompaction !== undefined) return;
       pauseGoalForPossibleManualCompaction(pi, runtime, ctx, reason);
       return;
     }
@@ -1152,13 +1318,40 @@ export function registerGoalSettlement(
     recoverGoalAfterManualCompaction(pi, runtime, initState, ctx);
   });
 
+  const resetAutomaticRecovery = (): void => { runtime.automaticCompaction = undefined; };
+  pi.on("session_before_switch", resetAutomaticRecovery);
+  pi.on("session_before_fork", resetAutomaticRecovery);
+
   return {
     isActive: (ctx: ExtensionContext): boolean => isGoalModeSupported(ctx)
       && isSavedSession(ctx)
       && runtime.state?.status === "active"
       && !initState.active,
     onRequested: (): void => {
-      if (runtime.state?.status === "active") runtime.automaticCompaction = "pending";
+      if (runtime.state?.status !== "active") return;
+      try {
+        const paused = transitionGoal(pi, runtime, "pause", "paused");
+        runtime.automaticCompaction = {
+          pausedRevision: paused.revision,
+          compactionSucceeded: false,
+          turnSettled: false,
+        };
+      } catch (error) {
+        const current = runtime.state;
+        const reason = safeTerminalText(`automatic compaction pause could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+        runtime.state = current ? {
+          ...stopGoalClock(current, Date.now()),
+          status: "paused",
+          result: reason,
+          ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
+        } : undefined;
+        syncGoalUpdateTool(pi, runtime);
+        runtime.persistenceRetryNeeded = true;
+        runtime.continuationScheduled = false;
+        runtime.automaticCompaction = undefined;
+        runtime.requestRender?.();
+        throw error;
+      }
     },
     onCompleted: (ctx: ExtensionContext): void => completeAutomaticCompaction(pi, runtime, initState, ctx),
     onFailed: (ctx: ExtensionContext, error: unknown): void => failAutomaticCompaction(pi, runtime, ctx, error),

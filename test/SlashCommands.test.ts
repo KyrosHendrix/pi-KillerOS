@@ -8,6 +8,7 @@ import {
   registerSlashAutocomplete,
 } from "../killeros/commands.ts";
 import { highlightSlashCommands, registerShellUi } from "../killeros/shell-ui.ts";
+import { extensionApiTestAdapter } from "./PiTestAdapters.ts";
 
 function command(
   name: string,
@@ -152,7 +153,7 @@ test("editor render uses the shared resolver, mdLink theme role, multiline token
       setEditorComponent: (factory: TestEditorFactory) => { editorFactory = factory; },
     },
   };
-  registerShellUi(api as never, resolver);
+  registerShellUi(extensionApiTestAdapter(api), resolver);
   for (const handler of handlers.get("session_start") ?? []) handler({}, ctx);
   assert.ok(editorFactory);
 
@@ -206,7 +207,7 @@ test("autocomplete uses the same resolver and falls back to current base suggest
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
   };
-  registerSlashAutocomplete(api as never, resolver);
+  registerSlashAutocomplete(extensionApiTestAdapter(api), resolver);
   const ctx = {
     mode: "tui",
     ui: { addAutocompleteProvider: (factory: TestProviderFactory) => { providerFactory = factory; } },

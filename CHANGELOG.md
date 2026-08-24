@@ -4,6 +4,16 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Hardened JSON and caught-error boundaries, made goal and `/init` target states constructive, added exhaustive outcome handling, and replaced unsafe test doubles with checked adapters.
+- Deprecated positional `executeHook` arguments in favor of object options; the compatibility adapter will be removed in the next major release.
+
+### Fixed
+
+- Paused active goals during automatic compaction and resumed the exact paused revision once after compaction and turn settlement succeed.
+- Restored active goals saved by v2.0.18 shutdown checkpoints that omitted their stopped clock timestamp.
+
 ## [2.0.18] - 2026-08-24
 
 ### Added

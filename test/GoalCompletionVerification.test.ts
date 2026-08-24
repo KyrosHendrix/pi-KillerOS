@@ -4,6 +4,28 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Killeros from "../Killeros.ts";
+import { extensionApiTestAdapter } from "./PiTestAdapters.ts";
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requiredMapValue<T>(values: ReadonlyMap<string, T>, key: string): T {
+  const value = values.get(key);
+  assert.ok(value, `expected ${key} to be registered`);
+  return value;
+}
+
+function last<T>(values: T[]): T {
+  const value = values.at(-1);
+  assert.ok(value, "expected a captured value");
+  return value;
+}
+
+function requiredState(entry: { data: { state: Record<string, unknown> | null } }): Record<string, unknown> {
+  assert.ok(entry.data.state, "expected a persisted goal state");
+  return entry.data.state;
+}
 
 function createHarness(entries: Array<Record<string, unknown>> = []) {
   const commands = new Map<string, { handler: (args: string, ctx: ReturnType<typeof createContext>) => Promise<void> }>();
@@ -31,7 +53,8 @@ function createHarness(entries: Array<Record<string, unknown>> = []) {
     getActiveTools: () => [],
     setActiveTools: () => {},
   };
-  Killeros(api as never, { completionNotifications: { store: { load: () => false, save: () => {} }, ring: () => {} } });
+  // Pi has no constructible extension host for tests; PiExtensionContract.test.ts proves the installed lifecycle.
+  Killeros(extensionApiTestAdapter(api), { completionNotifications: { store: { load: () => false, save: () => {} }, ring: () => {} } });
   return { appendedEntries, commands, entries, handlers, sentMessages, tools };
 }
 
@@ -71,12 +94,12 @@ function createContext(entries: Array<Record<string, unknown>> = []) {
 }
 
 async function startGoal(harness: ReturnType<typeof createHarness>, ctx: ReturnType<typeof createContext>, objective: string) {
-  await harness.commands.get("goal")!.handler(objective, ctx);
-  return harness.appendedEntries.at(-1)!.data.state!;
+  await requiredMapValue(harness.commands, "goal").handler(objective, ctx);
+  return requiredState(last(harness.appendedEntries));
 }
 
 function complete(harness: ReturnType<typeof createHarness>, ctx: ReturnType<typeof createContext>) {
-  return harness.tools.get("killeros_goal_update")!.execute(
+  return requiredMapValue(harness.tools, "killeros_goal_update").execute(
     "complete",
     { status: "complete", evidence: "Verified deliverable" },
     new AbortController().signal,
@@ -97,18 +120,18 @@ test("file goals verify the persisted exact path before completion", async (t) =
 
   assert.deepEqual(active.verification, { kind: "file", path: requested, baseline: { exists: false } });
   await assert.rejects(complete(harness, ctx), /not a regular file at the required path/u);
-  assert.equal(harness.appendedEntries.at(-1)!.data.state!.status, "active");
+  assert.equal(requiredState(last(harness.appendedEntries)).status, "active");
   assert.equal(harness.appendedEntries.some((entry) => entry.data.event === "complete"), false);
 
   mkdirSync(requested);
   await assert.rejects(complete(harness, ctx), /not a regular file at the required path/u);
-  assert.equal(harness.appendedEntries.at(-1)!.data.state!.status, "active");
+  assert.equal(requiredState(last(harness.appendedEntries)).status, "active");
   rmSync(requested, { recursive: true });
 
   try {
     symlinkSync(wrong, requested, "file");
     await assert.rejects(complete(harness, ctx), /not a regular file at the required path/u);
-    assert.equal(harness.appendedEntries.at(-1)!.data.state!.status, "active");
+    assert.equal(requiredState(last(harness.appendedEntries)).status, "active");
     rmSync(requested);
   } catch (error) {
     if (!(error instanceof Error) || !("code" in error) || !["EACCES", "EPERM"].includes(String(error.code))) throw error;
@@ -118,7 +141,7 @@ test("file goals verify the persisted exact path before completion", async (t) =
   const result = await complete(harness, ctx);
   assert.equal(result.details.status, "complete");
   assert.equal(result.details.verification, "file");
-  assert.equal(harness.appendedEntries.at(-1)!.data.state!.status, "complete");
+  assert.equal(requiredState(last(harness.appendedEntries)).status, "complete");
 });
 
 test("pre-existing file goals require a changed deliverable after restore", async (t) => {
@@ -130,7 +153,9 @@ test("pre-existing file goals require a changed deliverable after restore", asyn
   const originalContext = createContext();
   const active = await startGoal(originalHarness, originalContext, `Write the Markdown file to \`${requested}\``);
 
-  assert.equal((active.verification as { baseline: { exists: boolean } }).baseline.exists, true);
+  const verification = active.verification;
+  assert.ok(isUnknownRecord(verification) && isUnknownRecord(verification.baseline));
+  assert.equal(verification.baseline.exists, true);
   const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: "set", state: active } }];
   const restoredHarness = createHarness(entries);
   const restoredContext = createContext(entries);
@@ -179,7 +204,11 @@ test("file goals fail closed when their current content baseline is unavailable"
   const originalHarness = createHarness();
   const originalContext = createContext();
   const active = await startGoal(originalHarness, originalContext, `Write the Markdown file to \`${requested}\``);
-  const verification = active.verification as { kind: string; path: string; baseline: Record<string, unknown> };
+  const verification = active.verification;
+  assert.ok(isUnknownRecord(verification)
+    && typeof verification.kind === "string"
+    && typeof verification.path === "string"
+    && isUnknownRecord(verification.baseline));
   const entries = [{
     type: "custom",
     customType: "killeros-goal",
@@ -206,14 +235,14 @@ test("file goals reject baseline paths the filesystem cannot inspect", async () 
   const notifications: Array<{ message: string; level?: string }> = [];
   ctx.ui.notify = (message, level) => { notifications.push({ message, level }); };
 
-  await harness.commands.get("goal")!.handler(`Write the Markdown file to \`${requested}\``, ctx);
+  await requiredMapValue(harness.commands, "goal").handler(`Write the Markdown file to \`${requested}\``, ctx);
 
   assert.equal(harness.appendedEntries.length, 0);
   assert.equal(harness.sentMessages.length, 0);
   assert.equal(notifications.length, 1);
-  assert.match(notifications[0]!.message, /^Goal could not be started:/u);
-  assert.equal(notifications[0]!.message.includes("\0"), false);
-  assert.equal(notifications[0]!.level, "error");
+  assert.match(last(notifications).message, /^Goal could not be started:/u);
+  assert.equal(last(notifications).message.includes("\0"), false);
+  assert.equal(last(notifications).level, "error");
 });
 
 test("general natural-language goals retain model-reported completion", async () => {

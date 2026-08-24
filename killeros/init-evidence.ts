@@ -60,7 +60,8 @@ async function collectCandidates(projectRoot: string): Promise<string[]> {
   const queue: Array<{ relativePath: string; depth: number }> = [{ relativePath: "", depth: 0 }];
   let directoriesRead = 0;
   while (queue.length && files.length < PATH_LIMIT && directoriesRead < DIRECTORY_LIMIT) {
-    const current = queue.shift()!;
+    const current = queue.shift();
+    if (!current) break;
     directoriesRead += 1;
     let entries;
     try {
@@ -270,7 +271,8 @@ export function listInitEvidence(index: InitEvidenceIndex, requestedPath = "."):
     const remainder = relativePath.slice(prefixWithSlash.length);
     if (!remainder) continue;
     found = true;
-    children.add(remainder.split("/")[0]!);
+    const child = remainder.split("/", 1)[0];
+    if (child) children.add(child);
   }
   if (!found) throw new Error(`${requestedPath} is not available to /init`);
   return [...children].sort((left, right) => left.localeCompare(right)).slice(0, PATH_LIMIT);

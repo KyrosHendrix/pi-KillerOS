@@ -42,7 +42,7 @@ export function resolvePersonalInstructions(cwd: string): string | undefined {
   const importMatch = local.trim().match(/^@(.+)$/u);
   let content = local;
   if (importMatch) {
-    const requestedPath = importMatch[1]!.trim();
+    const requestedPath = (importMatch[1] ?? "").trim();
     const importedPath = requestedPath.startsWith("~/") || requestedPath.startsWith("~\\")
       ? path.join(os.homedir(), requestedPath.slice(2))
       : path.resolve(cwd, requestedPath);

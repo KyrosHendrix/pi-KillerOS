@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { StopReason } from "@earendil-works/pi-ai";
 import test from "node:test";
 import {
@@ -8,15 +8,21 @@ import {
   type WorkedForOutcome,
   workedForOutcome,
 } from "../killeros/worked-for.ts";
+import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 
 type WorkedForEvent = {
   type: string;
   messages?: Array<{ role?: string; stopReason?: StopReason }>;
 };
 
-type WorkedForSessionEntry = ReturnType<ExtensionContext["sessionManager"]["getEntries"]>[number];
-type WorkedForContext = Pick<ExtensionContext, "mode" | "hasPendingMessages" | "isIdle"> & {
-  sessionManager: Pick<ExtensionContext["sessionManager"], "getEntries">;
+type WorkedForSessionEntry =
+  | { type: "compaction" | "branch_summary"; usage: { totalTokens: number } }
+  | { type: "message"; message: { role: string; usage: { totalTokens: number } } };
+type WorkedForContext = {
+  mode: ExtensionContext["mode"];
+  hasPendingMessages(): boolean;
+  isIdle(): boolean;
+  sessionManager: { getEntries(): WorkedForSessionEntry[] };
   ui: Pick<ExtensionContext["ui"], "notify">;
 };
 
@@ -34,6 +40,10 @@ type WorkedForRenderer = (
 
 type WorkedForEntry = { customType: string; data: Record<string, unknown> };
 type NotificationLevel = Parameters<ExtensionContext["ui"]["notify"]>[1];
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 type WorkedForHarness = {
   appendedEntries: WorkedForEntry[];
@@ -62,7 +72,8 @@ function createWorkedForHarness(mode: WorkedForContext["mode"] = "tui"): WorkedF
   const api: WorkedForAPI = {
     appendEntry: (customType: string, data: unknown) => {
       if (appendError) throw appendError;
-      appendedEntries.push({ customType, data: data as Record<string, unknown> });
+      assert.ok(isUnknownRecord(data), "expected worked-for entry data to be an object");
+      appendedEntries.push({ customType, data });
     },
     on: (event: string, handler: WorkedForHandler) => {
       const eventHandlers = handlers.get(event) ?? [];
@@ -83,7 +94,7 @@ function createWorkedForHarness(mode: WorkedForContext["mode"] = "tui"): WorkedF
     } },
     ui: { notify: (message: string, level?: NotificationLevel) => notices.push({ message, level }) },
   };
-  registerWorkedFor(api as unknown as ExtensionAPI, () => currentTime);
+  registerWorkedFor(extensionApiTestAdapter(api), () => currentTime);
 
   return {
     appendedEntries,
@@ -101,16 +112,16 @@ function createWorkedForHarness(mode: WorkedForContext["mode"] = "tui"): WorkedF
   };
 }
 
-const theme = { fg: (_color: string, text: string): string => text } as unknown as Theme;
+const theme = themeTestAdapter({ fg: (_color: string, text: string): string => text });
 
 function usageEntry(type: "assistant" | "toolResult" | "compaction" | "branch_summary", totalTokens: number): WorkedForSessionEntry {
   if (type === "compaction" || type === "branch_summary") {
-    return { type, usage: { totalTokens } } as WorkedForSessionEntry;
+    return { type, usage: { totalTokens } };
   }
   return {
     type: "message",
     message: { role: type, usage: { totalTokens } },
-  } as WorkedForSessionEntry;
+  };
 }
 
 test("worked-for durations use compact mixed units with a one-second minimum", () => {
@@ -156,7 +167,7 @@ test("task tokens include model, tool, and compaction usage without recounting h
     usageEntry("toolResult", 2_000),
     usageEntry("compaction", 3_000),
     usageEntry("branch_summary", 4_000),
-    { type: "message", message: { role: "user", usage: { totalTokens: 100_000 } } } as unknown as WorkedForSessionEntry,
+    { type: "message", message: { role: "user", usage: { totalTokens: 100_000 } } },
     usageEntry("assistant", -1),
     usageEntry("assistant", Number.NaN),
   ]);
@@ -232,9 +243,9 @@ test("the durable entry renders task tokens and preserves older history", () => 
   const harness = createWorkedForHarness();
   const renderer = harness.renderers.get("killeros-worked-for");
   assert.ok(renderer);
-  const styledTheme = {
+  const styledTheme = themeTestAdapter({
     fg: (color: string, text: string): string => `<${color}>${text}</${color}>`,
-  } as unknown as Theme;
+  });
 
   const cases: ReadonlyArray<readonly [Record<string, unknown>, string]> = [
     [{ version: 3, milliseconds: 18_000, outcome: "done", tokens: 54_000 }, "<success>✓ Done</success><dim> · 18s · ↑ 54k tokens</dim>"],

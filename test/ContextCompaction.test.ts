@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import Killeros from "../Killeros.ts";
+import { extensionApiTestAdapter, extensionContextTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 
-const theme = {
+const theme = themeTestAdapter({
   bold(text: string): string { return text; },
   fg(_color: string, text: string): string { return text; },
   italic(text: string): string { return text; },
   strikethrough(text: string): string { return text; },
   underline(text: string): string { return text; },
-} as unknown as Theme;
+});
 
 type TestEvent = {
   type: string;
@@ -129,6 +130,25 @@ type Harness = {
   tools: Map<string, TestTool>;
 };
 
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isSavedGoalState(value: unknown): value is SavedGoalState {
+  return isUnknownRecord(value)
+    && typeof value.version === "number"
+    && typeof value.revision === "number"
+    && typeof value.objective === "string"
+    && typeof value.status === "string"
+    && typeof value.createdAt === "number"
+    && typeof value.updatedAt === "number"
+    && typeof value.activeMilliseconds === "number"
+    && typeof value.turns === "number"
+    && typeof value.blockedAuditStartTurn === "number"
+    && typeof value.baselineTokens === "number"
+    && (value.resumeAfterManualCompaction === undefined || typeof value.resumeAfterManualCompaction === "boolean");
+}
+
 type ContextUsage = { tokens: number | null; contextWindow: number };
 type ContextOptions = {
   entries?: TestEntry[];
@@ -151,8 +171,8 @@ function createHarness(): Harness {
   };
   const api: TestAPI = {
     appendEntry: (customType: string, data: unknown) => {
-      const entryData = data as { event: string; state: SavedGoalState };
-      appendedEntries.push({ type: "custom", customType, data: entryData });
+      assert.ok(isUnknownRecord(data) && typeof data.event === "string" && isSavedGoalState(data.state));
+      appendedEntries.push({ type: "custom", customType, data: { event: data.event, state: data.state } });
     },
     getAllTools: () => [...tools.values()].map((tool) => ({ ...tool, sourceInfo })),
     getCommands: () => [...commands].map(([name, command]) => ({
@@ -178,7 +198,7 @@ function createHarness(): Harness {
     setActiveTools: (names: string[]) => { activeTools.splice(0, activeTools.length, ...names); },
   };
 
-  Killeros(api as unknown as ExtensionAPI, {
+  Killeros(extensionApiTestAdapter(api), {
     completionNotifications: {
       store: { load: () => false, save: () => {} },
       ring: () => {},
@@ -352,9 +372,9 @@ test("auto-compaction stays idle while context remains above its threshold", asy
 
 test("contextPercentRemaining remains a public display helper", async () => {
   const { contextPercentRemaining } = await import("../Killeros.ts");
-  const makeContext = (tokens: number | null, contextWindow = 128_000): ExtensionContext => ({
+  const makeContext = (tokens: number | null, contextWindow = 128_000): ExtensionContext => extensionContextTestAdapter({
     getContextUsage: () => ({ tokens, contextWindow }),
-  } as unknown as ExtensionContext);
+  });
 
   assert.equal(contextPercentRemaining(makeContext(89_600)), 30);
   assert.equal(contextPercentRemaining(makeContext(64_000)), 50);
@@ -362,10 +382,10 @@ test("contextPercentRemaining remains a public display helper", async () => {
   assert.equal(contextPercentRemaining(makeContext(-1)), 100);
   assert.equal(contextPercentRemaining(makeContext(null)), null);
   assert.equal(contextPercentRemaining(makeContext(1, 0)), null);
-  assert.equal(contextPercentRemaining({ getContextUsage: () => undefined } as unknown as ExtensionContext), null);
-  assert.equal(contextPercentRemaining({
+  assert.equal(contextPercentRemaining(extensionContextTestAdapter({ getContextUsage: () => undefined })), null);
+  assert.equal(contextPercentRemaining(extensionContextTestAdapter({
     getContextUsage: () => { throw new Error("unavailable"); },
-  } as unknown as ExtensionContext), null);
+  })), null);
 });
 
 test("threshold compaction continues a goal only at Pi's settled boundary", async () => {

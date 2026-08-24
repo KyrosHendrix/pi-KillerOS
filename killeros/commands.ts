@@ -234,9 +234,11 @@ export function registerSlashAutocomplete(
         };
       },
       applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
-        const tagged = item as TaggedAutocompleteItem;
-        if (!tagged.killerosCommand) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
-        usage.set(tagged.killerosCommand, (usage.get(tagged.killerosCommand) ?? 0) + 1);
+        const commandName = "killerosCommand" in item && typeof item.killerosCommand === "string"
+          ? item.killerosCommand
+          : undefined;
+        if (!commandName) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+        usage.set(commandName, (usage.get(commandName) ?? 0) + 1);
         const line = lines[cursorLine] ?? "";
         const beforeCursor = line.slice(0, cursorCol);
         const afterCursor = line.slice(cursorCol);

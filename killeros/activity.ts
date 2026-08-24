@@ -52,6 +52,10 @@ export function formatActivityMessage(message: ActivityMessage, theme: Theme): s
           detail = `using ${safeToolName(message.toolName)}`;
       }
       break;
+    default: {
+      const exhaustive: never = message;
+      return exhaustive;
+    }
   }
 
   return `${theme.fg("accent", verb)} ${theme.fg("dim", `(${theme.bold("esc")} to interrupt · ${detail})`)}`;
