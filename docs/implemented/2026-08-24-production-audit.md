@@ -1,6 +1,6 @@
 # Production audit journal
 
-STATUS: ACTIVE
+STATUS: DONE
 
 This journal records the solo production-readiness review requested on 2026-08-24. It stays active for the duration of the long-running goal.
 
@@ -212,3 +212,13 @@ This journal records the solo production-readiness review requested on 2026-08-2
 
 - Added an isolated cache-busted module reload regression with legacy process-global state missing its listener set.
 - The initializer now reuses only a boolean enabled flag plus a set containing functions; incompatible state gets a fresh listener set while a valid saved enabled flag survives.
+
+## Final review
+
+- Re-traced every persisted goal, worked-for receipt, global setting, and process-global fast-mode reader/writer. Malformed session data fails closed, restored goals use only the selected branch, lifecycle-local flags reset on session and tree boundaries, and the sole settings writer uses same-directory atomic replacement.
+- Re-traced Pi 0.84.2's loader, runner invalidation, shutdown-before-reload sequence, and interactive UI reset. Pi clears extension UI ownership before rebinding, while KillerOS clears its own timers, subscriptions, async header work, goal/init state, activity state, and notification state.
+- Re-ran the installed-tarball activation/reload test against the locked Pi 0.84.2 floor.
+- Installed the registry-current Pi 0.84.3 packages without changing package metadata or the lockfile; TypeScript and the full suite passed, including installed-package activation and reload. Restored the locked 0.84.2 dependency tree afterward.
+- Final result: 257 tests passed and 2 platform-specific symlink tests skipped on both the declared Pi floor and current Pi release. The worktree was clean on `dev`; nothing was pushed.
+
+No known material correctness, security, persistence, or Pi lifecycle defect remains from this audit. Explicit hook-output truncation labels and multi-writer settings locking were not added: the first is diagnostic polish and the second has no second writer, so both would be speculative machinery rather than production hardening.
