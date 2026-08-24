@@ -11,6 +11,7 @@ All notable changes to KillerOS are documented here.
 
 ### Changed
 
+- Raised the locked Pi development packages and minimum supported Pi peer version to 0.84.3.
 - Made Pi lifecycle compatibility coverage install the generated npm tarball offline before activation and reload.
 - Limited push CI to `main` and `dev`; feature branches run through pull request CI without duplicate push runs.
 - Removed obsolete Pi tool API casts, shared caught-error formatting, and expanded the non-repeating startup tip and editor suggestion banks.
