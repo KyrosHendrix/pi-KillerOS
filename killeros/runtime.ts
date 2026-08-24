@@ -38,23 +38,49 @@ export interface GoalFileVerification {
   baseline: GoalFileBaseline;
 }
 
-export interface GoalState {
+export interface GoalStateCommon {
   version: 1;
   revision: number;
   objective: string;
-  status: GoalStatus;
   createdAt: number;
   updatedAt: number;
   activeMilliseconds: number;
-  activeStartedAt?: number;
   turns: number;
   blockedAuditStartTurn: number;
   baselineTokens: number;
-  result?: string;
-  resumeAfterManualCompaction?: true;
-  blockerAudit?: GoalBlockerAudit;
   verification?: GoalFileVerification;
 }
+
+export type GoalState = GoalStateCommon & (
+  | {
+      status: "active";
+      activeStartedAt: number;
+      result?: string;
+      blockerAudit?: GoalBlockerAudit;
+      resumeAfterManualCompaction?: never;
+    }
+  | {
+      status: "paused";
+      activeStartedAt?: never;
+      result?: string;
+      blockerAudit?: GoalBlockerAudit;
+      resumeAfterManualCompaction?: true;
+    }
+  | {
+      status: "blocked";
+      activeStartedAt?: never;
+      result: string;
+      blockerAudit?: GoalBlockerAudit;
+      resumeAfterManualCompaction?: never;
+    }
+  | {
+      status: "complete";
+      activeStartedAt?: never;
+      result: string;
+      blockerAudit?: never;
+      resumeAfterManualCompaction?: never;
+    }
+);
 
 export interface GoalRuntime {
   state?: GoalState;

@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { hasErrorCode } from "./errors.ts";
 
 const TARGET_LIMIT = 128 * 1024;
 const REQUIRED_GUIDANCE_HEADINGS = [
@@ -13,15 +14,17 @@ const REQUIRED_GUIDANCE_HEADINGS = [
   "## 4. Goal-Driven Execution",
 ] as const;
 
-export interface InitTargetBaseline {
-  exists: boolean;
-  content?: string;
-  digest?: string;
-  dev?: number;
-  ino?: number;
-  mode?: number;
-  nlink?: number;
-}
+export type InitTargetBaseline =
+  | { exists: false }
+  | {
+      exists: true;
+      content: string;
+      digest: string;
+      dev: number;
+      ino: number;
+      mode: number;
+      nlink: number;
+    };
 
 export interface InitInstallOperations {
   renameFile?: typeof fs.rename;
@@ -33,7 +36,7 @@ function digest(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-async function captureExistingTarget(targetPath: string): Promise<InitTargetBaseline> {
+async function captureExistingTarget(targetPath: string): Promise<Extract<InitTargetBaseline, { exists: true }>> {
   const pathStat = await fs.lstat(targetPath);
   if (pathStat.isSymbolicLink() || !pathStat.isFile() || pathStat.nlink !== 1) {
     throw new Error("/init requires root AGENTS.md to be absent or a regular, non-linked file");
@@ -67,14 +70,14 @@ export async function captureInitTargetBaseline(targetPath: string): Promise<Ini
   try {
     return await captureExistingTarget(targetPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
+    if (hasErrorCode(error, "ENOENT")) return { exists: false };
     throw error;
   }
 }
 
 function sameBaseline(left: InitTargetBaseline, right: InitTargetBaseline): boolean {
-  if (left.exists !== right.exists) return false;
-  if (!left.exists) return true;
+  if (!left.exists) return !right.exists;
+  if (!right.exists) return false;
   return left.digest === right.digest
     && left.dev === right.dev
     && left.ino === right.ino
@@ -82,7 +85,10 @@ function sameBaseline(left: InitTargetBaseline, right: InitTargetBaseline): bool
     && left.nlink === right.nlink;
 }
 
-async function installedCandidateMatches(targetPath: string, candidate: InitTargetBaseline): Promise<boolean> {
+async function installedCandidateMatches(
+  targetPath: string,
+  candidate: Extract<InitTargetBaseline, { exists: true }>,
+): Promise<boolean> {
   try {
     const pathStat = await fs.lstat(targetPath);
     if (pathStat.isSymbolicLink() || !pathStat.isFile() || pathStat.nlink !== 2) return false;
@@ -102,7 +108,7 @@ async function installedCandidateMatches(targetPath: string, candidate: InitTarg
       await handle.close();
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (hasErrorCode(error, "ENOENT")) return false;
     throw error;
   }
 }
@@ -124,7 +130,9 @@ export function validateGeneratedGuidance(content: string): string | undefined {
   for (const heading of REQUIRED_GUIDANCE_HEADINGS) {
     const matches = [...content.matchAll(new RegExp(`^${heading.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}$`, "gmu"))];
     if (matches.length !== 1) return `generated guidance must contain ${heading} exactly once`;
-    const index = matches[0]!.index;
+    const match = matches[0];
+    if (!match) return `generated guidance must contain ${heading} exactly once`;
+    const index = match.index;
     if (index <= previous) return "generated guidance headings must occur in the required order";
     previous = index;
   }
@@ -141,7 +149,7 @@ async function pathExists(filePath: string): Promise<boolean> {
     await fs.lstat(filePath);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (hasErrorCode(error, "ENOENT")) return false;
     throw error;
   }
 }
@@ -170,7 +178,7 @@ export async function installInitAgentsFile(
     const heldPath = path.join(tempDirectory, "held.md");
     let held = false;
     let installed = false;
-    let candidate: InitTargetBaseline | undefined;
+    let candidate: Extract<InitTargetBaseline, { exists: true }> | undefined;
     let retainedRecovery: string | undefined;
     try {
       const handle = await fs.open(candidatePath, "wx", 0o600);
@@ -187,7 +195,7 @@ export async function installInitAgentsFile(
           await linkFile(candidatePath, targetPath);
           installed = true;
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          if (hasErrorCode(error, "EEXIST")) {
             throw new Error("/init target changed while /init was generating; the newer AGENTS.md was preserved");
           }
           throw error;
@@ -221,7 +229,7 @@ export async function installInitAgentsFile(
         await linkFile(candidatePath, targetPath);
         installed = true;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        if (hasErrorCode(error, "EEXIST")) {
           retainedRecovery = recoveryPath(targetPath);
           await renameFile(heldPath, retainedRecovery);
           held = false;

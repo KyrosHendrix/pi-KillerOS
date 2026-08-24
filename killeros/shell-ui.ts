@@ -25,14 +25,19 @@ import {
 } from "./commands.ts";
 import { reportError } from "./errors.ts";
 import { formatModel } from "./footer.ts";
-import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
+import { LEVEL_COLORS } from "./variants.ts";
 
 const COMPACT_HEADER_MAX_WIDTH = 52;
 
 function readPackageVersion(path: string | URL): string | undefined {
   try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown };
-    return typeof value.version === "string" ? value.version : undefined;
+    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return typeof value === "object"
+      && value !== null
+      && "version" in value
+      && typeof value.version === "string"
+      ? value.version
+      : undefined;
   } catch {
     return undefined;
   }
@@ -93,7 +98,11 @@ function shuffledDeck(values: readonly string[]): string[] {
   const deck = [...values];
   for (let index = deck.length - 1; index > 0; index -= 1) {
     const swapIndex = Math.floor(Math.random() * (index + 1));
-    [deck[index], deck[swapIndex]] = [deck[swapIndex]!, deck[index]!];
+    const current = deck[index];
+    const swap = deck[swapIndex];
+    if (current === undefined || swap === undefined) continue;
+    deck[index] = swap;
+    deck[swapIndex] = current;
   }
   return deck;
 }
@@ -152,7 +161,7 @@ class PiStartupHeader {
     const innerWidth = panelWidth - 4;
     const version = KILLEROS_VERSION ? theme.fg("dim", ` (v${KILLEROS_VERSION})`) : "";
     const identity = `${theme.fg("dim", "›")} ${theme.fg("text", theme.bold("KillerOS"))}${version}`;
-    const thinkingLevel = this.pi.getThinkingLevel() as ThinkingLevel;
+    const thinkingLevel = this.pi.getThinkingLevel();
     const reasoning = this.ctx.model?.reasoning === false
       ? theme.fg("thinkingOff", "no reasoning")
       : theme.fg(LEVEL_COLORS[thinkingLevel], thinkingLevel);

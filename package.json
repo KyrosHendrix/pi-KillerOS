@@ -1,6 +1,6 @@
 {
   "name": "killeros",
-  "version": "2.0.16",
+  "version": "2.0.18",
   "description": "TUI, goals, and workflow automation for the Pi coding agent",
   "type": "module",
   "keywords": [

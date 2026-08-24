@@ -196,7 +196,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
     unsubscribeCodexFast = subscribeCodexFast(() => activeTui?.requestRender());
     const sessionStart = Date.now();
     currentModel = ctx.model;
-    thinkingLevel = pi.getThinkingLevel() as ThinkingLevel;
+    thinkingLevel = pi.getThinkingLevel();
     const cwd = formatCwd(ctx.cwd);
 
     ctx.ui.setFooter((tui, theme, footerData) => {

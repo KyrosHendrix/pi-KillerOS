@@ -8,6 +8,15 @@ interface ChangelogSection {
   lines: string[];
 }
 
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && typeof error.code === "string"
+    ? error.code
+    : undefined;
+}
+
 export function extractReleaseSection(text: string, version: string): string | null {
   if (text.startsWith("\uFEFF")) {
     text = text.slice(1);
@@ -41,7 +50,7 @@ if (isMain) {
   try {
     changelogText = readFileSync(changelogPath, "utf8");
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
+    const code = errorCode(error);
     const message = error instanceof Error ? error.message : String(error);
     console.error(`cannot read changelog ${changelogPath}: ${code ?? message}`);
     process.exit(1);

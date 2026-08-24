@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import type { StopReason } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   COMPLETION_BELL_GLYPH,
   type CompletionNotificationDependencies,
@@ -13,6 +13,7 @@ import {
   formatNotificationTitle,
   registerCompletionNotifications,
 } from "../killeros/notifications.ts";
+import { extensionApiTestAdapter } from "./PiTestAdapters.ts";
 
 type NotificationLevel = Parameters<ExtensionContext["ui"]["notify"]>[1];
 type NotificationMode = ExtensionContext["mode"];
@@ -191,7 +192,7 @@ function createNotificationHarness(options: NotificationHarnessOptions = {}): No
       commands.set(name, command);
     },
   };
-  registerCompletionNotifications(api as unknown as ExtensionAPI, dependencies);
+  registerCompletionNotifications(extensionApiTestAdapter(api), dependencies);
   const ctx: NotificationContext = {
     cwd: "/work/pi-KillerOS",
     hasPendingMessages: () => pendingMessages,

@@ -4,18 +4,25 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Hardened JSON and caught-error boundaries, made goal and `/init` target states constructive, added exhaustive outcome handling, and replaced unsafe test doubles with checked adapters.
+- Deprecated positional `executeHook` arguments in favor of object options; the compatibility adapter will be removed in the next major release.
+
+### Fixed
+
+- Restored active goals saved by v2.0.18 shutdown checkpoints that omitted their stopped clock timestamp.
+
+## [2.0.18] - 2026-08-24
+
 ### Added
 
 - Added a real Pi SDK lifecycle test for package activation, shutdown-before-reload, fresh registration, and stale-context rejection.
-- Added per-task token usage to settled TUI receipts for ordinary requests and individual goal turns.
 
 ### Changed
 
 - Raised the locked Pi development packages and minimum supported Pi peer version to 0.84.3.
 - Made Pi lifecycle compatibility coverage install the generated npm tarball offline before activation and reload.
-- Limited push CI to `main` and `dev`; feature branches run through pull request CI without duplicate push runs.
-- Removed obsolete Pi tool API casts, shared caught-error formatting, and expanded the non-repeating startup tip and editor suggestion banks.
-- Clarified that the README's pinned Git tag is an example rather than the current package version.
 
 ### Fixed
 
@@ -43,6 +50,21 @@ All notable changes to KillerOS are documented here.
 - Stripped terminal commands and control bytes from cwd and session names before emitting the KillerOS terminal title.
 - Removed filesystem source paths from personal-instruction prompt wrappers so unusual project paths cannot alter prompt structure.
 - Stripped terminal commands and unsafe control bytes from lifecycle hook failure notifications and tool block reasons.
+
+## [2.0.17] - 2026-08-23
+
+### Added
+
+- Added per-task token usage to settled TUI receipts for ordinary requests and individual goal turns.
+
+### Changed
+
+- Limited push CI to `main` and `dev`; feature branches run through pull request CI without duplicate push runs.
+- Removed obsolete Pi tool API casts, shared caught-error formatting, and expanded the non-repeating startup tip and editor suggestion banks.
+- Clarified that the README's pinned Git tag is an example rather than the current package version.
+
+### Fixed
+
 - Limited retired-feature repository checks to tracked and non-ignored files so ignored private notes cannot fail the suite.
 
 ## [2.0.16] - 2026-08-23

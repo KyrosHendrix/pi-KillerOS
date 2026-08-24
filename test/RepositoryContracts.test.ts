@@ -13,11 +13,40 @@ type PackageJson = {
 };
 
 type TypeScriptConfig = {
+  compilerOptions: { strict: true };
   include: string[];
 };
 
-const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as PackageJson;
-const tsconfig = JSON.parse(readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8")) as TypeScriptConfig;
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isUnknownRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isPackageJson(value: unknown): value is PackageJson {
+  return isUnknownRecord(value)
+    && typeof value.version === "string"
+    && (value.dependencies === undefined || isUnknownRecord(value.dependencies))
+    && isStringRecord(value.peerDependencies)
+    && isStringRecord(value.devDependencies);
+}
+
+function isTypeScriptConfig(value: unknown): value is TypeScriptConfig {
+  return isUnknownRecord(value)
+    && isUnknownRecord(value.compilerOptions)
+    && value.compilerOptions.strict === true
+    && Array.isArray(value.include)
+    && value.include.every((entry) => typeof entry === "string");
+}
+
+const packageValue: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const tsconfigValue: unknown = JSON.parse(readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8"));
+assert.ok(isPackageJson(packageValue));
+assert.ok(isTypeScriptConfig(tsconfigValue));
+const packageJson = packageValue;
+const tsconfig = tsconfigValue;
 const main = readFileSync(new URL("../Killeros.ts", import.meta.url), "utf8");
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
@@ -102,7 +131,8 @@ test("machine identifiers use locale-independent casing", () => {
   assert.doesNotMatch(source, /\.toLocale(?:Lower|Upper)Case\(/u);
 });
 
-test("all shipped TypeScript entry points are type-checked", () => {
+test("all shipped TypeScript entry points use strict checking", () => {
+  assert.equal(tsconfig.compilerOptions.strict, true);
   assert.deepEqual(tsconfig.include, ["Killeros.ts", "scripts/**/*.ts", "test/**/*.ts"]);
 });
 

@@ -20,8 +20,19 @@ import {
 import { registerGoal, registerGoalSettlement } from "../killeros/goals.ts";
 import { createGoalRuntime, createInitRuntime } from "../killeros/runtime.ts";
 import { createKillerosSettingsStore } from "../killeros/settings.ts";
+import { extensionApiTestAdapter, extensionContextTestAdapter } from "./PiTestAdapters.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
+
+function requiredMapValue<T>(values: ReadonlyMap<string, T>, key: string): T {
+  const value = values.get(key);
+  assert.ok(value, `expected ${key} to be registered`);
+  return value;
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 interface AutoHarness {
   compactCalls: CompactOptions[];
@@ -46,7 +57,7 @@ function createHarness(
   const notifications: AutoHarness["notifications"] = [];
   const sentMessages: AutoHarness["sentMessages"] = [];
   let usage: ContextUsage | undefined = initialUsage;
-  const api = {
+  const api = extensionApiTestAdapter({
     on(eventName: string, handler: Handler): void {
       const current = handlers.get(eventName) ?? [];
       current.push(handler);
@@ -55,8 +66,8 @@ function createHarness(
     sendMessage(message: unknown, options: unknown): void {
       sentMessages.push({ message, options });
     },
-  } as unknown as ExtensionAPI;
-  const ctx = {
+  });
+  const ctx = extensionContextTestAdapter({
     cwd: process.cwd(),
     getContextUsage: () => usage,
     hasPendingMessages: () => false,
@@ -68,7 +79,7 @@ function createHarness(
     ui: {
       notify: (message: string, type?: string) => notifications.push({ message, type }),
     },
-  } as unknown as ExtensionContext;
+  });
   registerAutoCompaction(api, {
     loadPreference: () => ({ enabled: true, percentRemaining: 15 }),
     getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }),
@@ -105,7 +116,7 @@ function createGoalHarness(): {
   const compactCalls: CompactOptions[] = [];
   const sentMessages: Array<{ message: unknown; options: unknown }> = [];
   const entries: unknown[] = [];
-  const api = {
+  const api = extensionApiTestAdapter({
     appendEntry: (customType: string, data: unknown) => entries.push({ customType, data }),
     getActiveTools: () => [...activeTools],
     on(eventName: string, handler: Handler): void {
@@ -118,7 +129,7 @@ function createGoalHarness(): {
     registerTool: (tool: { name: string }) => tools.set(tool.name, tool),
     sendMessage: (message: unknown, options: unknown) => sentMessages.push({ message, options }),
     setActiveTools: (names: string[]) => activeTools.splice(0, activeTools.length, ...names),
-  } as unknown as ExtensionAPI;
+  });
   const runtime = createGoalRuntime();
   const initRuntime = createInitRuntime();
   registerGoal(api, runtime, initRuntime);
@@ -128,7 +139,7 @@ function createGoalHarness(): {
     getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }),
     goal,
   });
-  const ctx = {
+  const ctx = extensionContextTestAdapter({
     cwd: process.cwd(),
     getContextUsage: () => ({ tokens: 90_000, contextWindow: 100_000, percent: 90 }),
     hasPendingMessages: () => false,
@@ -146,7 +157,7 @@ function createGoalHarness(): {
       notify: () => {},
     },
     waitForIdle: async () => {},
-  } as unknown as ExtensionContext;
+  });
   const emit = async (eventName: string, event = { type: eventName }): Promise<unknown> => {
     let result: unknown;
     for (const handler of handlers.get(eventName) ?? []) result = await handler(event, ctx);
@@ -156,7 +167,7 @@ function createGoalHarness(): {
     compactCalls,
     sentMessages,
     state: () => runtime,
-    startGoal: (objective) => commands.get("goal")!.handler(objective, ctx),
+    startGoal: (objective) => requiredMapValue(commands, "goal").handler(objective, ctx),
     emit,
   };
 }
@@ -245,20 +256,20 @@ test("missing readings, disabled Pi compaction, and failed compaction do not ret
   const failure = createHarness();
   // The harness supplies enabled Pi settings; replace the registration with a separate disabled probe.
   const disabledHandlers = new Map<string, Handler[]>();
-  const disabledApi = {
+  const disabledApi = extensionApiTestAdapter({
     on(eventName: string, handler: Handler): void {
       const current = disabledHandlers.get(eventName) ?? [];
       current.push(handler);
       disabledHandlers.set(eventName, current);
     },
-  } as unknown as ExtensionAPI;
-  const disabledCtx = {
+  });
+  const disabledCtx = extensionContextTestAdapter({
     mode: "tui",
     getContextUsage: () => ({ tokens: 99_000, contextWindow: 100_000, percent: 99 }),
     isProjectTrusted: () => true,
     compact: (options?: CompactOptions) => { if (options) disabledCalls.push(options); },
     ui: { notify: () => {} },
-  } as unknown as ExtensionContext;
+  });
   const disabledCalls: CompactOptions[] = [];
   registerAutoCompaction(disabledApi, {
     loadPreference: () => ({ enabled: true, percentRemaining: 15 }),
@@ -311,7 +322,9 @@ test("an active goal resumes once after Pi completes automatic compaction", asyn
   harness.compactCalls[0]?.onComplete?.(compactResult());
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.sentMessages.length, 2);
-  assert.equal((harness.sentMessages[1]?.message as { customType: string }).customType, "killeros-goal-continuation");
+  const continuation = harness.sentMessages[1]?.message;
+  assert.ok(isUnknownRecord(continuation));
+  assert.equal(continuation.customType, "killeros-goal-continuation");
 
   harness.compactCalls[0]?.onComplete?.(compactResult());
   await new Promise((resolve) => setImmediate(resolve));

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import test from "node:test";
 import {
   type ActivityMessage,
   formatActivityMessage,
   registerRequestActivity,
 } from "../killeros/activity.ts";
+import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 
 type ActivityEvent = {
   type: string;
@@ -29,15 +30,15 @@ type ActivityHarness = {
   workingMessages: Array<string | undefined>;
 };
 
-const plainTheme = {
+const plainTheme = themeTestAdapter({
   bold(text: string): string { return text; },
   fg(_color: string, text: string): string { return text; },
-} as unknown as Theme;
+});
 
-const styledTheme = {
+const styledTheme = themeTestAdapter({
   bold(text: string): string { return `<bold>${text}</bold>`; },
   fg(color: string, text: string): string { return `<${color}>${text}</${color}>`; },
-} as unknown as Theme;
+});
 
 test("working messages use exact causal copy and sanitize custom tool names", () => {
   const cases: ReadonlyArray<readonly [ActivityMessage, string]> = [
@@ -88,7 +89,7 @@ function createActivityHarness(mode: ActivityContext["mode"] = "tui"): ActivityH
       handlers.set(event, eventHandlers);
     },
   };
-  registerRequestActivity(api as unknown as ExtensionAPI);
+  registerRequestActivity(extensionApiTestAdapter(api));
 
   return {
     emit: async (event: string, data: Record<string, unknown> = {}) => {

@@ -165,7 +165,9 @@ function boundedQuestionLines(question: string, width: number, rowLimit: number)
   const wrapped = wrapTextWithAnsi(question.replace(/\s+/gu, " ").trim(), width);
   if (wrapped.length <= rowLimit) return wrapped;
   const visible = wrapped.slice(0, rowLimit);
-  visible[rowLimit - 1] = truncateToWidth(visible[rowLimit - 1]!, width, "…");
+  const finalIndex = rowLimit - 1;
+  const finalLine = visible[finalIndex];
+  if (finalLine !== undefined) visible[finalIndex] = truncateToWidth(finalLine, width, "…");
   return visible;
 }
 
@@ -173,12 +175,12 @@ function compactMultipleAnswers(answers: readonly string[], width: number): stri
   const prefix = "✓ ";
   if (answers.length === 0) return truncateToWidth(prefix + "No answers", width, "…");
   const visible: string[] = [];
-  for (let index = 0; index < answers.length; index += 1) {
+  for (const [index, answer] of answers.entries()) {
     const remaining = answers.length - index - 1;
-    const candidate = [...visible, oneLine(answers[index]!)].join(", ");
+    const candidate = [...visible, oneLine(answer)].join(", ");
     const suffix = remaining > 0 ? `, +${remaining} more` : "";
     if (visibleWidth(prefix + candidate + suffix) > width) break;
-    visible.push(oneLine(answers[index]!));
+    visible.push(oneLine(answer));
   }
   if (visible.length === answers.length) return prefix + visible.join(", ");
   const hidden = answers.length - visible.length;
@@ -228,7 +230,8 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
     if (bytes > CUSTOM_INPUT_HISTORY_BYTES) return false;
     const existingIndex = customInputHistory.indexOf(value);
     if (existingIndex >= 0) {
-      customInputHistoryBytes -= Buffer.byteLength(customInputHistory[existingIndex]!, "utf8");
+      const existing = customInputHistory[existingIndex];
+      if (existing !== undefined) customInputHistoryBytes -= Buffer.byteLength(existing, "utf8");
       customInputHistory.splice(existingIndex, 1);
     }
     while (customInputHistory.length >= CUSTOM_INPUT_HISTORY_LIMIT || customInputHistoryBytes + bytes > CUSTOM_INPUT_HISTORY_BYTES) {
@@ -329,7 +332,11 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
         const selectedCount = (): number => selectedOriginalIndices.size + (customAnswer === undefined ? 0 : 1);
         const orderedMultipleSelection = () => {
           const selectedIndices = [...selectedOriginalIndices].sort((left, right) => left - right);
-          const predefined = selectedIndices.map((index) => params.options[index - 1]!.label);
+          const predefined = selectedIndices.map((index) => {
+            const option = params.options[index - 1];
+            if (!option) throw new Error("Question selection no longer matches an available option");
+            return option.label;
+          });
           return {
             answers: customAnswer === undefined ? predefined : [...predefined, customAnswer],
             selectedIndices,
@@ -640,7 +647,8 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
               lines.push(...(draftLines.length > 0 ? draftLines : [editMode === "filter" ? "Type a filter" : "Type an answer"]).slice(-contentRows));
             } else {
               for (let index = start; index < end; index += 1) {
-                const option = visibleOptions[index]!;
+                const option = visibleOptions[index];
+                if (!option) continue;
                 const color: ThemeColor = index === optionIndex ? "accent" : "text";
                 lines.push(theme.fg(color, truncateToWidth(optionLabel(option, index), width, "…")));
               }
