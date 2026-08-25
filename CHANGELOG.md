@@ -11,6 +11,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Named `/handoff` output truncation instead of reporting "did not finish", raised the default summary budget to 4096 tokens for reasoning models, and made the budget configurable through `KillerosOptions` or the `killeros.json` `handoffMaxTokens` key.
 - Paused active goals during automatic compaction and resumed the exact paused revision once after compaction and turn settlement succeed.
 - Restored active goals saved by v2.0.18 shutdown checkpoints that omitted their stopped clock timestamp.
 

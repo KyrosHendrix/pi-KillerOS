@@ -30,6 +30,8 @@ export { buildInitEvidence, listInitEvidence, readInitEvidence } from "./killero
 export { captureInitTargetBaseline, installInitAgentsFile, validateGeneratedGuidance, writeInitAgentsFile } from "./killeros/init-target.ts";
 export interface KillerosOptions {
   completionNotifications?: CompletionNotificationDependencies;
+  /** Output-token budget for /handoff summaries; invalid values fall back to killeros.json, then the default. */
+  handoffMaxTokens?: number;
 }
 
 export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}): void {
@@ -41,7 +43,7 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerPersonalInstructions(pi, initRuntime);
   registerQuestionTool(pi);
   registerAliases(pi);
-  registerHandoff(pi, goalRuntime);
+  registerHandoff(pi, goalRuntime, options.handoffMaxTokens);
   registerSlashAutocomplete(pi, commandResolver);
   registerFooter(pi, goalRuntime);
   registerVariants(pi);

@@ -2,9 +2,12 @@ import { contentText } from "@earendil-works/pi-ai";
 import { BorderedLoader, convertToLlm, type ExtensionAPI, type ExtensionCommandContext, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { reportError } from "./errors.ts";
 import type { GoalRuntime } from "./runtime.ts";
+import { createKillerosSettingsStore, type KillerosSettings } from "./settings.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const HANDOFF_UNAVAILABLE = "/handoff is not available while an agent or /goal is running.";
+/** Output-token budget large enough for all ten sections under reasoning models. */
+export const DEFAULT_HANDOFF_MAX_TOKENS = 4_096;
 const HANDOFF_SECTIONS = [
   "Objective",
   "Current state",
@@ -69,6 +72,16 @@ function sessionName(sourceName: string | undefined, focus: string, document: st
   return `${shortBase || "Handoff"} · handoff`;
 }
 
+/** Accepts only positive integers; anything else falls back to the supplied default. */
+function positiveIntOr(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+/** Resolves the summary budget: explicit option first, then killeros.json, then the default. */
+export function resolveHandoffMaxTokens(settings: Readonly<KillerosSettings>, override?: number): number {
+  return positiveIntOr(override, positiveIntOr(settings.handoffMaxTokens, DEFAULT_HANDOFF_MAX_TOKENS));
+}
+
 /** Checks that the model returned every section needed to continue safely. */
 function hasRequiredHandoffContent(document: string, focus: string): boolean {
   if (focus && !document.includes(focus)) return false;
@@ -82,16 +95,16 @@ function hasRequiredHandoffContent(document: string, focus: string): boolean {
   });
 }
 
-/** Generates and validates a handoff summary with optional cancellation. */
-async function generateHandoffSummary(
+/** Generates a validated handoff summary; throws named errors for truncation and provider failures. */
+export async function generateHandoffSummary(
   ctx: ExtensionCommandContext,
   conversation: string,
   focus: string,
-  signal?: AbortSignal,
+  options: { maxTokens: number; signal?: AbortSignal },
 ): Promise<string> {
   if (!ctx.model) throw new Error("No current model is available");
 
-  signal?.throwIfAborted();
+  options.signal?.throwIfAborted();
 
   const response = await ctx.modelRegistry.complete(ctx.model, {
     systemPrompt: HANDOFF_SYSTEM_PROMPT,
@@ -101,10 +114,13 @@ async function generateHandoffSummary(
       timestamp: Date.now(),
     }],
   }, {
-    maxTokens: 2_048,
-    signal,
+    maxTokens: options.maxTokens,
+    signal: options.signal,
   });
   if (response.stopReason === "error") throw new Error(response.errorMessage || "Handoff summary failed");
+  if (response.stopReason === "length") {
+    throw new Error(`The handoff summary exceeded its ${options.maxTokens}-token output budget. Shorten the source session or raise the handoff token budget.`);
+  }
   if (response.stopReason !== "stop") throw new Error("The handoff summary did not finish");
 
   const summary = safeTerminalText(contentText(response.content)).trim();
@@ -113,7 +129,7 @@ async function generateHandoffSummary(
 }
 
 /** Registers the idle-only command that summarizes context into a child session. */
-export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime): void {
+export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, handoffMaxTokens?: number): void {
   pi.registerCommand("handoff", {
     description: "Create a fresh session with a continuation handoff",
     handler: async (args, ctx) => {
@@ -136,6 +152,7 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime): voi
         const conversation = serializeConversation(convertToLlm(messages));
         if (!conversation.trim()) throw new Error("No usable session context is available");
         focus = safeTerminalText(args).trim();
+        const maxTokens = resolveHandoffMaxTokens(createKillerosSettingsStore().load(), handoffMaxTokens);
         const generation = ctx.mode === "tui"
           ? await ctx.ui.custom<HandoffGenerationResult>((tui, theme, _keybindings, done) => {
             const loader = new BorderedLoader(tui, theme, "Generating handoff...");
@@ -146,12 +163,12 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime): voi
               done(result);
             };
             loader.onAbort = () => finish({ kind: "cancelled" });
-            generateHandoffSummary(ctx, conversation, focus, loader.signal)
+            generateHandoffSummary(ctx, conversation, focus, { maxTokens, signal: loader.signal })
               .then((summary) => finish({ kind: "summary", summary }))
               .catch((error: unknown) => finish({ kind: "error", error }));
             return loader;
           })
-          : { kind: "summary", summary: await generateHandoffSummary(ctx, conversation, focus) } as const;
+          : { kind: "summary", summary: await generateHandoffSummary(ctx, conversation, focus, { maxTokens }) } as const;
         if (generation.kind === "cancelled") {
           ctx.ui.notify("Handoff cancelled", "info");
           return;
