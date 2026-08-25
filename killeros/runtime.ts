@@ -82,9 +82,12 @@ export type GoalState = GoalStateCommon & (
     }
 );
 
+/** Pi request outcomes for goal recovery: awaiting result, compacted, or rejected as session-too-small. */
+export type AutomaticGoalCompactionOutcome = "pending" | "completed" | "skipped";
+
 export interface AutomaticGoalCompaction {
   pausedRevision: number;
-  compactionSucceeded: boolean;
+  outcome: AutomaticGoalCompactionOutcome;
   turnSettled: boolean;
 }
 

@@ -624,7 +624,7 @@ function scheduleGoalContinuation(
   }
 }
 
-/** Resumes the revision paused by automatic compaction after both host callbacks settle. */
+/** Resumes the revision paused by automatic compaction once both host callbacks settle and Pi reports an outcome. */
 function finalizeAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -632,7 +632,8 @@ function finalizeAutomaticCompaction(
   ctx: ExtensionContext,
 ): void {
   const recovery = runtime.automaticCompaction;
-  if (!recovery?.compactionSucceeded || !recovery.turnSettled) return;
+  if (!recovery || recovery.outcome === "pending" || !recovery.turnSettled) return;
+  const skipped = recovery.outcome === "skipped";
   runtime.automaticCompaction = undefined;
   if (runtime.state?.status !== "paused"
     || runtime.state.revision !== recovery.pausedRevision
@@ -641,7 +642,9 @@ function finalizeAutomaticCompaction(
     transitionGoal(pi, runtime, "resume", "active", undefined, { resetBlockedAudit: true });
   } catch (error) {
     runtime.persistenceRetryNeeded = true;
-    reportError(ctx, "Automatic compaction succeeded, but the goal could not be resumed", error);
+    reportError(ctx, skipped
+      ? "Automatic compaction was skipped, but the goal could not be resumed"
+      : "Automatic compaction succeeded, but the goal could not be resumed", error);
     return;
   }
   runtime.continuationScheduled = false;
@@ -656,7 +659,19 @@ function completeAutomaticCompaction(
   ctx: ExtensionContext,
 ): void {
   if (!runtime.automaticCompaction) return;
-  runtime.automaticCompaction.compactionSucceeded = true;
+  runtime.automaticCompaction.outcome = "completed";
+  finalizeAutomaticCompaction(pi, runtime, initState, ctx);
+}
+
+/** Records Pi's expected session-too-small rejection and resumes without claiming compaction succeeded. */
+function skipAutomaticCompaction(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  initState: InitRuntime,
+  ctx: ExtensionContext,
+): void {
+  if (!runtime.automaticCompaction) return;
+  runtime.automaticCompaction.outcome = "skipped";
   finalizeAutomaticCompaction(pi, runtime, initState, ctx);
 }
 
@@ -1247,6 +1262,7 @@ export function registerGoalSettlement(
   onRequested(): void;
   onCompleted(ctx: ExtensionContext): void;
   onFailed(ctx: ExtensionContext, error: unknown): void;
+  onSkipped(ctx: ExtensionContext): void;
 } {
   pi.on("agent_settled", (_event, ctx) => {
     const wasGoalTurn = runtime.goalTurnInFlight;
@@ -1333,7 +1349,7 @@ export function registerGoalSettlement(
         const paused = transitionGoal(pi, runtime, "pause", "paused");
         runtime.automaticCompaction = {
           pausedRevision: paused.revision,
-          compactionSucceeded: false,
+          outcome: "pending",
           turnSettled: false,
         };
       } catch (error) {
@@ -1355,5 +1371,6 @@ export function registerGoalSettlement(
     },
     onCompleted: (ctx: ExtensionContext): void => completeAutomaticCompaction(pi, runtime, initState, ctx),
     onFailed: (ctx: ExtensionContext, error: unknown): void => failAutomaticCompaction(pi, runtime, ctx, error),
+    onSkipped: (ctx: ExtensionContext): void => skipAutomaticCompaction(pi, runtime, initState, ctx),
   };
 }
