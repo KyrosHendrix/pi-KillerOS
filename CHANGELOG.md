@@ -13,7 +13,7 @@ All notable changes to KillerOS are documented here.
 ### Fixed
 
 - Treated Pi's exact `Nothing to compact (session too small)` rejection as an expected automatic-compaction skip: no failure notification, silent retry on the next eligible turn, and active goals resume through a dedicated skip recovery instead of pausing for `/goal resume`.
-- Made `/handoff` resilient to an unreadable `killeros.json`: the summary falls back to the default output budget with a visible warning instead of failing.
+- Made `/handoff` resilient to an unreadable `killeros.json`: explicit `KillerosOptions` budgets bypass the file, while other summaries fall back to the default budget with a visible warning.
 - Named `/handoff` output truncation instead of reporting "did not finish", raised the default summary budget to 8192 tokens for reasoning models, and made the budget configurable through `KillerosOptions` or the `killeros.json` `handoffMaxTokens` key.
 - Paused active goals during automatic compaction and resumed the exact paused revision once after compaction and turn settlement succeed.
 - Restored active goals saved by v2.0.18 shutdown checkpoints that omitted their stopped clock timestamp.

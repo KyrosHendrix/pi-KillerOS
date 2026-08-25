@@ -372,7 +372,7 @@ function createGoalState(status: GoalStatus): GoalState {
   }
 }
 
-function createHarness(killosOptions: { handoffMaxTokens?: number } = {}): Harness {
+function createHarness(killerosOptions: { handoffMaxTokens?: number } = {}): Harness {
   const commands = new Map<string, TestCommand>();
   const commandRegistrations: string[] = [];
   const handlers = new Map<string, TestHandler[]>();
@@ -428,7 +428,7 @@ function createHarness(killosOptions: { handoffMaxTokens?: number } = {}): Harne
       store: { load: () => false, save: () => {} },
       ring: () => {},
     },
-    ...killosOptions,
+    ...killerosOptions,
   });
   activeTools.push(...tools.keys());
   return { api, activeTools, appendedEntries, commandRegistrations, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
@@ -1670,37 +1670,49 @@ test("/handoff creates an idle child session with a visible summary", async () =
   ]);
 });
 
-test("/handoff sends the configured KillerosOptions budget to the model", async () => {
-  const { commands } = createHarness({ handoffMaxTokens: 1_234 });
-  let sentMaxTokens: number | undefined;
-  const summary = createCompleteHandoffSummary("Finish the release checks.");
-  await getCommand(commands, "handoff").handler("", {
-    isIdle: () => true,
-    hasPendingMessages: () => false,
-    model: { id: "test-model", provider: "github-copilot" },
-    modelRegistry: {
-      complete: async (_model: unknown, _context: unknown, options: { maxTokens?: number }) => {
-        sentMaxTokens = options.maxTokens;
-        return { content: [{ type: "text", text: summary }], stopReason: "stop" };
+test("/handoff uses the configured KillerosOptions budget without reading killeros.json", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-handoff-option-"));
+  writeFileSync(path.join(directory, "killeros.json"), "{ this is not json", "utf8");
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    const { commands } = createHarness({ handoffMaxTokens: 1_234 });
+    const notifications: Array<{ message: string; level?: string }> = [];
+    let sentMaxTokens: number | undefined;
+    const summary = createCompleteHandoffSummary("Finish the release checks.");
+    await getCommand(commands, "handoff").handler("", {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: { id: "test-model", provider: "github-copilot" },
+      modelRegistry: {
+        complete: async (_model: unknown, _context: unknown, options: { maxTokens?: number }) => {
+          sentMaxTokens = options.maxTokens;
+          return { content: [{ type: "text", text: summary }], stopReason: "stop" };
+        },
       },
-    },
-    sessionManager: {
-      getSessionFile: () => "C:/sessions/source.jsonl",
-      getSessionName: () => "Source session",
-      getEntries: () => [],
-      buildContextEntries: () => [{
-        type: "message",
-        id: "retained",
-        parentId: undefined,
-        timestamp: "2026-08-25T00:00:00.000Z",
-        message: { role: "user", content: "Implement the command", timestamp: 0 },
-      }],
-    },
-    newSession: async () => ({ cancelled: false }),
-    ui: { notify: (_message: string, _level?: string) => {} },
-    getSystemPromptOptions: () => ({ skills: [] }),
-  });
-  assert.equal(sentMaxTokens, 1_234);
+      sessionManager: {
+        getSessionFile: () => "C:/sessions/source.jsonl",
+        getSessionName: () => "Source session",
+        getEntries: () => [],
+        buildContextEntries: () => [{
+          type: "message",
+          id: "retained",
+          parentId: undefined,
+          timestamp: "2026-08-25T00:00:00.000Z",
+          message: { role: "user", content: "Implement the command", timestamp: 0 },
+        }],
+      },
+      newSession: async () => ({ cancelled: false }),
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+      getSystemPromptOptions: () => ({ skills: [] }),
+    });
+    assert.equal(sentMaxTokens, 1_234);
+    assert.deepEqual(notifications, []);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("/handoff falls back to the default budget when killeros.json is unreadable", async () => {
@@ -1742,7 +1754,7 @@ test("/handoff falls back to the default budget when killeros.json is unreadable
     assert.equal(sentMaxTokens, DEFAULT_HANDOFF_MAX_TOKENS);
     assert.equal(notifications.length, 1);
     assert.match(notifications[0]?.message ?? "", /killeros\.json could not be read/u);
-    assert.equal(notifications[0]?.level, "error");
+    assert.equal(notifications[0]?.level, "warning");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

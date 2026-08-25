@@ -1,6 +1,6 @@
 import { contentText } from "@earendil-works/pi-ai";
 import { BorderedLoader, convertToLlm, type ExtensionAPI, type ExtensionCommandContext, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
-import { reportError } from "./errors.ts";
+import { errorMessage, reportError } from "./errors.ts";
 import type { GoalRuntime } from "./runtime.ts";
 import { createKillerosSettingsStore, type KillerosSettings } from "./settings.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -72,9 +72,13 @@ function sessionName(sourceName: string | undefined, focus: string, document: st
   return `${shortBase || "Handoff"} · handoff`;
 }
 
-/** Accepts only positive integers; anything else falls back to the supplied default. */
+/** Accepts only positive integers. */
+function isPositiveInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
 function positiveIntOr(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+  return isPositiveInt(value) ? value : fallback;
 }
 
 /** Resolves the summary budget: explicit option first, then killeros.json, then the default. */
@@ -95,7 +99,7 @@ function hasRequiredHandoffContent(document: string, focus: string): boolean {
   });
 }
 
-/** Generates a validated handoff summary; throws named errors for truncation and provider failures. */
+/** Generates a handoff summary; throws named errors for truncation and provider failures. */
 export async function generateHandoffSummary(
   ctx: ExtensionCommandContext,
   conversation: string,
@@ -152,13 +156,16 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
         const conversation = serializeConversation(convertToLlm(messages));
         if (!conversation.trim()) throw new Error("No usable session context is available");
         focus = safeTerminalText(args).trim();
-        let settings: KillerosSettings = {};
-        try {
-          settings = createKillerosSettingsStore().load();
-        } catch (error) {
-          reportError(ctx, "killeros.json could not be read; using the default handoff budget", error);
+        let maxTokens = handoffMaxTokens;
+        if (!isPositiveInt(maxTokens)) {
+          let settings: KillerosSettings = {};
+          try {
+            settings = createKillerosSettingsStore().load();
+          } catch (error) {
+            ctx.ui.notify(`killeros.json could not be read; using the default handoff budget: ${errorMessage(error)}`, "warning");
+          }
+          maxTokens = resolveHandoffMaxTokens(settings);
         }
-        const maxTokens = resolveHandoffMaxTokens(settings, handoffMaxTokens);
         const generation = ctx.mode === "tui"
           ? await ctx.ui.custom<HandoffGenerationResult>((tui, theme, _keybindings, done) => {
             const loader = new BorderedLoader(tui, theme, "Generating handoff...");
