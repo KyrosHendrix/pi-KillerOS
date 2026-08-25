@@ -68,11 +68,11 @@ The packaged `killeros` theme activates on TUI start. Compaction triggers by def
     "enabled": true,
     "percentRemaining": 15
   },
-  "handoffMaxTokens": 4096
+  "handoffMaxTokens": 8192
 }
 ```
 
-`handoffMaxTokens` caps the `/handoff` summary output at 4096 tokens by default; raise it when long sessions truncate the summary.
+`handoffMaxTokens` caps the `/handoff` summary output at 8192 tokens by default; raise it when long sessions truncate the summary.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 

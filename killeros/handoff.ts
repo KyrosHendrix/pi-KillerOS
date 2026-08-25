@@ -6,8 +6,8 @@ import { createKillerosSettingsStore, type KillerosSettings } from "./settings.t
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const HANDOFF_UNAVAILABLE = "/handoff is not available while an agent or /goal is running.";
-/** Output-token budget large enough for all ten sections under reasoning models. */
-export const DEFAULT_HANDOFF_MAX_TOKENS = 4_096;
+/** Output-token budget with headroom for reasoning traces plus all ten sections. */
+export const DEFAULT_HANDOFF_MAX_TOKENS = 8_192;
 const HANDOFF_SECTIONS = [
   "Objective",
   "Current state",
@@ -152,7 +152,13 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
         const conversation = serializeConversation(convertToLlm(messages));
         if (!conversation.trim()) throw new Error("No usable session context is available");
         focus = safeTerminalText(args).trim();
-        const maxTokens = resolveHandoffMaxTokens(createKillerosSettingsStore().load(), handoffMaxTokens);
+        let settings: KillerosSettings = {};
+        try {
+          settings = createKillerosSettingsStore().load();
+        } catch (error) {
+          reportError(ctx, "killeros.json could not be read; using the default handoff budget", error);
+        }
+        const maxTokens = resolveHandoffMaxTokens(settings, handoffMaxTokens);
         const generation = ctx.mode === "tui"
           ? await ctx.ui.custom<HandoffGenerationResult>((tui, theme, _keybindings, done) => {
             const loader = new BorderedLoader(tui, theme, "Generating handoff...");

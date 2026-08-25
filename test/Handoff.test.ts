@@ -70,7 +70,7 @@ test("generateHandoffSummary names the token budget when truncation cuts the sum
     () => generateHandoffSummary(context, "conversation", "", { maxTokens: DEFAULT_HANDOFF_MAX_TOKENS }),
     (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.message, /exceeded its 4096-token output budget/u);
+      assert.match(error.message, new RegExp(`exceeded its ${DEFAULT_HANDOFF_MAX_TOKENS}-token output budget`, "u"));
       assert.match(error.message, /Shorten the source session or raise the handoff token budget/u);
       assert.doesNotMatch(error.message, /did not finish/u);
       return true;
@@ -120,11 +120,11 @@ test("generateHandoffSummary keeps the generic failure for non-length abnormal s
 });
 
 test("budget resolution prefers valid options over killeros.json over the default", () => {
-  assert.equal(resolveHandoffMaxTokens({}, undefined), 4_096);
-  assert.equal(resolveHandoffMaxTokens({ handoffMaxTokens: 8_192 }, undefined), 8_192);
-  assert.equal(resolveHandoffMaxTokens({ handoffMaxTokens: 8_192 }, 1_024), 1_024);
+  assert.equal(resolveHandoffMaxTokens({}, undefined), DEFAULT_HANDOFF_MAX_TOKENS);
+  assert.equal(resolveHandoffMaxTokens({ handoffMaxTokens: 16_384 }, undefined), 16_384);
+  assert.equal(resolveHandoffMaxTokens({ handoffMaxTokens: 16_384 }, 1_024), 1_024);
   for (const invalid of [0, -5, 1.5, Number.NaN, "2048", null]) {
-    assert.equal(resolveHandoffMaxTokens({ handoffMaxTokens: invalid }, undefined), 4_096, `settings ${String(invalid)}`);
+    assert.equal(resolveHandoffMaxTokens({ handoffMaxTokens: invalid }, undefined), DEFAULT_HANDOFF_MAX_TOKENS, `settings ${String(invalid)}`);
   }
-  assert.equal(resolveHandoffMaxTokens({ handoffMaxTokens: 8_192 }, Number.NaN), 8_192);
+  assert.equal(resolveHandoffMaxTokens({ handoffMaxTokens: 16_384 }, Number.NaN), 16_384);
 });

@@ -28,6 +28,7 @@ import Killeros, {
   validateGeneratedGuidance,
   writeInitAgentsFile,
 } from "../Killeros.ts";
+import { DEFAULT_HANDOFF_MAX_TOKENS } from "../killeros/handoff.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { resolvePersonalInstructions } from "../killeros/personal-instructions.ts";
@@ -1684,6 +1685,53 @@ test("/handoff sends the configured KillerosOptions budget to the model", async 
   assert.equal(sentMaxTokens, 1_234);
 });
 
+test("/handoff falls back to the default budget when killeros.json is unreadable", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-handoff-settings-"));
+  writeFileSync(path.join(directory, "killeros.json"), "{ this is not json", "utf8");
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    const { commands } = createHarness();
+    const notifications: Array<{ message: string; level?: string }> = [];
+    let sentMaxTokens: number | undefined;
+    const summary = createCompleteHandoffSummary("Finish the release checks.");
+    await getCommand(commands, "handoff").handler("", {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: { id: "test-model", provider: "github-copilot" },
+      modelRegistry: {
+        complete: async (_model: unknown, _context: unknown, options: { maxTokens?: number }) => {
+          sentMaxTokens = options.maxTokens;
+          return { content: [{ type: "text", text: summary }], stopReason: "stop" };
+        },
+      },
+      sessionManager: {
+        getSessionFile: () => "C:/sessions/source.jsonl",
+        getSessionName: () => "Source session",
+        getEntries: () => [],
+        buildContextEntries: () => [{
+          type: "message",
+          id: "retained",
+          parentId: undefined,
+          timestamp: "2026-08-25T00:00:00.000Z",
+          message: { role: "user", content: "Implement the command", timestamp: 0 },
+        }],
+      },
+      newSession: async () => ({ cancelled: false }),
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+      getSystemPromptOptions: () => ({ skills: [] }),
+    });
+    assert.equal(sentMaxTokens, DEFAULT_HANDOFF_MAX_TOKENS);
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0]?.message ?? "", /killeros\.json could not be read/u);
+    assert.equal(notifications[0]?.level, "error");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("/handoff derives short unnamed focus and objective fallback names", async () => {
   const longFocus = "Continue the release verification work after the new session has opened and preserve every active constraint";
   const cases = [
@@ -1887,7 +1935,7 @@ test("/handoff leaves the source selected when summary or replacement fails", as
     { label: "empty model response", model: { id: "test-model", provider: "test" }, completion: { content: [], stopReason: "stop" }, expected: "Handoff failed: The handoff summary was empty" },
     { label: "incomplete model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: "## Objective\nFinish the release checks." }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
     { label: "empty required sections", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: emptyHandoffSections }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
-    { label: "truncated model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary exceeded its 4096-token output budget. Shorten the source session or raise the handoff token budget." },
+    { label: "truncated model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary exceeded its 8192-token output budget. Shorten the source session or raise the handoff token budget." },
     { label: "aborted model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "aborted" }, expected: "Handoff failed: The handoff summary did not finish" },
     { label: "model failure", model: { id: "test-model", provider: "test" }, completion: new Error("\x1b]2;owned\x07\x1b[31mProvider\x1b[0m\0 failed"), expected: "Handoff failed: Provider failed" },
   ] as const;
