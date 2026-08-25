@@ -371,7 +371,7 @@ function createGoalState(status: GoalStatus): GoalState {
   }
 }
 
-function createHarness(): Harness {
+function createHarness(killosOptions: { handoffMaxTokens?: number } = {}): Harness {
   const commands = new Map<string, TestCommand>();
   const commandRegistrations: string[] = [];
   const handlers = new Map<string, TestHandler[]>();
@@ -427,6 +427,7 @@ function createHarness(): Harness {
       store: { load: () => false, save: () => {} },
       ring: () => {},
     },
+    ...killosOptions,
   });
   activeTools.push(...tools.keys());
   return { api, activeTools, appendedEntries, commandRegistrations, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
@@ -1648,6 +1649,39 @@ test("/handoff creates an idle child session with a visible summary", async () =
     },
     { name: `${sourceName} · handoff` },
   ]);
+});
+
+test("/handoff sends the configured KillerosOptions budget to the model", async () => {
+  const { commands } = createHarness({ handoffMaxTokens: 1_234 });
+  let sentMaxTokens: number | undefined;
+  const summary = createCompleteHandoffSummary("Finish the release checks.");
+  await getCommand(commands, "handoff").handler("", {
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    model: { id: "test-model", provider: "github-copilot" },
+    modelRegistry: {
+      complete: async (_model: unknown, _context: unknown, options: { maxTokens?: number }) => {
+        sentMaxTokens = options.maxTokens;
+        return { content: [{ type: "text", text: summary }], stopReason: "stop" };
+      },
+    },
+    sessionManager: {
+      getSessionFile: () => "C:/sessions/source.jsonl",
+      getSessionName: () => "Source session",
+      getEntries: () => [],
+      buildContextEntries: () => [{
+        type: "message",
+        id: "retained",
+        parentId: undefined,
+        timestamp: "2026-08-25T00:00:00.000Z",
+        message: { role: "user", content: "Implement the command", timestamp: 0 },
+      }],
+    },
+    newSession: async () => ({ cancelled: false }),
+    ui: { notify: (_message: string, _level?: string) => {} },
+    getSystemPromptOptions: () => ({ skills: [] }),
+  });
+  assert.equal(sentMaxTokens, 1_234);
 });
 
 test("/handoff derives short unnamed focus and objective fallback names", async () => {
