@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   CustomEditor,
-  VERSION,
   type ExtensionAPI,
   type ExtensionContext,
   type KeybindingsManager,

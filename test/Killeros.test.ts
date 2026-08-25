@@ -6,7 +6,7 @@ import os from "node:os";
 import { PassThrough } from "node:stream";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import {
@@ -28,6 +28,7 @@ import Killeros, {
   validateGeneratedGuidance,
   writeInitAgentsFile,
 } from "../Killeros.ts";
+import { DEFAULT_HANDOFF_MAX_TOKENS } from "../killeros/handoff.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { resolvePersonalInstructions } from "../killeros/personal-instructions.ts";
@@ -79,7 +80,7 @@ type TestHandlerResult = {
 type TestHandler = (event: TestEvent, ctx?: unknown) => TestHandlerResult | Promise<TestHandlerResult>;
 type TestRenderable = {
   render(width: number): string[];
-  dispose?(): void;
+  dispose?: () => void;
 };
 type TestInteractive = TestRenderable & {
   handleInput(input: string): void;
@@ -108,7 +109,7 @@ type TestTool = {
 type TestCommand = {
   description?: string;
   getArgumentCompletions?: unknown;
-  handler(args: string, ctx: unknown): unknown | Promise<unknown>;
+  handler(args: string, ctx: unknown): Promise<unknown>;
 };
 type SourceInfo = { path: string; source: string; baseDir: string };
 type TestEntry = { [key: string]: unknown };
@@ -230,7 +231,7 @@ type VariantsContext = {
   };
 };
 type TestAPI = {
-  appendEntry(customType: string, data: TestEntryData): void;
+  appendEntry: (customType: string, data: TestEntryData) => void;
   getAllTools(): Array<TestTool & { sourceInfo: SourceInfo }>;
   getCommands(): Array<{ name: string; description?: string; source: string; sourceInfo: SourceInfo }>;
   getSessionName(): undefined;
@@ -371,7 +372,7 @@ function createGoalState(status: GoalStatus): GoalState {
   }
 }
 
-function createHarness(): Harness {
+function createHarness(killerosOptions: { handoffMaxTokens?: number } = {}): Harness {
   const commands = new Map<string, TestCommand>();
   const commandRegistrations: string[] = [];
   const handlers = new Map<string, TestHandler[]>();
@@ -427,6 +428,7 @@ function createHarness(): Harness {
       store: { load: () => false, save: () => {} },
       ring: () => {},
     },
+    ...killerosOptions,
   });
   activeTools.push(...tools.keys());
   return { api, activeTools, appendedEntries, commandRegistrations, commands, entryRenderers, handlers, sentMessages, sentUserMessages, tools };
@@ -551,7 +553,9 @@ test("all KillerOS tools expose provider-compatible object schemas", () => {
   const { tools } = createHarness();
 
   for (const tool of tools.values()) {
-    const schema = JSON.parse(JSON.stringify(tool.parameters));
+    const rawSchema: unknown = JSON.parse(JSON.stringify(tool.parameters));
+    assert.ok(isUnknownRecord(rawSchema), `${tool.name} schema must be a JSON object`);
+    const schema = rawSchema;
     assert.equal(schema.type, "object", `${tool.name} must use a top-level object schema`);
     assert.equal(typeof schema.properties, "object", `${tool.name} must declare object properties`);
     assert.equal(schema.anyOf, undefined, `${tool.name} must not use a top-level anyOf`);
@@ -686,10 +690,19 @@ test("/codex-fast reload repairs legacy process-global state", async () => {
     globalThis.__killerosCodexFastState = { enabled: true };
     const moduleUrl = new URL("../killeros/codex-fast-state.ts", import.meta.url);
     moduleUrl.searchParams.set("legacy", String(Date.now()));
-    const reloaded = await import(moduleUrl.href);
+    // The query string forces a fresh module instance, so its exports cannot be typed statically.
+    const reloaded: unknown = await import(moduleUrl.href);
+    assert.ok(typeof reloaded === "object" && reloaded !== null);
+    assert.ok("isCodexFastEnabled" in reloaded && typeof reloaded.isCodexFastEnabled === "function");
+    assert.ok("subscribeCodexFast" in reloaded && typeof reloaded.subscribeCodexFast === "function");
+    // The assertions above validate the exact members used here.
+    const codexModule = reloaded as {
+      isCodexFastEnabled(): boolean;
+      subscribeCodexFast(listener: () => void): () => void;
+    };
 
-    assert.equal(reloaded.isCodexFastEnabled(), true);
-    const unsubscribe = reloaded.subscribeCodexFast(() => {});
+    assert.equal(codexModule.isCodexFastEnabled(), true);
+    const unsubscribe = codexModule.subscribeCodexFast(() => {});
     assert.doesNotThrow(unsubscribe);
   } finally {
     globalThis.__killerosCodexFastState = original;
@@ -698,9 +711,12 @@ test("/codex-fast reload repairs legacy process-global state", async () => {
 
 test("question exposes a Google-compatible optional selection mode", () => {
   const tool = getTool(createHarness(), "question");
-  const schema = JSON.parse(JSON.stringify(tool.parameters));
+  const rawSchema: unknown = JSON.parse(JSON.stringify(tool.parameters));
+  assert.ok(isUnknownRecord(rawSchema));
+  const properties = rawSchema.properties;
+  assert.ok(isUnknownRecord(properties));
 
-  assert.deepEqual(schema.properties.mode, {
+  assert.deepEqual(properties.mode, {
     type: "string",
     enum: ["single", "multiple"],
     description: "Choose one answer or multiple answers; defaults to single",
@@ -895,9 +911,12 @@ test("question retains multiple-select bound validation before rendering and exe
 
 test("goal updates use a Google-compatible status enum", () => {
   const tool = getTool(createHarness(), "killeros_goal_update");
-  const schema = JSON.parse(JSON.stringify(tool.parameters));
+  const rawSchema: unknown = JSON.parse(JSON.stringify(tool.parameters));
+  assert.ok(isUnknownRecord(rawSchema));
+  const properties = rawSchema.properties;
+  assert.ok(isUnknownRecord(properties));
 
-  assert.deepEqual(schema.properties.status, {
+  assert.deepEqual(properties.status, {
     type: "string",
     enum: ["complete", "blocked"],
     description: "Mark the active goal complete or blocked",
@@ -1089,7 +1108,8 @@ function createTuiContext(
         captured.widgets ??= [];
         captured.widgets.push({ key, content, options });
         if (typeof content === "function") {
-          captured.widgetComponent = content(tui, uiTheme);
+          const render = content as (tui: unknown, theme: unknown) => unknown;
+          captured.widgetComponent = render(tui, uiTheme);
         }
         if (content === undefined) captured.widgetComponent = undefined;
       },
@@ -1124,20 +1144,20 @@ test("BoundedText limits collapsed rows and preserves full expanded text", () =>
   assert.match(last(expanded) ?? "", /line 20/u);
 });
 
-function startQuestion(
+async function startQuestion(
   tool: TestTool,
   options: QuestionOption[] = [{ label: "Alpha" }],
   questionText = "Choose",
   terminalRows = 40,
   keybindings = getKeybindings(),
   extraParams: Record<string, unknown> = {},
-): {
+): Promise<{
   component: TestInteractive;
   finish: (value: unknown) => void;
   result: Promise<TestResult>;
   notifications: TestNotification[];
   tui: TestTui;
-} {
+}> {
   let component: TestInteractive | undefined;
   let finish: ((value: unknown) => void) | undefined;
   const notifications: TestNotification[] = [];
@@ -1650,6 +1670,98 @@ test("/handoff creates an idle child session with a visible summary", async () =
   ]);
 });
 
+test("/handoff uses the configured KillerosOptions budget without reading killeros.json", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-handoff-option-"));
+  writeFileSync(path.join(directory, "killeros.json"), "{ this is not json", "utf8");
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    const { commands } = createHarness({ handoffMaxTokens: 1_234 });
+    const notifications: Array<{ message: string; level?: string }> = [];
+    let sentMaxTokens: number | undefined;
+    const summary = createCompleteHandoffSummary("Finish the release checks.");
+    await getCommand(commands, "handoff").handler("", {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: { id: "test-model", provider: "github-copilot" },
+      modelRegistry: {
+        complete: async (_model: unknown, _context: unknown, options: { maxTokens?: number }) => {
+          sentMaxTokens = options.maxTokens;
+          return { content: [{ type: "text", text: summary }], stopReason: "stop" };
+        },
+      },
+      sessionManager: {
+        getSessionFile: () => "C:/sessions/source.jsonl",
+        getSessionName: () => "Source session",
+        getEntries: () => [],
+        buildContextEntries: () => [{
+          type: "message",
+          id: "retained",
+          parentId: undefined,
+          timestamp: "2026-08-25T00:00:00.000Z",
+          message: { role: "user", content: "Implement the command", timestamp: 0 },
+        }],
+      },
+      newSession: async () => ({ cancelled: false }),
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+      getSystemPromptOptions: () => ({ skills: [] }),
+    });
+    assert.equal(sentMaxTokens, 1_234);
+    assert.deepEqual(notifications, []);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/handoff falls back to the default budget when killeros.json is unreadable", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-handoff-settings-"));
+  writeFileSync(path.join(directory, "killeros.json"), "{ this is not json", "utf8");
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    const { commands } = createHarness();
+    const notifications: Array<{ message: string; level?: string }> = [];
+    let sentMaxTokens: number | undefined;
+    const summary = createCompleteHandoffSummary("Finish the release checks.");
+    await getCommand(commands, "handoff").handler("", {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: { id: "test-model", provider: "github-copilot" },
+      modelRegistry: {
+        complete: async (_model: unknown, _context: unknown, options: { maxTokens?: number }) => {
+          sentMaxTokens = options.maxTokens;
+          return { content: [{ type: "text", text: summary }], stopReason: "stop" };
+        },
+      },
+      sessionManager: {
+        getSessionFile: () => "C:/sessions/source.jsonl",
+        getSessionName: () => "Source session",
+        getEntries: () => [],
+        buildContextEntries: () => [{
+          type: "message",
+          id: "retained",
+          parentId: undefined,
+          timestamp: "2026-08-25T00:00:00.000Z",
+          message: { role: "user", content: "Implement the command", timestamp: 0 },
+        }],
+      },
+      newSession: async () => ({ cancelled: false }),
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+      getSystemPromptOptions: () => ({ skills: [] }),
+    });
+    assert.equal(sentMaxTokens, DEFAULT_HANDOFF_MAX_TOKENS);
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0]?.message ?? "", /killeros\.json could not be read/u);
+    assert.equal(notifications[0]?.level, "warning");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("/handoff derives short unnamed focus and objective fallback names", async () => {
   const longFocus = "Continue the release verification work after the new session has opened and preserve every active constraint";
   const cases = [
@@ -1853,7 +1965,7 @@ test("/handoff leaves the source selected when summary or replacement fails", as
     { label: "empty model response", model: { id: "test-model", provider: "test" }, completion: { content: [], stopReason: "stop" }, expected: "Handoff failed: The handoff summary was empty" },
     { label: "incomplete model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: "## Objective\nFinish the release checks." }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
     { label: "empty required sections", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: emptyHandoffSections }], stopReason: "stop" }, expected: "Handoff failed: The handoff summary did not contain every required section" },
-    { label: "truncated model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary did not finish" },
+    { label: "truncated model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "length" }, expected: "Handoff failed: The handoff summary exceeded its 8192-token output budget. Shorten the source session or raise the handoff token budget." },
     { label: "aborted model response", model: { id: "test-model", provider: "test" }, completion: { content: [{ type: "text", text: createCompleteHandoffSummary("Finish the release checks.") }], stopReason: "aborted" }, expected: "Handoff failed: The handoff summary did not finish" },
     { label: "model failure", model: { id: "test-model", provider: "test" }, completion: new Error("\x1b]2;owned\x07\x1b[31mProvider\x1b[0m\0 failed"), expected: "Handoff failed: Provider failed" },
   ] as const;
@@ -3627,7 +3739,8 @@ test("/init attaches a bounded project snapshot without reading existing guidanc
     await waitFor(() => sentMessages.length === 1);
     const marker = "## Initial repository snapshot (untrusted data)\n";
     const encodedSnapshot = sentMessages[0].message.content.split(marker)[1].split("\n\n## Existing root AGENTS.md")[0];
-    const snapshot = JSON.parse(encodedSnapshot);
+    const snapshot: unknown = JSON.parse(encodedSnapshot);
+    assert.ok(typeof snapshot === "string", "the snapshot must be a JSON string");
     assert.match(snapshot, /src\/core\/index\.ts/u);
     assert.match(snapshot, /node --test/u);
     assert.doesNotMatch(snapshot, /Preserve releases|PRIVATE-CONTEXT|PRIVATE-MEMORY|DEPENDENCY-CONTENT|PRIVATE-SKILL|PRIVATE-HOOK|MEMORY\.md|killeros-hooks/u);
@@ -5461,13 +5574,16 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
   const strip = (line: string) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "").trim();
   const shellUiUrl = new URL("../killeros/shell-ui.ts", import.meta.url);
   shellUiUrl.searchParams.set("startup-tip-test", String(Date.now()));
-  const { registerShellUi } = await import(shellUiUrl.href);
+  // The query string forces a fresh module instance, so its exports cannot be typed statically.
+  const shellUiModule: unknown = await import(shellUiUrl.href);
+  assert.ok(typeof shellUiModule === "object" && shellUiModule !== null);
+  assert.ok("registerShellUi" in shellUiModule && typeof shellUiModule.registerShellUi === "function");
   Math.random = () => 0;
 
   try {
     for (let index = 0; index < 10; index += 1) {
       const { api, handlers } = createHarness();
-      registerShellUi(api);
+      (shellUiModule as { registerShellUi(api: unknown): void }).registerShellUi(api);
       const { captured, ctx, tui } = createTuiContext();
       last(getHandlers(handlers, "session_start"))({}, ctx);
       const first = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));

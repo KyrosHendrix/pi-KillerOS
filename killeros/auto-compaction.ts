@@ -12,6 +12,8 @@ import { createKillerosSettingsStore } from "./settings.ts";
 export const DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING = 15;
 export const AUTO_COMPACTION_MESSAGE_TYPE = "killeros-auto-compaction";
 export const AUTO_COMPACTION_MESSAGE = "Continue the interrupted task from the compacted context.";
+/** Pi's exact rejection when a session has no eligible history to summarize; an expected skip, not a failure. */
+export const SESSION_TOO_SMALL_COMPACTION_ERROR = "Nothing to compact (session too small)";
 
 export interface AutoCompactionPreference {
   enabled: boolean;
@@ -23,6 +25,8 @@ export interface AutoCompactionGoalHandlers {
   onRequested(): void;
   onCompleted(ctx: ExtensionContext): void;
   onFailed(ctx: ExtensionContext, error: unknown): void;
+  /** Recovers the goal paused for a request Pi rejected as session-too-small, without claiming success. */
+  onSkipped(ctx: ExtensionContext): void;
 }
 
 export interface AutoCompactionDependencies {
@@ -72,6 +76,11 @@ function reserveTokens(settings: Pick<CompactionSettings, "reserveTokens">): num
     : 0;
 }
 
+/** Matches only Pi's exact rejection text on a real Error; near-matches and stringified values stay failures. */
+export function isSessionTooSmallCompactionError(error: unknown): boolean {
+  return error instanceof Error && error.message === SESSION_TOO_SMALL_COMPACTION_ERROR;
+}
+
 /** Triggers at the stricter of the user's percentage and Pi's token reserve. */
 export function shouldTriggerAutoCompaction(
   usage: Pick<ContextUsage, "tokens" | "contextWindow"> | undefined,
@@ -116,13 +125,7 @@ export function registerAutoCompaction(
     ctx.ui.notify(`Automatic compaction failed: ${errorMessage(error)}`, "error");
   };
 
-  const finishFailure = (
-    ctx: ExtensionContext,
-    token: symbol,
-    goal: boolean,
-    error: unknown,
-  ): void => {
-    if (!request || request.token !== token) return;
+  const finishFailure = (ctx: ExtensionContext, goal: boolean, error: unknown): void => {
     request = undefined;
     if (goal && dependencies.goal) {
       try {
@@ -133,6 +136,33 @@ export function registerAutoCompaction(
       return;
     }
     notifyFailure(ctx, error);
+  };
+
+  /** Ends a request with Pi's expected eligibility rejection: silent, rearmed, and never a failure. */
+  const finishSkip = (ctx: ExtensionContext, goal: boolean): void => {
+    request = undefined;
+    armed = true;
+    if (!goal) return;
+    try {
+      dependencies.goal?.onSkipped(ctx);
+    } catch (callbackError) {
+      notifyFailure(ctx, callbackError);
+    }
+  };
+
+  /** Single entry point for rejected requests: classifies before any sanitization, stale tokens stay inert. */
+  const finishRequestError = (
+    ctx: ExtensionContext,
+    token: symbol,
+    goal: boolean,
+    error: unknown,
+  ): void => {
+    if (!request || request.token !== token) return;
+    if (isSessionTooSmallCompactionError(error)) {
+      finishSkip(ctx, goal);
+      return;
+    }
+    finishFailure(ctx, goal, error);
   };
 
   pi.on("turn_end", (_event, ctx) => {
@@ -179,7 +209,7 @@ export function registerAutoCompaction(
       try {
         dependencies.goal.onRequested();
       } catch (error) {
-        finishFailure(ctx, token, true, error);
+        finishFailure(ctx, true, error);
         return;
       }
     }
@@ -207,10 +237,10 @@ export function registerAutoCompaction(
             notifyFailure(ctx, error);
           }
         },
-        onError: (error) => finishFailure(ctx, token, goal, error),
+        onError: (error) => finishRequestError(ctx, token, goal, error),
       });
     } catch (error) {
-      finishFailure(ctx, token, goal, error);
+      finishRequestError(ctx, token, goal, error);
     }
   });
 

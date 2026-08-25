@@ -1,5 +1,5 @@
-import { DynamicBorder, type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Container, Text, truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, formatTokens, padRight } from "./display.ts";
 import { goalElapsedMilliseconds } from "./goals.ts";

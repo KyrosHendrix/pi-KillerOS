@@ -8,11 +8,15 @@ All notable changes to KillerOS are documented here.
 
 ### Changed
 
+- Added a typescript-eslint type-checked lint gate (`npm run lint`) alongside `tsc --noEmit`, and cleaned up the dead imports and untyped boundaries it surfaced.
 - Hardened JSON and caught-error boundaries, made goal and `/init` target states constructive, added exhaustive outcome handling, and replaced unsafe test doubles with checked adapters.
 - Deprecated positional `executeHook` arguments in favor of object options; the compatibility adapter will be removed in the next major release.
 
 ### Fixed
 
+- Treated Pi's exact `Nothing to compact (session too small)` rejection as an expected automatic-compaction skip: no failure notification, silent retry on the next eligible turn, and active goals resume through a dedicated skip recovery instead of pausing for `/goal resume`.
+- Made `/handoff` resilient to an unreadable `killeros.json`: explicit `KillerosOptions` budgets bypass the file, while other summaries fall back to the default budget with a visible warning.
+- Named `/handoff` output truncation instead of reporting "did not finish", raised the default summary budget to 8192 tokens for reasoning models, and made the budget configurable through `KillerosOptions` or the `killeros.json` `handoffMaxTokens` key.
 - Paused active goals during automatic compaction and resumed the exact paused revision once after compaction and turn settlement succeed.
 - Restored active goals saved by v2.0.18 shutdown checkpoints that omitted their stopped clock timestamp.
 

@@ -261,7 +261,7 @@ export function executeHook(
   if (signal?.aborted) {
     return Promise.resolve({ code: 130, stdout: "", stderr: "", timedOut: false, cancelled: true, exitUnconfirmed: false });
   }
-  let child;
+  let child: HookChildProcess;
   try {
     child = spawnProcess(command, {
       cwd,

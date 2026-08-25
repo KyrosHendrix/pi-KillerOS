@@ -1,7 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
   type ExtensionAPI,
-  type ExtensionContext,
   type ThemeColor,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";

@@ -5,17 +5,18 @@ import path from "node:path";
 import test from "node:test";
 import type {
   CompactOptions,
-  CompactionSettings,
   ContextUsage,
-  ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
   AUTO_COMPACTION_MESSAGE,
   AUTO_COMPACTION_MESSAGE_TYPE,
+  isSessionTooSmallCompactionError,
   readAutoCompactionPreference,
   registerAutoCompaction,
+  SESSION_TOO_SMALL_COMPACTION_ERROR,
   shouldTriggerAutoCompaction,
+  type AutoCompactionGoalHandlers,
 } from "../killeros/auto-compaction.ts";
 import { registerGoal, registerGoalSettlement } from "../killeros/goals.ts";
 import { createGoalRuntime, createInitRuntime } from "../killeros/runtime.ts";
@@ -39,18 +40,14 @@ interface AutoHarness {
   notifications: Array<{ message: string; type: string | undefined }>;
   sentMessages: Array<{ message: unknown; options: unknown }>;
   setUsage(usage: ContextUsage | undefined): void;
+  failCompactionSynchronously(error?: Error): void;
   emit(eventName: string, event?: unknown): Promise<unknown>;
 }
 
 function createHarness(
   mode: "tui" | "rpc" = "tui",
   initialUsage: ContextUsage | undefined = { tokens: 90_000, contextWindow: 100_000, percent: 90 },
-  goal?: {
-    isActive(): boolean;
-    onRequested(): void;
-    onCompleted(ctx: ExtensionContext): void;
-    onFailed(ctx: ExtensionContext, error: unknown): void;
-  },
+  goal?: AutoCompactionGoalHandlers,
 ): AutoHarness {
   const handlers = new Map<string, Handler[]>();
   const compactCalls: CompactOptions[] = [];
@@ -75,11 +72,15 @@ function createHarness(
     isIdle: () => true,
     isProjectTrusted: () => true,
     mode,
-    compact: (options?: CompactOptions) => { if (options) compactCalls.push(options); },
+    compact: (options?: CompactOptions) => {
+      if (compactError) throw compactError;
+      if (options) compactCalls.push(options);
+    },
     ui: {
       notify: (message: string, type?: string) => notifications.push({ message, type }),
     },
   });
+  let compactError: Error | undefined;
   registerAutoCompaction(api, {
     loadPreference: () => ({ enabled: true, percentRemaining: 15 }),
     getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }),
@@ -90,6 +91,7 @@ function createHarness(
     notifications,
     sentMessages,
     setUsage: (next) => { usage = next; },
+    failCompactionSynchronously: (error) => { compactError = error; },
     async emit(eventName, event = { type: eventName }): Promise<unknown> {
       let result: unknown;
       for (const handler of handlers.get(eventName) ?? []) result = await handler(event, ctx);
@@ -315,6 +317,7 @@ test("a successful goal compaction uses the goal continuation callback without a
     onRequested: () => events.push("requested"),
     onCompleted: () => events.push("completed"),
     onFailed: (_ctx, error) => events.push(`failed:${String(error)}`),
+    onSkipped: () => events.push("skipped"),
   });
   await harness.emit("turn_end");
   assert.deepEqual(events, ["requested"]);
@@ -497,4 +500,190 @@ test("a successful compaction must be followed by a higher reading before anothe
   harness.setUsage({ tokens: 90_000, contextWindow: 100_000, percent: 90 });
   await harness.emit("turn_end");
   assert.equal(harness.compactCalls.length, 2);
+});
+
+test("an exact session-too-small rejection is a silent skip and rearms the next turn", async () => {
+  const harness = createHarness("tui");
+  await harness.emit("turn_end");
+  harness.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+  assert.equal(harness.compactCalls.length, 1);
+  assert.deepEqual(harness.notifications, []);
+  assert.deepEqual(harness.sentMessages, []);
+
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 2);
+});
+
+test("a synchronous session-too-small throw behaves like the asynchronous skip", async () => {
+  const harness = createHarness("rpc");
+  harness.failCompactionSynchronously(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+  await harness.emit("turn_end");
+  harness.failCompactionSynchronously(undefined);
+
+  assert.equal(harness.compactCalls.length, 0);
+  assert.deepEqual(harness.notifications, []);
+  assert.deepEqual(harness.sentMessages, []);
+
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 1);
+});
+
+test("a near-match of the session-too-small message remains a visible failure", async () => {
+  for (const message of [
+    `${SESSION_TOO_SMALL_COMPACTION_ERROR}: retry later`,
+    `automatic compaction skipped: ${SESSION_TOO_SMALL_COMPACTION_ERROR}`,
+    "nothing to compact (session too small)",
+  ] as const) {
+    const harness = createHarness();
+    await harness.emit("turn_end");
+    harness.compactCalls[0]?.onError?.(new Error(message));
+    assert.equal(harness.notifications[0]?.message, `Automatic compaction failed: ${message}`, message);
+    await harness.emit("turn_end");
+    assert.equal(harness.compactCalls.length, 1, `${message} must not rearm`);
+  }
+});
+
+test("session-too-small classification matches only Pi's exact Error message", () => {
+  assert.equal(isSessionTooSmallCompactionError(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR)), true);
+  for (const candidate of [
+    `${SESSION_TOO_SMALL_COMPACTION_ERROR}.`,
+    ` ${SESSION_TOO_SMALL_COMPACTION_ERROR}`,
+    "NOTHING TO COMPACT (SESSION TOO SMALL)",
+    SESSION_TOO_SMALL_COMPACTION_ERROR,
+    { message: SESSION_TOO_SMALL_COMPACTION_ERROR },
+    undefined,
+  ]) {
+    assert.equal(isSessionTooSmallCompactionError(candidate), false);
+  }
+});
+
+test("an active goal receives one requested and one skipped callback without failure or completion", async () => {
+  const events: string[] = [];
+  const harness = createHarness("rpc", undefined, {
+    isActive: () => true,
+    onRequested: () => events.push("requested"),
+    onCompleted: () => events.push("completed"),
+    onFailed: (_ctx, error) => events.push(`failed:${String(error)}`),
+    onSkipped: () => events.push("skipped"),
+  });
+  await harness.emit("turn_end");
+  harness.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+
+  assert.deepEqual(events, ["requested", "skipped"]);
+  assert.deepEqual(harness.notifications, []);
+  assert.deepEqual(harness.sentMessages, []);
+});
+
+test("a skipped goal request resumes the paused revision once after turn settlement", async () => {
+  for (const mode of ["tui", "rpc"] as const) {
+    const harness = createGoalHarness(mode);
+    await harness.startGoal("Continue after an ineligible compaction attempt");
+    await harness.emit("turn_end");
+    assert.equal(harness.state().state?.status, "paused", mode);
+
+    await harness.emit("agent_end", {
+      type: "agent_end",
+      messages: [{ role: "assistant", stopReason: "aborted" }],
+    });
+    // Before settlement a skip must not resume anything.
+    harness.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+    assert.equal(harness.state().state?.status, "paused", mode);
+    assert.equal(harness.sentMessages.length, 1, mode);
+
+    await harness.emit("agent_settled");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(harness.state().state?.status, "active", mode);
+    assert.equal(harness.state().automaticCompaction, undefined, mode);
+    assert.equal(harness.sentMessages.length, 2, mode);
+    assert.deepEqual(harness.persistedStatuses.slice(0, 4), ["active", "active", "paused", "active"], mode);
+    assert.ok(!harness.persistedStatuses.includes("error"), mode);
+    assert.deepEqual(harness.notifications.filter((notification) => notification.type === "error"), [], mode);
+  }
+});
+
+test("a skipped goal stays fail-closed when its resume cannot be saved or the revision moved on", async () => {
+  const unsavable = createGoalHarness();
+  await unsavable.startGoal("Keep fail-closed resume behavior");
+  await unsavable.emit("turn_end");
+  await unsavable.emit("agent_end", {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "aborted" }],
+  });
+  await unsavable.emit("agent_settled");
+  unsavable.failPersistence();
+
+  unsavable.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(unsavable.state().state?.status, "paused");
+  assert.equal(unsavable.state().persistenceRetryNeeded, true);
+  assert.equal(unsavable.sentMessages.length, 1);
+  assert.match(unsavable.notifications.at(-1)?.message ?? "", /skipped, but the goal could not be resumed/u);
+
+  const superseded = createGoalHarness();
+  await superseded.startGoal("Keep revision guards on skips");
+  await superseded.emit("turn_end");
+  await superseded.runGoalCommand("pause");
+  await superseded.emit("agent_end", {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "aborted" }],
+  });
+  await superseded.emit("agent_settled");
+
+  superseded.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(superseded.state().state?.status, "paused");
+  assert.equal(superseded.state().automaticCompaction, undefined);
+  assert.equal(superseded.sentMessages.length, 1);
+  assert.deepEqual(superseded.notifications.filter((notification) => /resume/u.test(notification.message) && notification.type === "info"), []);
+});
+
+test("a lifecycle reset makes a stale exact-error callback inert", async () => {
+  const stale = new Error(SESSION_TOO_SMALL_COMPACTION_ERROR);
+  const harness = createHarness();
+  await harness.emit("turn_end");
+  const staleCallbacks = harness.compactCalls[0];
+
+  await harness.emit("session_start");
+
+  staleCallbacks?.onError?.(stale);
+  assert.deepEqual(harness.notifications, []);
+  assert.deepEqual(harness.sentMessages, []);
+
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 2);
+  harness.compactCalls[1]?.onError?.(stale);
+  assert.deepEqual(harness.notifications, []);
+});
+
+test("RPC mode skips identically while print mode never requests compaction", async () => {
+  const rpc = createHarness("rpc");
+  await rpc.emit("turn_end");
+  rpc.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+  assert.deepEqual(rpc.notifications, []);
+  assert.deepEqual(rpc.sentMessages, []);
+  await rpc.emit("turn_end");
+  assert.equal(rpc.compactCalls.length, 2);
+
+  const printHandlers = new Map<string, Handler[]>();
+  const printApi = extensionApiTestAdapter({
+    on(eventName: string, handler: Handler): void {
+      const current = printHandlers.get(eventName) ?? [];
+      current.push(handler);
+      printHandlers.set(eventName, current);
+    },
+  });
+  const printCtx = extensionContextTestAdapter({
+    mode: "print",
+    getContextUsage: () => ({ tokens: 99_000, contextWindow: 100_000, percent: 99 }),
+    isProjectTrusted: () => true,
+    compact: (options?: CompactOptions) => { if (options) printCalls.push(options); },
+    ui: { notify: () => {} },
+  });
+  const printCalls: CompactOptions[] = [];
+  registerAutoCompaction(printApi);
+  for (const handler of printHandlers.get("turn_end") ?? []) await handler({ type: "turn_end" }, printCtx);
+  assert.equal(printCalls.length, 0);
 });
