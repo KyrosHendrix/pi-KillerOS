@@ -167,16 +167,20 @@ function createNotificationHarness(options: NotificationHarnessOptions = {}): No
   const dependencies: CompletionNotificationDependencies = {
     store: {
       load: () => {
+        // Deliberately throws an arbitrary value to prove containment of non-Error failures.
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
         if (options.loadError) throw options.loadError;
         return saved;
       },
       save: (enabled: boolean) => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
         if (options.saveError) throw options.saveError;
         saves += 1;
         saved = enabled;
       },
     },
     ring: () => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
       if (options.ringError) throw options.ringError;
       rings += 1;
     },

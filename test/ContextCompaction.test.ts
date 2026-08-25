@@ -18,11 +18,11 @@ type TestEvent = {
   [key: string]: unknown;
 };
 
-type TestHandler = (event: TestEvent, ctx: TestContext) => unknown | Promise<unknown>;
+type TestHandler = (event: TestEvent, ctx: TestContext) => Promise<unknown>;
 
 type TestCommand = {
   description?: string;
-  handler(args: string, ctx: TestContext): unknown | Promise<unknown>;
+  handler(args: string, ctx: TestContext): Promise<unknown>;
 };
 
 type TestTool = {

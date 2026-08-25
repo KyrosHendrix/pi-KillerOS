@@ -5,7 +5,6 @@ import test from "node:test";
 import {
   formatWorkedForDuration,
   registerWorkedFor,
-  type WorkedForOutcome,
   workedForOutcome,
 } from "../killeros/worked-for.ts";
 import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";

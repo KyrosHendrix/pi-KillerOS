@@ -5,9 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import type {
   CompactOptions,
-  CompactionSettings,
   ContextUsage,
-  ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -555,7 +553,7 @@ test("session-too-small classification matches only Pi's exact Error message", (
     { message: SESSION_TOO_SMALL_COMPACTION_ERROR },
     undefined,
   ]) {
-    assert.equal(isSessionTooSmallCompactionError(candidate), false, String(candidate));
+    assert.equal(isSessionTooSmallCompactionError(candidate), false);
   }
 });
 

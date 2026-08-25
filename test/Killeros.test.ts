@@ -6,7 +6,7 @@ import os from "node:os";
 import { PassThrough } from "node:stream";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import {
@@ -80,7 +80,7 @@ type TestHandlerResult = {
 type TestHandler = (event: TestEvent, ctx?: unknown) => TestHandlerResult | Promise<TestHandlerResult>;
 type TestRenderable = {
   render(width: number): string[];
-  dispose?(): void;
+  dispose?: () => void;
 };
 type TestInteractive = TestRenderable & {
   handleInput(input: string): void;
@@ -109,7 +109,7 @@ type TestTool = {
 type TestCommand = {
   description?: string;
   getArgumentCompletions?: unknown;
-  handler(args: string, ctx: unknown): unknown | Promise<unknown>;
+  handler(args: string, ctx: unknown): Promise<unknown>;
 };
 type SourceInfo = { path: string; source: string; baseDir: string };
 type TestEntry = { [key: string]: unknown };
@@ -231,7 +231,7 @@ type VariantsContext = {
   };
 };
 type TestAPI = {
-  appendEntry(customType: string, data: TestEntryData): void;
+  appendEntry: (customType: string, data: TestEntryData) => void;
   getAllTools(): Array<TestTool & { sourceInfo: SourceInfo }>;
   getCommands(): Array<{ name: string; description?: string; source: string; sourceInfo: SourceInfo }>;
   getSessionName(): undefined;
@@ -553,7 +553,9 @@ test("all KillerOS tools expose provider-compatible object schemas", () => {
   const { tools } = createHarness();
 
   for (const tool of tools.values()) {
-    const schema = JSON.parse(JSON.stringify(tool.parameters));
+    const rawSchema: unknown = JSON.parse(JSON.stringify(tool.parameters));
+    assert.ok(isUnknownRecord(rawSchema), `${tool.name} schema must be a JSON object`);
+    const schema = rawSchema;
     assert.equal(schema.type, "object", `${tool.name} must use a top-level object schema`);
     assert.equal(typeof schema.properties, "object", `${tool.name} must declare object properties`);
     assert.equal(schema.anyOf, undefined, `${tool.name} must not use a top-level anyOf`);
@@ -688,10 +690,19 @@ test("/codex-fast reload repairs legacy process-global state", async () => {
     globalThis.__killerosCodexFastState = { enabled: true };
     const moduleUrl = new URL("../killeros/codex-fast-state.ts", import.meta.url);
     moduleUrl.searchParams.set("legacy", String(Date.now()));
-    const reloaded = await import(moduleUrl.href);
+    // The query string forces a fresh module instance, so its exports cannot be typed statically.
+    const reloaded: unknown = await import(moduleUrl.href);
+    assert.ok(typeof reloaded === "object" && reloaded !== null);
+    assert.ok("isCodexFastEnabled" in reloaded && typeof reloaded.isCodexFastEnabled === "function");
+    assert.ok("subscribeCodexFast" in reloaded && typeof reloaded.subscribeCodexFast === "function");
+    // The assertions above validate the exact members used here.
+    const codexModule = reloaded as {
+      isCodexFastEnabled(): boolean;
+      subscribeCodexFast(listener: () => void): () => void;
+    };
 
-    assert.equal(reloaded.isCodexFastEnabled(), true);
-    const unsubscribe = reloaded.subscribeCodexFast(() => {});
+    assert.equal(codexModule.isCodexFastEnabled(), true);
+    const unsubscribe = codexModule.subscribeCodexFast(() => {});
     assert.doesNotThrow(unsubscribe);
   } finally {
     globalThis.__killerosCodexFastState = original;
@@ -700,9 +711,12 @@ test("/codex-fast reload repairs legacy process-global state", async () => {
 
 test("question exposes a Google-compatible optional selection mode", () => {
   const tool = getTool(createHarness(), "question");
-  const schema = JSON.parse(JSON.stringify(tool.parameters));
+  const rawSchema: unknown = JSON.parse(JSON.stringify(tool.parameters));
+  assert.ok(isUnknownRecord(rawSchema));
+  const properties = rawSchema.properties;
+  assert.ok(isUnknownRecord(properties));
 
-  assert.deepEqual(schema.properties.mode, {
+  assert.deepEqual(properties.mode, {
     type: "string",
     enum: ["single", "multiple"],
     description: "Choose one answer or multiple answers; defaults to single",
@@ -897,9 +911,12 @@ test("question retains multiple-select bound validation before rendering and exe
 
 test("goal updates use a Google-compatible status enum", () => {
   const tool = getTool(createHarness(), "killeros_goal_update");
-  const schema = JSON.parse(JSON.stringify(tool.parameters));
+  const rawSchema: unknown = JSON.parse(JSON.stringify(tool.parameters));
+  assert.ok(isUnknownRecord(rawSchema));
+  const properties = rawSchema.properties;
+  assert.ok(isUnknownRecord(properties));
 
-  assert.deepEqual(schema.properties.status, {
+  assert.deepEqual(properties.status, {
     type: "string",
     enum: ["complete", "blocked"],
     description: "Mark the active goal complete or blocked",
@@ -1091,7 +1108,8 @@ function createTuiContext(
         captured.widgets ??= [];
         captured.widgets.push({ key, content, options });
         if (typeof content === "function") {
-          captured.widgetComponent = content(tui, uiTheme);
+          const render = content as (tui: unknown, theme: unknown) => unknown;
+          captured.widgetComponent = render(tui, uiTheme);
         }
         if (content === undefined) captured.widgetComponent = undefined;
       },
@@ -1126,20 +1144,20 @@ test("BoundedText limits collapsed rows and preserves full expanded text", () =>
   assert.match(last(expanded) ?? "", /line 20/u);
 });
 
-function startQuestion(
+async function startQuestion(
   tool: TestTool,
   options: QuestionOption[] = [{ label: "Alpha" }],
   questionText = "Choose",
   terminalRows = 40,
   keybindings = getKeybindings(),
   extraParams: Record<string, unknown> = {},
-): {
+): Promise<{
   component: TestInteractive;
   finish: (value: unknown) => void;
   result: Promise<TestResult>;
   notifications: TestNotification[];
   tui: TestTui;
-} {
+}> {
   let component: TestInteractive | undefined;
   let finish: ((value: unknown) => void) | undefined;
   const notifications: TestNotification[] = [];
@@ -3709,7 +3727,8 @@ test("/init attaches a bounded project snapshot without reading existing guidanc
     await waitFor(() => sentMessages.length === 1);
     const marker = "## Initial repository snapshot (untrusted data)\n";
     const encodedSnapshot = sentMessages[0].message.content.split(marker)[1].split("\n\n## Existing root AGENTS.md")[0];
-    const snapshot = JSON.parse(encodedSnapshot);
+    const snapshot: unknown = JSON.parse(encodedSnapshot);
+    assert.ok(typeof snapshot === "string", "the snapshot must be a JSON string");
     assert.match(snapshot, /src\/core\/index\.ts/u);
     assert.match(snapshot, /node --test/u);
     assert.doesNotMatch(snapshot, /Preserve releases|PRIVATE-CONTEXT|PRIVATE-MEMORY|DEPENDENCY-CONTENT|PRIVATE-SKILL|PRIVATE-HOOK|MEMORY\.md|killeros-hooks/u);
@@ -5543,13 +5562,16 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
   const strip = (line: string) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "").trim();
   const shellUiUrl = new URL("../killeros/shell-ui.ts", import.meta.url);
   shellUiUrl.searchParams.set("startup-tip-test", String(Date.now()));
-  const { registerShellUi } = await import(shellUiUrl.href);
+  // The query string forces a fresh module instance, so its exports cannot be typed statically.
+  const shellUiModule: unknown = await import(shellUiUrl.href);
+  assert.ok(typeof shellUiModule === "object" && shellUiModule !== null);
+  assert.ok("registerShellUi" in shellUiModule && typeof shellUiModule.registerShellUi === "function");
   Math.random = () => 0;
 
   try {
     for (let index = 0; index < 10; index += 1) {
       const { api, handlers } = createHarness();
-      registerShellUi(api);
+      (shellUiModule as { registerShellUi(api: unknown): void }).registerShellUi(api);
       const { captured, ctx, tui } = createTuiContext();
       last(getHandlers(handlers, "session_start"))({}, ctx);
       const first = captured.headerFactory(tui).render(76).map(strip).find((line) => line.startsWith("Tip:"));

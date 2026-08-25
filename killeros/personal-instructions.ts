@@ -1,9 +1,8 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { fileURLToPath } from "node:url";
-import { CONFIG_DIR_NAME, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { InitRuntime } from "./runtime.ts";
 
 const PERSONAL_INSTRUCTIONS_FILE = "AGENTS.local.md";

@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Changed
 
+- Added a typescript-eslint type-checked lint gate (`npm run lint`) alongside `tsc --noEmit`, and cleaned up the dead imports and untyped boundaries it surfaced.
 - Hardened JSON and caught-error boundaries, made goal and `/init` target states constructive, added exhaustive outcome handling, and replaced unsafe test doubles with checked adapters.
 - Deprecated positional `executeHook` arguments in favor of object options; the compatibility adapter will be removed in the next major release.
 
