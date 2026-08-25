@@ -22,6 +22,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    outputs:
+      publish: ${{ steps.metadata.outputs.publish }}
 
     steps:
       - name: Check out verified source
@@ -123,3 +125,37 @@ jobs:
             ARGS+=(--prerelease)
           fi
           gh release create "$TAG" --title "$TAG" "${ARGS[@]}"
+
+  sync-dev:
+    name: Sync main back into dev
+    needs: release
+    if: needs.release.result == 'success' && needs.release.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Merge main into dev
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MAIN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin main dev
+          git checkout -B dev origin/dev
+
+          if git merge-base --is-ancestor "$MAIN_SHA" HEAD; then
+            echo "dev already contains the verified main commit."
+            exit 0
+          fi
+
+          git merge --ff-only "$MAIN_SHA"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/dev

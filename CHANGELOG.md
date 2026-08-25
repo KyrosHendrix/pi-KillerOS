@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Synced `dev` back to successful `main` releases after publishing.
+
 ## [2.0.20] - 2026-08-25
 
 ### Changed

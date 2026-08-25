@@ -172,6 +172,13 @@ test("GitHub releases require a green CI version bump and consistent metadata", 
   assert.doesNotMatch(release, /push:\s*\n\s*tags:/u);
   assert.match(release, /npm view "killeros@\$\{VERSION\}" version/u);
   assert.match(release, /publish_npm/u);
+  assert.match(release, /sync-dev:\s+name: Sync main back into dev\s+needs: release/su);
+  assert.match(release, /publish:\s+\$\{\{ steps\.metadata\.outputs\.publish \}\}/u);
+  assert.match(release, /if: needs\.release\.result == 'success' && needs\.release\.outputs\.publish == 'true'/u);
+  assert.match(release, /MAIN_SHA:.*workflow_run\.head_sha/u);
+  assert.match(release, /git merge-base --is-ancestor "\$MAIN_SHA" HEAD/u);
+  assert.match(release, /git merge --ff-only "\$MAIN_SHA"/u);
+  assert.match(release, /refs\/heads\/dev/u);
   assert.match(readme, /Releases go through CI on `main`/u);
   assert.match(readme, /do not push version tags manually/iu);
   assert.doesNotMatch(readme, /does not publish to npm|npm login/iu);
