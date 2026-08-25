@@ -34,7 +34,7 @@ Or from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin a release by appending its tag, for example `@v2.0.19`. Add `-l` to install only for the current project. Restart Pi after installing.
+Pin a release by appending its tag, for example `@v2.0.20`. Add `-l` to install only for the current project. Restart Pi after installing.
 
 ## Commands
 
