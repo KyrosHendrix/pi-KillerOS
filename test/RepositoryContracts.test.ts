@@ -160,18 +160,26 @@ test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.84.3");
 });
 
-test("GitHub releases require a green CI version bump and consistent metadata", () => {
+test("GitHub releases require green current main and consistent package provenance", () => {
   assert.match(release, /workflow_run:/u);
   assert.match(release, /workflows:\s*\n\s*- CI/u);
   assert.match(release, /github\.event\.workflow_run\.conclusion == 'success'/u);
   assert.match(release, /github\.event\.workflow_run\.head_sha/u);
+  assert.match(release, /git fetch --no-tags origin main/u);
+  assert.match(release, /CURRENT_MAIN=.*origin\/main/u);
+  assert.match(release, /Verified commit .* is stale/u);
   assert.match(release, /PREVIOUS_VERSION.*VERSION/su);
   assert.match(release, /packageJson\.version !== packageLock\.version/u);
   assert.match(release, /scripts\/release-notes\.ts CHANGELOG\.md/u);
   assert.match(release, /Existing tag.*verified commit/u);
+  assert.match(release, /git ls-remote[^\n]+\|\| TAG_LOOKUP_STATUS=\$\?/u);
+  assert.match(release, /TAG_LOOKUP_STATUS != 2[\s\S]+exit "\$TAG_LOOKUP_STATUS"/u);
   assert.doesNotMatch(release, /push:\s*\n\s*tags:/u);
   assert.match(release, /npm view "killeros@\$\{VERSION\}" version/u);
+  assert.match(release, /npm view "killeros@\$\{VERSION\}" gitHead/u);
+  assert.match(release, /npm package.*verified commit/u);
   assert.match(release, /publish_npm/u);
+  assert.ok(release.indexOf("Existing tag") < release.indexOf("- name: Publish package to npm"));
   assert.match(release, /sync-dev:\s+name: Sync main back into dev\s+needs: release/su);
   assert.match(release, /publish:\s+\$\{\{ steps\.metadata\.outputs\.publish \}\}/u);
   assert.match(release, /if: needs\.release\.result == 'success' && needs\.release\.outputs\.publish == 'true'/u);

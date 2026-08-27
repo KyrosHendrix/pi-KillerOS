@@ -8,6 +8,10 @@ All notable changes to KillerOS are documented here.
 
 - Synced `dev` back to successful `main` releases after publishing.
 
+### Fixed
+
+- Hardened releases against stale CI runs, mismatched existing npm artifacts, and tag conflicts discovered after publication.
+
 ## [2.0.20] - 2026-08-25
 
 ### Changed

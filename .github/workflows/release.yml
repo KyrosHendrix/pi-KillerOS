@@ -49,6 +49,14 @@ jobs:
           SHA="$VERIFIED_SHA"
           test "$(git rev-parse HEAD)" = "$SHA"
 
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          CURRENT_MAIN=$(git rev-parse origin/main)
+          if [[ "$SHA" != "$CURRENT_MAIN" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Verified commit ${SHA} is stale; current main is ${CURRENT_MAIN}."
+            exit 0
+          fi
+
           VERSION=$(node --input-type=module -e '
             import { readFileSync } from "node:fs";
             const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
@@ -62,25 +70,49 @@ jobs:
             process.stdout.write(packageJson.version);
           ')
           TAG="v${VERSION}"
-
           PREVIOUS_VERSION=$(git show HEAD^:package.json | node --input-type=module -e '
             import { readFileSync } from "node:fs";
             process.stdout.write(JSON.parse(readFileSync(0, "utf8")).version);
           ')
-          if [[ "$PREVIOUS_VERSION" == "$VERSION" ]]; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "Package version is unchanged; no release is needed."
-            exit 0
+
+          TAG_SHA=""
+          TAG_LOOKUP_STATUS=0
+          git ls-remote --exit-code --refs origin "refs/tags/${TAG}" >/dev/null 2>&1 || TAG_LOOKUP_STATUS=$?
+          if (( TAG_LOOKUP_STATUS == 0 )); then
+            git fetch --no-tags origin "refs/tags/${TAG}:refs/release-check/${TAG}"
+            TAG_SHA=$(git rev-list -n 1 "refs/release-check/${TAG}")
+          elif (( TAG_LOOKUP_STATUS != 2 )); then
+            echo "Unable to check existing tag ${TAG}." >&2
+            exit "$TAG_LOOKUP_STATUS"
+          fi
+
+          PUBLISH_NPM=true
+          PUBLISHED_SHA=""
+          if npm view "killeros@${VERSION}" version >/dev/null 2>&1; then
+            PUBLISH_NPM=false
+            PUBLISHED_SHA=$(npm view "killeros@${VERSION}" gitHead)
+            if [[ -z "$PUBLISHED_SHA" ]]; then
+              echo "Existing npm package killeros@${VERSION} has no gitHead provenance." >&2
+              exit 1
+            fi
+            if [[ "$PUBLISHED_SHA" != "$SHA" ]]; then
+              if [[ "$PREVIOUS_VERSION" == "$VERSION" && "$TAG_SHA" == "$PUBLISHED_SHA" ]]; then
+                echo "publish=false" >> "$GITHUB_OUTPUT"
+                echo "killeros@${VERSION} was already released from ${PUBLISHED_SHA}."
+                exit 0
+              fi
+              echo "Existing npm package killeros@${VERSION} points to ${PUBLISHED_SHA}, not verified commit ${SHA}." >&2
+              exit 1
+            fi
+          fi
+
+          if [[ -n "$TAG_SHA" && "$TAG_SHA" != "$SHA" ]]; then
+            echo "Existing tag ${TAG} points to ${TAG_SHA}, not verified commit ${SHA}." >&2
+            exit 1
           fi
 
           node scripts/release-notes.ts CHANGELOG.md "$VERSION" > /tmp/release-notes.md
           test -s /tmp/release-notes.md
-
-          PUBLISH_NPM=true
-          if npm view "killeros@${VERSION}" version >/dev/null 2>&1; then
-            PUBLISH_NPM=false
-            echo "killeros@${VERSION} already exists on npm; skipping package publication."
-          fi
 
           echo "publish=true" >> "$GITHUB_OUTPUT"
           echo "publish_npm=${PUBLISH_NPM}" >> "$GITHUB_OUTPUT"
@@ -109,15 +141,6 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists; skipping."
             exit 0
-          fi
-
-          if git ls-remote --exit-code --refs origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            git fetch --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
-            TAG_SHA=$(git rev-list -n 1 "$TAG")
-            if [[ "$TAG_SHA" != "$SHA" ]]; then
-              echo "Existing tag ${TAG} points to ${TAG_SHA}, not verified commit ${SHA}." >&2
-              exit 1
-            fi
           fi
 
           ARGS=(--target "$SHA" --notes-file /tmp/release-notes.md)
