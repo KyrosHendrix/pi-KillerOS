@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Changed
 
+- Added a live changed-file count beside the Git branch when the worktree is dirty.
 - Synced `dev` back to successful `main` releases after publishing.
 
 ### Fixed

@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
@@ -9,6 +10,37 @@ import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
 
 const FOOTER_REFRESH_INTERVAL_MS = 1_000;
 const CODEX_PROVIDER = "openai-codex";
+
+function resolveUncommittedFileCount(cwd: string): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    execFile(
+      "git",
+      ["-C", cwd, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      {
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 1_000,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) {
+          resolve(undefined);
+          return;
+        }
+
+        const entries = stdout.split("\0");
+        let count = 0;
+        for (let index = 0; index < entries.length; index += 1) {
+          const entry = entries[index];
+          if (!entry) continue;
+          count += 1;
+          if (entry[0] === "R" || entry[0] === "C" || entry[1] === "R" || entry[1] === "C") index += 1;
+        }
+        resolve(count);
+      },
+    );
+  });
+}
 
 export function formatCost(usd: number): string {
   if (!Number.isFinite(usd)) return "$—";
@@ -201,11 +233,32 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
 
     ctx.ui.setFooter((tui, theme, footerData) => {
       activeTui = tui;
-      const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
-      const refreshTimer = setInterval(() => tui.requestRender(), FOOTER_REFRESH_INTERVAL_MS);
+      let disposed = false;
+      let gitStatusPending = false;
+      let uncommittedFileCount: number | undefined;
+      const refreshGitStatus = (): void => {
+        if (gitStatusPending) return;
+        gitStatusPending = true;
+        void resolveUncommittedFileCount(ctx.cwd).then((count) => {
+          if (!disposed && count !== uncommittedFileCount) {
+            uncommittedFileCount = count;
+            tui.requestRender();
+          }
+        }).finally(() => { gitStatusPending = false; });
+      };
+      const unsubscribe = footerData.onBranchChange(() => {
+        refreshGitStatus();
+        tui.requestRender();
+      });
+      refreshGitStatus();
+      const refreshTimer = setInterval(() => {
+        refreshGitStatus();
+        tui.requestRender();
+      }, FOOTER_REFRESH_INTERVAL_MS);
       refreshTimer.unref?.();
       return {
         dispose() {
+          disposed = true;
           unsubscribe();
           clearInterval(refreshTimer);
           if (activeTui === tui) activeTui = undefined;
@@ -248,7 +301,11 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
               : footerRowFits(primaryFocused, "", width)
                 ? renderFooterRow(primaryFocused, "", width)
                 : renderFooterRow(essentialModel, context, width);
-          const branchLabel = branch ? theme.fg("dim", branch) : "";
+          const branchLabel = branch
+            ? uncommittedFileCount
+              ? `${theme.fg("dim", `${branch} · `)}${theme.fg("warning", `${uncommittedFileCount} changed`)}`
+              : theme.fg("dim", branch)
+            : "";
           const workspaceRight = goal || fullDirectory;
           const secondaryRow = footerRowFits(branchLabel, workspaceRight, width)
             ? renderFooterRow(branchLabel, workspaceRight, width)

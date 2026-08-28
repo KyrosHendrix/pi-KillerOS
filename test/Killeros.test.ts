@@ -5170,6 +5170,51 @@ test("footer includes assistant, tool, compaction, and branch-summary costs", ()
   disposeTestComponent(footer);
 });
 
+const FOOTER_TEST_REFRESH_MS = 1_100;
+
+test("footer emphasizes changed files and hides the clean count", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: directory });
+    writeFileSync(path.join(directory, "modified.txt"), "initial\n");
+    writeFileSync(path.join(directory, "renamed.txt"), "initial\n");
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: directory });
+
+    writeFileSync(path.join(directory, "modified.txt"), "changed\n");
+    execFileSync("git", ["mv", "renamed.txt", "moved.txt"], { cwd: directory });
+    writeFileSync(path.join(directory, "untracked.txt"), "new\n");
+    mkdirSync(path.join(directory, "nested"));
+    writeFileSync(path.join(directory, "nested", "first.txt"), "new\n");
+    writeFileSync(path.join(directory, "nested", "second.txt"), "new\n");
+
+    const { handlers } = createHarness();
+    const { captured, ctx, tui } = createTuiContext();
+    ctx.cwd = directory;
+    for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
+    const gitTheme = themeTestAdapter({
+      ...theme,
+      fg: (color: string, text: string) => color === "warning" ? `<warning>${text}</warning>` : text,
+    });
+    const footer = captured.footerFactory(tui, gitTheme, {
+      getGitBranch: () => "dev",
+      onBranchChange: () => () => {},
+    });
+
+    await waitFor(() => /dev · <warning>5 changed<\/warning>/u.test(footer.render(120).join("\n")));
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "save changes"], { cwd: directory });
+    await new Promise((resolve) => setTimeout(resolve, FOOTER_TEST_REFRESH_MS));
+    await waitFor(() => {
+      const rendered = footer.render(120).join("\n");
+      return /\bdev\b/u.test(rendered) && !/changed/u.test(rendered);
+    });
+    disposeTestComponent(footer);
+  } finally {
+    await removeDirectoryEventually(directory);
+  }
+});
+
 test("footer cuts down by priority while preserving model and context", () => {
   const { handlers } = createHarness();
   const entries = [{ type: "message", message: { role: "assistant", usage: usage(10) } }];
