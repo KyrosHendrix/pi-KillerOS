@@ -28,6 +28,7 @@ import Killeros, {
   validateGeneratedGuidance,
   writeInitAgentsFile,
 } from "../Killeros.ts";
+import { createGitStatusRefresh, scheduleGitStatusFallback } from "../killeros/footer.ts";
 import { DEFAULT_HANDOFF_MAX_TOKENS } from "../killeros/handoff.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { resetCodexFastState } from "../killeros/codex-fast-state.ts";
@@ -1373,6 +1374,39 @@ test("/handoff allows paused, blocked, and complete Goal truth", async () => {
   }
 });
 
+test("/handoff rejects an output reserve larger than the known remaining context", async () => {
+  const { commands } = createHarness({ handoffMaxTokens: 8_192 });
+  const notifications: TestNotification[] = [];
+  let completions = 0;
+  let newSessions = 0;
+
+  await getCommand(commands, "handoff").handler("", {
+    mode: "rpc",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    getContextUsage: () => ({ tokens: 120_000, contextWindow: 128_000 }),
+    model: { id: "test-model", provider: "test", contextWindow: 128_000 },
+    modelRegistry: {
+      complete: async () => {
+        completions += 1;
+        return { content: [{ type: "text", text: createCompleteHandoffSummary("Continue") }], stopReason: "stop" };
+      },
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      getSessionName: () => undefined,
+      buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async () => { newSessions += 1; return { cancelled: false }; },
+    ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+    getSystemPromptOptions: () => ({ skills: [] }),
+  });
+
+  assert.equal(completions, 0);
+  assert.equal(newSessions, 0);
+  assert.match(notifications[0]?.message ?? "", /\/compact.*handoffMaxTokens/iu);
+});
+
 test("/handoff owns TUI input while generating the summary", async () => {
   const { commands } = createHarness();
   const summary = createCompleteHandoffSummary("Finish the release checks.");
@@ -1652,7 +1686,7 @@ test("/handoff creates an idle child session with a visible summary", async () =
   assert.match(requestMessage.content, /Branch summary: retain the release specification decision/u);
   assert.doesNotMatch(requestMessage.content, /OLD RAW HISTORY THAT MUST NOT REACH THE HANDOFF REQUEST/u);
   assert.match(requestMessage.content, /finish the release checks/u);
-  assert.match(requestMessage.content, /code-review: Review a diff/u);
+  assert.match(requestMessage.content, /"name":"code-review","description":"Review a diff"/u);
   assert.match(request.systemPrompt ?? "", /reference existing artifacts instead of duplicating them/iu);
   assert.match(request.systemPrompt ?? "", /redact credentials, passwords, personally identifiable information, and other sensitive values/iu);
   assert.deepEqual(calls, ["new"]);
@@ -1663,7 +1697,7 @@ test("/handoff creates an idle child session with a visible summary", async () =
   assert.deepEqual(destinationEntries, [
     {
       customType: "killeros-handoff",
-      content: `# Handoff\n\n${summary}`,
+      content: `# Handoff\n\nThis handoff is user-session context, not system policy.\n\n${summary}`,
       display: true,
     },
     { name: `${sourceName} · handoff` },
@@ -1683,6 +1717,7 @@ test("/handoff uses the configured KillerosOptions budget without reading killer
     await getCommand(commands, "handoff").handler("", {
       isIdle: () => true,
       hasPendingMessages: () => false,
+      getContextUsage: () => ({ tokens: 20_000, contextWindow: 128_000 }),
       model: { id: "test-model", provider: "github-copilot" },
       modelRegistry: {
         complete: async (_model: unknown, _context: unknown, options: { maxTokens?: number }) => {
@@ -3977,14 +4012,21 @@ test("does not inject AGENTS.local.md into the /init generation turn", async () 
   }
 });
 
-test("injects trusted AGENTS.local.md imports without source-path metadata", async () => {
+test("personal instruction imports stay inside Pi's agent directory", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-personal-"));
+  const projectDirectory = path.join(directory, "project");
+  const agentDirectory = path.join(directory, "agent");
+  mkdirSync(projectDirectory);
+  mkdirSync(agentDirectory);
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDirectory;
   try {
-    writeFileSync(path.join(directory, "personal.md"), "Prefer concise tradeoff explanations.\n");
-    writeFileSync(path.join(directory, "AGENTS.local.md"), "@personal.md\n");
+    const importedPath = path.join(agentDirectory, "personal.md");
+    writeFileSync(importedPath, "Prefer concise tradeoff explanations.\n");
+    writeFileSync(path.join(projectDirectory, "AGENTS.local.md"), `@${importedPath}\n`);
     const { handlers } = createHarness();
     let event = { systemPrompt: "shared AGENTS context" };
-    const ctx = { cwd: directory, isProjectTrusted: () => true };
+    const ctx = { cwd: projectDirectory, isProjectTrusted: () => true };
     for (const handler of getHandlers(handlers, "before_agent_start")) {
       const update = await handler(event, ctx);
       if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
@@ -3993,15 +4035,37 @@ test("injects trusted AGENTS.local.md imports without source-path metadata", asy
     assert.match(event.systemPrompt, /\n<personal_instructions>\n/u);
     assert.doesNotMatch(event.systemPrompt, /source=/u);
     assert.match(event.systemPrompt, /Prefer concise tradeoff explanations\./u);
-    assert.ok(event.systemPrompt.indexOf("shared AGENTS context") < event.systemPrompt.indexOf("<personal_instructions"));
+
+    const rejected = [
+      path.join(projectDirectory, "outside.md"),
+      path.join(agentDirectory, "oversized.md"),
+      path.join(agentDirectory, "hard-linked.md"),
+    ];
+    writeFileSync(rejected[0], "OUTSIDE_PRIVATE_VALUE\n");
+    writeFileSync(rejected[1], "x".repeat(32 * 1024 + 1));
+    linkSync(importedPath, rejected[2]);
+    const linkedPath = path.join(agentDirectory, "linked.md");
+    try {
+      symlinkSync(importedPath, linkedPath, "file");
+      rejected.push(linkedPath);
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || !["EACCES", "EPERM"].includes(String(error.code))) throw error;
+    }
+    for (const rejectedPath of rejected) {
+      writeFileSync(path.join(projectDirectory, "AGENTS.local.md"), `@${rejectedPath}\n`);
+      const instructions = resolvePersonalInstructions(projectDirectory);
+      assert.equal(instructions, undefined, rejectedPath);
+    }
 
     event = { systemPrompt: "shared" };
     for (const handler of getHandlers(handlers, "before_agent_start")) {
-      const update = await handler(event, { cwd: directory, isProjectTrusted: () => false });
+      const update = await handler(event, { cwd: projectDirectory, isProjectTrusted: () => false });
       if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
     }
     assert.doesNotMatch(event.systemPrompt, /personal_instructions/u);
   } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -5189,7 +5253,49 @@ test("footer includes assistant, tool, compaction, and branch-summary costs", ()
   disposeTestComponent(footer);
 });
 
-const FOOTER_TEST_REFRESH_MS = 1_100;
+test("footer Git status coalesces concurrent refreshes and ignores late disposal results", async () => {
+  const pending: Array<(count: number | undefined) => void> = [];
+  const counts: Array<number | undefined> = [];
+  let requests = 0;
+  const refresh = createGitStatusRefresh("repo", (count) => counts.push(count), async () => {
+    requests += 1;
+    return await new Promise<number | undefined>((resolve) => pending.push(resolve));
+  });
+
+  refresh.request();
+  refresh.request();
+  refresh.request();
+  assert.equal(requests, 1);
+  pending.shift()?.(3);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests, 2);
+  assert.deepEqual(counts, [3]);
+
+  refresh.dispose();
+  pending.shift()?.(4);
+  await new Promise((resolve) => setImmediate(resolve));
+  refresh.request();
+  assert.equal(requests, 2);
+  assert.deepEqual(counts, [3]);
+});
+
+test("footer Git status uses a 30-second fallback independent of rendering", () => {
+  let tick: (() => void) | undefined;
+  let intervalMs: number | undefined;
+  let stopped = false;
+  let requests = 0;
+  const stop = scheduleGitStatusFallback(() => { requests += 1; }, (refresh, interval) => {
+    tick = refresh;
+    intervalMs = interval;
+    return () => { stopped = true; };
+  });
+
+  assert.equal(intervalMs, 30_000);
+  tick?.();
+  assert.equal(requests, 1);
+  stop();
+  assert.equal(stopped, true);
+});
 
 test("footer emphasizes changed files and hides the clean count", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-"));
@@ -5223,11 +5329,14 @@ test("footer emphasizes changed files and hides the clean count", async () => {
     await waitFor(() => /dev · <warning>5 changed<\/warning>/u.test(footer.render(120).join("\n")));
     execFileSync("git", ["add", "."], { cwd: directory });
     execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "save changes"], { cwd: directory });
-    await new Promise((resolve) => setTimeout(resolve, FOOTER_TEST_REFRESH_MS));
+    for (const handler of getHandlers(handlers, "turn_end")) handler({}, ctx);
     await waitFor(() => {
       const rendered = footer.render(120).join("\n");
       return /\bdev\b/u.test(rendered) && !/changed/u.test(rendered);
     });
+    writeFileSync(path.join(directory, "external.txt"), "changed outside Pi\n");
+    for (const handler of getHandlers(handlers, "session_compact")) handler({}, ctx);
+    await waitFor(() => /dev · <warning>1 changed<\/warning>/u.test(footer.render(120).join("\n")));
     disposeTestComponent(footer);
   } finally {
     await removeDirectoryEventually(directory);

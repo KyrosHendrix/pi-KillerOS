@@ -48,6 +48,8 @@ assert.ok(isTypeScriptConfig(tsconfigValue));
 const packageJson = packageValue;
 const tsconfig = tsconfigValue;
 const main = readFileSync(new URL("../Killeros.ts", import.meta.url), "utf8");
+const goals = readFileSync(new URL("../killeros/goals.ts", import.meta.url), "utf8");
+const question = readFileSync(new URL("../killeros/question.ts", import.meta.url), "utf8");
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
@@ -115,12 +117,19 @@ test("skill-specific workflow gating is no longer part of KillerOS", () => {
 
 test("peer ranges enforce the tested Pi floor", () => {
   assert.deepEqual(packageJson.peerDependencies, {
-    "@earendil-works/pi-ai": ">=0.84.3",
-    "@earendil-works/pi-coding-agent": ">=0.84.3",
-    "@earendil-works/pi-tui": ">=0.84.3",
+    "@earendil-works/pi-ai": ">=0.84.3 <1",
+    "@earendil-works/pi-coding-agent": ">=0.84.3 <1",
+    "@earendil-works/pi-tui": ">=0.84.3 <1",
     typebox: ">=1.1.38 <2",
   });
-  assert.match(readme, /Pi\s+`?0\.84\.3`?(?:\+| or later)/u);
+  assert.match(readme, /Pi\s+`?0\.84\.3`? or later within the 0\.x release line/u);
+});
+
+test("goal state and question UI stay separate from host wiring", () => {
+  assert.match(goals, /from "\.\/goal-state\.ts"/u);
+  assert.doesNotMatch(goals, /function parseGoalState|readFileSync|readSync|openSync/u);
+  assert.match(question, /from "\.\/question-ui\.ts"/u);
+  assert.doesNotMatch(question, /\bEditor\b|ctx\.ui\.custom|handleInput/u);
 });
 
 test("machine identifiers use locale-independent casing", () => {
@@ -144,10 +153,17 @@ test("public compaction documentation states the configurable default", () => {
   assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
 });
 
+test("CI blocks moderate dependency advisories without running lifecycle scripts", () => {
+  assert.match(ci, /npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund/u);
+  assert.match(ci, /fail-on-severity: moderate/u);
+  assert.match(ci, /npm ci --ignore-scripts/u);
+  assert.doesNotMatch(ci, /uses: [^\s]+@(?![a-f0-9]{40}(?:\s|$))/u);
+});
+
 test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.match(ci, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- dev/u);
   assert.match(ci, /Pi latest compatibility/u);
-  assert.match(ci, /npm view @earendil-works\/pi-coding-agent version/u);
+  assert.match(ci, /npm view "@earendil-works\/pi-coding-agent@>=0\.84\.3 <1" version/u);
   assert.match(ci, /dependencies\.@earendil-works\/pi-ai/u);
   assert.match(ci, /dependencies\.@earendil-works\/pi-tui/u);
   assert.match(ci, /@earendil-works\/pi-ai@\$PI_AI_RANGE/u);
@@ -157,7 +173,7 @@ test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "0.84.3");
   assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.84.3");
   assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "0.84.3");
-  assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.84.3");
+  assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.84.3 <1");
 });
 
 test("GitHub releases require green current main and consistent package provenance", () => {

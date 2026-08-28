@@ -19,7 +19,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## Requirements
 
 - Node.js 22.19.0+
-- Pi 0.84.3+
+- Pi 0.84.3 or later within the 0.x release line
 - An interactive TUI session for the custom header, editor, footer, `question`, and `/init`
 
 ## Install
@@ -34,7 +34,7 @@ Or from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin a release by appending its tag, for example `@v2.0.20`. Add `-l` to install only for the current project. Restart Pi after installing.
+Pin a release by appending its tag, for example `@v2.0.21`. Add `-l` to install only for the current project. Restart Pi after installing.
 
 ## Commands
 

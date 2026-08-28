@@ -4,8 +4,12 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.21] - 2026-08-29
+
 ### Changed
 
+- Bounded goal verification and Pi compatibility, reduced Git status polling, reserved handoff context, and separated goal state and question UI logic.
+- Blocked moderate dependency advisories in CI and updated TypeBox within the supported 1.x line.
 - Preserved seconds in footer and goal elapsed times after one minute.
 - Added a muted top border to the prompt editor.
 - Colored the footer workspace path `#F0F89A`.
@@ -14,6 +18,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Kept likely secrets out of `/init`, restricted personal-instruction imports to Pi's agent directory, and replaced injectable handoff framing with validated JSON.
 - Hardened releases against stale CI runs, mismatched existing npm artifacts, and tag conflicts discovered after publication.
 
 ## [2.0.20] - 2026-08-25

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Killeros from "../Killeros.ts";
+import { captureGoalFileBaseline } from "../killeros/goal-state.ts";
 import { extensionApiTestAdapter } from "./PiTestAdapters.ts";
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
@@ -194,6 +196,36 @@ test("pre-existing file goals compare content instead of file metadata", async (
   const result = await complete(changedHarness, changedContext);
   assert.equal(result.details.status, "complete");
   assert.equal(result.details.verification, "file");
+});
+
+test("file goals use metadata instead of hashing files larger than 64 MiB", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-large-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const requested = path.join(directory, "large.bin");
+  writeFileSync(requested, "x");
+  truncateSync(requested, 64 * 1024 * 1024 + 1);
+
+  const active = await startGoal(createHarness(), createContext(), `Create the file at \`${requested}\``);
+  const verification = active.verification;
+  assert.ok(isUnknownRecord(verification) && isUnknownRecord(verification.baseline));
+  assert.equal(verification.baseline.size, 64 * 1024 * 1024 + 1);
+  assert.equal(verification.baseline.contentHash, undefined);
+});
+
+test("baseline capture rejects a file swapped between inspection and opening", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-swap-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const requested = path.join(directory, "requested.md");
+  const replacement = path.join(directory, "replacement.md");
+  const original = path.join(directory, "original.md");
+  writeFileSync(requested, "original");
+  writeFileSync(replacement, "replacement");
+
+  await assert.rejects(captureGoalFileBaseline(requested, async (filePath) => {
+    renameSync(requested, original);
+    renameSync(replacement, requested);
+    return open(filePath, "r");
+  }), /changed while it was being inspected/u);
 });
 
 test("file goals fail closed when their current content baseline is unavailable", async (t) => {

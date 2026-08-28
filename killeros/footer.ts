@@ -3,12 +3,12 @@ import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor }
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, formatTokens, padRight } from "./display.ts";
-import { goalElapsedMilliseconds } from "./goals.ts";
+import { goalElapsedMilliseconds } from "./goal-state.ts";
 import type { GoalRuntime, GoalState } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
 
-const FOOTER_REFRESH_INTERVAL_MS = 1_000;
+const GIT_STATUS_REFRESH_INTERVAL_MS = 30_000;
 const CODEX_PROVIDER = "openai-codex";
 const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
@@ -41,6 +41,57 @@ function resolveUncommittedFileCount(cwd: string): Promise<number | undefined> {
       },
     );
   });
+}
+
+/** Coalesces Git status requests to one active scan and one queued follow-up. */
+export function createGitStatusRefresh(
+  cwd: string,
+  onCount: (count: number | undefined) => void,
+  resolveCount: (cwd: string) => Promise<number | undefined> = resolveUncommittedFileCount,
+): { request: () => void; dispose: () => void } {
+  let disposed = false;
+  let pending = false;
+  let queued = false;
+  const request = (): void => {
+    if (disposed) return;
+    if (pending) {
+      queued = true;
+      return;
+    }
+    pending = true;
+    void resolveCount(cwd).then((count) => {
+      if (!disposed) onCount(count);
+    }).finally(() => {
+      pending = false;
+      if (!disposed && queued) {
+        queued = false;
+        request();
+      }
+    });
+  };
+  return {
+    request,
+    dispose() {
+      disposed = true;
+      queued = false;
+    },
+  };
+}
+
+type ScheduleFallback = (refresh: () => void, intervalMs: number) => () => void;
+
+const scheduleFallback: ScheduleFallback = (refresh, intervalMs) => {
+  const timer = setInterval(refresh, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+};
+
+/** Schedules the fallback Git scan independently from footer rendering. */
+export function scheduleGitStatusFallback(
+  refresh: () => void,
+  schedule: ScheduleFallback = scheduleFallback,
+): () => void {
+  return schedule(refresh, GIT_STATUS_REFRESH_INTERVAL_MS);
 }
 
 export function formatCost(usd: number): string {
@@ -178,7 +229,7 @@ function renderFooter(rows: string[], width: number, theme: Theme): string[] {
 function formatGoalFooter(state: GoalState | undefined, theme: Theme): string {
   if (!state) return "";
   if (state.status === "active") {
-    return theme.fg("warning", `/goal is active (${formatTime(goalElapsedMilliseconds(state))})`);
+    return theme.fg("warning", `/goal is active (${formatTime(goalElapsedMilliseconds(state, Date.now()))})`);
   }
   if (state.status === "paused") return theme.fg("warning", "/goal is paused");
   if (state.status === "blocked") return theme.fg("error", "/goal is blocked");
@@ -192,6 +243,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
   let cachedSessionCost = 0;
   let sessionCostDirty = true;
   let unsubscribeCodexFast: (() => void) | undefined;
+  let requestGitStatusRefresh: (() => void) | undefined;
   const resetSessionCost = (): void => {
     cachedSessionCost = 0;
     sessionCostDirty = true;
@@ -221,34 +273,25 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
 
     ctx.ui.setFooter((tui, theme, footerData) => {
       activeTui = tui;
-      let disposed = false;
-      let gitStatusPending = false;
       let uncommittedFileCount: number | undefined;
-      const refreshGitStatus = (): void => {
-        if (gitStatusPending) return;
-        gitStatusPending = true;
-        void resolveUncommittedFileCount(ctx.cwd).then((count) => {
-          if (!disposed && count !== uncommittedFileCount) {
-            uncommittedFileCount = count;
-            tui.requestRender();
-          }
-        }).finally(() => { gitStatusPending = false; });
-      };
-      const unsubscribe = footerData.onBranchChange(() => {
-        refreshGitStatus();
+      const gitStatus = createGitStatusRefresh(ctx.cwd, (count) => {
+        if (count === uncommittedFileCount) return;
+        uncommittedFileCount = count;
         tui.requestRender();
       });
-      refreshGitStatus();
-      const refreshTimer = setInterval(() => {
-        refreshGitStatus();
+      requestGitStatusRefresh = gitStatus.request;
+      const unsubscribe = footerData.onBranchChange(() => {
+        gitStatus.request();
         tui.requestRender();
-      }, FOOTER_REFRESH_INTERVAL_MS);
-      refreshTimer.unref?.();
+      });
+      gitStatus.request();
+      const stopFallback = scheduleGitStatusFallback(gitStatus.request);
       return {
         dispose() {
-          disposed = true;
           unsubscribe();
-          clearInterval(refreshTimer);
+          stopFallback();
+          gitStatus.dispose();
+          if (requestGitStatusRefresh === gitStatus.request) requestGitStatusRefresh = undefined;
           if (activeTui === tui) activeTui = undefined;
         },
         invalidate() {},
@@ -316,8 +359,12 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
     thinkingLevel = event.level;
     activeTui?.requestRender();
   });
-  pi.on("turn_end", invalidateSessionCost);
-  pi.on("session_compact", invalidateSessionCost);
+  const refreshAfterActivity = (): void => {
+    invalidateSessionCost();
+    requestGitStatusRefresh?.();
+  };
+  pi.on("turn_end", refreshAfterActivity);
+  pi.on("session_compact", refreshAfterActivity);
   pi.on("session_tree", () => {
     resetSessionCost();
     activeTui?.requestRender();
@@ -327,6 +374,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
     unsubscribeCodexFast = undefined;
     resetSessionCost();
     activeTui = undefined;
+    requestGitStatusRefresh = undefined;
     goalRuntime.requestRender = undefined;
   });
 }

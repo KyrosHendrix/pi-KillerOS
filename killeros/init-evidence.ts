@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { containsLikelySecret } from "./secret-detector.ts";
 
 export const INIT_READ_TOOL = "killeros_init_read";
 export const INIT_LIST_TOOL = "killeros_init_list";
@@ -19,7 +20,7 @@ const EXCLUDED_GUIDANCE = new Set([
   ".cursorrules", "agents.md", "agents.local.md", "claude.md", "claude.local.md", "copilot-instructions.md", "gemini.md", "memory.md", "skill.md",
 ]);
 const ROOT_EVIDENCE = [
-  "README.md", "README.rst", "README.txt", "CONTRIBUTING.md", "package.json", "pyproject.toml", "requirements.txt", "Cargo.toml", "go.mod", "Makefile", "Dockerfile", "compose.yaml", "compose.yml", "config.yaml", "config.yml", "tsconfig.json", "vite.config.ts", "vite.config.js", "eslint.config.js", "eslint.config.mjs",
+  "README.md", "README.rst", "README.txt", "CONTRIBUTING.md", "package.json", "pyproject.toml", "requirements.txt", "Cargo.toml", "go.mod", "Makefile", "Dockerfile", "compose.yaml", "compose.yml", "tsconfig.json", "vite.config.ts", "vite.config.js", "eslint.config.js", "eslint.config.mjs",
 ] as const;
 const NESTED_EVIDENCE = new Set(["package.json", "pyproject.toml", "requirements.txt", "Cargo.toml", "go.mod"]);
 
@@ -43,6 +44,10 @@ function sensitiveEvidencePath(relativePath: string): boolean {
   const name = path.posix.basename(normalized);
   return /^\.env(?:\.|$)/u.test(name)
     || [".npmrc", ".pypirc", ".netrc", "id_rsa", "id_ed25519", "credentials.json"].includes(name)
+    || /(?:^|\/)\.aws\/credentials$/u.test(normalized)
+    || /(?:^|\/)\.docker\/config\.json$/u.test(normalized)
+    || /(?:^|\/)\.kube\/config$/u.test(normalized)
+    || /(?:credential|secret|token)/u.test(name)
     || /^service-account.*\.json$/u.test(name)
     || /\.(?:pem|key|p12|pfx|jks|keystore)$/u.test(name);
 }
@@ -200,6 +205,13 @@ async function validateAndRead(projectRoot: string, absolutePath: string, limit:
   }
 }
 
+/** Reads evidence only when its bounded content does not resemble a credential. */
+async function readEvidenceFile(projectRoot: string, absolutePath: string, limit: number): Promise<{ content: string; truncated: boolean }> {
+  const result = await validateAndRead(projectRoot, absolutePath, limit);
+  if (containsLikelySecret(result.content)) throw new Error("file is not available to /init");
+  return result;
+}
+
 function normalizeRequestedPath(requestedPath: string): string {
   if (!requestedPath || requestedPath.trim() !== requestedPath || requestedPath.startsWith("~")
     || /^file:/iu.test(requestedPath) || path.isAbsolute(requestedPath)) {
@@ -237,7 +249,7 @@ export async function buildInitEvidence(projectRoot: string): Promise<InitEviden
     const relativePath = canonicalPaths.get(evidenceKey(requested));
     if (!relativePath || Buffer.byteLength(snapshot, "utf8") >= SNAPSHOT_LIMIT) continue;
     try {
-      const result = await validateAndRead(projectRoot, path.join(projectRoot, relativePath), AUTOMATIC_FILE_LIMIT);
+      const result = await readEvidenceFile(projectRoot, path.join(projectRoot, relativePath), AUTOMATIC_FILE_LIMIT);
       const suffix = result.truncated ? "\n[truncated by /init]" : "";
       snapshot = appendWithinLimit(snapshot, `\n\n## ${relativePath}\n${result.content}${suffix}`, SNAPSHOT_LIMIT);
     } catch {
@@ -251,7 +263,7 @@ export async function readInitEvidence(index: InitEvidenceIndex, requestedPath: 
   const normalized = normalizeRequestedPath(requestedPath);
   const relativePath = index.canonicalPaths.get(evidenceKey(normalized));
   if (!relativePath) throw new Error(`${requestedPath} is not available to /init`);
-  const result = await validateAndRead(index.projectRoot, path.join(index.projectRoot, relativePath), READ_LIMIT);
+  const result = await readEvidenceFile(index.projectRoot, path.join(index.projectRoot, relativePath), READ_LIMIT);
   return result.truncated ? `${result.content}\n[truncated by /init at ${READ_LIMIT} bytes]` : result.content;
 }
 

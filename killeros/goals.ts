@@ -1,23 +1,20 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { createHash } from "node:crypto";
-import { closeSync, lstatSync, openSync, readSync } from "node:fs";
-import path from "node:path";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { BoundedText } from "./bounded-text.ts";
 import { formatTime, formatTokens } from "./display.ts";
-import { hasErrorCode, reportError } from "./errors.ts";
+import { beginGoalTurnState, checkpointActiveGoalState, checkpointPausedGoalState, createNewGoalState, editGoalState, goalElapsedMilliseconds, GOAL_VERSION, inferGoalVerification, parseGoalState, pauseGoalState, recordGoalBlockerAudit, transitionGoalState, validateGoalObjective, verifyGoalDeliverable, type GoalTransitionOptions } from "./goal-state.ts";
+import { reportError } from "./errors.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
-import type { GoalBlockerAudit, GoalFileBaseline, GoalFileVerification, GoalRuntime, GoalState, GoalStateCommon, GoalStatus, InitRuntime } from "./runtime.ts";
+import type { GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
+
+export { goalElapsedMilliseconds };
 
 const GOAL_ENTRY_TYPE = "killeros-goal";
 const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
 const GOAL_UPDATE_TOOL = "killeros_goal_update";
-const GOAL_OBJECTIVE_LIMIT = 4_000;
-const GOAL_VERSION = 1;
-const FILE_HASH_CHUNK_SIZE = 64 * 1024;
 
 type GoalEntryEvent = "set" | "replace" | "edit" | "turn" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
 interface GoalEntryData {
@@ -26,10 +23,8 @@ interface GoalEntryData {
   state: GoalState | null;
 }
 
-interface GoalTransitionOptions {
-  resetBlockedAudit?: boolean;
-  resumeAfterManualCompaction?: true;
-  blockerAudit?: GoalBlockerAudit;
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 interface RestoredGoalState {
@@ -59,218 +54,6 @@ interface GoalUpdateDetails {
   verification?: "file" | "model-reported";
   blockerKey?: string;
   streak?: number;
-}
-
-function isGoalStatus(value: unknown): value is GoalStatus {
-  return value === "active" || value === "paused" || value === "blocked" || value === "complete";
-}
-
-function finiteNonNegative(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function isUnknownRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isGoalFileBaseline(value: unknown): value is GoalFileBaseline {
-  if (!isUnknownRecord(value)) return false;
-  if (value.exists === false) {
-    return value.size === undefined && value.mtimeMs === undefined && value.contentHash === undefined;
-  }
-  return value.exists === true
-    && finiteNonNegative(value.size)
-    && finiteNonNegative(value.mtimeMs)
-    && (value.contentHash === undefined
-      || value.contentHash === null
-      || typeof value.contentHash === "string" && /^[a-f0-9]{64}$/u.test(value.contentHash));
-}
-
-function isGoalFileVerification(value: unknown): value is GoalFileVerification {
-  return isUnknownRecord(value)
-    && value.kind === "file"
-    && typeof value.path === "string"
-    && value.path === value.path.trim()
-    && isAbsoluteFilePath(value.path)
-    && isGoalFileBaseline(value.baseline);
-}
-
-function isAbsoluteFilePath(value: string): boolean {
-  if (!value || /^(?:https?|file):\/\//iu.test(value) || /[\\\/]$/u.test(value)) return false;
-  return path.isAbsolute(value) || path.win32.isAbsolute(value);
-}
-
-/** Hash a deliverable in bounded memory for baseline and completion checks. */
-function hashFileContent(filePath: string): string {
-  const descriptor = openSync(filePath, "r");
-  try {
-    const hash = createHash("sha256");
-    const buffer = Buffer.allocUnsafe(FILE_HASH_CHUNK_SIZE);
-    let position = 0;
-    while (true) {
-      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, position);
-      if (bytesRead === 0) return hash.digest("hex");
-      hash.update(buffer.subarray(0, bytesRead));
-      position += bytesRead;
-    }
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
-function captureGoalFileBaseline(filePath: string): GoalFileBaseline {
-  let artifact: ReturnType<typeof lstatSync>;
-  try {
-    artifact = lstatSync(filePath);
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) return { exists: false };
-    throw error;
-  }
-  const baseline = { exists: true as const, size: artifact.size, mtimeMs: artifact.mtimeMs };
-  if (!artifact.isFile()) return baseline;
-  try {
-    return { ...baseline, contentHash: hashFileContent(filePath) };
-  } catch {
-    return { ...baseline, contentHash: null };
-  }
-}
-
-/** Captures one explicit absolute output path so goal completion can verify its creation or modification. */
-function inferGoalVerification(objective: string): GoalFileVerification | undefined {
-  const destination = /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b\s+(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
-  const paths = [...objective.matchAll(destination)]
-    .map((match) => (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim())
-    .filter(isAbsoluteFilePath);
-  const unique = [...new Set(paths)];
-  const filePath = unique.length === 1 ? unique[0] : undefined;
-  return filePath ? { kind: "file", path: filePath, baseline: captureGoalFileBaseline(filePath) } : undefined;
-}
-
-function verifyGoalDeliverable(verification: GoalFileVerification): void {
-  let artifact: ReturnType<typeof lstatSync>;
-  try {
-    artifact = lstatSync(verification.path);
-  } catch {
-    throw new Error(`Goal deliverable is not a regular file at the required path: ${verification.path}`);
-  }
-  if (!artifact.isFile()) {
-    throw new Error(`Goal deliverable is not a regular file at the required path: ${verification.path}`);
-  }
-  if (!verification.baseline.exists) return;
-  if (verification.baseline.contentHash === null) {
-    throw new Error(`Goal deliverable content cannot be verified: ${verification.path}`);
-  }
-  if (verification.baseline.contentHash !== undefined) {
-    let contentHash: string;
-    try {
-      contentHash = hashFileContent(verification.path);
-    } catch {
-      throw new Error(`Goal deliverable content cannot be verified: ${verification.path}`);
-    }
-    if (contentHash === verification.baseline.contentHash) {
-      throw new Error(`Goal deliverable has not changed since the goal started: ${verification.path}`);
-    }
-  }
-  if (verification.baseline.contentHash === undefined
-    && artifact.size === verification.baseline.size
-    && artifact.mtimeMs === verification.baseline.mtimeMs) {
-    throw new Error(`Goal deliverable has not changed since the goal started: ${verification.path}`);
-  }
-}
-
-function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): value is GoalBlockerAudit {
-  if (!isUnknownRecord(value)
-    || typeof value.key !== "string"
-    || !/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.key)
-    || typeof value.streak !== "number" || !Number.isInteger(value.streak) || value.streak < 1 || value.streak > 3
-    || typeof value.lastTurn !== "number" || !Number.isInteger(value.lastTurn) || value.lastTurn < 1 || value.lastTurn > turns) {
-    return false;
-  }
-  if (status === "complete") return false;
-  return status === "blocked" ? value.streak === 3 : value.streak < 3;
-}
-
-function parseGoalState(value: unknown): GoalState | undefined {
-  if (!isUnknownRecord(value)) return undefined;
-  const {
-    version,
-    revision,
-    objective,
-    status,
-    createdAt,
-    updatedAt,
-    activeMilliseconds,
-    activeStartedAt,
-    turns,
-    blockedAuditStartTurn,
-    baselineTokens,
-    result,
-    resumeAfterManualCompaction,
-    blockerAudit,
-    verification,
-  } = value;
-  if (version !== GOAL_VERSION
-    || typeof revision !== "number" || !Number.isInteger(revision) || revision < 1
-    || typeof objective !== "string" || !objective.trim() || [...objective].length > GOAL_OBJECTIVE_LIMIT
-    || !isGoalStatus(status)
-    || !finiteNonNegative(createdAt)
-    || !finiteNonNegative(updatedAt)
-    || !finiteNonNegative(activeMilliseconds)
-    || typeof turns !== "number" || !Number.isInteger(turns) || turns < 0
-    || blockedAuditStartTurn !== undefined
-      && (typeof blockedAuditStartTurn !== "number" || !Number.isInteger(blockedAuditStartTurn)
-        || blockedAuditStartTurn < 0 || blockedAuditStartTurn > turns)
-    || !finiteNonNegative(baselineTokens)
-    || result !== undefined && typeof result !== "string"
-    || verification !== undefined && !isGoalFileVerification(verification)
-    || resumeAfterManualCompaction !== undefined && resumeAfterManualCompaction !== true
-    || blockerAudit !== undefined && !isGoalBlockerAudit(blockerAudit, turns, status)) {
-    return undefined;
-  }
-
-  const common: GoalStateCommon = {
-    version: GOAL_VERSION,
-    revision,
-    objective: objective.trim(),
-    createdAt,
-    updatedAt,
-    activeMilliseconds,
-    turns,
-    blockedAuditStartTurn: blockedAuditStartTurn ?? 0,
-    baselineTokens,
-    ...(verification === undefined ? {} : { verification }),
-  };
-  switch (status) {
-    case "active":
-      if (!finiteNonNegative(activeStartedAt) || resumeAfterManualCompaction !== undefined) return undefined;
-      return {
-        ...common,
-        status,
-        activeStartedAt,
-        ...(result === undefined ? {} : { result }),
-        ...(blockerAudit === undefined ? {} : { blockerAudit }),
-      };
-    case "paused":
-      if (activeStartedAt !== undefined) return undefined;
-      return {
-        ...common,
-        status,
-        ...(result === undefined ? {} : { result }),
-        ...(blockerAudit === undefined ? {} : { blockerAudit }),
-        ...(resumeAfterManualCompaction === undefined ? {} : { resumeAfterManualCompaction }),
-      };
-    case "blocked":
-      if (activeStartedAt !== undefined || resumeAfterManualCompaction !== undefined || typeof result !== "string") return undefined;
-      return { ...common, status, result, ...(blockerAudit === undefined ? {} : { blockerAudit }) };
-    case "complete":
-      if (activeStartedAt !== undefined || resumeAfterManualCompaction !== undefined
-        || typeof result !== "string" || blockerAudit !== undefined) return undefined;
-      return { ...common, status, result };
-    default: {
-      const exhaustive: never = status;
-      return exhaustive;
-    }
-  }
 }
 
 function goalBranchEntries(ctx: ExtensionContext): ReturnType<ExtensionContext["sessionManager"]["getEntries"]> {
@@ -309,35 +92,6 @@ function restoreGoalState(ctx: ExtensionContext): RestoredGoalState {
     return { state: restored };
   }
   return { state: undefined };
-}
-
-export function goalElapsedMilliseconds(state: GoalState, now = Date.now()): number {
-  const activeInterval = state.status === "active"
-    ? Math.max(0, now - state.activeStartedAt)
-    : 0;
-  return state.activeMilliseconds + activeInterval;
-}
-
-function commonGoalState(state: GoalState): GoalStateCommon {
-  return {
-    version: state.version,
-    revision: state.revision,
-    objective: state.objective,
-    createdAt: state.createdAt,
-    updatedAt: state.updatedAt,
-    activeMilliseconds: state.activeMilliseconds,
-    turns: state.turns,
-    blockedAuditStartTurn: state.blockedAuditStartTurn,
-    baselineTokens: state.baselineTokens,
-    ...(state.verification === undefined ? {} : { verification: state.verification }),
-  };
-}
-
-function stopGoalClock(state: GoalState, now: number): GoalStateCommon {
-  const common = commonGoalState(state);
-  return state.status === "active"
-    ? { ...common, activeMilliseconds: common.activeMilliseconds + Math.max(0, now - state.activeStartedAt) }
-    : common;
 }
 
 function sumGoalTokens(ctx: ExtensionContext): number {
@@ -390,42 +144,7 @@ function transitionGoal(
 ): GoalState {
   const current = runtime.state;
   if (!current) throw new Error("No goal is set");
-  const now = Date.now();
-  const stopped = stopGoalClock(current, now);
-  const common: GoalStateCommon = {
-    ...stopped,
-    revision: stopped.revision + 1,
-    updatedAt: now,
-    blockedAuditStartTurn: options.resetBlockedAudit ? stopped.turns : stopped.blockedAuditStartTurn,
-  };
-  const blockerAudit = options.resetBlockedAudit ? undefined : options.blockerAudit ?? current.blockerAudit;
-  let next: GoalState;
-  switch (status) {
-    case "active":
-      next = { ...common, status, activeStartedAt: now, ...(blockerAudit === undefined ? {} : { blockerAudit }) };
-      break;
-    case "paused":
-      next = {
-        ...common,
-        status,
-        ...(result === undefined ? {} : { result }),
-        ...(blockerAudit === undefined ? {} : { blockerAudit }),
-        ...(options.resumeAfterManualCompaction === undefined ? {} : { resumeAfterManualCompaction: true }),
-      };
-      break;
-    case "blocked":
-      if (result === undefined) throw new Error("A blocked goal requires a result");
-      next = { ...common, status, result, ...(blockerAudit === undefined ? {} : { blockerAudit }) };
-      break;
-    case "complete":
-      if (result === undefined) throw new Error("A complete goal requires a result");
-      next = { ...common, status, result };
-      break;
-    default: {
-      const exhaustive: never = status;
-      return exhaustive;
-    }
-  }
+  const next = transitionGoalState(current, status, result, options, Date.now());
   persistGoalState(pi, runtime, event, next);
   if (status !== "active") {
     runtime.continuationScheduled = false;
@@ -472,7 +191,7 @@ function goalPanelActions(status: GoalStatus): Array<{ label: string; control: "
 function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
   const usedTokens = Math.max(0, sumGoalTokens(ctx) - state.baselineTokens);
   const lines = [
-    `Goal ${goalStatusLabel(state.status).toLowerCase()} · ${state.turns} turn${state.turns === 1 ? "" : "s"} · ${formatTime(goalElapsedMilliseconds(state))} · ${formatTokens(usedTokens)} tokens`,
+    `Goal ${goalStatusLabel(state.status).toLowerCase()} · ${state.turns} turn${state.turns === 1 ? "" : "s"} · ${formatTime(goalElapsedMilliseconds(state, Date.now()))} · ${formatTokens(usedTokens)} tokens`,
     state.objective,
   ];
   if (state.result) lines.push(state.result);
@@ -493,12 +212,7 @@ export function pauseGoalAfterFailure(
     transitionGoal(pi, runtime, "error", "paused", safeReason);
   } catch {
     const current = runtime.state;
-    runtime.state = current ? {
-      ...stopGoalClock(current, Date.now()),
-      status: "paused",
-      result: safeReason,
-      ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
-    } : undefined;
+    runtime.state = current ? pauseGoalState(current, safeReason, Date.now()) : undefined;
     syncGoalUpdateTool(pi, runtime);
     runtime.persistenceRetryNeeded = true;
     runtime.continuationScheduled = false;
@@ -522,13 +236,7 @@ function pauseGoalForPossibleManualCompaction(
     });
   } catch {
     const current = runtime.state;
-    runtime.state = current ? {
-      ...stopGoalClock(current, Date.now()),
-      status: "paused",
-      result: safeReason,
-      resumeAfterManualCompaction: true,
-      ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
-    } : undefined;
+    runtime.state = current ? pauseGoalState(current, safeReason, Date.now(), true) : undefined;
     syncGoalUpdateTool(pi, runtime);
     runtime.persistenceRetryNeeded = true;
     runtime.continuationScheduled = false;
@@ -570,13 +278,7 @@ function beginGoalTurn(
   ctx: ExtensionContext,
   current: Extract<GoalState, { status: "active" }>,
 ): GoalState | undefined {
-  const now = Date.now();
-  const next: GoalState = {
-    ...current,
-    revision: current.revision + 1,
-    turns: current.turns + 1,
-    updatedAt: now,
-  };
+  const next = beginGoalTurnState(current, Date.now());
   try {
     persistGoalState(pi, runtime, "turn", next);
   } catch (error) {
@@ -760,12 +462,6 @@ function isSavedSession(ctx: ExtensionContext): boolean {
   }
 }
 
-function validateGoalObjective(input: string): string | undefined {
-  const objective = input.trim();
-  if (!objective) return undefined;
-  return [...objective].length <= GOAL_OBJECTIVE_LIMIT ? objective : undefined;
-}
-
 export function registerGoal(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -801,7 +497,7 @@ export function registerGoal(
       const evidence = params.evidence.trim();
       if (!evidence) throw new Error("Goal evidence must not be empty");
       if (params.status === "complete") {
-        if (state.verification) verifyGoalDeliverable(state.verification);
+        if (state.verification) await verifyGoalDeliverable(state.verification);
         const verification = state.verification ? "file" : "model-reported";
         transitionGoal(pi, runtime, "complete", "complete", evidence, { resetBlockedAudit: true });
         return {
@@ -822,12 +518,7 @@ export function registerGoal(
       const streak = sameTurn ? previous.streak : consecutive ? previous.streak + 1 : 1;
       const blockerAudit = { key: blockerKey, streak, lastTurn: state.turns };
       if (streak < 3) {
-        const next: GoalState = {
-          ...state,
-          revision: state.revision + 1,
-          updatedAt: Date.now(),
-          blockerAudit,
-        };
+        const next = recordGoalBlockerAudit(state, blockerAudit, Date.now());
         persistGoalState(pi, runtime, "blocker-audit", next);
         return {
           content: [{ type: "text", text: `Blocker audit ${streak}/3 recorded; the goal remains active: ${evidence}` }],
@@ -880,16 +571,7 @@ export function registerGoal(
 
   pi.on("session_shutdown", (_event, ctx) => {
     if (runtime.state?.status === "active") {
-      const now = Date.now();
-      const checkpoint: GoalState = {
-        ...stopGoalClock(runtime.state, now),
-        revision: runtime.state.revision + 1,
-        status: "active",
-        updatedAt: now,
-        activeStartedAt: now,
-        ...(runtime.state.result === undefined ? {} : { result: runtime.state.result }),
-        ...(runtime.state.blockerAudit === undefined ? {} : { blockerAudit: runtime.state.blockerAudit }),
-      };
+      const checkpoint = checkpointActiveGoalState(runtime.state, Date.now());
       try {
         persistGoalState(pi, runtime, "checkpoint", checkpoint);
       } catch (error) {
@@ -1008,13 +690,7 @@ export function registerGoal(
             ctx.ui.notify("Goal is already paused", "info");
             return;
           }
-          const now = Date.now();
-          const { resumeAfterManualCompaction: _resume, ...paused } = runtime.state;
-          const checkpoint: GoalState = {
-            ...paused,
-            revision: paused.revision + 1,
-            updatedAt: now,
-          };
+          const checkpoint = checkpointPausedGoalState(runtime.state, Date.now());
           try {
             persistGoalState(pi, runtime, "pause", checkpoint);
             ctx.ui.notify("Goal pause saved. Goal remains paused. Automatic compaction recovery is off.", "info");
@@ -1128,20 +804,8 @@ export function registerGoal(
           scheduleGoalContinuation(pi, runtime, initState, ctx);
           return;
         }
-        const now = Date.now();
-        const current = stopGoalClock(runtime.state, now);
-        const { verification: _previousVerification, ...currentWithoutVerification } = current;
-        const verification = inferGoalVerification(objective);
-        const next: GoalState = {
-          ...currentWithoutVerification,
-          revision: current.revision + 1,
-          objective,
-          status: "active",
-          updatedAt: now,
-          activeStartedAt: now,
-          blockedAuditStartTurn: current.turns,
-          ...(verification === undefined ? {} : { verification }),
-        };
+        const verification = await inferGoalVerification(objective);
+        const next = editGoalState(runtime.state, objective, verification, Date.now());
         try {
           persistGoalState(pi, runtime, "edit", next);
           runtime.continuationScheduled = false;
@@ -1197,22 +861,9 @@ export function registerGoal(
         scheduleGoalContinuation(pi, runtime, initState, ctx);
         return;
       }
-      const now = Date.now();
       try {
-        const state: GoalState = {
-          version: GOAL_VERSION,
-          revision: 1,
-          objective,
-          status: "active",
-          createdAt: now,
-          updatedAt: now,
-          activeMilliseconds: 0,
-          activeStartedAt: now,
-          turns: 0,
-          blockedAuditStartTurn: 0,
-          baselineTokens: sumGoalTokens(ctx),
-          verification: inferGoalVerification(objective),
-        };
+        const verification = await inferGoalVerification(objective);
+        const state = createNewGoalState(objective, sumGoalTokens(ctx), verification, Date.now());
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
         if (scheduleGoalContinuation(pi, runtime, initState, ctx)) {
           ctx.ui.notify("Goal active. KillerOS will continue until completion, a repeated blocker, or pause.", "info");
@@ -1355,12 +1006,7 @@ export function registerGoalSettlement(
       } catch (error) {
         const current = runtime.state;
         const reason = safeTerminalText(`automatic compaction pause could not be saved: ${error instanceof Error ? error.message : String(error)}`);
-        runtime.state = current ? {
-          ...stopGoalClock(current, Date.now()),
-          status: "paused",
-          result: reason,
-          ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
-        } : undefined;
+        runtime.state = current ? pauseGoalState(current, reason, Date.now()) : undefined;
         syncGoalUpdateTool(pi, runtime);
         runtime.persistenceRetryNeeded = true;
         runtime.continuationScheduled = false;

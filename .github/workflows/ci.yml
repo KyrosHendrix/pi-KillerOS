@@ -86,7 +86,7 @@ jobs:
 
       - name: Install latest matched Pi packages
         run: |
-          PI_VERSION=$(npm view @earendil-works/pi-coding-agent version)
+          PI_VERSION=$(npm view "@earendil-works/pi-coding-agent@>=0.84.3 <1" version --json | node -e 'const value=JSON.parse(require("node:fs").readFileSync(0)); console.log(Array.isArray(value) ? value.at(-1) : value)')
           PI_AI_RANGE=$(npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies.@earendil-works/pi-ai)
           PI_TUI_RANGE=$(npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies.@earendil-works/pi-tui)
           test -n "$PI_AI_RANGE" && test -n "$PI_TUI_RANGE"
@@ -149,7 +149,7 @@ jobs:
           node-version: '22.19.0'
 
       - name: Audit locked dependencies
-        run: npm audit --audit-level=high --package-lock-only --ignore-scripts --no-fund
+        run: npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund
 
   dependency-review:
     name: Dependency review
@@ -169,7 +169,7 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-scopes: runtime,development,unknown
-          fail-on-severity: high
+          fail-on-severity: moderate
 
   codeql:
     name: CodeQL
