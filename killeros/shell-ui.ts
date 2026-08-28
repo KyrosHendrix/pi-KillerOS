@@ -382,7 +382,7 @@ class PiCodeEditor extends CustomEditor {
     for (let index = bottomBorderIndex + 1; index < lines.length; index += 1) {
       rendered.push(`  ${padRight(lines[index] ?? "", innerWidth)}`);
     }
-    return ["", ...rendered.map((line) => truncateToWidth(line, width, ""))];
+    return [this.runtimeTheme.fg("borderMuted", "─".repeat(width)), ...rendered.map((line) => truncateToWidth(line, width, ""))];
   }
 }
 

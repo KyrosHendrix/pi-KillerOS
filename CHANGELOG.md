@@ -6,6 +6,9 @@ All notable changes to KillerOS are documented here.
 
 ### Changed
 
+- Preserved seconds in footer and goal elapsed times after one minute.
+- Added a muted top border to the prompt editor.
+- Colored the footer workspace path `#F0F89A`.
 - Added a live changed-file count beside the Git branch when the worktree is dirty.
 - Synced `dev` back to successful `main` releases after publishing.
 

@@ -10,6 +10,7 @@ import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
 
 const FOOTER_REFRESH_INTERVAL_MS = 1_000;
 const CODEX_PROVIDER = "openai-codex";
+const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
 function resolveUncommittedFileCount(cwd: string): Promise<number | undefined> {
   return new Promise((resolve) => {
@@ -174,23 +175,10 @@ function renderFooter(rows: string[], width: number, theme: Theme): string[] {
   return [theme.fg("borderMuted", "─".repeat(width)), ...rows];
 }
 
-function formatGoalElapsed(milliseconds: number): string {
-  const totalSeconds = Number.isFinite(milliseconds) ? Math.max(0, Math.floor(milliseconds / 1_000)) : 0;
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-
-  const seconds = totalSeconds % 60;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes}m ${seconds.toString().padStart(2, "0")}s`;
-
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${hours}h ${minutes.toString().padStart(2, "0")}m ${seconds.toString().padStart(2, "0")}s`;
-}
-
 function formatGoalFooter(state: GoalState | undefined, theme: Theme): string {
   if (!state) return "";
   if (state.status === "active") {
-    return theme.fg("warning", `/goal is active (${formatGoalElapsed(goalElapsedMilliseconds(state))})`);
+    return theme.fg("warning", `/goal is active (${formatTime(goalElapsedMilliseconds(state))})`);
   }
   if (state.status === "paused") return theme.fg("warning", "/goal is paused");
   if (state.status === "blocked") return theme.fg("error", "/goal is blocked");
@@ -280,8 +268,8 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
           const context = formatContextProgress(usage?.tokens ?? null, contextWindow, theme);
           const branch = footerData.getGitBranch();
           const signature = formatModel(model, theme, true, isCodexFastEnabled());
-          const fullDirectory = theme.fg("dim", cwd);
-          const focusedDirectory = theme.fg("dim", compactDirectory(cwd));
+          const fullDirectory = colorDirectory(cwd);
+          const focusedDirectory = colorDirectory(compactDirectory(cwd));
           const goal = formatGoalFooter(goalRuntime.state, theme);
           const primary = joinFooterParts([
             signature,

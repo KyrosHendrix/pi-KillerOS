@@ -28,9 +28,14 @@ export function formatTime(milliseconds: number): string {
   if (!Number.isFinite(milliseconds)) return "0s";
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
   if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
+
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m ${seconds.toString().padStart(2, "0")}s`;
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes.toString().padStart(2, "0")}m ${seconds.toString().padStart(2, "0")}s`;
 }
 
 export function formatTokens(value: number): string {

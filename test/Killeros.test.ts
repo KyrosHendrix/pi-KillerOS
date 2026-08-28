@@ -5048,9 +5048,28 @@ test("custom-answer history enforces Unicode character and byte limits", async (
   await afterNewSession.result;
 });
 
+test("time formatting preserves seconds across every unit boundary", () => {
+  const cases: ReadonlyArray<readonly [milliseconds: number, expected: string]> = [
+    [Number.NaN, "0s"],
+    [Number.POSITIVE_INFINITY, "0s"],
+    [Number.NEGATIVE_INFINITY, "0s"],
+    [-1, "0s"],
+    [0, "0s"],
+    [999, "0s"],
+    [1_000, "1s"],
+    [59_999, "59s"],
+    [60_000, "1m 00s"],
+    [65_000, "1m 05s"],
+    [3_599_999, "59m 59s"],
+    [3_600_000, "1h 00m 00s"],
+    [3_725_000, "1h 02m 05s"],
+    [90_061_000, "25h 01m 01s"],
+  ];
+  for (const [milliseconds, expected] of cases) assert.equal(formatTime(milliseconds), expected);
+});
+
 test("display formatters contain non-finite telemetry and honor Windows path casing", () => {
   for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-    assert.equal(formatTime(value), "0s");
     assert.equal(formatTokens(value), "0");
   }
   assert.equal(
@@ -5255,7 +5274,7 @@ test("footer cuts down by priority while preserving model and context", () => {
     : normalizedCwd.startsWith(normalizedHome) && /^[\\/]/u.test(separator)
       ? `~${normalizedCwd.slice(normalizedHome.length)}`
       : ctx.cwd;
-  assert.ok(wideSecondary.includes(displayedCwd));
+  assert.ok(wideSecondary.includes(`\x1B[38;2;240;248;154m${displayedCwd}\x1B[39m`));
 
   const focused = footer.render(48);
   assert.match(focused[1] ?? "", /GPT-5\.6 Sol OpenAI · high · 95% left \(1M\)/u);
@@ -5328,7 +5347,7 @@ test("footer uses model metadata and formats unknown provider names", () => {
   disposeTestComponent(footer);
 });
 
-test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", async () => {
+test("editor has a top border, is focus-aware and width-safe, and supports Shift+Enter", async () => {
   const source = readFileSync(new URL("../killeros/shell-ui.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /buildVisualLineMap|scrollOffset|lastWidth|as unknown as/u);
   assert.doesNotMatch(source, /COMMAND_TOKEN_PATTERN|highlightEditorLines/u);
@@ -5350,7 +5369,7 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
   editor.focused = true;
   const emptyRender = editor.render(40);
   const emptyLines = emptyRender.map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  assert.equal(emptyLines[0], "");
+  assert.equal(emptyLines[0], "─".repeat(40));
   const emptyPrompt = emptyLines[1] ?? "";
   assert.equal(emptyLines.length, 2);
   assert.match(emptyPrompt.replace(/\x1B_pi:c\x07/gu, ""), /^❯\u00A0Try "/u);
@@ -5358,7 +5377,7 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
   assert.doesNotMatch(emptyPrompt, /─/u);
   for (let width = 1; width <= 180; width += 1) {
     const lines = editor.render(width);
-    assert.equal(lines[0], "", `missing response gap at width ${width}`);
+    assert.equal(visibleWidth(lines[0] ?? ""), width, `top border width ${width}`);
     assert.equal(lines.length, 2, `empty editor rows at width ${width}`);
     assert.ok(lines.every((line) => visibleWidth(line) <= width), `empty editor width ${width}`);
   }
@@ -5378,16 +5397,15 @@ test("editor is frameless, focus-aware, width-safe, and supports Shift+Enter", a
   editor.handleInput("second");
   assert.equal(editor.getText(), "first\nsecond");
   const multiline = editor.render(40).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  assert.equal(multiline[0], "");
+  assert.equal(multiline[0], "─".repeat(40));
   assert.match(multiline[1], /^❯\u00A0first/u);
   assert.match(multiline[2], /^  second/u);
 
   editor.setText("wrapped text ".repeat(20));
   const wrapped = editor.render(24).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  assert.equal(wrapped[0], "");
+  assert.equal(wrapped[0], "─".repeat(24));
   assert.match(wrapped[1], /^  ↑ \d+ more/u);
   assert.ok(wrapped.slice(2).every((line) => line.startsWith("  ")));
-  assert.doesNotMatch(wrapped.join("\n"), /─/u);
   editor.handleInput("\x1B[5~");
   const scrolledUp = editor.render(24).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
   assert.match(last(scrolledUp) ?? "", /^  ↓ \d+ more/u);
@@ -5443,7 +5461,7 @@ test("autocomplete omits unsupported argument hints", async () => {
   assert.ok(result.items.some((item) => item.label === "/exit"));
 });
 
-test("frameless editor keeps autocomplete rows aligned below the prompt", async () => {
+test("top-bordered editor keeps autocomplete rows aligned below the prompt", async () => {
   const { handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
   for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
@@ -5459,11 +5477,10 @@ test("frameless editor keeps autocomplete rows aligned below the prompt", async 
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   const rendered = editor.render(60).map((line) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, ""));
-  assert.equal(rendered[0], "");
+  assert.equal(rendered[0], "─".repeat(60));
   assert.match(rendered[1], /^❯\u00A0\//u);
   assert.ok(rendered.slice(2).some((line) => line.includes("/clear")));
   assert.ok(rendered.slice(2).every((line) => line.startsWith("  ")));
-  assert.doesNotMatch(rendered.join("\n"), /─/u);
 });
 
 test("autocomplete preserves text and horizontal whitespace after the cursor", async () => {
