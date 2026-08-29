@@ -197,16 +197,23 @@ function appendBounded(output: HookOutputBuffer, chunk: Buffer | string): void {
   output.text += output.decoder.write(captured);
 }
 
+function terminateWindowsHookTree(child: HookChildProcess): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        shell: false,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.once("error", () => resolve(false));
+      killer.once("close", (code) => resolve(code === 0));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 function terminateHookProcess(child: HookChildProcess, force: boolean): void {
-  if (process.platform === "win32" && force && child.pid) {
-    const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-      shell: false,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    killer.unref();
-    return;
-  }
   if (process.platform !== "win32" && child.pid) {
     try {
       process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
@@ -282,6 +289,7 @@ export function executeHook(
     let timer: NodeJS.Timeout | undefined;
     let forceTimer: NodeJS.Timeout | undefined;
     let settleTimer: NodeJS.Timeout | undefined;
+    let windowsCleanupPending = false;
     const finish = (code: number, exitUnconfirmed = false): void => {
       if (completed) return;
       completed = true;
@@ -304,6 +312,15 @@ export function executeHook(
     const beginTermination = (reason: "timeout" | "cancelled"): void => {
       if (completed || termination) return;
       termination = reason;
+      if (process.platform === "win32" && child.pid) {
+        windowsCleanupPending = true;
+        void terminateWindowsHookTree(child).then((confirmed) => {
+          windowsCleanupPending = false;
+          finish(terminationCode(), !confirmed);
+        });
+        settleTimer = setTimeout(() => finish(terminationCode(), true), 2_000);
+        return;
+      }
       terminateHookProcess(child, false);
       forceTimer = setTimeout(() => {
         if (completed) return;
@@ -318,9 +335,11 @@ export function executeHook(
     child.stderr.on("data", (chunk) => appendBounded(stderr, chunk));
     child.on("error", (error) => {
       appendBounded(stderr, error.message);
-      finish(termination ? terminationCode() : 1);
+      if (!windowsCleanupPending) finish(termination ? terminationCode() : 1);
     });
-    child.once("close", (code) => finish(termination ? terminationCode() : code ?? 1));
+    child.once("close", (code) => {
+      if (!windowsCleanupPending) finish(termination ? terminationCode() : code ?? 1);
+    });
     timer = setTimeout(() => beginTermination("timeout"), Math.max(1, Math.min(timeoutMs, HOOK_TIMEOUT_MAX_MS)));
   });
 }

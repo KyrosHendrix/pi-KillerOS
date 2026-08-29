@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import os from "node:os";
 import { PassThrough } from "node:stream";
 import path from "node:path";
@@ -28,7 +28,7 @@ import Killeros, {
   validateGeneratedGuidance,
   writeInitAgentsFile,
 } from "../Killeros.ts";
-import { createGitStatusRefresh, scheduleGitStatusFallback, type GitFileChanges } from "../killeros/footer.ts";
+import { createGitStatusRefresh, scheduleGitStatusFallback } from "../killeros/footer.ts";
 import { DEFAULT_HANDOFF_MAX_TOKENS } from "../killeros/handoff.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { resetCodexFastState } from "../killeros/codex-fast-state.ts";
@@ -4070,6 +4070,20 @@ test("personal instruction imports stay inside Pi's agent directory", async () =
   }
 });
 
+test("personal instructions reject a linked AGENTS.local.md", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-personal-link-"));
+  const projectDirectory = path.join(directory, "project");
+  mkdirSync(projectDirectory);
+  try {
+    const externalPath = path.join(directory, "external.md");
+    writeFileSync(externalPath, "EXTERNAL_PRIVATE_VALUE\n");
+    linkSync(externalPath, path.join(projectDirectory, "AGENTS.local.md"));
+    assert.equal(resolvePersonalInstructions(projectDirectory), undefined);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("hook config rejects malformed roots without executing hooks", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-malformed-root-"));
   try {
@@ -4523,6 +4537,51 @@ test("aborting a running hook terminates it and reports cancellation", async () 
   assert.equal(racingResult.cancelled, true);
   assert.equal(racingResult.timedOut, false);
   assert.deepEqual(racingChild.signals, ["SIGTERM"]);
+});
+
+test("Windows hook cleanup survives the shell exiting before tree termination", { skip: process.platform !== "win32" }, async () => {
+  class ClosingShell extends EventEmitter {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    readonly pid: number;
+
+    constructor(pid: number) {
+      super();
+      this.pid = pid;
+    }
+
+    kill() {
+      queueMicrotask(() => this.emit("close", null));
+      return true;
+    }
+  }
+
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-windows-cleanup-"));
+  const marker = path.join(directory, "descendant-marker");
+  const script = path.join(directory, "descendant.cjs");
+  writeFileSync(script, "setTimeout(() => require('node:fs').writeFileSync(process.argv[2], 'alive'), 1500);\nsetTimeout(() => {}, 5000);\n");
+  const descendant = spawn(process.execPath, [script, marker], { stdio: "ignore", windowsHide: true });
+  assert.ok(descendant.pid);
+  try {
+    const shell = new ClosingShell(descendant.pid);
+    const result = await executeHook({
+      command: "ignored",
+      cwd: directory,
+      environment: {},
+      timeoutMs: 100,
+      spawnProcess: () => shell,
+    });
+    assert.equal(result.timedOut, true);
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    assert.equal(existsSync(marker), false);
+  } finally {
+    try {
+      execFileSync("taskkill", ["/pid", String(descendant.pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {
+      // The regression passes when cleanup already terminated the process.
+    }
+    await removeDirectoryEventually(directory);
+  }
 });
 
 test("timed-out hooks terminate the process tree or report bounded uncertainty", async () => {
@@ -5253,30 +5312,46 @@ test("footer includes assistant, tool, compaction, and branch-summary costs", ()
   disposeTestComponent(footer);
 });
 
+test("createGitStatusRefresh preserves its changed-file count callback", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-count-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: directory });
+    writeFileSync(path.join(directory, "untracked.txt"), "new\n");
+    let result: unknown;
+    const refresh = createGitStatusRefresh(directory, (count) => { result = count; });
+    refresh.request();
+    await waitFor(() => result !== undefined);
+    refresh.dispose();
+    assert.equal(result, 1);
+  } finally {
+    await removeDirectoryEventually(directory);
+  }
+});
+
 test("footer Git status coalesces concurrent refreshes and ignores late disposal results", async () => {
-  const pending: Array<(changes: GitFileChanges | undefined) => void> = [];
-  const results: Array<GitFileChanges | undefined> = [];
+  const pending: Array<(count: number | undefined) => void> = [];
+  const results: Array<number | undefined> = [];
   let requests = 0;
-  const refresh = createGitStatusRefresh("repo", (changes) => results.push(changes), async () => {
+  const refresh = createGitStatusRefresh("repo", (count) => results.push(count), async () => {
     requests += 1;
-    return await new Promise<GitFileChanges | undefined>((resolve) => pending.push(resolve));
+    return await new Promise<number | undefined>((resolve) => pending.push(resolve));
   });
 
   refresh.request();
   refresh.request();
   refresh.request();
   assert.equal(requests, 1);
-  pending.shift()?.({ modified: 3, added: 2, deleted: 1 });
+  pending.shift()?.(6);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(requests, 2);
-  assert.deepEqual(results, [{ modified: 3, added: 2, deleted: 1 }]);
+  assert.deepEqual(results, [6]);
 
   refresh.dispose();
-  pending.shift()?.({ modified: 4, added: 0, deleted: 0 });
+  pending.shift()?.(4);
   await new Promise((resolve) => setImmediate(resolve));
   refresh.request();
   assert.equal(requests, 2);
-  assert.deepEqual(results, [{ modified: 3, added: 2, deleted: 1 }]);
+  assert.deepEqual(results, [6]);
 });
 
 test("footer Git status uses a 30-second fallback independent of rendering", () => {

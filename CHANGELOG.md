@@ -8,6 +8,12 @@ All notable changes to KillerOS are documented here.
 
 - Replaced the footer's changed-file total with a colored modified, added, and deleted breakdown.
 
+### Fixed
+
+- Preserved the existing `createGitStatusRefresh` changed-file count callback contract.
+- Rejected linked `AGENTS.local.md` files before reading personal instructions.
+- Confirmed Windows hook process-tree cleanup before settling cancellations and timeouts.
+
 ## [2.0.21] - 2026-08-29
 
 ### Changed

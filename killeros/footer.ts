@@ -12,7 +12,7 @@ const GIT_STATUS_REFRESH_INTERVAL_MS = 30_000;
 const CODEX_PROVIDER = "openai-codex";
 const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
-export interface GitFileChanges {
+interface GitFileChanges {
   modified: number;
   added: number;
   deleted: number;
@@ -52,11 +52,15 @@ function resolveGitFileChanges(cwd: string): Promise<GitFileChanges | undefined>
   });
 }
 
-/** Coalesces Git status requests to one active scan and one queued follow-up. */
-export function createGitStatusRefresh(
+async function resolveUncommittedFileCount(cwd: string): Promise<number | undefined> {
+  const changes = await resolveGitFileChanges(cwd);
+  return changes && changes.modified + changes.added + changes.deleted;
+}
+
+function createGitRefresh<T>(
   cwd: string,
-  onChanges: (changes: GitFileChanges | undefined) => void,
-  resolveChanges: (cwd: string) => Promise<GitFileChanges | undefined> = resolveGitFileChanges,
+  onResult: (result: T | undefined) => void,
+  resolveResult: (cwd: string) => Promise<T | undefined>,
 ): { request: () => void; dispose: () => void } {
   let disposed = false;
   let pending = false;
@@ -68,8 +72,8 @@ export function createGitStatusRefresh(
       return;
     }
     pending = true;
-    void resolveChanges(cwd).then((changes) => {
-      if (!disposed) onChanges(changes);
+    void resolveResult(cwd).then((result) => {
+      if (!disposed) onResult(result);
     }).finally(() => {
       pending = false;
       if (!disposed && queued) {
@@ -85,6 +89,22 @@ export function createGitStatusRefresh(
       queued = false;
     },
   };
+}
+
+/** Coalesces Git status requests to one active scan and one queued follow-up. */
+export function createGitStatusRefresh(
+  cwd: string,
+  onCount: (count: number | undefined) => void,
+  resolveCount: (cwd: string) => Promise<number | undefined> = resolveUncommittedFileCount,
+): { request: () => void; dispose: () => void } {
+  return createGitRefresh(cwd, onCount, resolveCount);
+}
+
+function createGitFileChangesRefresh(
+  cwd: string,
+  onChanges: (changes: GitFileChanges | undefined) => void,
+): { request: () => void; dispose: () => void } {
+  return createGitRefresh(cwd, onChanges, resolveGitFileChanges);
 }
 
 type ScheduleFallback = (refresh: () => void, intervalMs: number) => () => void;
@@ -289,7 +309,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
     ctx.ui.setFooter((tui, theme, footerData) => {
       activeTui = tui;
       let gitFileChanges: GitFileChanges | undefined;
-      const gitStatus = createGitStatusRefresh(ctx.cwd, (changes) => {
+      const gitStatus = createGitFileChangesRefresh(ctx.cwd, (changes) => {
         if (JSON.stringify(changes) === JSON.stringify(gitFileChanges)) return;
         gitFileChanges = changes;
         tui.requestRender();

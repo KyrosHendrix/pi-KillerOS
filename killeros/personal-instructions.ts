@@ -11,7 +11,12 @@ const PERSONAL_INSTRUCTIONS_LIMIT = 32 * 1024;
 function readBoundedText(filePath: string, limit = PERSONAL_INSTRUCTIONS_LIMIT): string | undefined {
   let descriptor: number | undefined;
   try {
+    const pathStat = lstatSync(filePath);
+    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1) return undefined;
     descriptor = openSync(filePath, "r");
+    const openedStat = fstatSync(descriptor);
+    if (!openedStat.isFile() || openedStat.nlink !== 1
+      || openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) return undefined;
     const buffer = Buffer.alloc(limit + 1);
     const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
     const decoder = new StringDecoder("utf8");
