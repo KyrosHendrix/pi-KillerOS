@@ -5,7 +5,7 @@ import test from "node:test";
 import type { HookSpawnProcess } from "../killeros/hooks.ts";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { createHarness, createTuiContext, emitSequentially, getHandlers, last, removeDirectoryEventually, resultReason } from "./ExtensionTestHarness.ts";
+import { createHarness, createTuiContext, emitSequentially, getHandlers, last, removeDirectoryEventually, resultReason, waitFor } from "./ExtensionTestHarness.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { executeHook } from "../Killeros.ts";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -509,6 +509,49 @@ test("Windows hook cleanup survives the shell exiting before tree termination", 
       // The regression passes when cleanup already terminated the process.
     }
     await removeDirectoryEventually(directory);
+  }
+});
+
+test("Windows hook cleanup does not depend on taskkill being in PATH", { skip: process.platform !== "win32" }, async () => {
+  const originalPath = process.env.PATH;
+  let shell: ReturnType<HookSpawnProcess> | undefined;
+  try {
+    const resultPromise = executeHook({
+      command: `"${process.execPath}" -e "setTimeout(() => {}, 10000)"`,
+      cwd: process.cwd(),
+      environment: {},
+      timeoutMs: 100,
+      spawnProcess: (command, options) => {
+        const spawned = spawn(command, options);
+        shell = spawned;
+        return spawned;
+      },
+    });
+    process.env.PATH = "";
+
+    const result = await resultPromise;
+    assert.equal(result.timedOut, true);
+    assert.equal(result.exitUnconfirmed, false);
+    const pid = shell?.pid;
+    assert.ok(pid);
+    await waitFor(() => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (shell?.pid) {
+      try {
+        execFileSync("taskkill", ["/pid", String(shell.pid), "/T", "/F"], { stdio: "ignore" });
+      } catch {
+        // The expected fallback already terminated the process.
+      }
+    }
   }
 });
 

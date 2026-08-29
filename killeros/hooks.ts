@@ -197,10 +197,14 @@ function appendBounded(output: HookOutputBuffer, chunk: Buffer | string): void {
   output.text += output.decoder.write(captured);
 }
 
+/** Terminates a Windows hook tree without depending on the caller's PATH. */
 function terminateWindowsHookTree(child: HookChildProcess): Promise<boolean> {
   return new Promise((resolve) => {
     try {
-      const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+      const taskkill = process.env.SystemRoot
+        ? path.join(process.env.SystemRoot, "System32", "taskkill.exe")
+        : "taskkill";
+      const killer = spawn(taskkill, ["/pid", String(child.pid), "/T", "/F"], {
         shell: false,
         stdio: "ignore",
         windowsHide: true,
@@ -315,10 +319,16 @@ export function executeHook(
       if (process.platform === "win32" && child.pid) {
         windowsCleanupPending = true;
         void terminateWindowsHookTree(child).then((confirmed) => {
-          windowsCleanupPending = false;
+          if (completed) return;
+          if (!confirmed) terminateHookProcess(child, true);
           finish(terminationCode(), !confirmed);
+          windowsCleanupPending = false;
         });
-        settleTimer = setTimeout(() => finish(terminationCode(), true), 2_000);
+        settleTimer = setTimeout(() => {
+          terminateHookProcess(child, true);
+          finish(terminationCode(), true);
+          windowsCleanupPending = false;
+        }, 2_000);
         return;
       }
       terminateHookProcess(child, false);

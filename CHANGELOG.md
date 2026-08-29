@@ -12,7 +12,7 @@ All notable changes to KillerOS are documented here.
 
 - Preserved the existing `createGitStatusRefresh` changed-file count callback contract.
 - Rejected linked `AGENTS.local.md` files before reading personal instructions.
-- Confirmed Windows hook process-tree cleanup before settling cancellations and timeouts.
+- Confirmed Windows hook process-tree cleanup before settling cancellations and timeouts, even when `taskkill` is absent from `PATH`.
 
 ## [2.0.21] - 2026-08-29
 
