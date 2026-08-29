@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CURSOR_MARKER, getKeybindings, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-import {
-  createSlashCommandResolver,
-  findSlashCommandTokens,
-  getSlashCommandPrefix,
-  registerSlashAutocomplete,
-} from "../killeros/commands.ts";
+import { createSlashCommandResolver, findSlashCommandTokens, getSlashCommandPrefix, registerSlashAutocomplete } from "../killeros/commands.ts";
 import { highlightSlashCommands, registerShellUi } from "../killeros/shell-ui.ts";
 import { extensionApiTestAdapter } from "./PiTestAdapters.ts";
+import { createHarness, getCommand, waitFor } from "./ExtensionTestHarness.ts";
 
 function command(
   name: string,
@@ -244,4 +240,57 @@ test("autocomplete uses the same resolver and falls back to current base suggest
   const afterRemoval = await provider.getSuggestions(["/"], 0, 1, {});
   assert.equal(afterRemoval.items.some((item: { label: string }) => item.label === "/goal"), false);
   assert.equal(resolver.isValidCommand("goal"), false);
+});
+
+test("registers /exit without conflicting with Pi's /quit", async () => {
+  const { commands } = createHarness();
+  assert.equal(commands.has("exit"), true);
+  assert.equal(commands.has("quit"), false);
+
+  const calls: string[] = [];
+  await getCommand(commands, "exit").handler("", {
+    isIdle: () => false,
+    abort: () => calls.push("abort"),
+    shutdown: () => calls.push("shutdown"),
+  });
+  assert.deepEqual(calls, ["abort", "shutdown"]);
+
+  calls.length = 0;
+  await getCommand(commands, "exit").handler("", {
+    isIdle: () => true,
+    abort: () => calls.push("abort"),
+    shutdown: () => calls.push("shutdown"),
+  });
+  assert.deepEqual(calls, ["shutdown"]);
+});
+
+test("/clear confirms before aborting and waits before creating a session", async () => {
+  const { commands } = createHarness();
+  const calls: string[] = [];
+  let releaseIdle: () => void = () => {};
+  const idle = new Promise<void>((resolve) => { releaseIdle = resolve; });
+  const run = getCommand(commands, "clear").handler("", {
+    hasUI: true,
+    isIdle: () => false,
+    abort: () => calls.push("abort"),
+    waitForIdle: async () => { calls.push("wait"); await idle; },
+    newSession: async () => { calls.push("new"); return { cancelled: false }; },
+    ui: { confirm: async () => { calls.push("confirm"); return true; } },
+  });
+  await waitFor(() => calls.includes("wait"));
+  assert.deepEqual(calls, ["confirm", "abort", "wait"]);
+  releaseIdle();
+  await run;
+  assert.deepEqual(calls, ["confirm", "abort", "wait", "new"]);
+
+  calls.length = 0;
+  await getCommand(commands, "clear").handler("", {
+    hasUI: true,
+    isIdle: () => false,
+    abort: () => calls.push("abort"),
+    waitForIdle: async () => calls.push("wait"),
+    newSession: async () => calls.push("new"),
+    ui: { confirm: async () => false },
+  });
+  assert.deepEqual(calls, []);
 });

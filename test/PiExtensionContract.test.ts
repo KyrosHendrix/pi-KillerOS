@@ -4,11 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import {
-  createAgentSession,
-  DefaultResourceLoader,
-  SessionManager,
-} from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createHarness } from "./ExtensionTestHarness.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
@@ -117,5 +114,23 @@ test("the packed KillerOS package activates and reloads through Pi's public life
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+test("all KillerOS tools expose provider-compatible object schemas", () => {
+  const { tools } = createHarness();
+
+  for (const tool of tools.values()) {
+    const rawSchema: unknown = JSON.parse(JSON.stringify(tool.parameters));
+    assert.ok(isUnknownRecord(rawSchema), `${tool.name} schema must be a JSON object`);
+    const schema = rawSchema;
+    assert.equal(schema.type, "object", `${tool.name} must use a top-level object schema`);
+    assert.equal(typeof schema.properties, "object", `${tool.name} must declare object properties`);
+    assert.equal(schema.anyOf, undefined, `${tool.name} must not use a top-level anyOf`);
+    assert.equal(schema.oneOf, undefined, `${tool.name} must not use a top-level oneOf`);
   }
 });

@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import test from "node:test";
-import {
-  type ActivityMessage,
-  formatActivityMessage,
-  registerRequestActivity,
-} from "../killeros/activity.ts";
+import { type ActivityMessage, formatActivityMessage, registerRequestActivity } from "../killeros/activity.ts";
 import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
+import { createHarness, createTuiContext, getHandlers, last } from "./ExtensionTestHarness.ts";
 
 type ActivityEvent = {
   type: string;
@@ -16,6 +13,7 @@ type ActivityEvent = {
 };
 
 type ActivityHandler = (event: ActivityEvent, ctx: ActivityContext) => void | Promise<void>;
+
 type ActivityAPI = { on(event: string, handler: ActivityHandler): void };
 
 type ActivityContext = Pick<ExtensionContext, "mode" | "hasPendingMessages" | "isIdle"> & {
@@ -168,4 +166,58 @@ test("errors, custom tools, shutdown, and non-TUI modes stay truthful", async ()
     await nonTui.emit("agent_settled");
     assert.deepEqual(nonTui.workingMessages, [], mode);
   }
+});
+
+type TestStyle = {
+  bold(text: string): string;
+  fg(color: string, text: string): string;
+};
+
+type TestFullStyle = TestStyle & {
+  italic(text: string): string;
+  strikethrough(text: string): string;
+  underline(text: string): string;
+};
+
+test("activity keeps the animated orange glyph loop and uses contextual request copy", () => {
+  const { handlers } = createHarness();
+  const { captured, ctx } = createTuiContext();
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
+
+  assert.deepEqual(captured.workingIndicator, {
+    frames: ["·", "✢", "✱", "✶", "✻", "✽", "✽", "✻", "✶", "✱", "✢", "·"],
+    intervalMs: 120,
+  });
+  assert.equal(captured.hiddenThinkingLabel, "└ Thinking…");
+  for (const handler of getHandlers(handlers, "agent_start")) handler({}, ctx);
+  assert.equal(last(captured.workingMessages), "Mapping… (esc to interrupt · understanding request)");
+  assert.equal(captured.widgetComponent, undefined);
+});
+
+test("activity styles the glyph and causal verb orange with a gray bold interrupt status", () => {
+  const styledTheme: TestFullStyle = {
+    bold: (text) => `<bold>${text}</bold>`,
+    fg: (color, text) => `<${color}>${text}</${color}>`,
+    italic: (text) => text,
+    strikethrough: (text) => text,
+    underline: (text) => text,
+  };
+  const { handlers } = createHarness();
+  const { captured, ctx } = createTuiContext([], themeTestAdapter(styledTheme));
+  for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
+
+  assert.deepEqual(captured.workingIndicator, {
+    frames: [
+      "<accent>·</accent>", "<accent>✢</accent>", "<accent>✱</accent>", "<accent>✶</accent>",
+      "<accent>✻</accent>", "<accent>✽</accent>", "<accent>✽</accent>", "<accent>✻</accent>",
+      "<accent>✶</accent>", "<accent>✱</accent>", "<accent>✢</accent>", "<accent>·</accent>",
+    ],
+    intervalMs: 120,
+  });
+  for (const handler of getHandlers(handlers, "agent_start")) handler({}, ctx);
+
+  assert.match(
+    last(captured.workingMessages) ?? "",
+    /^<accent>Mapping…<\/accent> <dim>\(<bold>esc<\/bold> to interrupt · understanding request\)<\/dim>$/u,
+  );
 });
