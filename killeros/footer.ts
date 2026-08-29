@@ -12,7 +12,13 @@ const GIT_STATUS_REFRESH_INTERVAL_MS = 30_000;
 const CODEX_PROVIDER = "openai-codex";
 const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
-function resolveUncommittedFileCount(cwd: string): Promise<number | undefined> {
+export interface GitFileChanges {
+  modified: number;
+  added: number;
+  deleted: number;
+}
+
+function resolveGitFileChanges(cwd: string): Promise<GitFileChanges | undefined> {
   return new Promise((resolve) => {
     execFile(
       "git",
@@ -29,15 +35,18 @@ function resolveUncommittedFileCount(cwd: string): Promise<number | undefined> {
           return;
         }
 
+        const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
         const entries = stdout.split("\0");
-        let count = 0;
         for (let index = 0; index < entries.length; index += 1) {
           const entry = entries[index];
           if (!entry) continue;
-          count += 1;
-          if (entry[0] === "R" || entry[0] === "C" || entry[1] === "R" || entry[1] === "C") index += 1;
+          const status = entry.slice(0, 2);
+          if (status.includes("D")) changes.deleted += 1;
+          else if (status === "??" || status.includes("A")) changes.added += 1;
+          else changes.modified += 1;
+          if (status.includes("R") || status.includes("C")) index += 1;
         }
-        resolve(count);
+        resolve(changes);
       },
     );
   });
@@ -46,8 +55,8 @@ function resolveUncommittedFileCount(cwd: string): Promise<number | undefined> {
 /** Coalesces Git status requests to one active scan and one queued follow-up. */
 export function createGitStatusRefresh(
   cwd: string,
-  onCount: (count: number | undefined) => void,
-  resolveCount: (cwd: string) => Promise<number | undefined> = resolveUncommittedFileCount,
+  onChanges: (changes: GitFileChanges | undefined) => void,
+  resolveChanges: (cwd: string) => Promise<GitFileChanges | undefined> = resolveGitFileChanges,
 ): { request: () => void; dispose: () => void } {
   let disposed = false;
   let pending = false;
@@ -59,8 +68,8 @@ export function createGitStatusRefresh(
       return;
     }
     pending = true;
-    void resolveCount(cwd).then((count) => {
-      if (!disposed) onCount(count);
+    void resolveChanges(cwd).then((changes) => {
+      if (!disposed) onChanges(changes);
     }).finally(() => {
       pending = false;
       if (!disposed && queued) {
@@ -236,6 +245,12 @@ function formatGoalFooter(state: GoalState | undefined, theme: Theme): string {
   return "";
 }
 
+function formatGitFileChanges(changes: GitFileChanges, theme: Theme): string {
+  const total = changes.modified + changes.added + changes.deleted;
+  if (total === 0) return "";
+  return `${theme.fg("dim", `±${total} [`)}${theme.fg("warning", `~${changes.modified}`)} ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}${theme.fg("dim", "]")}`;
+}
+
 export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void {
   let currentModel: ExtensionContext["model"];
   let thinkingLevel: ThinkingLevel = "off";
@@ -273,10 +288,10 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
 
     ctx.ui.setFooter((tui, theme, footerData) => {
       activeTui = tui;
-      let uncommittedFileCount: number | undefined;
-      const gitStatus = createGitStatusRefresh(ctx.cwd, (count) => {
-        if (count === uncommittedFileCount) return;
-        uncommittedFileCount = count;
+      let gitFileChanges: GitFileChanges | undefined;
+      const gitStatus = createGitStatusRefresh(ctx.cwd, (changes) => {
+        if (JSON.stringify(changes) === JSON.stringify(gitFileChanges)) return;
+        gitFileChanges = changes;
         tui.requestRender();
       });
       requestGitStatusRefresh = gitStatus.request;
@@ -332,10 +347,9 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
               : footerRowFits(primaryFocused, "", width)
                 ? renderFooterRow(primaryFocused, "", width)
                 : renderFooterRow(essentialModel, context, width);
+          const changes = gitFileChanges ? formatGitFileChanges(gitFileChanges, theme) : "";
           const branchLabel = branch
-            ? uncommittedFileCount
-              ? `${theme.fg("dim", `${branch} · `)}${theme.fg("warning", `${uncommittedFileCount} changed`)}`
-              : theme.fg("dim", branch)
+            ? `${theme.fg("dim", branch)}${changes ? `${theme.fg("dim", " · ")}${changes}` : ""}`
             : "";
           const workspaceRight = goal || fullDirectory;
           const secondaryRow = footerRowFits(branchLabel, workspaceRight, width)

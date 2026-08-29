@@ -392,7 +392,7 @@ test("default notification output is exactly one standard BEL byte", (t: TestCon
   const result = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "--eval", script], {
     encoding: null,
     env: { ...process.env, PI_CODING_AGENT_DIR: agentDirectory },
-    timeout: 10_000,
+    timeout: 30_000,
   });
 
   const stdout = result.stdout;

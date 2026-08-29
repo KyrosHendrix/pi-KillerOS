@@ -28,7 +28,7 @@ import Killeros, {
   validateGeneratedGuidance,
   writeInitAgentsFile,
 } from "../Killeros.ts";
-import { createGitStatusRefresh, scheduleGitStatusFallback } from "../killeros/footer.ts";
+import { createGitStatusRefresh, scheduleGitStatusFallback, type GitFileChanges } from "../killeros/footer.ts";
 import { DEFAULT_HANDOFF_MAX_TOKENS } from "../killeros/handoff.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { resetCodexFastState } from "../killeros/codex-fast-state.ts";
@@ -5254,29 +5254,29 @@ test("footer includes assistant, tool, compaction, and branch-summary costs", ()
 });
 
 test("footer Git status coalesces concurrent refreshes and ignores late disposal results", async () => {
-  const pending: Array<(count: number | undefined) => void> = [];
-  const counts: Array<number | undefined> = [];
+  const pending: Array<(changes: GitFileChanges | undefined) => void> = [];
+  const results: Array<GitFileChanges | undefined> = [];
   let requests = 0;
-  const refresh = createGitStatusRefresh("repo", (count) => counts.push(count), async () => {
+  const refresh = createGitStatusRefresh("repo", (changes) => results.push(changes), async () => {
     requests += 1;
-    return await new Promise<number | undefined>((resolve) => pending.push(resolve));
+    return await new Promise<GitFileChanges | undefined>((resolve) => pending.push(resolve));
   });
 
   refresh.request();
   refresh.request();
   refresh.request();
   assert.equal(requests, 1);
-  pending.shift()?.(3);
+  pending.shift()?.({ modified: 3, added: 2, deleted: 1 });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(requests, 2);
-  assert.deepEqual(counts, [3]);
+  assert.deepEqual(results, [{ modified: 3, added: 2, deleted: 1 }]);
 
   refresh.dispose();
-  pending.shift()?.(4);
+  pending.shift()?.({ modified: 4, added: 0, deleted: 0 });
   await new Promise((resolve) => setImmediate(resolve));
   refresh.request();
   assert.equal(requests, 2);
-  assert.deepEqual(counts, [3]);
+  assert.deepEqual(results, [{ modified: 3, added: 2, deleted: 1 }]);
 });
 
 test("footer Git status uses a 30-second fallback independent of rendering", () => {
@@ -5297,21 +5297,24 @@ test("footer Git status uses a 30-second fallback independent of rendering", () 
   assert.equal(stopped, true);
 });
 
-test("footer emphasizes changed files and hides the clean count", async () => {
+test("footer shows colored modified, added, and deleted file counts and hides clean status", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-"));
   try {
     execFileSync("git", ["init", "-q"], { cwd: directory });
-    writeFileSync(path.join(directory, "modified.txt"), "initial\n");
+    for (let index = 1; index <= 6; index += 1) {
+      writeFileSync(path.join(directory, `modified-${index}.txt`), "initial\n");
+    }
     writeFileSync(path.join(directory, "renamed.txt"), "initial\n");
+    writeFileSync(path.join(directory, "deleted.txt"), "initial\n");
     execFileSync("git", ["add", "."], { cwd: directory });
     execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: directory });
 
-    writeFileSync(path.join(directory, "modified.txt"), "changed\n");
+    for (let index = 1; index <= 6; index += 1) {
+      writeFileSync(path.join(directory, `modified-${index}.txt`), "changed\n");
+    }
     execFileSync("git", ["mv", "renamed.txt", "moved.txt"], { cwd: directory });
+    rmSync(path.join(directory, "deleted.txt"));
     writeFileSync(path.join(directory, "untracked.txt"), "new\n");
-    mkdirSync(path.join(directory, "nested"));
-    writeFileSync(path.join(directory, "nested", "first.txt"), "new\n");
-    writeFileSync(path.join(directory, "nested", "second.txt"), "new\n");
 
     const { handlers } = createHarness();
     const { captured, ctx, tui } = createTuiContext();
@@ -5319,24 +5322,30 @@ test("footer emphasizes changed files and hides the clean count", async () => {
     for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
     const gitTheme = themeTestAdapter({
       ...theme,
-      fg: (color: string, text: string) => color === "warning" ? `<warning>${text}</warning>` : text,
+      fg: (color: string, text: string) => ["warning", "success", "error"].includes(color)
+        ? `<${color}>${text}</${color}>`
+        : text,
     });
     const footer = captured.footerFactory(tui, gitTheme, {
       getGitBranch: () => "dev",
       onBranchChange: () => () => {},
     });
 
-    await waitFor(() => /dev · <warning>5 changed<\/warning>/u.test(footer.render(120).join("\n")));
+    await waitFor(() => footer.render(120).join("\n").includes(
+      "dev · ±9 [<warning>~7</warning> <success>+1</success> <error>−1</error>]",
+    ));
     execFileSync("git", ["add", "."], { cwd: directory });
     execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "save changes"], { cwd: directory });
     for (const handler of getHandlers(handlers, "turn_end")) handler({}, ctx);
     await waitFor(() => {
       const rendered = footer.render(120).join("\n");
-      return /\bdev\b/u.test(rendered) && !/changed/u.test(rendered);
+      return /\bdev\b/u.test(rendered) && !rendered.includes("±");
     });
     writeFileSync(path.join(directory, "external.txt"), "changed outside Pi\n");
     for (const handler of getHandlers(handlers, "session_compact")) handler({}, ctx);
-    await waitFor(() => /dev · <warning>1 changed<\/warning>/u.test(footer.render(120).join("\n")));
+    await waitFor(() => footer.render(120).join("\n").includes(
+      "dev · ±1 [<warning>~0</warning> <success>+1</success> <error>−0</error>]",
+    ));
     disposeTestComponent(footer);
   } finally {
     await removeDirectoryEventually(directory);
