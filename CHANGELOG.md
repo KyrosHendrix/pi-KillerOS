@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.0.22] - 2026-08-30
+
 ### Changed
 
 - Replaced the footer's changed-file total with a colored modified, added, and deleted breakdown.
