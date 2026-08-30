@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -109,6 +109,53 @@ function complete(harness: ReturnType<typeof createHarness>, ctx: ReturnType<typ
     ctx,
   );
 }
+
+test("named goal checks bind by hash, reject failures and changes, then complete after reattachment", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(path.join(directory, ".pi"));
+  const configPath = path.join(directory, ".pi", "killeros-hooks.json");
+  const writeCheck = (command: string) => writeFileSync(configPath, JSON.stringify({ goalChecks: { quality: { command } } }));
+  writeCheck(`"${process.execPath}" -e "process.stderr.write('not ready');process.exit(7)"`);
+
+  const harness = createHarness();
+  const ctx = createContext();
+  ctx.cwd = directory;
+  ctx.isProjectTrusted = () => true;
+  await requiredMapValue(harness.commands, "goal").handler("start --check quality -- Ship the release", ctx);
+  const active = requiredState(last(harness.appendedEntries));
+  assert.equal(isUnknownRecord(active.completionCheck) && active.completionCheck.name, "quality");
+  assert.equal(JSON.stringify(active).includes("process.exit"), false);
+
+  await assert.rejects(complete(harness, ctx), /quality failed[\s\S]*not ready/u);
+  assert.equal(requiredState(last(harness.appendedEntries)).status, "active");
+
+  writeCheck(`"${process.execPath}" -e "process.exit(0)"`);
+  await assert.rejects(complete(harness, ctx), /quality changed/u);
+  await requiredMapValue(harness.commands, "goal").handler("check quality", ctx);
+  const result = await complete(harness, ctx);
+  assert.equal(result.details.status, "complete");
+  assert.equal(result.details.verification, "check");
+  assert.equal(requiredState(last(harness.appendedEntries)).status, "complete");
+});
+
+test("file verification runs before a named completion command", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-order-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(path.join(directory, ".pi"));
+  const requested = path.join(directory, "requested.md");
+  const marker = path.join(directory, "check-ran");
+  const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('check-ran','yes')"`;
+  writeFileSync(path.join(directory, ".pi", "killeros-hooks.json"), JSON.stringify({ goalChecks: { quality: { command } } }));
+  const harness = createHarness();
+  const ctx = createContext();
+  ctx.cwd = directory;
+  ctx.isProjectTrusted = () => true;
+  await requiredMapValue(harness.commands, "goal").handler(`start --check quality -- Write the Markdown file to \`${requested}\``, ctx);
+
+  await assert.rejects(complete(harness, ctx), /not a regular file/u);
+  assert.equal(existsSync(marker), false);
+});
 
 test("file goals verify the persisted exact path before completion", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-"));
@@ -350,4 +397,9 @@ test("old goal state restores, while malformed persisted verification fails clos
   assert.equal((await restore({ ...baseState, verification: { kind: "file", path: "relative.md", baseline: { exists: false } } })).sentMessages.length, 0);
   assert.equal((await restore({ ...baseState, verification: { kind: "file", path: "C:\\out.md" } })).sentMessages.length, 0);
   assert.equal((await restore({ ...baseState, verification: { kind: "url", path: "C:\\out.md", baseline: { exists: false } } })).sentMessages.length, 0);
+  assert.equal((await restore({ ...baseState, completionCheck: { kind: "named-command", name: "quality", configHash: "a".repeat(64) }, maxTurns: 3 })).sentMessages.length, 1);
+  assert.equal((await restore({ ...baseState, completionCheck: { kind: "named-command", name: "Bad", configHash: "a".repeat(64) } })).sentMessages.length, 0);
+  assert.equal((await restore({ ...baseState, completionCheck: { kind: "named-command", name: "quality", configHash: "ABC" } })).sentMessages.length, 0);
+  assert.equal((await restore({ ...baseState, maxTurns: 0 })).sentMessages.length, 0);
+  assert.equal((await restore({ ...baseState, maxTurns: 10_001 })).sentMessages.length, 0);
 });

@@ -38,6 +38,8 @@ test("/goal restores only the current branch and resumes active saved work", asy
     activeStartedAt: now - 10_000,
     turns: 2,
     baselineTokens: 0,
+    completionCheck: { kind: "named-command", name: "quality", configHash: "a".repeat(64) },
+    maxTurns: 4,
   };
   const branchEntries = [{
     type: "custom",
@@ -54,8 +56,35 @@ test("/goal restores only the current branch and resumes active saved work", asy
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   ctx.mode = "rpc";
   await getCommand(commands, "goal").handler("", ctx);
-  assert.match(last(notifications).message, /Goal active/u);
+  assert.match(last(notifications).message, /Goal active · 3\/4 turns/u);
+  assert.match(last(notifications).message, /Check: quality/u);
   assert.match(last(notifications).message, /Finish the saved task/u);
+});
+
+test("/goal pauses an exhausted restored goal before continuation", async () => {
+  const now = Date.now();
+  const exhausted = {
+    version: 1,
+    revision: 3,
+    objective: "Do not start another turn",
+    status: "active",
+    createdAt: now - 60_000,
+    updatedAt: now,
+    activeMilliseconds: 60_000,
+    activeStartedAt: now,
+    turns: 2,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+    maxTurns: 2,
+  };
+  const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: "turn", state: exhausted } }];
+  const { appendedEntries, handlers, sentMessages } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext(entries);
+  await emitSequentially(getHandlers(handlers, "session_start"), { reason: "resume" }, ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sentMessages.length, 0);
+  assert.equal(last(appendedEntries).data.event, "limit");
+  assert.equal(last(appendedEntries).data.state.status, "paused");
 });
 
 test("/goal restores v2.0.18 active shutdown checkpoints", async () => {

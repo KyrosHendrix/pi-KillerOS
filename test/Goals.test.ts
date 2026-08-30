@@ -50,6 +50,129 @@ async function emitGoalStart(handlers: Map<string, TestHandler[]>, ctx: unknown)
   }
 }
 
+test("strict goal start validates controls atomically", async () => {
+  const { appendedEntries, commands } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  await getCommand(commands, "goal").handler("Existing objective", ctx);
+  const writes = appendedEntries.length;
+  for (const malformed of [
+    "start --turns 0 -- Invalid",
+    "start --turns 2 --turns 3 -- Invalid",
+    "start --unknown value -- Invalid",
+    "start --turns 2 Invalid",
+    "start positional -- Invalid",
+    "start --check Bad -- Invalid",
+  ]) {
+    await getCommand(commands, "goal").handler(malformed, ctx);
+    assert.equal(appendedEntries.length, writes, malformed);
+  }
+
+  const controlled = createHarness<GoalEntryData>();
+  const controlledContext = createTuiContext().ctx;
+  await getCommand(controlled.commands, "goal").handler("start --turns 2 -- Objective with -- later text", controlledContext);
+  const state = last(controlled.appendedEntries).data.state;
+  assert.equal(state.objective, "Objective with -- later text");
+  assert.equal(state.maxTurns, 2);
+  assert.equal(controlled.sentMessages.length, 1);
+
+  const unbounded = createHarness<GoalEntryData>();
+  await getCommand(unbounded.commands, "goal").handler("start -- Objective without controls", createTuiContext().ctx);
+  assert.equal(last(unbounded.appendedEntries).data.state.objective, "Objective without controls");
+});
+
+test("plain goals preserve objectives that begin with control words", async () => {
+  for (const objective of [
+    "Start reliably",
+    "Clear stale generated files",
+    "Edit the release notes",
+    "Pause scheduled work safely",
+    "Resume interrupted downloads",
+    "Check the release artifacts carefully",
+    "Limit dependency updates carefully",
+    "History of the migration effort",
+  ]) {
+    const { appendedEntries, commands } = createHarness<GoalEntryData>();
+    await getCommand(commands, "goal").handler(objective, createTuiContext().ctx);
+    assert.equal(last(appendedEntries).data.state.objective, objective);
+  }
+});
+
+test("turn limits pause at settlement and refuse exhausted resume", async () => {
+  const { appendedEntries, commands, handlers, sentMessages } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  const settle = async () => {
+    await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
+  };
+  await getCommand(commands, "goal").handler("start --turns 2 -- Finish in two turns", ctx);
+  assert.equal(sentMessages.length, 1);
+  await settle();
+  assert.equal(sentMessages.length, 2);
+  await settle();
+  assert.equal(sentMessages.length, 2);
+  assert.equal(last(appendedEntries).data.event, "limit");
+  assert.equal(last(appendedEntries).data.state.status, "paused");
+
+  await getCommand(commands, "goal").handler("resume", ctx);
+  assert.equal(last(appendedEntries).data.state.status, "paused");
+  await getCommand(commands, "goal").handler("limit clear", ctx);
+  assert.equal(last(appendedEntries).data.state.maxTurns, undefined);
+  assert.equal(last(appendedEntries).data.state.status, "paused");
+});
+
+test("completion wins on the last allowed goal turn", async () => {
+  const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  await getCommand(commands, "goal").handler("start --turns 1 -- Complete now", ctx);
+  await getTool(tools, "killeros_goal_update").execute(
+    "complete-at-limit",
+    { status: "complete", evidence: "Verified" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
+  assert.equal(last(appendedEntries).data.state.status, "complete");
+  assert.equal(sentMessages.length, 1);
+});
+
+test("goal history scans the active branch without writing state", async () => {
+  const now = Date.now();
+  const state = (revision: number, status: "active" | "paused", turns: number, result?: string) => ({
+    version: 1,
+    revision,
+    objective: "Ship the release",
+    status,
+    createdAt: now - 60_000,
+    updatedAt: now,
+    activeMilliseconds: 60_000,
+    ...(status === "active" ? { activeStartedAt: now } : {}),
+    turns,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 10,
+    ...(result === undefined ? {} : { result }),
+  });
+  const entries = [
+    { type: "custom", customType: "killeros-goal", data: { version: 1, event: "set", state: state(1, "active", 0) } },
+    { type: "message", message: { role: "assistant", usage: { totalTokens: 110 } } },
+    { type: "custom", customType: "killeros-goal", data: { version: 1, event: "turn", state: state(2, "active", 1) } },
+    { type: "custom", customType: "killeros-goal", data: { version: 1, event: "pause", state: state(3, "paused", 1, "Waiting") } },
+    { type: "custom", customType: "killeros-goal", data: { version: 1, event: "complete", state: { broken: true } } },
+  ];
+  const { appendedEntries, commands, sentMessages } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext(entries);
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await getCommand(commands, "goal").handler("history 1", ctx);
+  assert.match(last(notifications).message, /pause  turn 1  100 tokens  Waiting/u);
+  assert.doesNotMatch(last(notifications).message, /\bturn  turn\b/u);
+  assert.equal(appendedEntries.length, 0);
+  assert.equal(sentMessages.length, 0);
+  await getCommand(commands, "goal").handler("history 51", ctx);
+  assert.equal(last(notifications).message, "Usage: /goal history [count]");
+});
+
 test("registers /goal and completes only through the model goal tool", async () => {
   const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();

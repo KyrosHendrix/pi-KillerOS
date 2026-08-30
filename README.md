@@ -5,7 +5,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## What you get
 
 - A custom TUI: startup card with version, model, provider, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.
-- `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Pause, resume, edit, or clear it anytime.
+- `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Optional named checks and turn limits control completion and unattended work.
 - `/init`: generates a root `AGENTS.md` from repository evidence, preserving compatible existing rules.
 - `/variants`: pick a reasoning level supported by the active model.
 - `/codex-fast`: toggles the `priority` service tier on Codex requests.
@@ -41,6 +41,10 @@ Pin a release by appending its tag, for example `@v2.0.22`. Add `-l` to install 
 ```text
 /init                     Generate root AGENTS.md from repository evidence
 /goal                     Open goal status, or set an objective with /goal <objective>
+/goal start [--check name] [--turns count] -- <objective>
+/goal check <name|clear>  Set or clear a named completion check
+/goal limit <count|clear> Set or clear a turn limit
+/goal history [count]     Show goal transitions on the current branch
 /goal edit|pause|resume|clear
 /variants                 Reasoning-level selector (/variants high sets directly)
 /codex-fast               Toggle Codex fast mode
@@ -73,6 +77,21 @@ The packaged `killeros` theme activates on TUI start. Compaction triggers by def
 ```
 
 `handoffMaxTokens` caps the `/handoff` summary output at 8192 tokens by default; raise it when long sessions truncate the summary.
+
+Trusted projects can define up to 32 named goal checks in `.pi/killeros-hooks.json`:
+
+```json
+{
+  "goalChecks": {
+    "quality": {
+      "command": "npm run check && npm test",
+      "timeoutMs": 300000
+    }
+  }
+}
+```
+
+Bind a check with `/goal start --check quality -- <objective>` or `/goal check quality`. KillerOS stores the check name and definition hash, not the command. If the project changes the command or timeout, bind the check again before completing the goal.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 

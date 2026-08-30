@@ -242,6 +242,19 @@ test("autocomplete uses the same resolver and falls back to current base suggest
   assert.equal(resolver.isValidCommand("goal"), false);
 });
 
+test("goal completions include controls and strict start options", () => {
+  const goal = getCommand(createHarness(), "goal");
+  assert.ok(goal.getArgumentCompletions);
+  assert.deepEqual(
+    goal.getArgumentCompletions("")?.map(({ value }) => value),
+    ["clear", "edit", "pause", "resume", "start", "check", "limit", "history"],
+  );
+  assert.deepEqual(
+    goal.getArgumentCompletions("start --")?.map(({ value }) => value),
+    ["start --check ", "start --turns ", "start -- "],
+  );
+});
+
 test("registers /exit without conflicting with Pi's /quit", async () => {
   const { commands } = createHarness();
   assert.equal(commands.has("exit"), true);

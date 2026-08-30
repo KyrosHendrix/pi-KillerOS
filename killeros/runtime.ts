@@ -38,6 +38,12 @@ export interface GoalFileVerification {
   baseline: GoalFileBaseline;
 }
 
+export interface GoalCompletionCheck {
+  kind: "named-command";
+  name: string;
+  configHash: string;
+}
+
 export interface GoalStateCommon {
   version: 1;
   revision: number;
@@ -49,6 +55,8 @@ export interface GoalStateCommon {
   blockedAuditStartTurn: number;
   baselineTokens: number;
   verification?: GoalFileVerification;
+  completionCheck?: GoalCompletionCheck;
+  maxTurns?: number;
 }
 
 export type GoalState = GoalStateCommon & (

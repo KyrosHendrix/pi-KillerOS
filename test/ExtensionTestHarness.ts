@@ -54,7 +54,7 @@ export type TestTool = {
 
 export type TestCommand = {
   description?: string;
-  getArgumentCompletions?: unknown;
+  getArgumentCompletions?: (prefix: string) => Array<{ value: string; label: string; description?: string }> | null;
   handler(args: string, ctx: unknown): Promise<unknown>;
 };
 

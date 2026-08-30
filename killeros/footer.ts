@@ -325,7 +325,8 @@ function renderFooter(rows: string[], width: number, theme: Theme): string[] {
 function formatGoalFooter(state: GoalState | undefined, theme: Theme): string {
   if (!state) return "";
   if (state.status === "active") {
-    return theme.fg("warning", `/goal is active (${formatTime(goalElapsedMilliseconds(state, Date.now()))})`);
+    const turns = state.maxTurns === undefined ? "" : ` ${state.turns}/${state.maxTurns}`;
+    return theme.fg("warning", `/goal is active${turns} (${formatTime(goalElapsedMilliseconds(state, Date.now()))})`);
   }
   if (state.status === "paused") return theme.fg("warning", "/goal is paused");
   if (state.status === "blocked") return theme.fg("error", "/goal is blocked");

@@ -4,12 +4,17 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added named goal completion checks, per-goal turn limits, and branch-aware `/goal history`.
+
 ### Changed
 
 - Refreshed footer Git telemetry from throttled filesystem changes instead of every completed turn, while retaining branch and 30-second fallback scans.
 
 ### Fixed
 
+- Preserved plain goal objectives that begin with command words and accepted strict `/goal start -- <objective>` syntax without options.
 - Kept lifecycle hooks stable for corrupt payload serialization, `NaN` direct timeouts, abort races, stream errors, and synchronous process completion without tightening custom process adapter contracts.
 
 ## [2.0.22] - 2026-08-30

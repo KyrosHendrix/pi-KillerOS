@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
-import type { GoalBlockerAudit, GoalFileBaseline, GoalFileVerification, GoalState, GoalStateCommon, GoalStatus } from "./runtime.ts";
+import type { GoalBlockerAudit, GoalCompletionCheck, GoalFileBaseline, GoalFileVerification, GoalState, GoalStateCommon, GoalStatus } from "./runtime.ts";
 
 export const GOAL_OBJECTIVE_LIMIT = 4_000;
+export const GOAL_MAX_TURNS = 10_000;
+export const GOAL_CHECK_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 export const GOAL_VERSION = 1;
 const FILE_HASH_CHUNK_SIZE = 64 * 1024;
 export const FILE_HASH_LIMIT = 64 * 1024 * 1024;
@@ -56,6 +58,19 @@ function isGoalFileVerification(value: unknown): value is GoalFileVerification {
     && isGoalFileBaseline(value.baseline);
 }
 
+function isGoalCompletionCheck(value: unknown): value is GoalCompletionCheck {
+  return isUnknownRecord(value)
+    && value.kind === "named-command"
+    && typeof value.name === "string"
+    && GOAL_CHECK_NAME_PATTERN.test(value.name)
+    && typeof value.configHash === "string"
+    && /^[a-f0-9]{64}$/u.test(value.configHash);
+}
+
+function isMaxTurns(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= GOAL_MAX_TURNS;
+}
+
 function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): value is GoalBlockerAudit {
   if (!isUnknownRecord(value)
     || typeof value.key !== "string"
@@ -86,6 +101,8 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     resumeAfterManualCompaction,
     blockerAudit,
     verification,
+    completionCheck,
+    maxTurns,
   } = value;
   if (version !== GOAL_VERSION
     || typeof revision !== "number" || !Number.isInteger(revision) || revision < 1
@@ -101,6 +118,8 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     || !finiteNonNegative(baselineTokens)
     || result !== undefined && typeof result !== "string"
     || verification !== undefined && !isGoalFileVerification(verification)
+    || completionCheck !== undefined && !isGoalCompletionCheck(completionCheck)
+    || maxTurns !== undefined && !isMaxTurns(maxTurns)
     || resumeAfterManualCompaction !== undefined && resumeAfterManualCompaction !== true
     || blockerAudit !== undefined && !isGoalBlockerAudit(blockerAudit, turns, status)) {
     return undefined;
@@ -117,6 +136,8 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     blockedAuditStartTurn: blockedAuditStartTurn ?? 0,
     baselineTokens,
     ...(verification === undefined ? {} : { verification }),
+    ...(completionCheck === undefined ? {} : { completionCheck }),
+    ...(maxTurns === undefined ? {} : { maxTurns }),
   };
   switch (status) {
     case "active":
@@ -265,6 +286,8 @@ export function commonGoalState(state: GoalState): GoalStateCommon {
     blockedAuditStartTurn: state.blockedAuditStartTurn,
     baselineTokens: state.baselineTokens,
     ...(state.verification === undefined ? {} : { verification: state.verification }),
+    ...(state.completionCheck === undefined ? {} : { completionCheck: state.completionCheck }),
+    ...(state.maxTurns === undefined ? {} : { maxTurns: state.maxTurns }),
   };
 }
 
@@ -280,6 +303,7 @@ export function createNewGoalState(
   baselineTokens: number,
   verification: GoalFileVerification | undefined,
   now: number,
+  controls: { completionCheck?: GoalCompletionCheck; maxTurns?: number } = {},
 ): GoalState {
   return {
     version: GOAL_VERSION,
@@ -294,6 +318,8 @@ export function createNewGoalState(
     blockedAuditStartTurn: 0,
     baselineTokens,
     ...(verification === undefined ? {} : { verification }),
+    ...(controls.completionCheck === undefined ? {} : { completionCheck: controls.completionCheck }),
+    ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
   };
 }
 
@@ -314,6 +340,46 @@ export function editGoalState(
     activeStartedAt: now,
     blockedAuditStartTurn: current.turns,
     ...(verification === undefined ? {} : { verification }),
+  };
+}
+
+export function updateGoalControlsState(
+  state: Exclude<GoalState, { status: "complete" }>,
+  controls: { completionCheck?: GoalCompletionCheck; maxTurns?: number },
+  now: number,
+): GoalState {
+  const stopped = stopGoalClock(state, now);
+  const { completionCheck: _completionCheck, maxTurns: _maxTurns, ...common } = stopped;
+  const nextCommon: GoalStateCommon = {
+    ...common,
+    revision: common.revision + 1,
+    updatedAt: now,
+    ...(controls.completionCheck === undefined ? {} : { completionCheck: controls.completionCheck }),
+    ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
+  };
+  if (state.status === "active") {
+    return {
+      ...nextCommon,
+      status: "active",
+      activeStartedAt: now,
+      ...(state.result === undefined ? {} : { result: state.result }),
+      ...(state.blockerAudit === undefined ? {} : { blockerAudit: state.blockerAudit }),
+    };
+  }
+  if (state.status === "paused") {
+    return {
+      ...nextCommon,
+      status: "paused",
+      ...(state.result === undefined ? {} : { result: state.result }),
+      ...(state.blockerAudit === undefined ? {} : { blockerAudit: state.blockerAudit }),
+      ...(state.resumeAfterManualCompaction === undefined ? {} : { resumeAfterManualCompaction: true }),
+    };
+  }
+  return {
+    ...nextCommon,
+    status: "blocked",
+    result: state.result,
+    ...(state.blockerAudit === undefined ? {} : { blockerAudit: state.blockerAudit }),
   };
 }
 

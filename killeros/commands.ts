@@ -70,7 +70,7 @@ const BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
 ];
 
 const COMMAND_SYNTAX_HINTS: Readonly<Record<string, string>> = {
-  goal: "/goal [objective|clear|edit|pause|resume]",
+  goal: "/goal [objective|start|check|limit|history|clear|edit|pause|resume]",
   handoff: "/handoff [next-session focus]",
   variants: "/variants [level]",
   model: "/model [provider/model]",

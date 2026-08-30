@@ -306,6 +306,32 @@ test("footer shows colored modified, added, and deleted file counts and hides cl
   }
 });
 
+test("footer shows a compact active goal turn limit", async () => {
+  const now = Date.now();
+  const goal = {
+    version: 1,
+    revision: 1,
+    objective: "Limited work",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    activeMilliseconds: 0,
+    activeStartedAt: now,
+    turns: 3,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+    maxTurns: 8,
+  };
+  const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: "turn", state: goal } }];
+  const { handlers } = createHarness();
+  const { captured, ctx, tui } = createTuiContext(entries);
+  ctx.hasPendingMessages = () => true;
+  for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+  const footer = captured.footerFactory(tui, theme, { getGitBranch: () => "main", onBranchChange: () => () => {} });
+  assert.match(footer.render(120).join("\n"), /\/goal is active 3\/8/u);
+  disposeTestComponent(footer);
+});
+
 test("footer cuts down by priority while preserving model and context", () => {
   const { handlers } = createHarness();
   const entries = [{ type: "message", message: { role: "assistant", usage: usage(10) } }];
