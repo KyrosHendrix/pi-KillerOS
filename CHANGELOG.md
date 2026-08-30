@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed footer Git telemetry from throttled filesystem changes instead of every completed turn, while retaining branch and 30-second fallback scans.
+
 ### Fixed
 
 - Kept lifecycle hooks stable for corrupt payload serialization, `NaN` direct timeouts, abort races, stream errors, and synchronous process completion without tightening custom process adapter contracts.

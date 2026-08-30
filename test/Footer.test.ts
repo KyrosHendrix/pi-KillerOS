@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createGitStatusRefresh, scheduleGitStatusFallback } from "../killeros/footer.ts";
+import { createGitStatusRefresh, scheduleGitStatusFallback, scheduleGitStatusWatch } from "../killeros/footer.ts";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -31,6 +31,14 @@ function usage(cost: number): TestUsage {
     totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
   };
+}
+
+async function waitForGitWatch(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("timed out waiting for watched Git status");
 }
 
 test("footer survives unavailable context telemetry", () => {
@@ -166,6 +174,85 @@ test("footer Git status uses a 30-second fallback independent of rendering", () 
   assert.equal(stopped, true);
 });
 
+test("footer Git status debounces filesystem bursts before throttling refreshes", () => {
+  let changed: (() => void) | undefined;
+  let failed: (() => void) | undefined;
+  let tick: (() => void) | undefined;
+  let watchStopped = false;
+  let timersStopped = 0;
+  let requests = 0;
+  const delays: number[] = [];
+  const stop = scheduleGitStatusWatch(
+    "repo",
+    () => { requests += 1; },
+    (_cwd, onChange, onError) => {
+      changed = onChange;
+      failed = onError;
+      return () => { watchStopped = true; };
+    },
+    (refresh, delay) => {
+      delays.push(delay);
+      tick = refresh;
+      return () => { timersStopped += 1; };
+    },
+  );
+
+  changed?.();
+  changed?.();
+  assert.equal(requests, 0);
+  tick?.();
+  assert.equal(requests, 1);
+  assert.deepEqual(delays, [250, 5_000]);
+
+  changed?.();
+  failed?.();
+  tick?.();
+  assert.equal(requests, 1);
+  assert.equal(watchStopped, true);
+  assert.equal(timersStopped, 1);
+
+  stop();
+});
+
+test("footer Git status bounds refreshes during sustained filesystem activity", () => {
+  let changed: (() => void) | undefined;
+  let now = 0;
+  let requests = 0;
+  const timers: Array<{ dueAt: number; refresh: () => void; stopped: boolean }> = [];
+  scheduleGitStatusWatch(
+    "repo",
+    () => { requests += 1; },
+    (_cwd, onChange) => {
+      changed = onChange;
+      return () => {};
+    },
+    (refresh, delay) => {
+      const timer = { dueAt: now + delay, refresh, stopped: false };
+      timers.push(timer);
+      return () => { timer.stopped = true; };
+    },
+  );
+  const advance = (milliseconds: number): void => {
+    now += milliseconds;
+    for (const timer of timers) {
+      if (!timer.stopped && timer.dueAt <= now) {
+        timer.stopped = true;
+        timer.refresh();
+      }
+    }
+  };
+
+  changed?.();
+  advance(250);
+  changed?.();
+  advance(4_750);
+  assert.equal(requests, 1);
+  advance(250);
+  advance(250);
+
+  assert.equal(requests, 2);
+});
+
 test("footer shows colored modified, added, and deleted file counts and hides clean status", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-"));
   try {
@@ -205,14 +292,12 @@ test("footer shows colored modified, added, and deleted file counts and hides cl
     ));
     execFileSync("git", ["add", "."], { cwd: directory });
     execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "save changes"], { cwd: directory });
-    for (const handler of getHandlers(handlers, "turn_end")) handler({}, ctx);
-    await waitFor(() => {
+    await waitForGitWatch(() => {
       const rendered = footer.render(120).join("\n");
       return /\bdev\b/u.test(rendered) && !rendered.includes("±");
     });
     writeFileSync(path.join(directory, "external.txt"), "changed outside Pi\n");
-    for (const handler of getHandlers(handlers, "session_compact")) handler({}, ctx);
-    await waitFor(() => footer.render(120).join("\n").includes(
+    await waitForGitWatch(() => footer.render(120).join("\n").includes(
       "dev · ±1 [<warning>~0</warning> <success>+1</success> <error>−0</error>]",
     ));
     disposeTestComponent(footer);

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { watch } from "node:fs";
 import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
@@ -9,6 +10,8 @@ import { safeTerminalText } from "./safe-terminal-text.ts";
 import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
 
 const GIT_STATUS_REFRESH_INTERVAL_MS = 30_000;
+const GIT_STATUS_WATCH_DEBOUNCE_MS = 250;
+const GIT_STATUS_WATCH_INTERVAL_MS = 5_000;
 const CODEX_PROVIDER = "openai-codex";
 const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
@@ -25,6 +28,7 @@ function resolveGitFileChanges(cwd: string): Promise<GitFileChanges | undefined>
       ["-C", cwd, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
       {
         encoding: "utf8",
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
         maxBuffer: 4 * 1024 * 1024,
         timeout: 1_000,
         windowsHide: true,
@@ -108,11 +112,25 @@ function createGitFileChangesRefresh(
 }
 
 type ScheduleFallback = (refresh: () => void, intervalMs: number) => () => void;
+type WatchDirectory = (cwd: string, onChange: () => void, onError: () => void) => () => void;
+type ScheduleDelay = (refresh: () => void, delayMs: number) => () => void;
 
 const scheduleFallback: ScheduleFallback = (refresh, intervalMs) => {
   const timer = setInterval(refresh, intervalMs);
   timer.unref?.();
   return () => clearInterval(timer);
+};
+
+const watchDirectory: WatchDirectory = (cwd, onChange, onError) => {
+  const watcher = watch(cwd, { recursive: true }, onChange);
+  watcher.on("error", onError);
+  return () => watcher.close();
+};
+
+const scheduleDelay: ScheduleDelay = (refresh, delayMs) => {
+  const timer = setTimeout(refresh, delayMs);
+  timer.unref?.();
+  return () => clearTimeout(timer);
 };
 
 /** Schedules the fallback Git scan independently from footer rendering. */
@@ -121,6 +139,55 @@ export function scheduleGitStatusFallback(
   schedule: ScheduleFallback = scheduleFallback,
 ): () => void {
   return schedule(refresh, GIT_STATUS_REFRESH_INTERVAL_MS);
+}
+
+/** Throttles filesystem changes and falls back silently when watching is unavailable. */
+export function scheduleGitStatusWatch(
+  cwd: string,
+  refresh: () => void,
+  startWatching: WatchDirectory = watchDirectory,
+  schedule: ScheduleDelay = scheduleDelay,
+): () => void {
+  let disposed = false;
+  let coolingDown = false;
+  let queued = false;
+  let stopTimer: (() => void) | undefined;
+  let stopWatching: (() => void) | undefined;
+  const stop = (): void => {
+    if (disposed) return;
+    disposed = true;
+    stopTimer?.();
+    stopTimer = undefined;
+    stopWatching?.();
+    stopWatching = undefined;
+  };
+  const changed = (): void => {
+    if (disposed) return;
+    if (stopTimer) {
+      if (coolingDown) queued = true;
+      return;
+    }
+    stopTimer = schedule(() => {
+      stopTimer = undefined;
+      if (disposed) return;
+      refresh();
+      coolingDown = true;
+      stopTimer = schedule(() => {
+        stopTimer = undefined;
+        coolingDown = false;
+        if (queued) {
+          queued = false;
+          changed();
+        }
+      }, GIT_STATUS_WATCH_INTERVAL_MS);
+    }, GIT_STATUS_WATCH_DEBOUNCE_MS);
+  };
+  try {
+    stopWatching = startWatching(cwd, changed, stop);
+  } catch {
+    disposed = true;
+  }
+  return stop;
 }
 
 export function formatCost(usd: number): string {
@@ -278,7 +345,6 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
   let cachedSessionCost = 0;
   let sessionCostDirty = true;
   let unsubscribeCodexFast: (() => void) | undefined;
-  let requestGitStatusRefresh: (() => void) | undefined;
   const resetSessionCost = (): void => {
     cachedSessionCost = 0;
     sessionCostDirty = true;
@@ -314,19 +380,19 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
         gitFileChanges = changes;
         tui.requestRender();
       });
-      requestGitStatusRefresh = gitStatus.request;
       const unsubscribe = footerData.onBranchChange(() => {
         gitStatus.request();
         tui.requestRender();
       });
       gitStatus.request();
+      const stopWatch = scheduleGitStatusWatch(ctx.cwd, gitStatus.request);
       const stopFallback = scheduleGitStatusFallback(gitStatus.request);
       return {
         dispose() {
           unsubscribe();
+          stopWatch();
           stopFallback();
           gitStatus.dispose();
-          if (requestGitStatusRefresh === gitStatus.request) requestGitStatusRefresh = undefined;
           if (activeTui === tui) activeTui = undefined;
         },
         invalidate() {},
@@ -393,12 +459,8 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
     thinkingLevel = event.level;
     activeTui?.requestRender();
   });
-  const refreshAfterActivity = (): void => {
-    invalidateSessionCost();
-    requestGitStatusRefresh?.();
-  };
-  pi.on("turn_end", refreshAfterActivity);
-  pi.on("session_compact", refreshAfterActivity);
+  pi.on("turn_end", invalidateSessionCost);
+  pi.on("session_compact", invalidateSessionCost);
   pi.on("session_tree", () => {
     resetSessionCost();
     activeTui?.requestRender();
@@ -408,7 +470,6 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
     unsubscribeCodexFast = undefined;
     resetSessionCost();
     activeTui = undefined;
-    requestGitStatusRefresh = undefined;
     goalRuntime.requestRender = undefined;
   });
 }
