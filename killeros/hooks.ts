@@ -331,16 +331,14 @@ export function executeHook(
         }, 2_000);
         return;
       }
-      terminateHookProcess(child, false);
       forceTimer = setTimeout(() => {
         if (completed) return;
         terminateHookProcess(child, true);
         settleTimer = setTimeout(() => finish(terminationCode(), true), 1_000);
       }, 1_000);
+      terminateHookProcess(child, false);
     };
     const abort = (): void => beginTermination("cancelled");
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) beginTermination("cancelled");
     child.stdout.on("data", (chunk) => appendBounded(stdout, chunk));
     child.stderr.on("data", (chunk) => appendBounded(stderr, chunk));
     child.on("error", (error) => {
@@ -350,12 +348,22 @@ export function executeHook(
     child.once("close", (code) => {
       if (!windowsCleanupPending) finish(termination ? terminationCode() : code ?? 1);
     });
-    timer = setTimeout(() => beginTermination("timeout"), Math.max(1, Math.min(timeoutMs, HOOK_TIMEOUT_MAX_MS)));
+    const boundedTimeoutMs = Number.isNaN(timeoutMs)
+      ? 30_000
+      : Math.max(1, Math.min(timeoutMs, HOOK_TIMEOUT_MAX_MS));
+    timer = setTimeout(() => beginTermination("timeout"), boundedTimeoutMs);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) beginTermination("cancelled");
   });
 }
 
 function serializeHookPayload(payload: unknown): string {
-  const serialized = JSON.stringify(payload) ?? "null";
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(payload) ?? "null";
+  } catch {
+    return JSON.stringify({ serializationError: true });
+  }
   if (serialized.length <= HOOK_PAYLOAD_LIMIT) return serialized;
   const previewLength = Math.floor((HOOK_PAYLOAD_LIMIT - 64) / 2);
   return JSON.stringify({ truncated: true, preview: serialized.slice(0, previewLength) });

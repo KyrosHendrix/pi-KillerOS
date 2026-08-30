@@ -326,6 +326,36 @@ test("project tool_call hook failures block tools without exposing configured co
   }
 });
 
+test("unserializable hook payloads degrade to valid JSON", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-unserializable-payload-"));
+  try {
+    const configDirectory = path.join(directory, ".pi");
+    mkdirSync(configDirectory);
+    const command = `"${process.execPath}" -e "const payload=JSON.parse(process.env.KILLEROS_PAYLOAD);if(payload.serializationError!==true)process.exit(2)"`;
+    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
+      hooks: { tool_call: [{ matcher: "^write$", command }] },
+    }));
+
+    const { handlers } = createHarness();
+    const { ctx } = createTuiContext();
+    ctx.cwd = directory;
+    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+
+    const circularInput: Record<string, unknown> = {};
+    circularInput.self = circularInput;
+    for (const [toolCallId, input] of [["circular", circularInput], ["bigint", { value: 1n }]] as const) {
+      const results = await emitSequentially(getHandlers(handlers, "tool_call"), {
+        toolCallId,
+        toolName: "write",
+        input,
+      }, ctx);
+      assert.equal(results.some((result) => result?.block), false);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("oversized hook payloads remain valid JSON and report truncation", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-payload-"));
   try {
@@ -393,6 +423,34 @@ test("the positional executeHook adapter preserves synchronous spawn failures", 
     cancelled: false,
     exitUnconfirmed: false,
   });
+});
+
+test("NaN hook timeouts use the default instead of firing immediately", async () => {
+  class ClosingHook extends EventEmitter {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    pid = undefined;
+    signals: NodeJS.Signals[] = [];
+
+    kill(signal: NodeJS.Signals) {
+      this.signals.push(signal);
+      return true;
+    }
+  }
+  const child = new ClosingHook();
+  const resultPromise = executeHook({
+    command: "ignored",
+    cwd: process.cwd(),
+    environment: {},
+    timeoutMs: Number.NaN,
+    spawnProcess: () => child,
+  });
+  setTimeout(() => child.emit("close", 0), 20);
+
+  const result = await resultPromise;
+  assert.equal(result.code, 0);
+  assert.equal(result.timedOut, false);
+  assert.deepEqual(child.signals, []);
 });
 
 test("never-closing hooks report unconfirmed exit after bounded cleanup", async () => {
@@ -465,6 +523,40 @@ test("aborting a running hook terminates it and reports cancellation", async () 
   assert.equal(racingResult.cancelled, true);
   assert.equal(racingResult.timedOut, false);
   assert.deepEqual(racingChild.signals, ["SIGTERM"]);
+});
+
+test("abort cleanup observes a synchronous close from custom process adapters", async () => {
+  class SynchronouslyClosingChild extends EventEmitter {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    pid = undefined;
+    signals: NodeJS.Signals[] = [];
+
+    kill(signal: NodeJS.Signals) {
+      this.signals.push(signal);
+      this.emit("close", null);
+      return true;
+    }
+  }
+  const controller = new AbortController();
+  const child = new SynchronouslyClosingChild();
+  const baselineTimeouts = process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+  const resultPromise = executeHook({
+    command: "ignored",
+    cwd: process.cwd(),
+    environment: {},
+    spawnProcess: () => {
+      controller.abort();
+      return child;
+    },
+    signal: controller.signal,
+  });
+
+  const result = await resultPromise;
+  assert.equal(result.cancelled, true);
+  assert.equal(result.exitUnconfirmed, false);
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  assert.equal(process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length, baselineTimeouts);
 });
 
 test("Windows hook cleanup survives the shell exiting before tree termination", { skip: process.platform !== "win32" }, async () => {
