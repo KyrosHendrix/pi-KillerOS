@@ -412,6 +412,58 @@ test("hook output preserves split UTF-8 and flushes incomplete final bytes", asy
   assert.equal((await incompleteResultPromise).stderr, "�");
 });
 
+test("hook stream errors are captured instead of escaping", async () => {
+  class StreamErrorChild extends EventEmitter {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    pid = undefined;
+    kill() { return true; }
+  }
+  const child = new StreamErrorChild();
+  const resultPromise = executeHook({
+    command: "ignored",
+    cwd: process.cwd(),
+    environment: {},
+    timeoutMs: 1_000,
+    spawnProcess: () => child,
+  });
+  child.stdout.emit("error", new Error("stdout failed"));
+  child.stderr.emit("error", new Error("stderr failed"));
+  child.emit("close", 1);
+
+  const result = await resultPromise;
+  assert.match(result.stderr, /stdout failed/u);
+  assert.match(result.stderr, /stderr failed/u);
+});
+
+test("custom process adapters can keep data-only output streams", async () => {
+  // Models an adapter written against the original output stream contract.
+  class DataOnlyOutputStream {
+    on(event: "data", _listener: (chunk: Buffer | string) => void) {
+      assert.equal(event, "data");
+      return this;
+    }
+  }
+  class DataOnlyStreamChild extends EventEmitter {
+    stdout = new DataOnlyOutputStream();
+    stderr = new DataOnlyOutputStream();
+    pid = undefined;
+    kill() { return true; }
+  }
+  const child = new DataOnlyStreamChild();
+  const spawnProcess: HookSpawnProcess = () => child;
+  const resultPromise = executeHook({
+    command: "ignored",
+    cwd: process.cwd(),
+    environment: {},
+    timeoutMs: 1_000,
+    spawnProcess,
+  });
+  child.emit("close", 0);
+
+  assert.equal((await resultPromise).code, 0);
+});
+
 test("the positional executeHook adapter preserves synchronous spawn failures", async () => {
   const spawnFailure: HookSpawnProcess = () => { throw new Error("process could not start"); };
   const result = await executeHook("ignored", process.cwd(), {}, 1_000, spawnFailure);
@@ -523,6 +575,32 @@ test("aborting a running hook terminates it and reports cancellation", async () 
   assert.equal(racingResult.cancelled, true);
   assert.equal(racingResult.timedOut, false);
   assert.deepEqual(racingChild.signals, ["SIGTERM"]);
+});
+
+test("synchronous process completion does not leave cleanup resources behind", async () => {
+  class SynchronouslyClosedChild {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    pid = undefined;
+
+    kill() { return true; }
+    on(_event: "error", _listener: (error: Error) => void) { return this; }
+    once(_event: "close", listener: (code: number | null) => void) {
+      listener(0);
+      return this;
+    }
+  }
+  const baselineTimeouts = process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+  const result = await executeHook({
+    command: "ignored",
+    cwd: process.cwd(),
+    environment: {},
+    timeoutMs: 50,
+    spawnProcess: () => new SynchronouslyClosedChild(),
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length, baselineTimeouts);
 });
 
 test("abort cleanup observes a synchronous close from custom process adapters", async () => {

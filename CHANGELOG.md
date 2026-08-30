@@ -6,7 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
-- Kept lifecycle hooks stable for corrupt payload serialization, `NaN` direct timeouts, and abort races.
+- Kept lifecycle hooks stable for corrupt payload serialization, `NaN` direct timeouts, abort races, stream errors, and synchronous process completion without tightening custom process adapter contracts.
 
 ## [2.0.22] - 2026-08-30
 

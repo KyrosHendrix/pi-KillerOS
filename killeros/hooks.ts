@@ -2,6 +2,7 @@ import {
   spawn,
   type SpawnOptionsWithStdioTuple,
 } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -341,6 +342,9 @@ export function executeHook(
     const abort = (): void => beginTermination("cancelled");
     child.stdout.on("data", (chunk) => appendBounded(stdout, chunk));
     child.stderr.on("data", (chunk) => appendBounded(stderr, chunk));
+    const captureStreamError = (error: Error): void => appendBounded(stderr, error.message);
+    if (child.stdout instanceof EventEmitter) child.stdout.on("error", captureStreamError);
+    if (child.stderr instanceof EventEmitter) child.stderr.on("error", captureStreamError);
     child.on("error", (error) => {
       appendBounded(stderr, error.message);
       if (!windowsCleanupPending) finish(termination ? terminationCode() : 1);
@@ -348,6 +352,7 @@ export function executeHook(
     child.once("close", (code) => {
       if (!windowsCleanupPending) finish(termination ? terminationCode() : code ?? 1);
     });
+    if (completed) return;
     const boundedTimeoutMs = Number.isNaN(timeoutMs)
       ? 30_000
       : Math.max(1, Math.min(timeoutMs, HOOK_TIMEOUT_MAX_MS));
