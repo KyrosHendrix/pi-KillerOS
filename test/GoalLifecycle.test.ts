@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { goalElapsedMilliseconds, parseGoalState, stopGoalClock } from "../killeros/goal-state.ts";
 import { createHarness, createTuiContext, emitSequentially, getCommand, getHandlers, getTool, last, type TestHandler, type TestResult } from "./ExtensionTestHarness.ts";
 type GoalEntryState = {
   status: string;
@@ -154,6 +155,88 @@ test("/goal restore rejects contradictory status-specific fields", async () => {
     assert.match(last(notifications)?.message ?? "", /No goal is set/u, state.status);
   }
 });
+
+test("/goal restore rejects counters that cannot advance safely", async () => {
+  const now = Date.now();
+  const common = {
+    version: 1,
+    revision: 1,
+    objective: "Reject unsafe counters",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    activeMilliseconds: 0,
+    activeStartedAt: now,
+    turns: 1,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+  };
+
+  for (const state of [
+    { ...common, revision: Number.MAX_SAFE_INTEGER },
+    { ...common, turns: Number.MAX_SAFE_INTEGER },
+    { ...common, activeMilliseconds: Number.MAX_VALUE },
+  ]) {
+    const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: "checkpoint", state } }];
+    const { commands, handlers, sentMessages } = createHarness<GoalEntryData>();
+    const { ctx } = createTuiContext(entries);
+    const notifications: TestNotification[] = [];
+    ctx.ui.notify = (message, level) => notifications.push({ message, level });
+    await emitSequentially(getHandlers(handlers, "session_start"), { reason: "resume" }, ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+    ctx.mode = "rpc";
+    await getCommand(commands, "goal").handler("", ctx);
+
+    assert.equal(sentMessages.length, 0);
+    assert.match(last(notifications)?.message ?? "", /No goal is set/u);
+  }
+});
+
+test("goal duration arithmetic rejects unsafe integer results", () => {
+  const state = parseGoalState({
+    version: 1,
+    revision: 1,
+    objective: "Reject unsafe duration arithmetic",
+    status: "active",
+    createdAt: 0,
+    updatedAt: 0,
+    activeMilliseconds: Number.MAX_SAFE_INTEGER - 1,
+    activeStartedAt: 0,
+    turns: 0,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+  });
+  assert.ok(state);
+
+  assert.throws(() => goalElapsedMilliseconds(state, 10), /safe integer range/iu);
+  assert.throws(() => stopGoalClock(state, 10), /safe integer range/iu);
+});
+
+test("/goal edit contains verification inference failures and resumes the old goal", async () => {
+  const { appendedEntries, commands, handlers, sentMessages } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await getCommand(commands, "goal").handler("Keep the original objective", ctx);
+  ctx.waitForIdle = async () => {
+    await emitSequentially(getHandlers(handlers, "agent_end"), {
+      messages: [{ role: "assistant", stopReason: "stop" }],
+    }, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
+  };
+  ctx.ui.editor = async () => `Create file at \`${pathWithNullByte()}\``;
+
+  await getCommand(commands, "goal").handler("edit", ctx);
+
+  assert.equal(last(appendedEntries).data.state.objective, "Keep the original objective");
+  assert.equal(last(appendedEntries).data.state.status, "active");
+  assert.equal(sentMessages.length, 2);
+  assert.equal(last(notifications).level, "error");
+});
+
+function pathWithNullByte(): string {
+  return `${process.cwd().replace(/\\/gu, "/")}/invalid\0file`;
+}
 
 test("goal update is active only while a goal is active", async () => {
   const { activeTools, commands, handlers, tools } = createHarness<GoalEntryData>();

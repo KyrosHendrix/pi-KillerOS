@@ -139,6 +139,46 @@ test("named goal checks bind by hash, reject failures and changes, then complete
   assert.equal(requiredState(last(harness.appendedEntries)).status, "complete");
 });
 
+test("completion cannot finish a goal restored while its check is running", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-race-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(path.join(directory, ".pi"));
+  const marker = path.join(directory, "check-started");
+  const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('check-started','yes');setTimeout(()=>process.exit(0),200)"`;
+  writeFileSync(path.join(directory, ".pi", "killeros-hooks.json"), JSON.stringify({ goalChecks: { quality: { command } } }));
+
+  const harness = createHarness();
+  const ctx = createContext(harness.entries);
+  ctx.cwd = directory;
+  ctx.isProjectTrusted = () => true;
+  await requiredMapValue(harness.commands, "goal").handler("start --check quality -- Original goal", ctx);
+  const completion = complete(harness, ctx);
+  while (!existsSync(marker)) await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const now = Date.now();
+  harness.entries.splice(0, harness.entries.length, {
+    type: "custom",
+    customType: "killeros-goal",
+    data: { version: 1, event: "set", state: {
+      version: 1,
+      revision: 1,
+      objective: "Goal restored from another branch",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      activeMilliseconds: 0,
+      activeStartedAt: now,
+      turns: 0,
+      blockedAuditStartTurn: 0,
+      baselineTokens: 0,
+    } },
+  });
+  for (const handler of harness.handlers.get("session_tree") ?? []) await handler({}, ctx);
+
+  await assert.rejects(completion, /goal changed while completion was being verified/iu);
+  assert.equal(harness.appendedEntries.some((entry) => entry.data.event === "complete"), false);
+});
+
 test("file verification runs before a named completion command", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-order-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

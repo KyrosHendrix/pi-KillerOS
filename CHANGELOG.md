@@ -15,6 +15,7 @@ All notable changes to KillerOS are documented here.
 ### Fixed
 
 - Preserved plain goal objectives that begin with command words and accepted strict `/goal start -- <objective>` syntax without options.
+- Rejected unsafe persisted goal counters, contained file-verification inference errors, and prevented stale completion checks from completing a newly restored goal.
 - Kept lifecycle hooks stable for corrupt payload serialization, `NaN` direct timeouts, abort races, stream errors, and synchronous process completion without tightening custom process adapter contracts.
 
 ## [2.0.22] - 2026-08-30

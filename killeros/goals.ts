@@ -617,6 +617,7 @@ export function registerGoal(
       if (params.status === "complete") {
         if (state.verification) await verifyGoalDeliverable(state.verification);
         if (state.completionCheck) await runGoalCompletionCheck(ctx, state.completionCheck, signal);
+        if (runtime.state !== state) throw new Error("Goal changed while completion was being verified");
         const verification = state.verification && state.completionCheck
           ? "file-and-check"
           : state.verification ? "file" : state.completionCheck ? "check" : "model-reported";
@@ -1044,7 +1045,14 @@ export function registerGoal(
           scheduleGoalContinuation(pi, runtime, initState, ctx);
           return;
         }
-        const verification = await inferGoalVerification(objective);
+        let verification: Awaited<ReturnType<typeof inferGoalVerification>>;
+        try {
+          verification = await inferGoalVerification(objective);
+        } catch (error) {
+          reportError(ctx, "Goal verification could not be inferred", error);
+          scheduleGoalContinuation(pi, runtime, initState, ctx);
+          return;
+        }
         const next = editGoalState(runtime.state, objective, verification, Date.now());
         try {
           persistGoalState(pi, runtime, "edit", next);

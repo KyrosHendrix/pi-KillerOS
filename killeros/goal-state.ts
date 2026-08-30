@@ -27,6 +27,20 @@ function finiteNonNegative(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function safeNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function incrementableNonNegativeInteger(value: unknown): value is number {
+  return safeNonNegativeInteger(value) && value < Number.MAX_SAFE_INTEGER;
+}
+
+function addGoalMilliseconds(accumulated: number, interval: number): number {
+  const total = accumulated + interval;
+  if (!safeNonNegativeInteger(total)) throw new Error("Goal active duration exceeds the safe integer range");
+  return total;
+}
+
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -105,17 +119,16 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     maxTurns,
   } = value;
   if (version !== GOAL_VERSION
-    || typeof revision !== "number" || !Number.isInteger(revision) || revision < 1
+    || !incrementableNonNegativeInteger(revision) || revision < 1
     || typeof objective !== "string" || !objective.trim() || [...objective].length > GOAL_OBJECTIVE_LIMIT
     || !isGoalStatus(status)
-    || !finiteNonNegative(createdAt)
-    || !finiteNonNegative(updatedAt)
-    || !finiteNonNegative(activeMilliseconds)
-    || typeof turns !== "number" || !Number.isInteger(turns) || turns < 0
+    || !safeNonNegativeInteger(createdAt)
+    || !safeNonNegativeInteger(updatedAt)
+    || !incrementableNonNegativeInteger(activeMilliseconds)
+    || !incrementableNonNegativeInteger(turns)
     || blockedAuditStartTurn !== undefined
-      && (typeof blockedAuditStartTurn !== "number" || !Number.isInteger(blockedAuditStartTurn)
-        || blockedAuditStartTurn < 0 || blockedAuditStartTurn > turns)
-    || !finiteNonNegative(baselineTokens)
+      && (!safeNonNegativeInteger(blockedAuditStartTurn) || blockedAuditStartTurn > turns)
+    || !safeNonNegativeInteger(baselineTokens)
     || result !== undefined && typeof result !== "string"
     || verification !== undefined && !isGoalFileVerification(verification)
     || completionCheck !== undefined && !isGoalCompletionCheck(completionCheck)
@@ -141,7 +154,7 @@ export function parseGoalState(value: unknown): GoalState | undefined {
   };
   switch (status) {
     case "active":
-      if (!finiteNonNegative(activeStartedAt) || resumeAfterManualCompaction !== undefined) return undefined;
+      if (!safeNonNegativeInteger(activeStartedAt) || resumeAfterManualCompaction !== undefined) return undefined;
       return {
         ...common,
         status,
@@ -271,7 +284,7 @@ export function validateGoalObjective(input: string): string | undefined {
 
 export function goalElapsedMilliseconds(state: GoalState, now: number): number {
   const activeInterval = state.status === "active" ? Math.max(0, now - state.activeStartedAt) : 0;
-  return state.activeMilliseconds + activeInterval;
+  return addGoalMilliseconds(state.activeMilliseconds, activeInterval);
 }
 
 export function commonGoalState(state: GoalState): GoalStateCommon {
@@ -294,7 +307,7 @@ export function commonGoalState(state: GoalState): GoalStateCommon {
 export function stopGoalClock(state: GoalState, now: number): GoalStateCommon {
   const common = commonGoalState(state);
   return state.status === "active"
-    ? { ...common, activeMilliseconds: common.activeMilliseconds + Math.max(0, now - state.activeStartedAt) }
+    ? { ...common, activeMilliseconds: addGoalMilliseconds(common.activeMilliseconds, Math.max(0, now - state.activeStartedAt)) }
     : common;
 }
 
