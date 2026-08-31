@@ -3,6 +3,7 @@ docs/
 .pi/
 *.tgz
 *.log
+/.audit/
 
 # Local generated previews
 /design/
