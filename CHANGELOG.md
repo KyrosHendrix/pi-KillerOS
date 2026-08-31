@@ -7,6 +7,7 @@ All notable changes to KillerOS are documented here.
 ### Added
 
 - Added named goal completion checks, per-goal turn limits, and branch-aware `/goal history`.
+- Added per-response TUI receipts for net Git changes and recognized verification results.
 
 ### Changed
 

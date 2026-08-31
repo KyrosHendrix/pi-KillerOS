@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { StopReason } from "@earendil-works/pi-ai";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import test from "node:test";
+import type { ChangeReceiptCollection } from "../killeros/change-receipt.ts";
 import {
   formatWorkedForDuration,
   registerWorkedFor,
@@ -12,12 +14,16 @@ import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 type WorkedForEvent = {
   type: string;
   messages?: Array<{ role?: string; stopReason?: StopReason }>;
+  toolName?: string;
+  input?: Record<string, unknown>;
+  isError?: boolean;
 };
 
 type WorkedForSessionEntry =
   | { type: "compaction" | "branch_summary"; usage: { totalTokens: number } }
   | { type: "message"; message: { role: string; usage: { totalTokens: number } } };
 type WorkedForContext = {
+  cwd: string;
   mode: ExtensionContext["mode"];
   hasPendingMessages(): boolean;
   isIdle(): boolean;
@@ -57,7 +63,13 @@ type WorkedForHarness = {
   setTime(milliseconds: number): void;
 };
 
-function createWorkedForHarness(mode: WorkedForContext["mode"] = "tui"): WorkedForHarness {
+function createWorkedForHarness(
+  mode: WorkedForContext["mode"] = "tui",
+  collect: (cwd: string) => Promise<ChangeReceiptCollection> = async () => ({
+    finish: async () => ({ state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0 }),
+    dispose: async () => undefined,
+  }),
+): WorkedForHarness {
   let currentTime = 0;
   let appendError: Error | undefined;
   let idle = true;
@@ -84,6 +96,7 @@ function createWorkedForHarness(mode: WorkedForContext["mode"] = "tui"): WorkedF
     },
   };
   const ctx: WorkedForContext = {
+    cwd: process.cwd(),
     hasPendingMessages: () => pendingMessages,
     isIdle: () => idle,
     mode,
@@ -93,7 +106,7 @@ function createWorkedForHarness(mode: WorkedForContext["mode"] = "tui"): WorkedF
     } },
     ui: { notify: (message: string, level?: NotificationLevel) => notices.push({ message, level }) },
   };
-  registerWorkedFor(extensionApiTestAdapter(api), () => currentTime);
+  registerWorkedFor(extensionApiTestAdapter(api), () => currentTime, collect);
 
   return {
     appendedEntries,
@@ -112,6 +125,11 @@ function createWorkedForHarness(mode: WorkedForContext["mode"] = "tui"): WorkedF
 }
 
 const theme = themeTestAdapter({ fg: (_color: string, text: string): string => text });
+const EMPTY_V4 = {
+  changes: { state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0 },
+  checks: [],
+  omittedChecks: { passed: 0, failed: 0 },
+} as const;
 
 function usageEntry(type: "assistant" | "toolResult" | "compaction" | "branch_summary", totalTokens: number): WorkedForSessionEntry {
   if (type === "compaction" || type === "branch_summary") {
@@ -150,7 +168,7 @@ test("a settled TUI run appends one durable timing entry measured from its first
 
   assert.deepEqual(harness.appendedEntries, [{
     customType: "killeros-worked-for",
-    data: { version: 3, milliseconds: 8_000, outcome: "done", tokens: 54_000 },
+    data: { version: 4, milliseconds: 8_000, outcome: "done", tokens: 54_000, ...EMPTY_V4 },
   }]);
 });
 
@@ -174,10 +192,11 @@ test("task tokens include model, tool, and compaction usage without recounting h
   await harness.emit("agent_settled");
 
   assert.deepEqual(harness.appendedEntries[0]?.data, {
-    version: 3,
+    version: 4,
     milliseconds: 1_000,
     outcome: "done",
     tokens: 39_000,
+    ...EMPTY_V4,
   });
 });
 
@@ -229,11 +248,11 @@ test("settled goal turns each append their own task receipt before continuation"
   assert.deepEqual(harness.appendedEntries, [
     {
       customType: "killeros-worked-for",
-      data: { version: 3, milliseconds: 3_000, outcome: "done", tokens: 20_000 },
+      data: { version: 4, milliseconds: 3_000, outcome: "done", tokens: 20_000, ...EMPTY_V4 },
     },
     {
       customType: "killeros-worked-for",
-      data: { version: 3, milliseconds: 4_000, outcome: "done", tokens: 10_000 },
+      data: { version: 4, milliseconds: 4_000, outcome: "done", tokens: 10_000, ...EMPTY_V4 },
     },
   ]);
 });
@@ -276,6 +295,165 @@ test("the durable entry renders task tokens and preserves older history", () => 
   ]) {
     assert.equal(renderer({ data }, {}, theme), undefined);
   }
+});
+
+test("version 4 receipts render compact and expanded change details within every width", () => {
+  const harness = createWorkedForHarness();
+  const renderer = harness.renderers.get("killeros-worked-for");
+  assert.ok(renderer);
+  const data = {
+    version: 4,
+    milliseconds: 84_000,
+    outcome: "done",
+    tokens: 18_200,
+    changes: {
+      state: "available",
+      totalFiles: 3,
+      additions: 84,
+      deletions: 21,
+      files: [
+        { kind: "modified", path: "killeros/worked-for.ts", additions: 46, deletions: 12 },
+        { kind: "renamed", path: "test/Receipt.test.ts", previousPath: "test/Old.test.ts", additions: 35, deletions: 9 },
+        { kind: "added", path: "docs/implemented/change-receipts.md", additions: 3, deletions: 0 },
+      ],
+      omittedFiles: 0,
+    },
+    checks: [
+      { label: "npm test", outcome: "passed" },
+      { label: "npm run check", outcome: "passed" },
+    ],
+    omittedChecks: { passed: 0, failed: 0 },
+  };
+  const compact = renderer({ data }, { expanded: false }, theme);
+  assert.ok(compact);
+  assert.deepEqual(compact.render(80), [
+    "✓ Done · 1m 24s · ↑ 18.2k tokens",
+    "  Changed 3 files · +84 −21",
+    "  Verified: 2 passed",
+  ]);
+  const expanded = renderer({ data }, { expanded: true }, theme);
+  assert.ok(expanded);
+  assert.match(expanded.render(120).join("\n"), /R test\/Old\.test\.ts → test\/Receipt\.test\.ts \+35 −9/u);
+
+  const longPathData = {
+    ...data,
+    changes: {
+      state: "available",
+      totalFiles: 1,
+      additions: 10,
+      deletions: 2,
+      files: [{ kind: "modified", path: `${"directory/".repeat(8)}file.ts`, additions: 10, deletions: 2 }],
+      omittedFiles: 0,
+    },
+    checks: [],
+  };
+  const narrowExpanded = renderer({ data: longPathData }, { expanded: true }, theme);
+  assert.ok(narrowExpanded);
+  assert.match(narrowExpanded.render(40)[3] ?? "", /\+10 −2/u);
+
+  for (let width = 1; width <= 200; width += 1) {
+    const compactLines = compact.render(width);
+    const expandedLines = expanded.render(width);
+    assert.ok(compactLines.length <= 3);
+    assert.ok(expandedLines.length <= 45);
+    assert.ok([...compactLines, ...expandedLines].every((line) => visibleWidth(line) <= width), `width ${width}`);
+  }
+});
+
+test("version 4 validation rejects malformed and oversized durable data", () => {
+  const harness = createWorkedForHarness();
+  const renderer = harness.renderers.get("killeros-worked-for");
+  assert.ok(renderer);
+  const valid = {
+    version: 4,
+    milliseconds: 1,
+    outcome: "done",
+    tokens: 1,
+    changes: { state: "available", totalFiles: 1, additions: 1, deletions: 0, files: [{ kind: "added", path: "safe\npath.ts", additions: 1, deletions: 0 }], omittedFiles: 0 },
+    checks: [{ label: "npm test", outcome: "passed" }],
+    omittedChecks: { passed: 0, failed: 0 },
+  };
+  const component = renderer({ data: valid }, { expanded: true }, theme);
+  assert.ok(component);
+  assert.match(component.render(100).join("\n"), /safe⏎path\.ts/u);
+  for (const data of [
+    { ...valid, milliseconds: 1.5 },
+    { ...valid, tokens: Number.POSITIVE_INFINITY },
+    { ...valid, outcome: "unknown" },
+    { ...valid, changes: { ...valid.changes, totalFiles: 2 } },
+    { ...valid, changes: { ...valid.changes, files: [{ kind: "added", path: "../unsafe", additions: 1, deletions: 0 }] } },
+    { ...valid, checks: [{ label: "npm install", outcome: "passed" }] },
+    { ...valid, checks: [{ label: "npm test", outcome: "unknown" }] },
+    { ...valid, checks: [], omittedChecks: { passed: 1, failed: 0 } },
+    { ...valid, changes: { ...valid.changes, files: [{ kind: "modified", path: "binary.bin", additions: 1, deletions: 0, detail: "binary" }] } },
+    { ...valid, changes: { ...valid.changes, files: [{ kind: "added", path: "x".repeat(70_000), additions: 1, deletions: 0 }] } },
+  ]) assert.equal(renderer({ data }, { expanded: false }, theme), undefined);
+});
+
+test("response collection keeps the first baseline and records verification attempts in event order", async () => {
+  let starts = 0;
+  const harness = createWorkedForHarness("tui", async () => {
+    starts += 1;
+    return {
+      finish: async () => ({
+        state: "available",
+        totalFiles: 1,
+        additions: 2,
+        deletions: 1,
+        files: [{ kind: "modified", path: "changed.ts", additions: 2, deletions: 1 }],
+        omittedFiles: 0,
+      }),
+      dispose: async () => undefined,
+    };
+  });
+  await harness.emit("agent_start");
+  await harness.emit("agent_start");
+  await harness.emit("tool_result", { toolName: "bash", input: { command: "npm test -- --runInBand" }, isError: false });
+  await harness.emit("tool_result", { toolName: "powershell", input: { command: "npm run check" }, isError: true });
+  await harness.emit("tool_result", { toolName: "bash", input: { command: "npm test || true" }, isError: false });
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await harness.emit("agent_settled");
+  assert.equal(starts, 1);
+  assert.deepEqual(harness.appendedEntries[0]?.data, {
+    version: 4,
+    milliseconds: 0,
+    outcome: "done",
+    tokens: 0,
+    changes: {
+      state: "available",
+      totalFiles: 1,
+      additions: 2,
+      deletions: 1,
+      files: [{ kind: "modified", path: "changed.ts", additions: 2, deletions: 1 }],
+      omittedFiles: 0,
+    },
+    checks: [
+      { label: "npm test", outcome: "passed" },
+      { label: "npm run check", outcome: "failed" },
+    ],
+    omittedChecks: { passed: 0, failed: 0 },
+  });
+});
+
+test("verification overflow keeps the first 20 attempts and unavailable collection warns once", async () => {
+  const harness = createWorkedForHarness("tui", async () => ({
+    finish: async () => ({ state: "unavailable", reason: "timeout" }),
+    dispose: async () => undefined,
+  }));
+  for (let response = 0; response < 2; response += 1) {
+    await harness.emit("agent_start");
+    for (let attempt = 0; attempt < 22; attempt += 1) {
+      await harness.emit("tool_result", {
+        toolName: "bash",
+        input: { command: attempt % 2 === 0 ? "npm test" : "npm run check" },
+        isError: attempt % 2 === 1,
+      });
+    }
+    await harness.emit("agent_settled");
+  }
+  assert.equal((harness.appendedEntries[0]?.data.checks as unknown[]).length, 20);
+  assert.deepEqual(harness.appendedEntries[0]?.data.omittedChecks, { passed: 1, failed: 1 });
+  assert.deepEqual(harness.notices, [{ message: "Change receipt unavailable: timeout", level: "warning" }]);
 });
 
 test("all Pi stop reasons map to truthful outcomes", async () => {
@@ -326,11 +504,11 @@ test("each settled continuation uses its own last assistant reason", async () =>
   assert.deepEqual(harness.appendedEntries, [
     {
       customType: "killeros-worked-for",
-      data: { version: 3, milliseconds: 1_000, outcome: "failed", tokens: 0 },
+      data: { version: 4, milliseconds: 1_000, outcome: "failed", tokens: 0, ...EMPTY_V4 },
     },
     {
       customType: "killeros-worked-for",
-      data: { version: 3, milliseconds: 2_000, outcome: "done", tokens: 0 },
+      data: { version: 4, milliseconds: 2_000, outcome: "done", tokens: 0, ...EMPTY_V4 },
     },
   ]);
 });
