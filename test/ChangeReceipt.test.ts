@@ -9,7 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   beginChangeReceipt,
   disposeChangeReceipts,
-  recognizedVerification,
+  recognizedCheck,
+  CHECK_LABELS,
 } from "../killeros/change-receipt.ts";
 
 after(disposeChangeReceipts);
@@ -44,20 +45,24 @@ async function inventory(directory: string, prefix = ""): Promise<string[]> {
   return result.sort();
 }
 
-test("verification recognition stores only canonical command prefixes", () => {
-  assert.deepEqual(recognizedVerification("  npm test -- --runInBand", false), { label: "npm test", outcome: "passed" });
-  assert.deepEqual(recognizedVerification(".\\gradlew.bat check --scan", true), { label: ".\\gradlew.bat check", outcome: "failed" });
+test("check recognition stores only exact canonical commands", () => {
+  for (const command of CHECK_LABELS) {
+    assert.deepEqual(recognizedCheck(` \t${command}\t `, false), { label: command, outcome: "passed" });
+  }
   for (const command of [
-    "npm testing",
+    "npm test --if-present",
+    "npm test --ignore-scripts",
+    "npm test --help",
+    "npm test -- --runInBand",
+    "node --test --help",
+    "pytest tests/unit",
+    "go test ./...",
     "API_TOKEN=secret npm test",
     "npm test || true",
     "npm test && npm run build",
     "npm test\nnpm run build",
-    "ls",
-    "git status",
-    "npm install",
   ]) {
-    assert.equal(recognizedVerification(command, false), undefined, command);
+    assert.equal(recognizedCheck(command, false), undefined, command);
   }
 });
 

@@ -40,7 +40,7 @@ Pin a release by appending its tag, for example `@v2.0.22`. Add `-l` to install 
 
 ```text
 /init                     Generate root AGENTS.md from repository evidence
-/goal                     Open goal status, or set an objective with /goal <objective>
+/goal                     Open status, or set with /goal <objective>
 /goal start [--check name] [--turns count] -- <objective>
 /goal check <name|clear>  Set or clear a named completion check
 /goal limit <count|clear> Set or clear a turn limit
@@ -91,7 +91,7 @@ Trusted projects can define up to 32 named goal checks in `.pi/killeros-hooks.js
 }
 ```
 
-Bind a check with `/goal start --check quality -- <objective>` or `/goal check quality`. KillerOS stores the check name and definition hash, not the command. If the project changes the command or timeout, bind the check again before completing the goal.
+Use `/goal start -- <objective>` when an objective begins with `start`, `check`, `limit`, `history`, `clear`, `edit`, `pause`, or `resume`. Bind a check with `/goal start --check quality -- <objective>` or `/goal check quality`. KillerOS stores the check name and definition hash, not the command. If the project changes the command or timeout, bind the check again before completing the goal.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 

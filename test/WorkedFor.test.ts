@@ -329,7 +329,7 @@ test("version 4 receipts render compact and expanded change details within every
   assert.deepEqual(compact.render(80), [
     "✓ Done · 1m 24s · ↑ 18.2k tokens",
     "  Changed 3 files · +84 −21",
-    "  Verified: 2 passed",
+    "  Checks: 2 passed",
   ]);
   const expanded = renderer({ data }, { expanded: true }, theme);
   assert.ok(expanded);
@@ -357,6 +357,25 @@ test("version 4 receipts render compact and expanded change details within every
     assert.ok(compactLines.length <= 3);
     assert.ok(expandedLines.length <= 45);
     assert.ok([...compactLines, ...expandedLines].every((line) => visibleWidth(line) <= width), `width ${width}`);
+  }
+});
+
+test("version 4 receipts describe observed checks without verification claims", () => {
+  const renderer = createWorkedForHarness().renderers.get("killeros-worked-for");
+  assert.ok(renderer);
+  const changed = { state: "available", totalFiles: 1, additions: 1, deletions: 0, files: [{ kind: "added", path: "file.ts", additions: 1, deletions: 0 }], omittedFiles: 0 };
+  const cases = [
+    { checks: [{ label: "npm test", outcome: "passed" }], omittedChecks: { passed: 0, failed: 0 }, expected: "  Check passed: npm test ✓" },
+    { checks: [{ label: "npm test", outcome: "failed" }], omittedChecks: { passed: 0, failed: 0 }, expected: "  Check failed: npm test ×" },
+    { checks: [{ label: "npm test", outcome: "passed" }, { label: "npm run check", outcome: "failed" }], omittedChecks: { passed: 0, failed: 0 }, expected: "  Checks: 1 passed · 1 failed" },
+    { checks: [], omittedChecks: { passed: 0, failed: 0 }, expected: "  No check recorded" },
+  ] as const;
+  for (const receipt of cases) {
+    const component = renderer({ data: { version: 4, milliseconds: 1, outcome: "done", tokens: 1, changes: changed, checks: receipt.checks, omittedChecks: receipt.omittedChecks } }, { expanded: false }, theme);
+    assert.ok(component);
+    const lines = component.render(100);
+    assert.equal(lines[2], receipt.expected);
+    assert.doesNotMatch(lines.join("\n"), /Verified|Verification|Not verified/u);
   }
 });
 
@@ -390,7 +409,7 @@ test("version 4 validation rejects malformed and oversized durable data", () => 
   ]) assert.equal(renderer({ data }, { expanded: false }, theme), undefined);
 });
 
-test("response collection keeps the first baseline and records verification attempts in event order", async () => {
+test("response collection keeps the first baseline and records checks in event order", async () => {
   let starts = 0;
   const harness = createWorkedForHarness("tui", async () => {
     starts += 1;
@@ -409,6 +428,7 @@ test("response collection keeps the first baseline and records verification atte
   await harness.emit("agent_start");
   await harness.emit("agent_start");
   await harness.emit("tool_result", { toolName: "bash", input: { command: "npm test -- --runInBand" }, isError: false });
+  await harness.emit("tool_result", { toolName: "bash", input: { command: "npm test" }, isError: false });
   await harness.emit("tool_result", { toolName: "powershell", input: { command: "npm run check" }, isError: true });
   await harness.emit("tool_result", { toolName: "bash", input: { command: "npm test || true" }, isError: false });
   await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
@@ -435,7 +455,7 @@ test("response collection keeps the first baseline and records verification atte
   });
 });
 
-test("verification overflow keeps the first 20 attempts and unavailable collection warns once", async () => {
+test("check overflow keeps the first 20 attempts and unavailable collection warns once", async () => {
   const harness = createWorkedForHarness("tui", async () => ({
     finish: async () => ({ state: "unavailable", reason: "timeout" }),
     dispose: async () => undefined,

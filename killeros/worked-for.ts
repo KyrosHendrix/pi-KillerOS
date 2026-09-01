@@ -5,12 +5,12 @@ import { Text, truncateToWidth, visibleWidth, type Component } from "@earendil-w
 import {
   beginChangeReceipt,
   disposeChangeReceipts,
-  recognizedVerification,
-  VERIFICATION_LABELS,
+  recognizedCheck,
+  CHECK_LABELS,
   type ChangeReceiptCollection,
   type ChangeSummary,
   type ChangedFile,
-  type VerificationAttempt,
+  type CheckAttempt,
 } from "./change-receipt.ts";
 import { formatTokens } from "./display.ts";
 import { errorMessage } from "./errors.ts";
@@ -18,7 +18,6 @@ import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const WORKED_FOR_ENTRY_TYPE = "killeros-worked-for";
 const MAX_PAYLOAD_BYTES = 64 * 1024;
-const CANONICAL_CHECKS = new Set<string>(VERIFICATION_LABELS);
 
 interface WorkedForEntryDataV1 {
   version: 1;
@@ -46,7 +45,7 @@ export interface WorkedForEntryDataV4 {
   outcome: WorkedForOutcome;
   tokens: number;
   changes: ChangeSummary;
-  checks: VerificationAttempt[];
+  checks: CheckAttempt[];
   omittedChecks: { passed: number; failed: number };
 }
 
@@ -133,11 +132,12 @@ function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefine
   if (!changes || !Array.isArray(data.checks) || data.checks.length > 20 || !record(data.omittedChecks)
     || !integer(data.omittedChecks.passed) || !integer(data.omittedChecks.failed)) return undefined;
   if (data.omittedChecks.passed + data.omittedChecks.failed > 0 && data.checks.length !== 20) return undefined;
-  const checks: VerificationAttempt[] = [];
+  const checks: CheckAttempt[] = [];
   for (const check of data.checks) {
-    if (!record(check) || typeof check.label !== "string" || !CANONICAL_CHECKS.has(check.label)
-      || check.outcome !== "passed" && check.outcome !== "failed") return undefined;
-    checks.push({ label: check.label, outcome: check.outcome });
+    if (!record(check) || check.outcome !== "passed" && check.outcome !== "failed") return undefined;
+    const label = CHECK_LABELS.find((candidate) => candidate === check.label);
+    if (!label) return undefined;
+    checks.push({ label, outcome: check.outcome });
   }
   return {
     version: 4,
@@ -223,15 +223,15 @@ class WorkedForV4Component implements Component {
     const failed = data.checks.filter((check) => check.outcome === "failed").length + data.omittedChecks.failed;
     const totalChecks = passed + failed;
     if (totalChecks === 0) {
-      if (data.changes.state === "available" && data.changes.totalFiles > 0) lines.push(theme.fg("warning", "  Not verified"));
+      if (data.changes.state === "available" && data.changes.totalFiles > 0) lines.push(theme.fg("warning", "  No check recorded"));
     } else if (totalChecks === 1) {
       const check = data.checks[0];
-      if (check?.outcome === "passed") lines.push(`${theme.fg("success", `  ${width < 40 ? "Check:" : "Verified:"} ${check.label} ✓`)}`);
-      else if (check) lines.push(theme.fg("error", `  ${width < 40 ? "Check:" : "Verification failed:"} ${check.label} ×`));
+      if (check?.outcome === "passed") lines.push(theme.fg("success", `  Check passed: ${check.label} ✓`));
+      else if (check) lines.push(theme.fg("error", `  Check failed: ${check.label} ×`));
     } else if (failed === 0) {
-      lines.push(theme.fg("success", `  ${width < 40 ? "Check:" : "Verified:"} ${passed} passed`));
+      lines.push(theme.fg("success", `  Checks: ${passed} passed`));
     } else {
-      lines.push(`  ${theme.fg("error", "Verification:")} ${theme.fg("success", `${passed} passed`)}${theme.fg("dim", " · ")}${theme.fg("error", `${failed} failed`)}`);
+      lines.push(`  ${theme.fg("accent", "Checks:")} ${theme.fg("success", `${passed} passed`)}${theme.fg("dim", " · ")}${theme.fg("error", `${failed} failed`)}`);
     }
     if (this.expanded && data.changes.state === "available") {
       for (const file of data.changes.files) {
@@ -270,7 +270,7 @@ type ActiveReceipt = {
   startedTokens: number | undefined;
   stopReason: StopReason | undefined;
   collection: Promise<ChangeReceiptCollection>;
-  checks: VerificationAttempt[];
+  checks: CheckAttempt[];
   omittedChecks: { passed: number; failed: number };
 };
 
@@ -327,7 +327,7 @@ export function registerWorkedFor(
 
   pi.on("tool_result", (event: ToolResultEvent, ctx) => {
     if (ctx.mode !== "tui" || !active || event.toolName !== "bash" && event.toolName !== "powershell") return;
-    const check = recognizedVerification(event.input.command, event.isError);
+    const check = recognizedCheck(event.input.command, event.isError);
     if (!check) return;
     if (active.checks.length < 20) active.checks.push(check);
     else active.omittedChecks[check.outcome] += 1;

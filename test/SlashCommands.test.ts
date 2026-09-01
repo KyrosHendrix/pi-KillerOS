@@ -244,6 +244,7 @@ test("autocomplete uses the same resolver and falls back to current base suggest
 
 test("goal completions include controls and strict start options", () => {
   const goal = getCommand(createHarness(), "goal");
+  assert.equal(goal.description, "Set a non-command objective or view the current goal");
   assert.ok(goal.getArgumentCompletions);
   assert.deepEqual(
     goal.getArgumentCompletions("")?.map(({ value }) => value),

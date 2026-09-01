@@ -22,20 +22,28 @@ export type ChangeSummary =
   | { state: "available"; totalFiles: number; additions: number; deletions: number; files: ChangedFile[]; omittedFiles: number }
   | { state: "unavailable"; reason: ChangeUnavailableReason };
 
-export type VerificationAttempt = { label: VerificationLabel; outcome: "passed" | "failed" };
+export type CheckAttempt = { label: CheckLabel; outcome: "passed" | "failed" };
 
 const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"] as const;
 const PACKAGE_SCRIPTS = ["test", "check", "lint", "typecheck", "build"] as const;
 const GRADLE_COMMANDS = ["gradle", "gradlew", "gradlew.bat", "./gradlew", "./gradlew.bat", ".\\gradlew", ".\\gradlew.bat"] as const;
+const PACKAGE_CHECK_LABELS = PACKAGE_MANAGERS.flatMap((manager) => [
+  `${manager} test`,
+  ...PACKAGE_SCRIPTS.map((script) => `${manager} run ${script}` as const),
+] as const);
+const GRADLE_CHECK_LABELS = GRADLE_COMMANDS.flatMap((command) => [
+  `${command} test`,
+  `${command} check`,
+] as const);
 
-export const VERIFICATION_LABELS = [
-  ...PACKAGE_MANAGERS.flatMap((manager) => [`${manager} test`, ...PACKAGE_SCRIPTS.map((script) => `${manager} run ${script}`)]),
+export const CHECK_LABELS = [
+  ...PACKAGE_CHECK_LABELS,
   "python -m pytest", "py -m pytest", "node --test", "cargo clippy", "cargo check", "cargo test",
   "dotnet test", "mvn verify", "mvn test", "go test", "go vet", "pytest",
-  ...GRADLE_COMMANDS.flatMap((command) => [`${command} test`, `${command} check`]),
-].sort((left, right) => right.length - left.length) as readonly string[];
+  ...GRADLE_CHECK_LABELS,
+] as const;
 
-export type VerificationLabel = typeof VERIFICATION_LABELS[number];
+export type CheckLabel = typeof CHECK_LABELS[number];
 
 export interface ChangeReceiptCollection {
   finish(): Promise<ChangeSummary>;
@@ -544,15 +552,10 @@ async function compare(repo: Repository, baseline: Snapshot, settlement: Snapsho
   return { state: "available", totalFiles: changes.length, additions, deletions, files: changes.slice(0, MAX_FILES), omittedFiles: Math.max(0, changes.length - MAX_FILES) };
 }
 
-function verificationLabel(command: string): VerificationLabel | undefined {
-  if (/\r|\n|[&|;<>]/u.test(command)) return undefined;
-  const trimmed = command.replace(/^[\t ]+/u, "");
-  return VERIFICATION_LABELS.find((label) => trimmed === label || trimmed.startsWith(label) && /^[\t ]/u.test(trimmed.slice(label.length)));
-}
-
-export function recognizedVerification(command: unknown, failed: boolean): VerificationAttempt | undefined {
+export function recognizedCheck(command: unknown, failed: boolean): CheckAttempt | undefined {
   if (typeof command !== "string") return undefined;
-  const label = verificationLabel(command);
+  const normalized = command.replace(/^[\t ]+|[\t ]+$/gu, "");
+  const label = CHECK_LABELS.find((candidate) => normalized === candidate);
   return label ? { label, outcome: failed ? "failed" : "passed" } : undefined;
 }
 

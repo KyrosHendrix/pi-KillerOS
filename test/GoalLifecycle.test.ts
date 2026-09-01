@@ -545,7 +545,7 @@ test("/goal pause stops a scheduled continuation before its goal turn starts", a
   const calls: string[] = [];
   ctx.abort = () => calls.push("abort");
   ctx.waitForIdle = async () => { calls.push("waitForIdle"); };
-  await getCommand(commands, "goal").handler("Pause scheduled work", ctx);
+  await getCommand(commands, "goal").handler("start -- Pause scheduled work", ctx);
   assert.equal(sentMessages.length, 1);
   calls.length = 0;
   await getCommand(commands, "goal").handler("pause", ctx);

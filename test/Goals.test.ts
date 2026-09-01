@@ -80,20 +80,79 @@ test("strict goal start validates controls atomically", async () => {
   assert.equal(last(unbounded.appendedEntries).data.state.objective, "Objective without controls");
 });
 
-test("plain goals preserve objectives that begin with control words", async () => {
-  for (const objective of [
-    "Start reliably",
-    "Clear stale generated files",
-    "Edit the release notes",
-    "Pause scheduled work safely",
-    "Resume interrupted downloads",
-    "Check the release artifacts carefully",
-    "Limit dependency updates carefully",
-    "History of the migration effort",
-  ]) {
-    const { appendedEntries, commands } = createHarness<GoalEntryData>();
-    await getCommand(commands, "goal").handler(objective, createTuiContext().ctx);
-    assert.equal(last(appendedEntries).data.state.objective, objective);
+test("reserved goal words require strict start syntax for objectives", async () => {
+  for (const word of ["Start", "Check", "Limit", "History", "Clear", "Edit", "Pause", "Resume"]) {
+    const objective = `${word} the release artifacts`;
+    const rejected = createHarness<GoalEntryData>();
+    const rejectedContext = createTuiContext().ctx;
+    const notifications: TestNotification[] = [];
+    rejectedContext.ui.notify = (message, level) => notifications.push({ message, level });
+    await getCommand(rejected.commands, "goal").handler(objective, rejectedContext);
+    assert.deepEqual(rejected.appendedEntries, []);
+    assert.deepEqual(rejected.sentMessages, []);
+    assert.equal(last(notifications).message, "Objective begins with a reserved goal command. Use /goal start -- <objective>.");
+
+    const started = createHarness<GoalEntryData>();
+    await getCommand(started.commands, "goal").handler(`start -- ${objective}`, createTuiContext().ctx);
+    assert.equal(last(started.appendedEntries).data.state.objective, objective);
+  }
+});
+
+test("malformed reserved goal commands have no side effects", async () => {
+  const cases = [
+    ["check", "Usage: /goal check <name|clear>"],
+    ["check quality extra", "Usage: /goal check <name|clear>"],
+    ["check clear extra", "Usage: /goal check <name|clear>"],
+    ["limit", "Usage: /goal limit <count|clear>"],
+    ["limit 3 extra", "Usage: /goal limit <count|clear>"],
+    ["limit clear extra", "Usage: /goal limit <count|clear>"],
+    ["history 2 extra", "Usage: /goal history [count]"],
+    ["clear now", "Usage: /goal clear"],
+    ["edit now", "Usage: /goal edit"],
+    ["pause now", "Usage: /goal pause"],
+    ["resume now", "Usage: /goal resume"],
+  ] as const;
+  const now = Date.now();
+  const activeState = {
+    version: 1,
+    revision: 1,
+    objective: "Existing objective",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    activeMilliseconds: 0,
+    activeStartedAt: now,
+    turns: 0,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+  };
+
+  for (const [input, expected] of cases) {
+    for (const existing of [false, true]) {
+      const entries = existing ? [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: "set", state: activeState } }] : [];
+      const harness = createHarness<GoalEntryData>();
+      const { ctx } = createTuiContext(entries);
+      const notifications: TestNotification[] = [];
+      let aborts = 0;
+      let waits = 0;
+      let confirmations = 0;
+      let edits = 0;
+      ctx.abort = () => { aborts += 1; };
+      ctx.waitForIdle = async () => { waits += 1; };
+      ctx.ui.confirm = async () => { confirmations += 1; return true; };
+      ctx.ui.editor = async () => { edits += 1; return "edited"; };
+      ctx.ui.notify = (message, level) => notifications.push({ message, level });
+      if (existing) await emitSequentially(getHandlers(harness.handlers, "session_start"), {}, ctx);
+      const writes = harness.appendedEntries.length;
+      const messages = harness.sentMessages.length;
+
+      await getCommand(harness.commands, "goal").handler(input, ctx);
+
+      assert.equal(harness.appendedEntries.length, writes, `${input}, existing=${existing}`);
+      assert.equal(harness.sentMessages.length, messages, `${input}, existing=${existing}`);
+      assert.deepEqual({ aborts, waits, confirmations, edits }, { aborts: 0, waits: 0, confirmations: 0, edits: 0 });
+      assert.deepEqual(notifications, [{ message: expected, level: "error" }]);
+    }
   }
 });
 
@@ -377,7 +436,7 @@ test("/goal continues one turn at a time and pause stops future turns", async ()
 test("/goal pauses when a dispatched continuation settles without an agent result", async () => {
   const { appendedEntries, commands, handlers } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
-  await getCommand(commands, "goal").handler("Start reliably", ctx);
+  await getCommand(commands, "goal").handler("start -- Start reliably", ctx);
   await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   const lastGoalEntry = last(appendedEntries.filter((entry) => entry.customType === "killeros-goal"));
   assert.equal(lastGoalEntry.data.state.status, "paused");
@@ -394,7 +453,7 @@ test("/goal does not report start, resume, or edit success after dispatch failur
 
     if (control === "start") {
       api.sendMessage = () => { throw new Error("provider unavailable"); };
-      await getCommand(commands, "goal").handler("Start reliably", ctx);
+      await getCommand(commands, "goal").handler("start -- Start reliably", ctx);
     } else {
       await getCommand(commands, "goal").handler("Original objective", ctx);
       api.sendMessage = () => { throw new Error("provider unavailable"); };
@@ -451,7 +510,7 @@ test("/goal waits for an unrelated active run to settle before dispatch", async 
   let idle = false;
   ctx.isIdle = () => idle;
 
-  await getCommand(commands, "goal").handler("Start after unrelated work", ctx);
+  await getCommand(commands, "goal").handler("start -- Start after unrelated work", ctx);
   assert.equal(sentMessages.length, 0);
   idle = true;
   await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
@@ -560,7 +619,7 @@ test("/goal pause can save an in-memory fallback after persistence recovers", as
   const { ctx } = createTuiContext();
   const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
-  await getCommand(commands, "goal").handler("Pause even if storage fails", ctx);
+  await getCommand(commands, "goal").handler("start -- Pause even if storage fails", ctx);
 
   const appendEntry = api.appendEntry;
   api.appendEntry = () => { throw new Error("persistent session write failure"); };
