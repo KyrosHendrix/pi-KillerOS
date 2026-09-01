@@ -15,7 +15,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
-- Allowed Git footer scans up to five seconds and kept the last successful file-change status after transient failures.
+- Allowed Git footer scans up to five seconds, contained rejected refreshes, and kept the last successful file-change status after transient failures.
 - Recorded only exact check commands in response receipts, replaced verification claims with observed-check copy, and reserved `/goal` command words so malformed controls cannot start objectives.
 - Rejected unsafe persisted goal counters, contained file-verification inference errors, and prevented stale completion checks from completing a newly restored goal.
 - Kept lifecycle hooks stable for corrupt payload serialization, `NaN` direct timeouts, abort races, stream errors, and synchronous process completion without tightening custom process adapter contracts.

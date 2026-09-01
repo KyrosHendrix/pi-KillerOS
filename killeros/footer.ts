@@ -94,9 +94,16 @@ function createGitRefresh<T>(
       return;
     }
     pending = true;
-    void resolveResult(cwd).then((result) => {
-      if (!disposed) onResult(result);
-    }).finally(() => {
+    let result: Promise<T | undefined>;
+    try {
+      result = resolveResult(cwd);
+    } catch {
+      result = Promise.resolve(undefined);
+    }
+    void result.then(
+      (value) => { if (!disposed) onResult(value); },
+      () => { if (!disposed) onResult(undefined); },
+    ).finally(() => {
       pending = false;
       if (!disposed && queued) {
         queued = false;

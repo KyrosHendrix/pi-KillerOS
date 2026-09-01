@@ -173,6 +173,24 @@ test("footer Git status recovers after an unavailable initial refresh without re
   refresh.dispose();
 });
 
+test("footer Git refresh contains rejected scans and runs queued recovery", async () => {
+  const results: Array<number | undefined> = [];
+  let attempts = 0;
+  const refresh = createGitStatusRefresh("repo", (count) => results.push(count), async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("Git failed");
+    return 3;
+  });
+
+  refresh.request();
+  refresh.request();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(results, [undefined, 3]);
+  refresh.dispose();
+});
+
 test("createGitStatusRefresh preserves its changed-file count callback", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-count-"));
   try {
