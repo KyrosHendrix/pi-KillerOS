@@ -4,7 +4,14 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRuntime,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import { createHarness } from "./ExtensionTestHarness.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -113,6 +120,119 @@ test("the packed KillerOS package activates and reloads through Pi's public life
       session.dispose();
     }
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("real Pi delivery starts one hidden ordinary continuation after turn_end -> agent_settled -> compaction", { timeout: 15_000 }, async () => {
+  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-auto-compaction-lifecycle-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  try {
+    const cwd = path.join(directory, "project");
+    const agentDir = path.join(directory, "agent");
+    mkdirSync(cwd);
+    mkdirSync(agentDir);
+    writeFileSync(path.join(agentDir, "killeros.json"), JSON.stringify({
+      autoCompaction: { enabled: true, percentRemaining: 100 },
+    }));
+    writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({
+      compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
+    }));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const faux = fauxProvider({
+      provider: "killeros-lifecycle",
+      models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }],
+    });
+    faux.setResponses([
+      fauxAssistantMessage("ordinary turn finished"),
+      fauxAssistantMessage("continuation turn finished"),
+    ]);
+    const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+    modelRuntime.registerNativeProvider(faux.provider);
+    await modelRuntime.setRuntimeApiKey("killeros-lifecycle", "local-test-key");
+
+    const settingsManager = SettingsManager.inMemory({
+      compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
+    });
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      additionalExtensionPaths: [path.join(repositoryRoot, "Killeros.ts")],
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      settingsManager,
+      extensionFactories: [(pi) => {
+        pi.on("session_before_compact", (event) => ({
+          compaction: {
+            summary: "Compacted ordinary task context.",
+            firstKeptEntryId: event.preparation.firstKeptEntryId,
+            tokensBefore: event.preparation.tokensBefore,
+          },
+        }));
+      }],
+    });
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+
+    const sessionManager = SessionManager.inMemory(cwd);
+    sessionManager.appendMessage({ role: "user", content: "Earlier task context", timestamp: Date.now() - 2 });
+    sessionManager.appendMessage(fauxAssistantMessage("Earlier work", { timestamp: Date.now() - 1 }));
+    const { session } = await createAgentSession({
+      cwd,
+      agentDir,
+      model: faux.getModel(),
+      modelRuntime,
+      resourceLoader: loader,
+      sessionManager,
+      settingsManager,
+      noTools: "all",
+    });
+    let agentStarts = 0;
+    const lifecycleErrors: string[] = [];
+    let continuationFinished: (() => void) | undefined;
+    const continuation = new Promise<void>((resolve) => { continuationFinished = resolve; });
+    const unsubscribe = session.subscribe((event) => {
+      if (event.type === "agent_start") agentStarts++;
+      if (event.type === "message_end"
+        && event.message.role === "assistant"
+        && event.message.content.some((part) => part.type === "text" && part.text === "continuation turn finished")) {
+        continuationFinished?.();
+      }
+    });
+    try {
+      await session.bindExtensions({
+        mode: "rpc",
+        shutdownHandler() {},
+        onError(diagnostic) { lifecycleErrors.push(`${diagnostic.event}: ${diagnostic.error}`); },
+      });
+      await session.prompt("Continue the ordinary task");
+      await continuation;
+      await session.waitForIdle();
+
+      assert.equal(agentStarts, 2);
+      assert.equal(faux.state.callCount, 2);
+      const internalMessages = session.messages.filter((message) => message.role === "custom"
+        && message.customType === "killeros-auto-compaction");
+      assert.equal(internalMessages.length, 1);
+      const internalMessage = internalMessages[0];
+      assert.ok(internalMessage?.role === "custom");
+      assert.equal(internalMessage.display, false);
+      assert.equal(session.messages.some((message) => message.role === "user"
+        && typeof message.content === "string"
+        && message.content.includes("Continue the interrupted task")), false);
+      assert.equal(session.pendingMessageCount, 0);
+      assert.deepEqual(lifecycleErrors, []);
+    } finally {
+      unsubscribe();
+      session.dispose();
+    }
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     rmSync(directory, { recursive: true, force: true });
   }
 });

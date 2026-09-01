@@ -41,6 +41,7 @@ interface AutoHarness {
   sentMessages: Array<{ message: unknown; options: unknown }>;
   setUsage(usage: ContextUsage | undefined): void;
   failCompactionSynchronously(error?: Error): void;
+  failContinuationSynchronously(error?: Error): void;
   emit(eventName: string, event?: unknown): Promise<unknown>;
 }
 
@@ -54,6 +55,7 @@ function createHarness(
   const notifications: AutoHarness["notifications"] = [];
   const sentMessages: AutoHarness["sentMessages"] = [];
   let usage: ContextUsage | undefined = initialUsage;
+  let continuationError: Error | undefined;
   const api = extensionApiTestAdapter({
     on(eventName: string, handler: Handler): void {
       const current = handlers.get(eventName) ?? [];
@@ -61,6 +63,7 @@ function createHarness(
       handlers.set(eventName, current);
     },
     sendMessage(message: unknown, options: unknown): void {
+      if (continuationError) throw continuationError;
       sentMessages.push({ message, options });
     },
   });
@@ -92,6 +95,7 @@ function createHarness(
     sentMessages,
     setUsage: (next) => { usage = next; },
     failCompactionSynchronously: (error) => { compactError = error; },
+    failContinuationSynchronously: (error) => { continuationError = error; },
     async emit(eventName, event = { type: eventName }): Promise<unknown> {
       let result: unknown;
       for (const handler of handlers.get(eventName) ?? []) result = await handler(event, ctx);
@@ -254,14 +258,18 @@ test("auto-compaction shares the global KillerOS settings file without clobberin
   }
 });
 
-test("TUI and RPC compaction happens at the settled turn boundary and queues one hidden continuation", async () => {
+test("TUI and RPC wait for turn_end -> agent_settled -> compaction completion before one hidden continuation", async () => {
   for (const mode of ["tui", "rpc"] as const) {
     const harness = createHarness(mode);
     await harness.emit("turn_end", { type: "turn_end", toolResults: [{ toolName: "read" }] });
     assert.equal(harness.compactCalls.length, 1, mode);
     assert.equal(harness.sentMessages.length, 0, mode);
 
+    await harness.emit("agent_settled");
+    assert.equal(harness.sentMessages.length, 0, mode);
     harness.compactCalls[0]?.onComplete?.(compactResult());
+    harness.compactCalls[0]?.onComplete?.(compactResult());
+    await harness.emit("agent_settled");
     assert.deepEqual(harness.sentMessages, [{
       message: {
         customType: AUTO_COMPACTION_MESSAGE_TYPE,
@@ -271,6 +279,44 @@ test("TUI and RPC compaction happens at the settled turn boundary and queues one
       options: { triggerTurn: true, deliverAs: "followUp" },
     }], mode);
   }
+});
+
+test("ordinary continuation also waits when compaction completion precedes settlement", async () => {
+  const harness = createHarness();
+  await harness.emit("turn_end");
+
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  assert.equal(harness.sentMessages.length, 0);
+
+  await harness.emit("agent_settled");
+  assert.equal(harness.sentMessages.length, 1);
+});
+
+test("a stale ordinary continuation cannot dispatch after a lifecycle reset", async () => {
+  for (const event of ["session_start", "session_shutdown", "session_tree", "session_before_switch", "session_before_fork"] as const) {
+    const harness = createHarness();
+    await harness.emit("turn_end");
+    const callbacks = harness.compactCalls[0];
+
+    await harness.emit(event);
+    callbacks?.onComplete?.(compactResult());
+    await harness.emit("agent_settled");
+
+    assert.equal(harness.sentMessages.length, 0, event);
+  }
+});
+
+test("a synchronous ordinary continuation dispatch failure is visible and never retried", async () => {
+  const harness = createHarness();
+  harness.failContinuationSynchronously(new Error("continuation unavailable"));
+  await harness.emit("turn_end");
+  await harness.emit("agent_settled");
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await harness.emit("agent_settled");
+
+  assert.equal(harness.sentMessages.length, 0);
+  assert.match(harness.notifications.at(-1)?.message ?? "", /continuation unavailable/u);
 });
 
 test("missing readings, disabled Pi compaction, and failed compaction do not retry automatically", async () => {
@@ -492,7 +538,12 @@ test("a synchronous automatic goal compaction failure stays paused", async () =>
 test("a successful compaction must be followed by a higher reading before another trigger", async () => {
   const harness = createHarness();
   await harness.emit("turn_end");
+  await harness.emit("agent_settled");
   harness.compactCalls[0]?.onComplete?.(compactResult());
+  await harness.emit("message_start", {
+    type: "message_start",
+    message: { role: "custom", customType: AUTO_COMPACTION_MESSAGE_TYPE },
+  });
   await harness.emit("turn_end");
   assert.equal(harness.compactCalls.length, 1);
   harness.setUsage({ tokens: 70_000, contextWindow: 100_000, percent: 70 });

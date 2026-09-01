@@ -35,10 +35,17 @@ export interface AutoCompactionDependencies {
   goal?: AutoCompactionGoalHandlers;
 }
 
-interface AutoCompactionRequest {
+type AutoCompactionRequest = {
+  phase: "compacting";
   goal: boolean;
   token: symbol;
-}
+  turnSettled: boolean;
+  compactionCompleted: boolean;
+} | {
+  phase: "continuation-dispatched";
+  goal: false;
+  token: symbol;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -157,12 +164,32 @@ export function registerAutoCompaction(
     goal: boolean,
     error: unknown,
   ): void => {
-    if (!request || request.token !== token) return;
+    if (request?.phase !== "compacting" || request.token !== token) return;
     if (isSessionTooSmallCompactionError(error)) {
       finishSkip(ctx, goal);
       return;
     }
     finishFailure(ctx, goal, error);
+  };
+
+  /** Dispatches one ordinary continuation after compaction and the interrupted run have both finished. */
+  const finalizeOrdinaryContinuation = (ctx: ExtensionContext, token: symbol): void => {
+    if (request?.phase !== "compacting"
+      || request.token !== token
+      || request.goal
+      || !request.turnSettled
+      || !request.compactionCompleted) return;
+    request = { phase: "continuation-dispatched", goal: false, token };
+    try {
+      pi.sendMessage({
+        customType: AUTO_COMPACTION_MESSAGE_TYPE,
+        content: AUTO_COMPACTION_MESSAGE,
+        display: false,
+      }, { triggerTurn: true, deliverAs: "followUp" });
+    } catch (error) {
+      request = undefined;
+      notifyFailure(ctx, error);
+    }
   };
 
   pi.on("turn_end", (_event, ctx) => {
@@ -204,7 +231,13 @@ export function registerAutoCompaction(
     armed = false;
     const token = Symbol();
     const goal = dependencies.goal?.isActive(ctx) === true;
-    request = { goal, token };
+    request = {
+      phase: "compacting",
+      goal,
+      token,
+      turnSettled: false,
+      compactionCompleted: false,
+    };
     if (goal && dependencies.goal) {
       try {
         dependencies.goal.onRequested();
@@ -217,9 +250,9 @@ export function registerAutoCompaction(
     try {
       ctx.compact({
         onComplete: () => {
-          if (!request || request.token !== token) return;
-          request = undefined;
+          if (request?.phase !== "compacting" || request.token !== token) return;
           if (goal && dependencies.goal) {
+            request = undefined;
             try {
               dependencies.goal.onCompleted(ctx);
             } catch (error) {
@@ -227,21 +260,25 @@ export function registerAutoCompaction(
             }
             return;
           }
-          try {
-            pi.sendMessage({
-              customType: AUTO_COMPACTION_MESSAGE_TYPE,
-              content: AUTO_COMPACTION_MESSAGE,
-              display: false,
-            }, { triggerTurn: true, deliverAs: "followUp" });
-          } catch (error) {
-            notifyFailure(ctx, error);
-          }
+          request.compactionCompleted = true;
+          finalizeOrdinaryContinuation(ctx, token);
         },
         onError: (error) => finishRequestError(ctx, token, goal, error),
       });
     } catch (error) {
       finishRequestError(ctx, token, goal, error);
     }
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
+    if (request?.phase !== "compacting" || request.goal) return;
+    request.turnSettled = true;
+    finalizeOrdinaryContinuation(ctx, request.token);
+  });
+  pi.on("message_start", (event) => {
+    if (request?.phase === "continuation-dispatched"
+      && event.message.role === "custom"
+      && event.message.customType === AUTO_COMPACTION_MESSAGE_TYPE) request = undefined;
   });
 
   pi.on("session_start", resetForLifecycle);

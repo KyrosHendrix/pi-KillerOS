@@ -15,6 +15,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Resumed ordinary tasks exactly once after automatic compaction and interrupted-turn settlement, keeping the hidden continuation pending until Pi accepts it.
 - Allowed Git footer scans up to five seconds, contained rejected refreshes, and kept the last successful file-change status after transient failures.
 - Recorded only exact check commands in response receipts, replaced verification claims with observed-check copy, and reserved `/goal` command words so malformed controls cannot start objectives.
 - Rejected unsafe persisted goal counters, contained file-verification inference errors, and prevented stale completion checks from completing a newly restored goal.
