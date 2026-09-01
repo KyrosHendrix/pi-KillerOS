@@ -10,27 +10,45 @@ import { safeTerminalText } from "./safe-terminal-text.ts";
 import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
 
 const GIT_STATUS_REFRESH_INTERVAL_MS = 30_000;
+const GIT_STATUS_TIMEOUT_MS = 5_000;
 const GIT_STATUS_WATCH_DEBOUNCE_MS = 250;
 const GIT_STATUS_WATCH_INTERVAL_MS = 5_000;
 const CODEX_PROVIDER = "openai-codex";
 const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
-interface GitFileChanges {
+export interface GitFileChanges {
   modified: number;
   added: number;
   deleted: number;
 }
 
-function resolveGitFileChanges(cwd: string): Promise<GitFileChanges | undefined> {
+type GitStatusExecutor = (
+  file: string,
+  args: string[],
+  options: {
+    encoding: "utf8";
+    env: NodeJS.ProcessEnv;
+    maxBuffer: number;
+    timeout: number;
+    windowsHide: true;
+  },
+  callback: (error: Error | null, stdout: string) => void,
+) => unknown;
+
+/** Resolves changed-file counts with a bounded asynchronous Git status process. */
+export function resolveGitFileChanges(
+  cwd: string,
+  execute: GitStatusExecutor = execFile,
+): Promise<GitFileChanges | undefined> {
   return new Promise((resolve) => {
-    execFile(
+    execute(
       "git",
       ["-C", cwd, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
       {
         encoding: "utf8",
         env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
         maxBuffer: 4 * 1024 * 1024,
-        timeout: 1_000,
+        timeout: GIT_STATUS_TIMEOUT_MS,
         windowsHide: true,
       },
       (error, stdout) => {
@@ -104,11 +122,15 @@ export function createGitStatusRefresh(
   return createGitRefresh(cwd, onCount, resolveCount);
 }
 
-function createGitFileChangesRefresh(
+/** Coalesces file-change scans and emits only successful results. */
+export function createGitFileChangesRefresh(
   cwd: string,
-  onChanges: (changes: GitFileChanges | undefined) => void,
+  onChanges: (changes: GitFileChanges) => void,
+  resolveChanges: (cwd: string) => Promise<GitFileChanges | undefined> = resolveGitFileChanges,
 ): { request: () => void; dispose: () => void } {
-  return createGitRefresh(cwd, onChanges, resolveGitFileChanges);
+  return createGitRefresh(cwd, (changes) => {
+    if (changes !== undefined) onChanges(changes);
+  }, resolveChanges);
 }
 
 type ScheduleFallback = (refresh: () => void, intervalMs: number) => () => void;

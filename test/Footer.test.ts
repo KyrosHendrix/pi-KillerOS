@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createGitStatusRefresh, scheduleGitStatusFallback, scheduleGitStatusWatch } from "../killeros/footer.ts";
+import {
+  createGitFileChangesRefresh,
+  createGitStatusRefresh,
+  resolveGitFileChanges,
+  scheduleGitStatusFallback,
+  scheduleGitStatusWatch,
+  type GitFileChanges,
+} from "../killeros/footer.ts";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -112,6 +119,58 @@ test("footer includes assistant, tool, compaction, and branch-summary costs", ()
   });
   assert.match(footer.render(160).join("\n"), /\$10\.00/);
   disposeTestComponent(footer);
+});
+
+test("Git status uses a five-second deadline and settles timeouts as unavailable", async () => {
+  let configuredTimeout: number | undefined;
+  const result = await resolveGitFileChanges("repo", (_file, _args, options, callback) => {
+    configuredTimeout = options.timeout;
+    callback(new Error("timed out"), "");
+  });
+
+  assert.equal(configuredTimeout, 5_000);
+  assert.equal(result, undefined);
+});
+
+test("footer Git status keeps the last successful result through failure and accepts clean recovery", async () => {
+  const dirty: GitFileChanges = { modified: 2, added: 1, deleted: 1 };
+  const clean: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
+  const pending: Array<(changes: GitFileChanges | undefined) => void> = [];
+  const results: GitFileChanges[] = [];
+  const refresh = createGitFileChangesRefresh(
+    "repo",
+    (changes) => results.push(changes),
+    () => new Promise((resolve) => pending.push(resolve)),
+  );
+
+  refresh.request();
+  pending.shift()?.(dirty);
+  await new Promise((resolve) => setImmediate(resolve));
+  refresh.request();
+  pending.shift()?.(undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(results, [dirty]);
+
+  refresh.request();
+  pending.shift()?.(clean);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(results, [dirty, clean]);
+  refresh.dispose();
+});
+
+test("footer Git status recovers after an unavailable initial refresh without recreation", async () => {
+  const dirty: GitFileChanges = { modified: 1, added: 0, deleted: 0 };
+  const outcomes: Array<GitFileChanges | undefined> = [undefined, dirty];
+  const results: GitFileChanges[] = [];
+  const refresh = createGitFileChangesRefresh("repo", (changes) => results.push(changes), async () => outcomes.shift());
+
+  refresh.request();
+  refresh.request();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(results, [dirty]);
+  refresh.dispose();
 });
 
 test("createGitStatusRefresh preserves its changed-file count callback", async () => {
