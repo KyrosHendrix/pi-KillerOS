@@ -7,7 +7,9 @@ import {
   registerSlashAutocomplete,
 } from "./killeros/commands.ts";
 import { registerFooter } from "./killeros/footer.ts";
-import { registerGoal, registerGoalSettlement } from "./killeros/goals.ts";
+import { registerGoalInterface } from "./killeros/goal-interface.ts";
+import { registerGoalRuntime } from "./killeros/goal-runtime.ts";
+import { registerGoalSettlement } from "./killeros/goal-settlement.ts";
 import { registerHandoff } from "./killeros/handoff.ts";
 import { registerLifecycleHooks } from "./killeros/hooks.ts";
 import { registerInitCommand, registerInitSettlement } from "./killeros/init.ts";
@@ -39,7 +41,8 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   const goalRuntime = createGoalRuntime();
   const commandResolver = createSlashCommandResolver(pi);
   registerShellUi(pi, commandResolver);
-  registerGoal(pi, goalRuntime, initRuntime);
+  registerGoalInterface(pi, goalRuntime, initRuntime);
+  registerGoalRuntime(pi, goalRuntime, initRuntime);
   registerPersonalInstructions(pi, initRuntime);
   registerQuestionTool(pi);
   registerAliases(pi);

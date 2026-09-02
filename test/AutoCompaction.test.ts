@@ -18,7 +18,9 @@ import {
   shouldTriggerAutoCompaction,
   type AutoCompactionGoalHandlers,
 } from "../killeros/auto-compaction.ts";
-import { registerGoal, registerGoalSettlement } from "../killeros/goals.ts";
+import { registerGoalInterface } from "../killeros/goal-interface.ts";
+import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
+import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
 import { createGoalRuntime, createInitRuntime } from "../killeros/runtime.ts";
 import { createKillerosSettingsStore } from "../killeros/settings.ts";
 import { extensionApiTestAdapter, extensionContextTestAdapter } from "./PiTestAdapters.ts";
@@ -153,7 +155,8 @@ function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
   });
   const runtime = createGoalRuntime();
   const initRuntime = createInitRuntime();
-  registerGoal(api, runtime, initRuntime);
+  registerGoalInterface(api, runtime, initRuntime);
+  registerGoalRuntime(api, runtime, initRuntime);
   const goal = registerGoalSettlement(api, runtime, initRuntime);
   registerAutoCompaction(api, {
     loadPreference: () => ({ enabled: true, percentRemaining: 15 }),

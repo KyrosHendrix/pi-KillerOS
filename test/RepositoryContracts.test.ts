@@ -48,7 +48,9 @@ assert.ok(isTypeScriptConfig(tsconfigValue));
 const packageJson = packageValue;
 const tsconfig = tsconfigValue;
 const main = readFileSync(new URL("../Killeros.ts", import.meta.url), "utf8");
-const goals = readFileSync(new URL("../killeros/goals.ts", import.meta.url), "utf8");
+const goalModules = ["goal-interface.ts", "goal-runtime.ts", "goal-settlement.ts"]
+  .map((file) => readFileSync(new URL(`../killeros/${file}`, import.meta.url), "utf8"))
+  .join("\n");
 const question = readFileSync(new URL("../killeros/question.ts", import.meta.url), "utf8");
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
@@ -126,8 +128,8 @@ test("peer ranges enforce the tested Pi floor", () => {
 });
 
 test("goal state and question UI stay separate from host wiring", () => {
-  assert.match(goals, /from "\.\/goal-state\.ts"/u);
-  assert.doesNotMatch(goals, /function parseGoalState|readFileSync|readSync|openSync/u);
+  assert.match(goalModules, /from "\.\/goal-state\.ts"/u);
+  assert.doesNotMatch(goalModules, /function parseGoalState|readFileSync|readSync|openSync/u);
   assert.match(question, /from "\.\/question-ui\.ts"/u);
   assert.doesNotMatch(question, /\bEditor\b|ctx\.ui\.custom|handleInput/u);
 });
