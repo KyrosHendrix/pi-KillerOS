@@ -16,6 +16,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Prevented Linux CI test workers from waiting indefinitely on extension-owned handles after their tests finish.
 - Made change receipts use a final repository scan, disable current Git filters, report line-ending-only edits, and recheck file goals after completion commands.
 - Released automatic-compaction request state when Pi rejects an ordinary continuation before accepting its hidden message.
 - Resumed ordinary tasks exactly once after automatic compaction and interrupted-turn settlement, keeping the hidden continuation pending until Pi accepts it.
