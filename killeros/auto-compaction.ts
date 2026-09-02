@@ -44,7 +44,6 @@ type AutoCompactionRequest = {
 } | {
   phase: "continuation-dispatched";
   goal: false;
-  token: symbol;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -179,7 +178,7 @@ export function registerAutoCompaction(
       || request.goal
       || !request.turnSettled
       || !request.compactionCompleted) return;
-    request = { phase: "continuation-dispatched", goal: false, token };
+    request = { phase: "continuation-dispatched", goal: false };
     try {
       pi.sendMessage({
         customType: AUTO_COMPACTION_MESSAGE_TYPE,
@@ -271,6 +270,11 @@ export function registerAutoCompaction(
   });
 
   pi.on("agent_settled", (_event, ctx) => {
+    if (request?.phase === "continuation-dispatched") {
+      request = undefined;
+      notifyFailure(ctx, new Error("continuation was not accepted"));
+      return;
+    }
     if (request?.phase !== "compacting" || request.goal) return;
     request.turnSettled = true;
     finalizeOrdinaryContinuation(ctx, request.token);

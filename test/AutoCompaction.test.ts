@@ -272,6 +272,10 @@ test("TUI and RPC wait for turn_end -> agent_settled -> compaction completion be
     assert.equal(harness.sentMessages.length, 0, mode);
     harness.compactCalls[0]?.onComplete?.(compactResult());
     harness.compactCalls[0]?.onComplete?.(compactResult());
+    await harness.emit("message_start", {
+      type: "message_start",
+      message: { role: "custom", customType: AUTO_COMPACTION_MESSAGE_TYPE },
+    });
     await harness.emit("agent_settled");
     assert.deepEqual(harness.sentMessages, [{
       message: {
@@ -320,6 +324,22 @@ test("a synchronous ordinary continuation dispatch failure is visible and never 
 
   assert.equal(harness.sentMessages.length, 0);
   assert.match(harness.notifications.at(-1)?.message ?? "", /continuation unavailable/u);
+});
+
+test("an asynchronously rejected ordinary continuation releases request state", async () => {
+  const harness = createHarness();
+  await harness.emit("turn_end");
+  await harness.emit("agent_settled");
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+
+  await harness.emit("agent_settled");
+  harness.setUsage({ tokens: 70_000, contextWindow: 100_000, percent: 70 });
+  await harness.emit("turn_end");
+  harness.setUsage({ tokens: 90_000, contextWindow: 100_000, percent: 90 });
+  await harness.emit("turn_end");
+
+  assert.equal(harness.compactCalls.length, 2);
+  assert.match(harness.notifications.at(-1)?.message ?? "", /continuation was not accepted/u);
 });
 
 test("missing readings, disabled Pi compaction, and failed compaction do not retry automatically", async () => {
