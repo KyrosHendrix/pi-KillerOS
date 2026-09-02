@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.1.22] - 2026-09-03
+
 ### Added
 
 - Added named goal completion checks, per-goal turn limits, and branch-aware `/goal history`.
