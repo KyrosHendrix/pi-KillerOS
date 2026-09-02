@@ -106,6 +106,7 @@ export function registerGoalInterface(
       if (params.status === "complete") {
         if (state.verification) await verifyGoalDeliverable(state.verification);
         if (state.completionCheck) await runGoalCompletionCheck(ctx, state.completionCheck, signal);
+        if (state.verification && state.completionCheck) await verifyGoalDeliverable(state.verification);
         if (runtime.state !== state) throw new Error("Goal changed while completion was being verified");
         const verification = state.verification && state.completionCheck
           ? "file-and-check"

@@ -197,6 +197,26 @@ test("file verification runs before a named completion command", async (t) => {
   assert.equal(existsSync(marker), false);
 });
 
+test("named completion commands cannot invalidate file verification", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-invalidation-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(path.join(directory, ".pi"));
+  const requested = path.join(directory, "requested.md");
+  const command = `"${process.execPath}" -e "require('node:fs').rmSync('requested.md')"`;
+  writeFileSync(path.join(directory, ".pi", "killeros-hooks.json"), JSON.stringify({ goalChecks: { quality: { command } } }));
+  const harness = createHarness();
+  const ctx = createContext();
+  ctx.cwd = directory;
+  ctx.isProjectTrusted = () => true;
+  await requiredMapValue(harness.commands, "goal").handler(`start --check quality -- Write the Markdown file to \`${requested}\``, ctx);
+  writeFileSync(requested, "verified before the check");
+
+  await assert.rejects(complete(harness, ctx), /not a regular file/u);
+
+  assert.equal(requiredState(last(harness.appendedEntries)).status, "active");
+  assert.equal(harness.appendedEntries.some((entry) => entry.data.event === "complete"), false);
+});
+
 test("file goals verify the persisted exact path before completion", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

@@ -33,6 +33,8 @@ test("change collection stays within the 100 ms p95 budget", { timeout: 120_000 
   }
 
   const durations: number[] = [];
+  const baselineDurations: number[] = [];
+  const settlementDurations: number[] = [];
   for (let cycle = 0; cycle < 110; cycle += 1) {
     const baselineStartedAt = performance.now();
     const collection = await beginChangeReceipt(root);
@@ -42,12 +44,20 @@ test("change collection stays within the 100 ms p95 budget", { timeout: 120_000 
     }
     const settlementStartedAt = performance.now();
     const summary = await collection.finish();
-    const duration = baselineDuration + performance.now() - settlementStartedAt;
+    const settlementDuration = performance.now() - settlementStartedAt;
+    const duration = baselineDuration + settlementDuration;
     assert.equal(summary.state, "available");
-    if (cycle >= 10) durations.push(duration);
+    if (cycle >= 10) {
+      durations.push(duration);
+      baselineDurations.push(baselineDuration);
+      settlementDurations.push(settlementDuration);
+    }
   }
   durations.sort((left, right) => left - right);
-  const p95 = durations[Math.ceil(durations.length * 0.95) - 1] ?? Infinity;
-  t.diagnostic(`p95 ${p95.toFixed(1)} ms`);
+  baselineDurations.sort((left, right) => left - right);
+  settlementDurations.sort((left, right) => left - right);
+  const p95Index = Math.ceil(durations.length * 0.95) - 1;
+  const p95 = durations[p95Index] ?? Infinity;
+  t.diagnostic(`p95 ${p95.toFixed(1)} ms (baseline ${(baselineDurations[p95Index] ?? Infinity).toFixed(1)} ms, settlement ${(settlementDurations[p95Index] ?? Infinity).toFixed(1)} ms)`);
   assert.ok(p95 <= 100, `p95 ${p95.toFixed(1)} ms exceeded 100 ms`);
 });

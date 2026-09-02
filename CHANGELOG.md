@@ -16,6 +16,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Made change receipts use a final repository scan, disable current Git filters, report line-ending-only edits, and recheck file goals after completion commands.
 - Released automatic-compaction request state when Pi rejects an ordinary continuation before accepting its hidden message.
 - Resumed ordinary tasks exactly once after automatic compaction and interrupted-turn settlement, keeping the hidden continuation pending until Pi accepts it.
 - Allowed Git footer scans up to five seconds, contained rejected refreshes, and kept the last successful file-change status after transient failures.

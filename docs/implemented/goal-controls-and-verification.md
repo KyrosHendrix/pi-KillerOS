@@ -2,7 +2,7 @@
 
 STATUS: DONE
 
-> **Superseded grammar:** This document records the original design. See [`2026-09-01-truthful-check-receipts-and-safe-goal-grammar.md`](2026-09-01-truthful-check-receipts-and-safe-goal-grammar.md) for the current reserved-word grammar. In particular, objectives beginning with a reserved word require `/goal start -- <objective>`.
+> **Reserved-word grammar:** Objectives beginning with a reserved goal command require `/goal start -- <objective>`.
 
 ## Summary
 
@@ -129,7 +129,8 @@ The model continues to call `killeros_goal_update` with `status: "complete"` and
 4. Resolve the bound named completion check.
 5. Compare its current definition hash with the hash saved on the goal.
 6. Run the command from `ctx.cwd` through `executeHook` with the tool's `AbortSignal`.
-7. Persist `complete` only when every applicable check passes.
+7. Repeat file verification so the command cannot invalidate the deliverable.
+8. Persist `complete` only when every applicable check passes.
 
 A nonzero exit, timeout, cancellation, missing check, changed definition, unreadable configuration, or untrusted project throws a tool error and leaves the goal active. The model receives a bounded reason and may fix the repository before retrying. KillerOS never records partial completion.
 
@@ -191,7 +192,7 @@ TUI and RPC use the same plain notification output. History adds no custom compo
 
 ## Command grammar
 
-`/goal` recognizes controls case-insensitively only when the full input matches a command form. Sentences such as `/goal Start reliably` and `/goal Pause scheduled work` remain plain objectives.
+`/goal` reserves command words case-insensitively. Objectives such as `Start reliably` and `Pause scheduled work` require `/goal start -- <objective>`.
 
 The forms are:
 
@@ -315,6 +316,7 @@ model calls killeros_goal_update complete
   -> reject changed or missing definition
   -> execute through executeHook
   -> reject cancellation, timeout, or nonzero exit
+  -> verify the file again when both checks apply
   -> persist complete with model evidence
   -> disable goal update tool
 ```

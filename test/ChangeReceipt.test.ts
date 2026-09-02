@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { chmod, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -99,6 +100,23 @@ test("Git collection reports only the response delta and cleans its temporary di
   assert.match(status, /preexisting\.txt/u);
   const tempAfter = new Set((await readdir(os.tmpdir())).filter((name) => name.startsWith("killeros-change-receipt-")));
   assert.deepEqual(tempAfter, tempBefore);
+});
+
+test("finish detects an immediate write without waiting for watcher delivery", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const collection = await beginChangeReceipt(root);
+
+  writeFileSync(path.join(root, "clean.txt"), "immediate\n");
+
+  assert.deepEqual(await collection.finish(), {
+    state: "available",
+    totalFiles: 1,
+    additions: 1,
+    deletions: 1,
+    files: [{ kind: "modified", path: "clean.txt", additions: 1, deletions: 1 }],
+    omittedFiles: 0,
+  });
 });
 
 test("settlement includes changes that arrive while changed paths are being read", async (t) => {
@@ -261,6 +279,67 @@ test("collection leaves Git state untouched and does not invoke configured exten
   assert.deepEqual(git(root, "rev-parse", "HEAD"), beforeHead);
   assert.deepEqual(git(root, "branch", "--show-current"), beforeBranch);
   assert.deepEqual(git(root, "stash", "list"), beforeStash);
+});
+
+test("settlement disables filters configured after collection starts", async (t) => {
+  const root = await fixture();
+  const sentinelDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-filter-test-"));
+  const sentinel = path.join(sentinelDirectory, "sentinel");
+  const tripwire = path.join(root, "tripwire.cjs");
+  t.after(async () => Promise.all([
+    rm(root, { recursive: true, force: true }),
+    rm(sentinelDirectory, { recursive: true, force: true }),
+  ]));
+  await writeFile(tripwire, "require('node:fs').writeFileSync(process.argv[2], 'invoked');process.stdin.pipe(process.stdout);\n");
+  await writeFile(path.join(root, ".gitattributes"), "*.txt filter=late\n");
+  const collection = await beginChangeReceipt(root);
+
+  git(root, "config", "filter.late.clean", `node \"${tripwire.replaceAll("\\", "/")}\" \"${sentinel.replaceAll("\\", "/")}\"`);
+  await writeFile(path.join(root, "clean.txt"), "changed\n");
+  await collection.finish();
+
+  await assert.rejects(readFile(sentinel), { code: "ENOENT" });
+});
+
+test("settlement disables filters activated by a branch-conditional include", async (t) => {
+  const root = await fixture();
+  const sentinelDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-branch-filter-test-"));
+  const sentinel = path.join(sentinelDirectory, "sentinel");
+  const tripwire = path.join(root, "tripwire.cjs");
+  const includedConfig = path.join(root, "late-filter.config");
+  t.after(async () => Promise.all([
+    rm(root, { recursive: true, force: true }),
+    rm(sentinelDirectory, { recursive: true, force: true }),
+  ]));
+  await writeFile(tripwire, "require('node:fs').writeFileSync(process.argv[2], 'invoked');process.stdin.pipe(process.stdout);\n");
+  await writeFile(includedConfig, `[filter \"late\"]\n\tclean = node \"${tripwire.replaceAll("\\", "/")}\" \"${sentinel.replaceAll("\\", "/")}\"\n`);
+  git(root, "config", "includeIf.onbranch:trigger.path", includedConfig.replaceAll("\\", "/"));
+  const collection = await beginChangeReceipt(root);
+
+  git(root, "checkout", "--quiet", "-b", "trigger");
+  await writeFile(path.join(root, ".gitattributes"), "*.txt filter=late\n");
+  await writeFile(path.join(root, "clean.txt"), "changed\n");
+  await rm(sentinel, { force: true });
+  await collection.finish();
+
+  await assert.rejects(readFile(sentinel), { code: "ENOENT" });
+});
+
+test("line-ending-only edits remain visible with normalized line counts", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const collection = await beginChangeReceipt(root);
+
+  await writeFile(path.join(root, "clean.txt"), "clean\r\n");
+
+  assert.deepEqual(await collection.finish(), {
+    state: "available",
+    totalFiles: 1,
+    additions: 0,
+    deletions: 0,
+    files: [{ kind: "modified", path: "clean.txt", additions: 0, deletions: 0 }],
+    omittedFiles: 0,
+  });
 });
 
 test("mode-only changes carry no line count", { skip: process.platform === "win32" }, async (t) => {

@@ -119,8 +119,48 @@ function missingFile(error: unknown): boolean {
   return error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
 }
 
-type Repository = { root: string; gitDirectory: string; commonDirectory: string; objectDirectory: string; filterNames: readonly string[] };
+type FilterConfiguration = { names: readonly string[]; sources: ReadonlyMap<string, Buffer> };
+type Repository = {
+  root: string;
+  gitDirectory: string;
+  commonDirectory: string;
+  objectDirectory: string;
+  filterConfiguration: FilterConfiguration;
+  blobCache: Map<string, Buffer>;
+  blobCacheBytes: number;
+};
 const repositoryCache = new Map<string, Promise<Repository>>();
+
+async function loadFilterConfiguration(root: string, gitDirectory: string): Promise<FilterConfiguration> {
+  const records = decode(await runGit(root, ["config", "--null", "--show-origin", "--name-only", "--list"])).split("\0");
+  const names = new Set<string>();
+  const sourcePaths = new Set<string>([path.join(gitDirectory, "HEAD")]);
+  for (let index = 0; index + 1 < records.length; index += 2) {
+    const origin = records[index];
+    const key = records[index + 1];
+    if (origin?.startsWith("file:")) sourcePaths.add(path.resolve(root, origin.slice("file:".length)));
+    if (key && /^filter\..*\.(clean|process)$/u.test(key)) names.add(key.slice("filter.".length, key.lastIndexOf(".")));
+  }
+  const sources = new Map<string, Buffer>();
+  for (const sourcePath of sourcePaths) sources.set(sourcePath, await readBoundedFile(sourcePath, GIT_OUTPUT_LIMIT));
+  return { names: [...names], sources };
+}
+
+async function currentFilterNames(repo: Repository): Promise<readonly string[]> {
+  for (const [sourcePath, previous] of repo.filterConfiguration.sources) {
+    try {
+      if (!(await readBoundedFile(sourcePath, GIT_OUTPUT_LIMIT)).equals(previous)) {
+        repo.filterConfiguration = await loadFilterConfiguration(repo.root, repo.gitDirectory);
+        break;
+      }
+    } catch (error) {
+      if (!missingFile(error)) throw error;
+      repo.filterConfiguration = await loadFilterConfiguration(repo.root, repo.gitDirectory);
+      break;
+    }
+  }
+  return repo.filterConfiguration.names;
+}
 
 async function repository(cwd: string): Promise<Repository> {
   const cached = repositoryCache.get(cwd);
@@ -129,9 +169,15 @@ async function repository(cwd: string): Promise<Repository> {
     const result = decode(await runGit(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"])).trimEnd().split(/\r?\n/u);
     const [root, gitDirectory, commonDirectory] = result;
     if (!root || !gitDirectory || !commonDirectory) throw new GitFailure("error");
-    const configKeys = decode(await runGit(root, ["config", "--null", "--name-only", "--list"])).split("\0");
-    const filterNames = [...new Set(configKeys.filter((key) => /^filter\..*\.(clean|process)$/u.test(key)).map((key) => key.slice("filter.".length, key.lastIndexOf("."))))];
-    return { root, gitDirectory, commonDirectory, objectDirectory: path.join(commonDirectory, "objects"), filterNames };
+    return {
+      root,
+      gitDirectory,
+      commonDirectory,
+      objectDirectory: path.join(commonDirectory, "objects"),
+      filterConfiguration: await loadFilterConfiguration(root, gitDirectory),
+      blobCache: new Map(),
+      blobCacheBytes: 0,
+    };
   })();
   repositoryCache.set(cwd, pending);
   try {
@@ -166,11 +212,52 @@ async function readBoundedFile(filePath: string, limit: number): Promise<Buffer>
       if (bytesRead === 0) break;
       length += bytesRead;
     }
-    if (length > limit) throw new GitFailure("too-large");
+    if (length > stats.size) throw new GitFailure("error");
     return content.subarray(0, length);
   } finally {
     await handle.close();
   }
+}
+
+async function readSnapshotFiles(repo: Repository, files: Map<string, DirtyFile>): Promise<void> {
+  const pending = [...files.values()].filter((file) => file.mode && !file.contentObjectId);
+  let totalBytes = 0;
+  let nextIndex = 0;
+  const readNext = async (): Promise<void> => {
+    while (nextIndex < pending.length) {
+      const file = pending[nextIndex];
+      nextIndex += 1;
+      if (!file?.mode) continue;
+      const absolutePath = path.join(repo.root, ...file.path.split("/"));
+      if (file.mode === "120000") {
+        const content = Buffer.from(await readlink(absolutePath));
+        totalBytes += content.length;
+        if (totalBytes > SNAPSHOT_CONTENT_LIMIT) throw new GitFailure("too-large");
+        file.content = content;
+        continue;
+      }
+      const handle = await open(absolutePath, "r");
+      try {
+        const stats = await handle.stat();
+        if (!stats.isFile()) throw new GitFailure("error");
+        totalBytes += stats.size;
+        if (totalBytes > SNAPSHOT_CONTENT_LIMIT) throw new GitFailure("too-large");
+        const content = Buffer.alloc(stats.size + 1);
+        let length = 0;
+        while (length < content.length) {
+          const { bytesRead } = await handle.read(content, length, content.length - length, length);
+          if (bytesRead === 0) break;
+          length += bytesRead;
+        }
+        if (length > stats.size) throw new GitFailure("error");
+        totalBytes -= stats.size - length;
+        file.content = content.subarray(0, length);
+      } finally {
+        await handle.close();
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, pending.length) }, readNext));
 }
 
 type Snapshot = { head: string; files: Map<string, DirtyFile> };
@@ -191,9 +278,10 @@ function discardMonitor(monitor: RepositoryMonitor): void {
 }
 
 async function snapshot(repo: Repository, paths?: readonly string[]): Promise<Snapshot> {
+  const filterNames = await currentFilterNames(repo);
   const output = decode(await runGit(repo.root, [
     "-c", "core.fsmonitor=false",
-    ...repo.filterNames.flatMap((name) => ["-c", `filter.${name}.clean=`, "-c", `filter.${name}.process=`, "-c", `filter.${name}.required=false`]),
+    ...filterNames.flatMap((name) => ["-c", `filter.${name}.clean=`, "-c", `filter.${name}.process=`, "-c", `filter.${name}.required=false`]),
     "status", "--porcelain=v2", "--branch", "--no-ahead-behind", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all",
     ...(paths ? ["--", ...paths] : []),
   ]));
@@ -234,16 +322,7 @@ async function snapshot(repo: Repository, paths?: readonly string[]): Promise<Sn
       contentObjectId: worktreeChanged || /^0+$/u.test(indexObjectId) ? undefined : indexObjectId,
     });
   }
-  let totalBytes = 0;
-  for (const file of files.values()) {
-    if (!file.mode || file.contentObjectId) continue;
-    const absolutePath = path.join(repo.root, ...file.path.split("/"));
-    file.content = file.mode === "120000"
-      ? Buffer.from(await readlink(absolutePath))
-      : await readBoundedFile(absolutePath, SNAPSHOT_CONTENT_LIMIT - totalBytes);
-    totalBytes += file.content.length;
-    if (totalBytes > SNAPSHOT_CONTENT_LIMIT) throw new GitFailure("too-large");
-  }
+  await readSnapshotFiles(repo, files);
   return { head: headRecord.slice("# branch.oid ".length), files };
 }
 
@@ -359,13 +438,30 @@ async function looseBlob(objectDirectory: string, id: string): Promise<Buffer | 
   }
 }
 
+function cacheBlob(repo: Repository, id: string, content: Buffer): void {
+  if (repo.blobCacheBytes + content.length > SNAPSHOT_CONTENT_LIMIT) {
+    repo.blobCache.clear();
+    repo.blobCacheBytes = 0;
+  }
+  if (content.length > SNAPSHOT_CONTENT_LIMIT) return;
+  repo.blobCache.set(id, content);
+  repo.blobCacheBytes += content.length;
+}
+
 async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<Map<string, Buffer>> {
   const blobs = new Map<string, Buffer>();
   const missing: string[] = [];
   for (const id of new Set(ids)) {
+    const cached = repo.blobCache.get(id);
+    if (cached) {
+      blobs.set(id, cached);
+      continue;
+    }
     const content = await looseBlob(repo.objectDirectory, id);
-    if (content) blobs.set(id, content);
-    else missing.push(id);
+    if (content) {
+      blobs.set(id, content);
+      cacheBlob(repo, id, content);
+    } else missing.push(id);
   }
   if (missing.length > 0) {
     const output = await runGit(repo.root, ["cat-file", "--batch"], Buffer.from(`${missing.join("\n")}\n`));
@@ -378,7 +474,9 @@ async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<
       const start = headerEnd + 1;
       const end = start + size;
       if (output[end] !== 10) throw new Error("invalid batch body");
-      blobs.set(id, output.subarray(start, end));
+      const content = Buffer.from(output.subarray(start, end));
+      blobs.set(id, content);
+      cacheBlob(repo, id, content);
       offset = end + 1;
     }
   }
@@ -387,6 +485,17 @@ async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<
 
 type FileState = { mode: string; content: Buffer };
 
+function sameDirtyFile(left: DirtyFile | undefined, right: DirtyFile | undefined): boolean {
+  if (!left || !right) return left === right;
+  return left.headMode === right.headMode
+    && left.headObjectId === right.headObjectId
+    && left.indexMode === right.indexMode
+    && left.indexObjectId === right.indexObjectId
+    && left.mode === right.mode
+    && left.contentObjectId === right.contentObjectId
+    && (left.content && right.content ? left.content.equals(right.content) : left.content === right.content);
+}
+
 function lines(content: Buffer): string[] {
   return (content.toString("latin1").match(/[^\n]*\n|[^\n]+$/gu) ?? [])
     .map((line) => line.endsWith("\r\n") ? `${line.slice(0, -2)}\n` : line);
@@ -394,12 +503,7 @@ function lines(content: Buffer): string[] {
 
 function sameFileState(left: FileState | undefined, right: FileState | undefined): boolean {
   if (!left || !right) return left === right;
-  if (left.mode !== right.mode) return false;
-  if (left.content.equals(right.content)) return true;
-  if (isBinary(left.content) || isBinary(right.content)) return false;
-  const leftLines = lines(left.content);
-  const rightLines = lines(right.content);
-  return leftLines.length === rightLines.length && leftLines.every((line, index) => line === rightLines[index]);
+  return left.mode === right.mode && left.content.equals(right.content);
 }
 
 function lineDelta(before: Buffer, after: Buffer): { additions: number; deletions: number } {
@@ -448,7 +552,8 @@ function binarySimilarity(left: Buffer, right: Buffer): number {
 // ponytail: fuzzy rename matching is quadratic up to 400 pairs; use Git's diff engine if larger rename batches matter.
 async function compare(repo: Repository, baseline: Snapshot, settlement: Snapshot): Promise<ChangeSummary> {
   if (baseline.head !== settlement.head) throw new Error("HEAD changed during response");
-  const paths = new Set([...baseline.files.keys(), ...settlement.files.keys()]);
+  const paths = new Set([...baseline.files.keys(), ...settlement.files.keys()]
+    .filter((filePath) => !sameDirtyFile(baseline.files.get(filePath), settlement.files.get(filePath))));
   const ids = [...paths].flatMap((filePath) => {
     const sources = [baseline.files.get(filePath), settlement.files.get(filePath)];
     return sources.flatMap((source) => [source?.headObjectId, source?.indexObjectId, source?.contentObjectId].filter((id): id is string => Boolean(id)));
@@ -584,12 +689,13 @@ export async function beginChangeReceipt(cwd: string): Promise<ChangeReceiptColl
         if (disposed) return { state: "unavailable", reason: "error" };
         disposed = true;
         try {
-          let settlement = baseline;
-          do {
+          monitor.changedPaths.clear();
+          let settlement = await snapshot(repo);
+          while (monitor.changedPaths.size > 0) {
             const observedPaths = [...monitor.changedPaths];
             monitor.changedPaths.clear();
             settlement = await refreshSnapshot(monitor, observedPaths, settlement);
-          } while (monitor.changedPaths.size > 0);
+          }
           if (await currentHead(repo) !== baseline.head) throw new Error("HEAD changed during response");
           const summary = await compare(repo, baseline, settlement);
           monitor.snapshot = settlement;

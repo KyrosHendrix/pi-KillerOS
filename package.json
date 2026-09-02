@@ -30,6 +30,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
+    "benchmark:change-receipt": "node --test --experimental-strip-types test/ChangeReceipt.bench.ts",
     "check": "tsc --noEmit && eslint .",
     "lint": "eslint .",
     "test": "node --test --experimental-strip-types test/*.test.*"
