@@ -11,6 +11,7 @@ All notable changes to KillerOS are documented here.
 
 ### Changed
 
+- Defaulted new goals to 20 turns, added safe `/goal checks` discovery, preserved blocker evidence in history, and separated pure goal parsing and history formatting.
 - Refreshed footer Git telemetry from throttled filesystem changes instead of every completed turn, while retaining branch and 30-second fallback scans.
 
 ### Fixed

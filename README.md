@@ -5,7 +5,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## What you get
 
 - A custom TUI: startup card with version, model, provider, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.
-- `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Optional named checks and turn limits control completion and unattended work.
+- `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. New goals default to 20 turns. Named checks and turn limits control completion and unattended work.
 - `/init`: generates a root `AGENTS.md` from repository evidence, preserving compatible existing rules.
 - `/variants`: pick a reasoning level supported by the active model.
 - `/codex-fast`: toggles the `priority` service tier on Codex requests.
@@ -43,8 +43,9 @@ Pin a release by appending its tag, for example `@v2.0.22`. Add `-l` to install 
 /goal                     Open status, or set with /goal <objective>
 /goal start [--check name] [--turns count] -- <objective>
 /goal check <name|clear>  Set or clear a named completion check
-/goal limit <count|clear> Set or clear a turn limit
-/goal history [count]     Show goal transitions on the current branch
+/goal checks              List configured completion-check names
+/goal limit <count|clear> Set a limit or clear it for unlimited turns
+/goal history [count]     Show transitions and blocker evidence on this branch
 /goal edit|pause|resume|clear
 /variants                 Reasoning-level selector (/variants high sets directly)
 /codex-fast               Toggle Codex fast mode
@@ -91,7 +92,9 @@ Trusted projects can define up to 32 named goal checks in `.pi/killeros-hooks.js
 }
 ```
 
-Use `/goal start -- <objective>` when an objective begins with `start`, `check`, `limit`, `history`, `clear`, `edit`, `pause`, or `resume`. Bind a check with `/goal start --check quality -- <objective>` or `/goal check quality`. KillerOS stores the check name and definition hash, not the command. If the project changes the command or timeout, bind the check again before completing the goal.
+Use `/goal checks` to list configured names. Use `/goal start -- <objective>` when an objective begins with `start`, `check`, `checks`, `limit`, `history`, `clear`, `edit`, `pause`, or `resume`. Bind a check with `/goal start --check quality -- <objective>` or `/goal check quality`. KillerOS stores the check name and definition hash, not the command. If the project changes the command or timeout, bind the check again before completing the goal.
+
+New goals use a 20-turn limit unless `/goal start --turns <count> -- <objective>` supplies another value. Use `/goal limit <count>` to change the current goal or `/goal limit clear` to allow unlimited turns. Restored goals keep their persisted limit.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 

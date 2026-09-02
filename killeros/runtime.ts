@@ -26,6 +26,7 @@ export interface GoalBlockerAudit {
   key: string;
   streak: number;
   lastTurn: number;
+  evidence?: string;
 }
 
 export type GoalFileBaseline =

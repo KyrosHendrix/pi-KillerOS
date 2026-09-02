@@ -1,13 +1,14 @@
-import { parseArgs } from "node:util";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { BoundedText } from "./bounded-text.ts";
 import { formatTime, formatTokens } from "./display.ts";
-import { beginGoalTurnState, checkpointActiveGoalState, checkpointPausedGoalState, createNewGoalState, editGoalState, goalElapsedMilliseconds, GOAL_CHECK_NAME_PATTERN, GOAL_MAX_TURNS, GOAL_VERSION, inferGoalVerification, parseGoalState, pauseGoalState, recordGoalBlockerAudit, transitionGoalState, updateGoalControlsState, validateGoalObjective, verifyGoalDeliverable, type GoalTransitionOptions } from "./goal-state.ts";
+import { parseGoalCommand } from "./goal-command.ts";
+import { formatGoalHistory } from "./goal-history.ts";
+import { beginGoalTurnState, checkpointActiveGoalState, checkpointPausedGoalState, createNewGoalState, DEFAULT_GOAL_MAX_TURNS, editGoalState, goalElapsedMilliseconds, GOAL_VERSION, inferGoalVerification, parseGoalState, pauseGoalState, recordGoalBlockerAudit, transitionGoalState, updateGoalControlsState, validateGoalObjective, verifyGoalDeliverable, type GoalTransitionOptions } from "./goal-state.ts";
 import { reportError } from "./errors.ts";
-import { resolveGoalCompletionCheck, runGoalCompletionCheck } from "./hooks.ts";
+import { listGoalCompletionChecks, resolveGoalCompletionCheck, runGoalCompletionCheck } from "./hooks.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
 import type { GoalCompletionCheck, GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -27,124 +28,6 @@ interface GoalEntryData {
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-const GOAL_START_USAGE = "Usage: /goal start [--check <name>] [--turns <count>] -- <objective>";
-const GOAL_CHECK_USAGE = "Usage: /goal check <name|clear>";
-const GOAL_LIMIT_USAGE = "Usage: /goal limit <count|clear>";
-const GOAL_HISTORY_USAGE = "Usage: /goal history [count]";
-const GOAL_CLEAR_USAGE = "Usage: /goal clear";
-const GOAL_EDIT_USAGE = "Usage: /goal edit";
-const GOAL_PAUSE_USAGE = "Usage: /goal pause";
-const GOAL_RESUME_USAGE = "Usage: /goal resume";
-const RESERVED_OBJECTIVE_USAGE = "Objective begins with a reserved goal command. Use /goal start -- <objective>.";
-
-interface ControlledGoalStart {
-  objective: string;
-  completionCheckName?: string;
-  maxTurns?: number;
-}
-
-function parseBoundedInteger(value: string, maximum: number): number | undefined {
-  if (!/^[1-9][0-9]*$/u.test(value)) return undefined;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : undefined;
-}
-
-function parseControlledGoalStart(input: string): ControlledGoalStart | undefined {
-  const separator = input.startsWith("-- ") ? 0 : input.indexOf(" -- ");
-  if (separator < 0) return undefined;
-  const optionText = input.slice(0, separator).trim();
-  const objective = validateGoalObjective(input.slice(separator + (separator === 0 ? 3 : 4)));
-  if (!objective) return undefined;
-  const tokens = optionText ? optionText.split(/\s+/u) : [];
-  if (tokens.filter((token) => token === "--check" || token.startsWith("--check=")).length > 1
-    || tokens.filter((token) => token === "--turns" || token.startsWith("--turns=")).length > 1) return undefined;
-  try {
-    const parsed = parseArgs({
-      args: tokens,
-      options: { check: { type: "string" }, turns: { type: "string" } },
-      strict: true,
-      allowPositionals: false,
-    });
-    const check = parsed.values.check;
-    const turns = parsed.values.turns;
-    if (check !== undefined && !GOAL_CHECK_NAME_PATTERN.test(check)) return undefined;
-    const maxTurns = turns === undefined ? undefined : parseBoundedInteger(turns, GOAL_MAX_TURNS);
-    if (turns !== undefined && maxTurns === undefined) return undefined;
-    return {
-      objective,
-      ...(check === undefined ? {} : { completionCheckName: check }),
-      ...(maxTurns === undefined ? {} : { maxTurns }),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-type GoalCommand =
-  | { kind: "status" }
-  | { kind: "objective"; objective: string }
-  | { kind: "start"; objective: string; completionCheckName?: string; maxTurns?: number }
-  | { kind: "check"; value: { kind: "clear" } | { kind: "named"; name: string } }
-  | { kind: "limit"; value: { kind: "clear" } | { kind: "count"; count: number } }
-  | { kind: "history"; count: number }
-  | { kind: "clear" }
-  | { kind: "edit" }
-  | { kind: "pause" }
-  | { kind: "resume" }
-  | { kind: "invalid"; message: string };
-
-const RESERVED_GOAL_WORDS = ["start", "check", "limit", "history", "clear", "edit", "pause", "resume"] as const;
-
-function parseGoalCommand(args: string): GoalCommand {
-  const input = args.trim();
-  if (!input) return { kind: "status" };
-  const parts = input.split(/\s+/u);
-  const rawFirstWord = parts[0] ?? "";
-  const firstWord = RESERVED_GOAL_WORDS.find((word) => word === rawFirstWord.toLowerCase());
-  if (!firstWord) {
-    const objective = validateGoalObjective(input);
-    return objective
-      ? { kind: "objective", objective }
-      : { kind: "invalid", message: "A goal objective may not exceed 4,000 characters" };
-  }
-
-  if (firstWord === "start") {
-    const start = parseControlledGoalStart(input.slice(rawFirstWord.length).trimStart());
-    if (start) return { kind: "start", ...start };
-    return { kind: "invalid", message: rawFirstWord === firstWord ? GOAL_START_USAGE : RESERVED_OBJECTIVE_USAGE };
-  }
-  if (firstWord === "check") {
-    const value = parts[1];
-    if (parts.length === 2 && value?.toLowerCase() === "clear") return { kind: "check", value: { kind: "clear" } };
-    if (parts.length === 2 && value && GOAL_CHECK_NAME_PATTERN.test(value)) return { kind: "check", value: { kind: "named", name: value } };
-    return { kind: "invalid", message: rawFirstWord !== firstWord && parts.length > 2 ? RESERVED_OBJECTIVE_USAGE : GOAL_CHECK_USAGE };
-  }
-  if (firstWord === "limit") {
-    const value = parts[1];
-    if (parts.length === 2 && value?.toLowerCase() === "clear") return { kind: "limit", value: { kind: "clear" } };
-    const count = parts.length === 2 && value ? parseBoundedInteger(value, GOAL_MAX_TURNS) : undefined;
-    if (count !== undefined) return { kind: "limit", value: { kind: "count", count } };
-    return { kind: "invalid", message: rawFirstWord !== firstWord && parts.length > 2 ? RESERVED_OBJECTIVE_USAGE : GOAL_LIMIT_USAGE };
-  }
-  if (firstWord === "history") {
-    if (parts.length === 1) return { kind: "history", count: 20 };
-    const count = parts.length === 2 && parts[1] ? parseBoundedInteger(parts[1], 50) : undefined;
-    if (count !== undefined) return { kind: "history", count };
-    return { kind: "invalid", message: rawFirstWord !== firstWord && parts.length > 2 ? RESERVED_OBJECTIVE_USAGE : GOAL_HISTORY_USAGE };
-  }
-  if (parts.length === 1) {
-    if (firstWord === "clear") return { kind: "clear" };
-    if (firstWord === "edit") return { kind: "edit" };
-    if (firstWord === "pause") return { kind: "pause" };
-    return { kind: "resume" };
-  }
-  const usage = firstWord === "clear" ? GOAL_CLEAR_USAGE
-    : firstWord === "edit" ? GOAL_EDIT_USAGE
-      : firstWord === "pause" ? GOAL_PAUSE_USAGE
-        : GOAL_RESUME_USAGE;
-  return { kind: "invalid", message: rawFirstWord === firstWord ? usage : RESERVED_OBJECTIVE_USAGE };
 }
 
 interface RestoredGoalState {
@@ -224,51 +107,6 @@ function sumGoalTokens(ctx: ExtensionContext): number {
     }
   }
   return total;
-}
-
-const VALID_GOAL_EVENTS: ReadonlySet<string> = new Set([
-  "set", "replace", "edit", "check", "limit", "turn", "pause", "resume",
-  "blocker-audit", "blocked", "complete", "error", "clear", "checkpoint",
-]);
-const MEANINGFUL_GOAL_EVENTS: ReadonlySet<string> = new Set(
-  [...VALID_GOAL_EVENTS].filter((event) => event !== "turn" && event !== "checkpoint"),
-);
-
-function goalHistoryPreview(value: string): string {
-  const safe = safeTerminalText(value).replaceAll("\n", " ").trim();
-  const characters = [...safe];
-  return characters.length <= 160 ? safe : `${characters.slice(0, 159).join("")}…`;
-}
-
-function goalHistory(ctx: ExtensionContext, count: number): string | undefined {
-  const lines: string[] = [];
-  let tokens = 0;
-  let previousState: GoalState | undefined;
-  for (const entry of goalBranchEntries(ctx)) {
-    if (entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "toolResult")) {
-      tokens += entry.message.usage?.totalTokens ?? 0;
-      continue;
-    }
-    if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
-      tokens += entry.usage.totalTokens;
-      continue;
-    }
-    if (entry.type !== "custom" || entry.customType !== GOAL_ENTRY_TYPE || !isUnknownRecord(entry.data)) continue;
-    const event = entry.data.event;
-    if (typeof event !== "string" || !VALID_GOAL_EVENTS.has(event)) continue;
-    const state = entry.data.state === null ? previousState : parseGoalState(entry.data.state);
-    if (!state) continue;
-    if (entry.data.state !== null) previousState = state;
-    if (!MEANINGFUL_GOAL_EVENTS.has(event)) continue;
-    let detail = state.result || state.objective;
-    if (event === "check") {
-      detail = state.completionCheck ? `check ${state.completionCheck.name}` : "check cleared";
-    } else if (event === "limit") {
-      detail = state.maxTurns === undefined ? "limit cleared" : `limit ${state.maxTurns}`;
-    }
-    lines.push(`+${formatTime(Math.max(0, state.updatedAt - state.createdAt))}  ${event}  turn ${state.turns}  ${formatTokens(Math.max(0, tokens - state.baselineTokens))} tokens  ${goalHistoryPreview(detail)}`);
-  }
-  return lines.length ? lines.slice(-count).join("\n") : undefined;
 }
 
 function setGoalUpdateToolActive(pi: ExtensionAPI, active: boolean): void {
@@ -359,8 +197,9 @@ function goalStatusLabel(status: GoalStatus): string {
   return `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
 }
 
-function goalPanelActions(status: GoalStatus): Array<{ label: string; control: "pause" | "resume" | "edit" | "clear" }> {
+function goalPanelActions(status: GoalStatus): Array<{ label: string; control: "checks" | "pause" | "resume" | "edit" | "clear" }> {
   const terminal = [
+    { label: "List completion checks", control: "checks" as const },
     { label: "Edit objective", control: "edit" as const },
     { label: "Clear goal", control: "clear" as const },
   ];
@@ -714,7 +553,7 @@ export function registerGoal(
       const sameTurn = previous?.key === blockerKey && previous.lastTurn === state.turns;
       const consecutive = previous?.key === blockerKey && previous.lastTurn === state.turns - 1;
       const streak = sameTurn ? previous.streak : consecutive ? previous.streak + 1 : 1;
-      const blockerAudit = { key: blockerKey, streak, lastTurn: state.turns };
+      const blockerAudit = { key: blockerKey, streak, lastTurn: state.turns, evidence };
       if (streak < 3) {
         const next = recordGoalBlockerAudit(state, blockerAudit, Date.now());
         persistGoalState(pi, runtime, "blocker-audit", next);
@@ -841,8 +680,20 @@ export function registerGoal(
       }
 
       if (command.kind === "history") {
-        const history = goalHistory(ctx, command.count);
+        const history = formatGoalHistory(goalBranchEntries(ctx), command.count);
         ctx.ui.notify(history ?? "No goal history on the current branch.", "info");
+        return;
+      }
+
+      if (command.kind === "checks") {
+        try {
+          const checks = listGoalCompletionChecks(ctx);
+          ctx.ui.notify(checks.length
+            ? `Goal completion checks: ${checks.join(", ")}`
+            : "No goal completion checks are configured.", "info");
+        } catch (error) {
+          reportError(ctx, "Goal completion checks could not be listed", error);
+        }
         return;
       }
 
@@ -1176,7 +1027,7 @@ export function registerGoal(
         const verification = await inferGoalVerification(objective);
         const state = createNewGoalState(objective, sumGoalTokens(ctx), verification, Date.now(), {
           ...(completionCheck === undefined ? {} : { completionCheck }),
-          ...(controlledStart?.maxTurns === undefined ? {} : { maxTurns: controlledStart.maxTurns }),
+          maxTurns: controlledStart?.maxTurns ?? DEFAULT_GOAL_MAX_TURNS,
         });
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
         if (scheduleGoalContinuation(pi, runtime, initState, ctx)) {
@@ -1216,6 +1067,7 @@ export function registerGoal(
             { value: "resume", description: "Resume automatic continuation" },
             { value: "start", description: "Start with optional controls" },
             { value: "check", description: "Set or clear a completion check" },
+            { value: "checks", description: "List completion checks" },
             { value: "limit", description: "Set or clear a turn limit" },
             { value: "history", description: "Show goal history" },
           ];

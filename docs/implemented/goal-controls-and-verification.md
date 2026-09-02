@@ -2,6 +2,8 @@
 
 STATUS: DONE
 
+> **Superseded grammar:** This document records the original design. See [`2026-09-01-truthful-check-receipts-and-safe-goal-grammar.md`](2026-09-01-truthful-check-receipts-and-safe-goal-grammar.md) for the current reserved-word grammar. In particular, objectives beginning with a reserved word require `/goal start -- <objective>`.
+
 ## Summary
 
 KillerOS `/goal` can continue across turns, compaction, reloads, and branch navigation. Three additions make that automation easier to trust and inspect:

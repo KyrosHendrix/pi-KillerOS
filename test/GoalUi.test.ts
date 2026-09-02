@@ -142,17 +142,17 @@ test("active, paused, and blocked goals replace the footer path with exact statu
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 10_000;
   const seconds = footer.render(160)[2] ?? "";
-  assert.match(seconds, /\x1B\[33m\/goal is active \(10s\)\x1B\[39m/u);
-  assert.ok(stripAnsi(seconds).trimEnd().endsWith("/goal is active (10s)"));
+  assert.match(seconds, /\x1B\[33m\/goal is active 1\/20 \(10s\)\x1B\[39m/u);
+  assert.ok(stripAnsi(seconds).trimEnd().endsWith("/goal is active 1/20 (10s)"));
   assert.doesNotMatch(stripAnsi(seconds), /✻ goal|pi-KillerOS/u);
 
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 125_000;
-  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal is active (2m 05s)"));
+  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal is active 1/20 (2m 05s)"));
 
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 3_725_000;
-  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal is active (1h 02m 05s)"));
+  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal is active 1/20 (1h 02m 05s)"));
 
   for (let width = 1; width <= 180; width += 1) {
     const lines = footer.render(width).map(stripAnsi);

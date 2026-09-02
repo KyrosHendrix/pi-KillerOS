@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { resolveGoalCompletionCheck, runGoalCompletionCheck, type HookSpawnProcess } from "../killeros/hooks.ts";
+import { listGoalCompletionChecks, resolveGoalCompletionCheck, runGoalCompletionCheck, type HookSpawnProcess } from "../killeros/hooks.ts";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { createHarness, createTuiContext, emitSequentially, getHandlers, last, removeDirectoryEventually, resultReason, waitFor } from "./ExtensionTestHarness.ts";
@@ -26,7 +26,11 @@ test("goal checks validate trusted configuration and bind command plus effective
     goalChecks,
   }));
 
-  writeChecks({ quality: { command: `"${process.execPath}" -e "if(process.env.KILLEROS_EVENT!=='goal_check'||process.env.KILLEROS_GOAL_CHECK!=='quality')process.exit(2)"` } });
+  writeChecks({
+    unit: { command: "npm test" },
+    quality: { command: `"${process.execPath}" -e "if(process.env.KILLEROS_EVENT!=='goal_check'||process.env.KILLEROS_GOAL_CHECK!=='quality')process.exit(2)"` },
+  });
+  assert.deepEqual(listGoalCompletionChecks(extensionCtx), ["quality", "unit"]);
   const first = resolveGoalCompletionCheck(extensionCtx, "quality");
   assert.deepEqual(resolveGoalCompletionCheck(extensionCtx, "quality"), first);
   await runGoalCompletionCheck(extensionCtx, first);
@@ -34,6 +38,7 @@ test("goal checks validate trusted configuration and bind command plus effective
   writeChecks({ quality: { command: `"${process.execPath}" -e "process.exit(0)"`, timeoutMs: 30_001 } });
   assert.notEqual(resolveGoalCompletionCheck(extensionCtx, "quality").configHash, first.configHash);
   ctx.isProjectTrusted = () => false;
+  assert.throws(() => listGoalCompletionChecks(extensionCtx), /trusted project/u);
   assert.throws(() => resolveGoalCompletionCheck(extensionCtx, "quality"), /trusted project/u);
 });
 
@@ -54,10 +59,9 @@ test("goal checks reject malformed definitions", async (t) => {
   ];
   for (const goalChecks of invalid) {
     writeFileSync(configPath, JSON.stringify({ goalChecks }));
-    assert.throws(
-      () => resolveGoalCompletionCheck(extensionCtx, "quality"),
-      (error) => error instanceof Error && !error.message.includes("\x1b") && !error.message.includes("\x07"),
-    );
+    const safeError = (error: unknown) => error instanceof Error && !error.message.includes("\x1b") && !error.message.includes("\x07");
+    assert.throws(() => listGoalCompletionChecks(extensionCtx), safeError);
+    assert.throws(() => resolveGoalCompletionCheck(extensionCtx, "quality"), safeError);
   }
 });
 

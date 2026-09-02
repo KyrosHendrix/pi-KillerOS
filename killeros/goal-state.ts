@@ -4,6 +4,7 @@ import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { GoalBlockerAudit, GoalCompletionCheck, GoalFileBaseline, GoalFileVerification, GoalState, GoalStateCommon, GoalStatus } from "./runtime.ts";
 
+export const DEFAULT_GOAL_MAX_TURNS = 20;
 export const GOAL_OBJECTIVE_LIMIT = 4_000;
 export const GOAL_MAX_TURNS = 10_000;
 export const GOAL_CHECK_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
@@ -90,7 +91,9 @@ function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): 
     || typeof value.key !== "string"
     || !/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.key)
     || typeof value.streak !== "number" || !Number.isInteger(value.streak) || value.streak < 1 || value.streak > 3
-    || typeof value.lastTurn !== "number" || !Number.isInteger(value.lastTurn) || value.lastTurn < 1 || value.lastTurn > turns) {
+    || typeof value.lastTurn !== "number" || !Number.isInteger(value.lastTurn) || value.lastTurn < 1 || value.lastTurn > turns
+    || value.evidence !== undefined && (typeof value.evidence !== "string"
+      || value.evidence !== value.evidence.trim() || !value.evidence || value.evidence.length > 2_000)) {
     return false;
   }
   if (status === "complete") return false;

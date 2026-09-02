@@ -342,6 +342,7 @@ test("a goal blocks only after the same blocker is recorded on three consecutive
     key: "missing-credential",
     streak: 3,
     lastTurn: 3,
+    evidence: "Evidence for missing-credential",
   });
 });
 
@@ -623,8 +624,14 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
     return { ...harness, ctx };
   };
 
-  const valid = await restore({ key: "missing-credential", streak: 2, lastTurn: 2 });
+  const valid = await restore({ key: "missing-credential", streak: 2, lastTurn: 2, evidence: "Credential is still unavailable" });
   assert.equal(valid.sentMessages.length, 1);
+  assert.deepEqual(last(valid.appendedEntries).data.state.blockerAudit, {
+    key: "missing-credential",
+    streak: 2,
+    lastTurn: 2,
+    evidence: "Credential is still unavailable",
+  });
   await emitGoalStart(valid.handlers, valid.ctx);
   await getTool(valid, "killeros_goal_update").execute(
     "restored-third-attempt",
@@ -644,6 +651,9 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
     { key: "valid", streak: 1, lastTurn: -1 },
     { key: "valid", streak: 1, lastTurn: 0 },
     { key: "valid", streak: 1, lastTurn: 3 },
+    { key: "valid", streak: 1, lastTurn: 1, evidence: "" },
+    { key: "valid", streak: 1, lastTurn: 1, evidence: " padded" },
+    { key: "valid", streak: 1, lastTurn: 1, evidence: "x".repeat(2_001) },
   ];
   for (const audit of malformed) {
     const restored = await restore(audit);

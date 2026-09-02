@@ -433,6 +433,12 @@ function goalCheckHash(check: KillerosGoalCheck): string {
     .digest("hex");
 }
 
+/** Lists validated completion-check names without exposing their definitions. */
+export function listGoalCompletionChecks(ctx: ExtensionContext): readonly string[] {
+  if (!ctx.isProjectTrusted()) throw new Error("Goal completion checks require a trusted project");
+  return Object.keys(loadKillerosConfig(ctx, true).goalChecks ?? {}).sort();
+}
+
 export function resolveGoalCompletionCheck(ctx: ExtensionContext, name: string): GoalCompletionCheck {
   if (!GOAL_CHECK_NAME_PATTERN.test(name)) throw new Error("Invalid goal completion check name");
   if (!ctx.isProjectTrusted()) throw new Error("Goal completion checks require a trusted project");

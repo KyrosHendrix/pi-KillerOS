@@ -248,7 +248,7 @@ test("goal completions include controls and strict start options", () => {
   assert.ok(goal.getArgumentCompletions);
   assert.deepEqual(
     goal.getArgumentCompletions("")?.map(({ value }) => value),
-    ["clear", "edit", "pause", "resume", "start", "check", "limit", "history"],
+    ["clear", "edit", "pause", "resume", "start", "check", "checks", "limit", "history"],
   );
   assert.deepEqual(
     goal.getArgumentCompletions("start --")?.map(({ value }) => value),

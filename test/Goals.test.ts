@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { Check } from "typebox/value";
 import { createHarness, createTuiContext, emitSequentially, getCommand, getHandlers, getTool, last, type TestHandler } from "./ExtensionTestHarness.ts";
@@ -54,6 +57,7 @@ test("strict goal start validates controls atomically", async () => {
   const { appendedEntries, commands } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
   await getCommand(commands, "goal").handler("Existing objective", ctx);
+  assert.equal(last(appendedEntries).data.state.maxTurns, 20);
   const writes = appendedEntries.length;
   for (const malformed of [
     "start --turns 0 -- Invalid",
@@ -75,13 +79,22 @@ test("strict goal start validates controls atomically", async () => {
   assert.equal(state.maxTurns, 2);
   assert.equal(controlled.sentMessages.length, 1);
 
-  const unbounded = createHarness<GoalEntryData>();
-  await getCommand(unbounded.commands, "goal").handler("start -- Objective without controls", createTuiContext().ctx);
-  assert.equal(last(unbounded.appendedEntries).data.state.objective, "Objective without controls");
+  const defaultLimited = createHarness<GoalEntryData>();
+  await getCommand(defaultLimited.commands, "goal").handler("start -- Objective without controls", createTuiContext().ctx);
+  assert.equal(last(defaultLimited.appendedEntries).data.state.objective, "Objective without controls");
+  assert.equal(last(defaultLimited.appendedEntries).data.state.maxTurns, 20);
+
+  const replacement = createHarness<GoalEntryData>();
+  const replacementContext = createTuiContext().ctx;
+  replacementContext.ui.confirm = async () => true;
+  await getCommand(replacement.commands, "goal").handler("start --turns 3 -- First objective", replacementContext);
+  await getCommand(replacement.commands, "goal").handler("Replacement objective", replacementContext);
+  assert.equal(last(replacement.appendedEntries).data.event, "replace");
+  assert.equal(last(replacement.appendedEntries).data.state.maxTurns, 20);
 });
 
 test("reserved goal words require strict start syntax for objectives", async () => {
-  for (const word of ["Start", "Check", "Limit", "History", "Clear", "Edit", "Pause", "Resume"]) {
+  for (const word of ["Start", "Check", "Checks", "Limit", "History", "Clear", "Edit", "Pause", "Resume"]) {
     const objective = `${word} the release artifacts`;
     const rejected = createHarness<GoalEntryData>();
     const rejectedContext = createTuiContext().ctx;
@@ -103,6 +116,7 @@ test("malformed reserved goal commands have no side effects", async () => {
     ["check", "Usage: /goal check <name|clear>"],
     ["check quality extra", "Usage: /goal check <name|clear>"],
     ["check clear extra", "Usage: /goal check <name|clear>"],
+    ["checks extra", "Usage: /goal checks"],
     ["limit", "Usage: /goal limit <count|clear>"],
     ["limit 3 extra", "Usage: /goal limit <count|clear>"],
     ["limit clear extra", "Usage: /goal limit <count|clear>"],
@@ -156,6 +170,29 @@ test("malformed reserved goal commands have no side effects", async () => {
   }
 });
 
+test("/goal checks lists only sorted names without goal side effects", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-checks-command-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(path.join(directory, ".pi"));
+  writeFileSync(path.join(directory, ".pi", "killeros-hooks.json"), JSON.stringify({
+    goalChecks: {
+      unit: { command: "npm test", timeoutMs: 1_000 },
+      quality: { command: "npm run check", timeoutMs: 2_000 },
+    },
+  }));
+  const harness = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  ctx.cwd = directory;
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+
+  await getCommand(harness.commands, "goal").handler("checks", ctx);
+
+  assert.deepEqual(notifications, [{ message: "Goal completion checks: quality, unit", level: "info" }]);
+  assert.deepEqual(harness.appendedEntries, []);
+  assert.deepEqual(harness.sentMessages, []);
+});
+
 test("turn limits pause at settlement and refuse exhausted resume", async () => {
   const { appendedEntries, commands, handlers, sentMessages } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
@@ -177,6 +214,22 @@ test("turn limits pause at settlement and refuse exhausted resume", async () => 
   await getCommand(commands, "goal").handler("limit clear", ctx);
   assert.equal(last(appendedEntries).data.state.maxTurns, undefined);
   assert.equal(last(appendedEntries).data.state.status, "paused");
+});
+
+test("the 20th default-limited turn settles without starting turn 21", async () => {
+  const { appendedEntries, commands, handlers, sentMessages } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  await getCommand(commands, "goal").handler("Finish within the default limit", ctx);
+
+  for (let turn = 1; turn <= 20; turn += 1) {
+    await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
+  }
+
+  assert.equal(sentMessages.length, 20);
+  assert.equal(last(appendedEntries).data.event, "limit");
+  assert.equal(last(appendedEntries).data.state.status, "paused");
+  assert.equal(last(appendedEntries).data.state.turns, 20);
 });
 
 test("completion wins on the last allowed goal turn", async () => {
@@ -216,7 +269,15 @@ test("goal history scans the active branch without writing state", async () => {
     { type: "custom", customType: "killeros-goal", data: { version: 1, event: "set", state: state(1, "active", 0) } },
     { type: "message", message: { role: "assistant", usage: { totalTokens: 110 } } },
     { type: "custom", customType: "killeros-goal", data: { version: 1, event: "turn", state: state(2, "active", 1) } },
-    { type: "custom", customType: "killeros-goal", data: { version: 1, event: "pause", state: state(3, "paused", 1, "Waiting") } },
+    { type: "custom", customType: "killeros-goal", data: { version: 1, event: "blocker-audit", state: {
+      ...state(3, "active", 1),
+      blockerAudit: { key: "missing-token", streak: 1, lastTurn: 1 },
+    } } },
+    { type: "custom", customType: "killeros-goal", data: { version: 1, event: "blocker-audit", state: {
+      ...state(4, "active", 2),
+      blockerAudit: { key: "missing-token", streak: 2, lastTurn: 2, evidence: "Token was rejected" },
+    } } },
+    { type: "custom", customType: "killeros-goal", data: { version: 1, event: "pause", state: state(5, "paused", 2, "Waiting") } },
     { type: "custom", customType: "killeros-goal", data: { version: 1, event: "complete", state: { broken: true } } },
   ];
   const { appendedEntries, commands, sentMessages } = createHarness<GoalEntryData>();
@@ -224,8 +285,11 @@ test("goal history scans the active branch without writing state", async () => {
   const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   await getCommand(commands, "goal").handler("history 1", ctx);
-  assert.match(last(notifications).message, /pause  turn 1  100 tokens  Waiting/u);
+  assert.match(last(notifications).message, /pause  turn 2  100 tokens  Waiting/u);
   assert.doesNotMatch(last(notifications).message, /\bturn  turn\b/u);
+  await getCommand(commands, "goal").handler("history 3", ctx);
+  assert.match(last(notifications).message, /Blocker 1\/3: missing-token/u);
+  assert.match(last(notifications).message, /blocker-audit  turn 2  100 tokens  Blocker 2\/3: Token was rejected/u);
   assert.equal(appendedEntries.length, 0);
   assert.equal(sentMessages.length, 0);
   await getCommand(commands, "goal").handler("history 51", ctx);
@@ -293,9 +357,11 @@ test("bare /goal opens a context-valid action panel in TUI mode", async () => {
 
   await getCommand(commands, "goal").handler("", ctx);
   assert.match(captured.selection.title, /Goal active/u);
+  assert.match(captured.selection.title, /1\/20 turns/u);
   assert.match(captured.selection.title, /Ship the release/u);
   assert.deepEqual(captured.selection.options, [
     "Pause automatic continuation",
+    "List completion checks",
     "Edit objective",
     "Clear goal",
   ]);
@@ -335,9 +401,9 @@ test("goal panel actions match paused, blocked, and complete states", async () =
   const unsafeObjective = "\x1b]2;owned\x07\x1b[31mobjective\x1b[0m\0";
   const unsafeResult = "\x1b]2;owned\x07\x1b[31mverified\x1b[0m\0";
   const expected = {
-    paused: ["Resume automatic continuation", "Edit objective", "Clear goal"],
-    blocked: ["Resume automatic continuation", "Edit objective", "Clear goal"],
-    complete: ["Edit objective", "Clear goal"],
+    paused: ["Resume automatic continuation", "List completion checks", "Edit objective", "Clear goal"],
+    blocked: ["Resume automatic continuation", "List completion checks", "Edit objective", "Clear goal"],
+    complete: ["List completion checks", "Edit objective", "Clear goal"],
   };
   for (const [status, options] of Object.entries(expected)) {
     const now = Date.now();
