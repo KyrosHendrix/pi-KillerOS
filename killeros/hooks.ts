@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   spawn,
   type SpawnOptionsWithStdioTuple,
@@ -9,8 +8,6 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { errorMessage, reportError } from "./errors.ts";
-import { GOAL_CHECK_NAME_PATTERN } from "./goal-state.ts";
-import type { GoalCompletionCheck } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 type KillerosHookEvent = "tool_call" | "tool_result" | "agent_settled";
@@ -21,14 +18,8 @@ interface KillerosHook {
   timeoutMs?: number;
 }
 
-interface KillerosGoalCheck {
-  command: string;
-  timeoutMs?: number;
-}
-
 interface KillerosHookConfig {
   hooks?: Partial<Record<KillerosHookEvent, KillerosHook[]>>;
-  goalChecks?: Record<string, KillerosGoalCheck>;
 }
 
 interface HookExecutionResult {
@@ -70,8 +61,6 @@ const HOOK_OUTPUT_LIMIT = 16 * 1024;
 const HOOK_PAYLOAD_LIMIT = 8_000;
 const HOOK_TIMEOUT_DEFAULT_MS = 30_000;
 const HOOK_TIMEOUT_MAX_MS = 300_000;
-const GOAL_CHECK_LIMIT = 32;
-const GOAL_CHECK_COMMAND_LIMIT = 8_000;
 
 // Reads executable project configuration through a bounded, project-local file descriptor.
 function readHookConfig(configPath: string, projectRoot: string): string {
@@ -122,12 +111,11 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function loadKillerosConfig(ctx: ExtensionContext, strictGoalChecks = false): KillerosHookConfig {
+function loadKillerosConfig(ctx: ExtensionContext): KillerosHookConfig {
   const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "killeros-hooks.json");
   if (!existsSync(configPath)) return {};
   const displayPath = safeTerminalText(configPath).replaceAll("\n", "");
   if (!ctx.isProjectTrusted()) {
-    if (strictGoalChecks) throw new Error("Goal completion checks require a trusted project");
     ctx.ui.notify(`Ignored untrusted project hooks in ${displayPath}`, "warning");
     return {};
   }
@@ -181,34 +169,8 @@ function loadKillerosConfig(ctx: ExtensionContext, strictGoalChecks = false): Ki
       hooks[event] = accepted;
     }
 
-    let goalChecks: Record<string, KillerosGoalCheck> | undefined;
-    try {
-      const candidates = parsed.goalChecks;
-      if (candidates !== undefined) {
-        if (!isUnknownRecord(candidates)) throw new Error("goalChecks must contain a JSON object");
-        const entries = Object.entries(candidates);
-        if (entries.length > GOAL_CHECK_LIMIT) throw new Error(`goalChecks may contain at most ${GOAL_CHECK_LIMIT} checks`);
-        goalChecks = {};
-        for (const [name, candidate] of entries) {
-          if (!GOAL_CHECK_NAME_PATTERN.test(name)) throw new Error(`Invalid goal check name: ${JSON.stringify(name)}`);
-          if (!isUnknownRecord(candidate)) throw new Error(`Goal check ${name} must contain a JSON object`);
-          const { command, timeoutMs } = candidate;
-          if (typeof command !== "string" || command.trim().length < 1 || command.trim().length > GOAL_CHECK_COMMAND_LIMIT) {
-            throw new Error(`Goal check ${name} command must contain 1 to ${GOAL_CHECK_COMMAND_LIMIT} characters`);
-          }
-          if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > HOOK_TIMEOUT_MAX_MS)) {
-            throw new Error(`Goal check ${name} timeoutMs must be an integer from 1 to ${HOOK_TIMEOUT_MAX_MS}`);
-          }
-          goalChecks[name] = { command: command.trim(), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
-        }
-      }
-    } catch (error) {
-      if (strictGoalChecks) throw error;
-      reportError(ctx, `Invalid ${CONFIG_DIR_NAME}/killeros-hooks.json goalChecks`, error);
-    }
-    return { hooks, ...(goalChecks === undefined ? {} : { goalChecks }) };
+    return { hooks };
   } catch (error) {
-    if (strictGoalChecks) throw error;
     reportError(ctx, `Invalid ${CONFIG_DIR_NAME}/killeros-hooks.json`, error);
     return {};
   }
@@ -425,48 +387,6 @@ function hookEnvironment(event: KillerosHookEvent, toolName = "", payload: unkno
 function hookFailureMessage(result: HookExecutionResult): string {
   const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
   return safeTerminalText(`Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}\n${detail}`);
-}
-
-function goalCheckHash(check: KillerosGoalCheck): string {
-  return createHash("sha256")
-    .update(JSON.stringify({ command: check.command, timeoutMs: check.timeoutMs ?? HOOK_TIMEOUT_DEFAULT_MS }))
-    .digest("hex");
-}
-
-/** Lists validated completion-check names without exposing their definitions. */
-export function listGoalCompletionChecks(ctx: ExtensionContext): readonly string[] {
-  if (!ctx.isProjectTrusted()) throw new Error("Goal completion checks require a trusted project");
-  return Object.keys(loadKillerosConfig(ctx, true).goalChecks ?? {}).sort();
-}
-
-export function resolveGoalCompletionCheck(ctx: ExtensionContext, name: string): GoalCompletionCheck {
-  if (!GOAL_CHECK_NAME_PATTERN.test(name)) throw new Error("Invalid goal completion check name");
-  if (!ctx.isProjectTrusted()) throw new Error("Goal completion checks require a trusted project");
-  const check = loadKillerosConfig(ctx, true).goalChecks?.[name];
-  if (!check) throw new Error(`Unknown goal completion check: ${safeTerminalText(name)}`);
-  return { kind: "named-command", name, configHash: goalCheckHash(check) };
-}
-
-export async function runGoalCompletionCheck(
-  ctx: ExtensionContext,
-  bound: GoalCompletionCheck,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (!ctx.isProjectTrusted()) throw new Error("Goal completion checks require a trusted project");
-  const check = loadKillerosConfig(ctx, true).goalChecks?.[bound.name];
-  if (!check) throw new Error(`Unknown goal completion check: ${safeTerminalText(bound.name)}`);
-  if (goalCheckHash(check) !== bound.configHash) {
-    throw new Error(`Goal completion check ${safeTerminalText(bound.name)} changed; run /goal check ${safeTerminalText(bound.name)} to approve it`);
-  }
-  const result = await executeHook({
-    command: check.command,
-    cwd: ctx.cwd,
-    environment: { KILLEROS_EVENT: "goal_check", KILLEROS_GOAL_CHECK: bound.name },
-    timeoutMs: check.timeoutMs,
-    signal,
-  });
-  if (result.cancelled) throw new Error(`Goal completion check ${safeTerminalText(bound.name)} was cancelled`);
-  if (result.code !== 0) throw new Error(hookFailureMessage(result).replace(/^Hook failed/u, `Goal completion check ${safeTerminalText(bound.name)} failed`));
 }
 
 export function registerLifecycleHooks(pi: ExtensionAPI): void {

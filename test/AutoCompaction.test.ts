@@ -199,7 +199,7 @@ function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
     failCompactionSynchronously: (error) => { compactError = error ?? new Error("compaction unavailable"); },
     failPersistence: (error) => { persistenceError = error ?? new Error("session storage unavailable"); },
     runGoalCommand: (command) => requiredMapValue(commands, "goal").handler(command, ctx),
-    startGoal: (objective) => requiredMapValue(commands, "goal").handler(`start -- ${objective}`, ctx),
+    startGoal: (objective) => requiredMapValue(commands, "goal").handler(objective, ctx),
     emit,
   };
 }

@@ -541,19 +541,6 @@ test("explicit pause cancellation cannot become manual-compaction recovery", asy
   assert.equal(harness.sentMessages.length, 1);
 });
 
-test("editing a marked paused goal clears recovery before reactivation", async () => {
-  const harness = createHarness();
-  const { ctx } = createContext();
-  await abortActiveGoal(harness, ctx);
-  ctx.ui.editor = async () => "Edited objective";
-  await getCommand(harness, "goal").handler("edit", ctx);
-
-  const edited = lastAppendedEntry(harness).data.state;
-  assert.equal(edited.objective, "Edited objective");
-  assert.equal(edited.status, "active");
-  assert.equal(edited.resumeAfterManualCompaction, undefined);
-});
-
 test("a terminal goal update cannot be revived by manual compaction", async () => {
   const harness = createHarness();
   const { ctx } = createContext();

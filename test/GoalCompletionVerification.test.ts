@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -110,51 +110,17 @@ function complete(harness: ReturnType<typeof createHarness>, ctx: ReturnType<typ
   );
 }
 
-test("named goal checks bind by hash, reject failures and changes, then complete after reattachment", async (t) => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-"));
+test("completion cannot finish a goal restored while its file check is running", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-file-race-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  mkdirSync(path.join(directory, ".pi"));
-  const configPath = path.join(directory, ".pi", "killeros-hooks.json");
-  const writeCheck = (command: string) => writeFileSync(configPath, JSON.stringify({ goalChecks: { quality: { command } } }));
-  writeCheck(`"${process.execPath}" -e "process.stderr.write('not ready');process.exit(7)"`);
-
-  const harness = createHarness();
-  const ctx = createContext();
-  ctx.cwd = directory;
-  ctx.isProjectTrusted = () => true;
-  await requiredMapValue(harness.commands, "goal").handler("start --check quality -- Ship the release", ctx);
-  const active = requiredState(last(harness.appendedEntries));
-  assert.equal(isUnknownRecord(active.completionCheck) && active.completionCheck.name, "quality");
-  assert.equal(JSON.stringify(active).includes("process.exit"), false);
-
-  await assert.rejects(complete(harness, ctx), /quality failed[\s\S]*not ready/u);
-  assert.equal(requiredState(last(harness.appendedEntries)).status, "active");
-
-  writeCheck(`"${process.execPath}" -e "process.exit(0)"`);
-  await assert.rejects(complete(harness, ctx), /quality changed/u);
-  await requiredMapValue(harness.commands, "goal").handler("check quality", ctx);
-  const result = await complete(harness, ctx);
-  assert.equal(result.details.status, "complete");
-  assert.equal(result.details.verification, "check");
-  assert.equal(requiredState(last(harness.appendedEntries)).status, "complete");
-});
-
-test("completion cannot finish a goal restored while its check is running", async (t) => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-race-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  mkdirSync(path.join(directory, ".pi"));
-  const marker = path.join(directory, "check-started");
-  const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('check-started','yes');setTimeout(()=>process.exit(0),200)"`;
-  writeFileSync(path.join(directory, ".pi", "killeros-hooks.json"), JSON.stringify({ goalChecks: { quality: { command } } }));
-
+  const requested = path.join(directory, "requested.md");
+  writeFileSync(requested, "stale");
   const harness = createHarness();
   const ctx = createContext(harness.entries);
   ctx.cwd = directory;
-  ctx.isProjectTrusted = () => true;
-  await requiredMapValue(harness.commands, "goal").handler("start --check quality -- Original goal", ctx);
+  await requiredMapValue(harness.commands, "goal").handler(`Write the Markdown file to \`${requested}\``, ctx);
+  writeFileSync(requested, "fresh deliverable");
   const completion = complete(harness, ctx);
-  while (!existsSync(marker)) await new Promise((resolve) => setTimeout(resolve, 10));
-
   const now = Date.now();
   harness.entries.splice(0, harness.entries.length, {
     type: "custom",
@@ -174,46 +140,7 @@ test("completion cannot finish a goal restored while its check is running", asyn
     } },
   });
   for (const handler of harness.handlers.get("session_tree") ?? []) await handler({}, ctx);
-
   await assert.rejects(completion, /goal changed while completion was being verified/iu);
-  assert.equal(harness.appendedEntries.some((entry) => entry.data.event === "complete"), false);
-});
-
-test("file verification runs before a named completion command", async (t) => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-order-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  mkdirSync(path.join(directory, ".pi"));
-  const requested = path.join(directory, "requested.md");
-  const marker = path.join(directory, "check-ran");
-  const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('check-ran','yes')"`;
-  writeFileSync(path.join(directory, ".pi", "killeros-hooks.json"), JSON.stringify({ goalChecks: { quality: { command } } }));
-  const harness = createHarness();
-  const ctx = createContext();
-  ctx.cwd = directory;
-  ctx.isProjectTrusted = () => true;
-  await requiredMapValue(harness.commands, "goal").handler(`start --check quality -- Write the Markdown file to \`${requested}\``, ctx);
-
-  await assert.rejects(complete(harness, ctx), /not a regular file/u);
-  assert.equal(existsSync(marker), false);
-});
-
-test("named completion commands cannot invalidate file verification", async (t) => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-invalidation-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  mkdirSync(path.join(directory, ".pi"));
-  const requested = path.join(directory, "requested.md");
-  const command = `"${process.execPath}" -e "require('node:fs').rmSync('requested.md')"`;
-  writeFileSync(path.join(directory, ".pi", "killeros-hooks.json"), JSON.stringify({ goalChecks: { quality: { command } } }));
-  const harness = createHarness();
-  const ctx = createContext();
-  ctx.cwd = directory;
-  ctx.isProjectTrusted = () => true;
-  await requiredMapValue(harness.commands, "goal").handler(`start --check quality -- Write the Markdown file to \`${requested}\``, ctx);
-  writeFileSync(requested, "verified before the check");
-
-  await assert.rejects(complete(harness, ctx), /not a regular file/u);
-
-  assert.equal(requiredState(last(harness.appendedEntries)).status, "active");
   assert.equal(harness.appendedEntries.some((entry) => entry.data.event === "complete"), false);
 });
 
@@ -429,10 +356,27 @@ test("explicit file goals support extensionless absolute destinations", async (t
 });
 
 test("unquoted goal paths shed sentence punctuation while quoted paths stay exact", async () => {
-  assert.equal((await inferGoalVerification("create file report to /tmp/out.md. Thanks"))?.path, "/tmp/out.md");
-  assert.equal((await inferGoalVerification("create file report to /tmp/out.md) Thanks"))?.path, "/tmp/out.md");
-  assert.equal((await inferGoalVerification("create file report to /tmp/out(1)"))?.path, "/tmp/out(1)");
-  assert.equal((await inferGoalVerification('Create the file at "/tmp/out.md."'))?.path, "/tmp/out.md.");
+  const cwd = process.cwd();
+  assert.equal((await inferGoalVerification("create file report to /tmp/out.md. Thanks", cwd))?.path, "/tmp/out.md");
+  assert.equal((await inferGoalVerification("create file report to /tmp/out.md) Thanks", cwd))?.path, "/tmp/out.md");
+  assert.equal((await inferGoalVerification("create file report to /tmp/out(1)", cwd))?.path, "/tmp/out(1)");
+  assert.equal((await inferGoalVerification('Create the file at "/tmp/out.md."', cwd))?.path, "/tmp/out.md.");
+});
+
+test("direct verb targets bind only when a quoted path immediately follows", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-direct-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const report = path.join(directory, "docs", "report.md");
+  const footer = path.join(directory, "killeros", "footer.ts");
+  const runtime = path.join(directory, "src", "runtime.ts");
+  assert.equal((await inferGoalVerification("Write the Markdown file to `docs/report.md`", directory))?.path, report);
+  assert.equal((await inferGoalVerification("Fix `killeros/footer.ts`", directory))?.path, footer);
+  assert.equal((await inferGoalVerification('Refactor "src/runtime.ts"', directory))?.path, runtime);
+  assert.equal(await inferGoalVerification("Fix the bug described in `docs/report.md`", directory), undefined);
+  assert.equal(await inferGoalVerification("Review `killeros/footer.ts`", directory), undefined);
+  assert.equal(await inferGoalVerification("Create a directory at `docs/output`", directory), undefined);
+  assert.equal(await inferGoalVerification("Fix `https://example.com/out.md`", directory), undefined);
+  assert.equal(await inferGoalVerification("Fix `docs/output/`", directory), undefined);
 });
 
 test("old goal state restores, while malformed persisted verification fails closed", async () => {
@@ -465,8 +409,8 @@ test("old goal state restores, while malformed persisted verification fails clos
   assert.equal((await restore({ ...baseState, verification: { kind: "file", path: "C:\\out.md" } })).sentMessages.length, 0);
   assert.equal((await restore({ ...baseState, verification: { kind: "url", path: "C:\\out.md", baseline: { exists: false } } })).sentMessages.length, 0);
   assert.equal((await restore({ ...baseState, completionCheck: { kind: "named-command", name: "quality", configHash: "a".repeat(64) }, maxTurns: 3 })).sentMessages.length, 1);
-  assert.equal((await restore({ ...baseState, completionCheck: { kind: "named-command", name: "Bad", configHash: "a".repeat(64) } })).sentMessages.length, 0);
-  assert.equal((await restore({ ...baseState, completionCheck: { kind: "named-command", name: "quality", configHash: "ABC" } })).sentMessages.length, 0);
+  assert.equal((await restore({ ...baseState, completionCheck: { kind: "named-command", name: "Bad", configHash: "a".repeat(64) } })).sentMessages.length, 1);
+  assert.equal((await restore({ ...baseState, completionCheck: { kind: "named-command", name: "quality", configHash: "ABC" } })).sentMessages.length, 1);
   assert.equal((await restore({ ...baseState, maxTurns: 0 })).sentMessages.length, 0);
   assert.equal((await restore({ ...baseState, maxTurns: 10_001 })).sentMessages.length, 0);
 });

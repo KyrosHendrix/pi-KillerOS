@@ -242,17 +242,13 @@ test("autocomplete uses the same resolver and falls back to current base suggest
   assert.equal(resolver.isValidCommand("goal"), false);
 });
 
-test("goal completions include controls and strict start options", () => {
+test("goal completions include only lifecycle controls", () => {
   const goal = getCommand(createHarness(), "goal");
   assert.equal(goal.description, "Set a non-command objective or view the current goal");
   assert.ok(goal.getArgumentCompletions);
   assert.deepEqual(
     goal.getArgumentCompletions("")?.map(({ value }) => value),
-    ["clear", "edit", "pause", "resume", "start", "check", "checks", "limit", "history"],
-  );
-  assert.deepEqual(
-    goal.getArgumentCompletions("start --")?.map(({ value }) => value),
-    ["start --check ", "start --turns ", "start -- "],
+    ["clear", "pause", "resume"],
   );
 });
 

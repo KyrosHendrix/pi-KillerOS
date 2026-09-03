@@ -2,12 +2,11 @@ import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
-import type { GoalBlockerAudit, GoalCompletionCheck, GoalFileBaseline, GoalFileVerification, GoalState, GoalStateCommon, GoalStatus } from "./runtime.ts";
+import type { GoalBlockerAudit, GoalFileBaseline, GoalFileVerification, GoalState, GoalStateCommon, GoalStatus } from "./runtime.ts";
 
 export const DEFAULT_GOAL_MAX_TURNS = 20;
 export const GOAL_OBJECTIVE_LIMIT = 4_000;
 export const GOAL_MAX_TURNS = 10_000;
-export const GOAL_CHECK_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 export const GOAL_VERSION = 1;
 const FILE_HASH_CHUNK_SIZE = 64 * 1024;
 export const FILE_HASH_LIMIT = 64 * 1024 * 1024;
@@ -81,15 +80,6 @@ function isGoalFileVerification(value: unknown): value is GoalFileVerification {
     && isGoalFileBaseline(value.baseline);
 }
 
-function isGoalCompletionCheck(value: unknown): value is GoalCompletionCheck {
-  return isUnknownRecord(value)
-    && value.kind === "named-command"
-    && typeof value.name === "string"
-    && GOAL_CHECK_NAME_PATTERN.test(value.name)
-    && typeof value.configHash === "string"
-    && /^[a-f0-9]{64}$/u.test(value.configHash);
-}
-
 function isMaxTurns(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= GOAL_MAX_TURNS;
 }
@@ -126,7 +116,6 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     resumeAfterManualCompaction,
     blockerAudit,
     verification,
-    completionCheck,
     maxTurns,
   } = value;
   if (version !== GOAL_VERSION
@@ -142,7 +131,6 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     || !safeNonNegativeInteger(baselineTokens)
     || result !== undefined && typeof result !== "string"
     || verification !== undefined && !isGoalFileVerification(verification)
-    || completionCheck !== undefined && !isGoalCompletionCheck(completionCheck)
     || maxTurns !== undefined && !isMaxTurns(maxTurns)
     || resumeAfterManualCompaction !== undefined && resumeAfterManualCompaction !== true
     || blockerAudit !== undefined && !isGoalBlockerAudit(blockerAudit, turns, status)) {
@@ -160,7 +148,6 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     blockedAuditStartTurn: blockedAuditStartTurn ?? 0,
     baselineTokens,
     ...(verification === undefined ? {} : { verification }),
-    ...(completionCheck === undefined ? {} : { completionCheck }),
     ...(maxTurns === undefined ? {} : { maxTurns }),
   };
   switch (status) {
@@ -246,17 +233,26 @@ export async function captureGoalFileBaseline(
   }
 }
 
-/** Captures one explicit absolute output path so goal completion can verify its creation or modification. */
-export async function inferGoalVerification(objective: string): Promise<GoalFileVerification | undefined> {
+/** Captures one explicit output path so goal completion can verify its creation or modification. */
+export async function inferGoalVerification(objective: string, cwd: string): Promise<GoalFileVerification | undefined> {
+  const candidates: string[] = [];
   const destination = /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b\s+(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
-  const paths = [...objective.matchAll(destination)]
-    .map((match) => {
-      const quoted = match[1] ?? match[2] ?? match[3];
-      if (quoted !== undefined) return quoted.trim();
-      return stripUnquotedPathPunctuation((match[4] ?? "").trim());
-    })
-    .filter(isAbsoluteFilePath);
-  const unique = [...new Set(paths)];
+  for (const match of objective.matchAll(destination)) {
+    const quoted = match[1] ?? match[2] ?? match[3];
+    candidates.push(quoted !== undefined ? quoted.trim() : stripUnquotedPathPunctuation((match[4] ?? "").trim()));
+  }
+  const direct = /\b(?:update|edit|fix|refactor|migrate)\s+(`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)')/giu;
+  for (const match of objective.matchAll(direct)) {
+    const quoted = match[2] ?? match[3] ?? match[4];
+    if (quoted !== undefined) candidates.push(quoted.trim());
+  }
+  const resolved: string[] = [];
+  for (const raw of candidates) {
+    if (!raw || /^(?:https?|file):\/\//iu.test(raw) || /[\\\/]$/u.test(raw)) continue;
+    const absolute = path.isAbsolute(raw) || path.win32.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+    if (isAbsoluteFilePath(absolute)) resolved.push(absolute);
+  }
+  const unique = [...new Set(resolved)];
   const filePath = unique.length === 1 ? unique[0] : undefined;
   return filePath ? { kind: "file", path: filePath, baseline: await captureGoalFileBaseline(filePath) } : undefined;
 }
@@ -314,7 +310,6 @@ export function commonGoalState(state: GoalState): GoalStateCommon {
     blockedAuditStartTurn: state.blockedAuditStartTurn,
     baselineTokens: state.baselineTokens,
     ...(state.verification === undefined ? {} : { verification: state.verification }),
-    ...(state.completionCheck === undefined ? {} : { completionCheck: state.completionCheck }),
     ...(state.maxTurns === undefined ? {} : { maxTurns: state.maxTurns }),
   };
 }
@@ -331,7 +326,7 @@ export function createNewGoalState(
   baselineTokens: number,
   verification: GoalFileVerification | undefined,
   now: number,
-  controls: { completionCheck?: GoalCompletionCheck; maxTurns?: number } = {},
+  controls: { maxTurns?: number } = {},
 ): GoalState {
   return {
     version: GOAL_VERSION,
@@ -346,68 +341,7 @@ export function createNewGoalState(
     blockedAuditStartTurn: 0,
     baselineTokens,
     ...(verification === undefined ? {} : { verification }),
-    ...(controls.completionCheck === undefined ? {} : { completionCheck: controls.completionCheck }),
     ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
-  };
-}
-
-export function editGoalState(
-  state: GoalState,
-  objective: string,
-  verification: GoalFileVerification | undefined,
-  now: number,
-): GoalState {
-  const current = stopGoalClock(state, now);
-  const { verification: _previousVerification, ...common } = current;
-  return {
-    ...common,
-    revision: current.revision + 1,
-    objective,
-    status: "active",
-    updatedAt: now,
-    activeStartedAt: now,
-    blockedAuditStartTurn: current.turns,
-    ...(verification === undefined ? {} : { verification }),
-  };
-}
-
-export function updateGoalControlsState(
-  state: Exclude<GoalState, { status: "complete" }>,
-  controls: { completionCheck?: GoalCompletionCheck; maxTurns?: number },
-  now: number,
-): GoalState {
-  const stopped = stopGoalClock(state, now);
-  const { completionCheck: _completionCheck, maxTurns: _maxTurns, ...common } = stopped;
-  const nextCommon: GoalStateCommon = {
-    ...common,
-    revision: common.revision + 1,
-    updatedAt: now,
-    ...(controls.completionCheck === undefined ? {} : { completionCheck: controls.completionCheck }),
-    ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
-  };
-  if (state.status === "active") {
-    return {
-      ...nextCommon,
-      status: "active",
-      activeStartedAt: now,
-      ...(state.result === undefined ? {} : { result: state.result }),
-      ...(state.blockerAudit === undefined ? {} : { blockerAudit: state.blockerAudit }),
-    };
-  }
-  if (state.status === "paused") {
-    return {
-      ...nextCommon,
-      status: "paused",
-      ...(state.result === undefined ? {} : { result: state.result }),
-      ...(state.blockerAudit === undefined ? {} : { blockerAudit: state.blockerAudit }),
-      ...(state.resumeAfterManualCompaction === undefined ? {} : { resumeAfterManualCompaction: true }),
-    };
-  }
-  return {
-    ...nextCommon,
-    status: "blocked",
-    result: state.result,
-    ...(state.blockerAudit === undefined ? {} : { blockerAudit: state.blockerAudit }),
   };
 }
 

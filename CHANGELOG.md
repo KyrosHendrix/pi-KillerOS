@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Simplified `/goal` to five forms with proof-by-prose and silent file proof, removing configured completion checks.
+
 ### Fixed
 
 - Stripped sentence punctuation from unquoted inferred goal paths and picked token units after rounding so 999.6 shows as 1k and 999999 as 1M.

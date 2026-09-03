@@ -2,67 +2,32 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { listGoalCompletionChecks, resolveGoalCompletionCheck, runGoalCompletionCheck, type HookSpawnProcess } from "../killeros/hooks.ts";
+import type { HookSpawnProcess } from "../killeros/hooks.ts";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { createHarness, createTuiContext, emitSequentially, getHandlers, last, removeDirectoryEventually, resultReason, waitFor } from "./ExtensionTestHarness.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { executeHook } from "../Killeros.ts";
-import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 
 type TestNotification = { message: string; level?: string };
 
-test("goal checks validate trusted configuration and bind command plus effective timeout", async (t) => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-config-"));
+test("hook config ignores goalChecks without weakening lifecycle hooks", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-goalchecks-ignored-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   mkdirSync(path.join(directory, ".pi"));
-  const configPath = path.join(directory, ".pi", "killeros-hooks.json");
-  const { ctx } = createTuiContext();
-  ctx.cwd = directory;
-  const extensionCtx = extensionContextTestAdapter(ctx);
-  const writeChecks = (goalChecks: unknown) => writeFileSync(configPath, JSON.stringify({
-    hooks: { tool_call: [{ command: `"${process.execPath}" -e "process.exit(0)"` }] },
-    goalChecks,
+  const marker = path.join(directory, "accepted");
+  const command = `"${process.execPath}" -e "require('node:fs').writeFileSync('accepted','ran')"`;
+  writeFileSync(path.join(directory, ".pi", "killeros-hooks.json"), JSON.stringify({
+    hooks: { tool_call: [{ command }] },
+    goalChecks: { quality: { command: "npm test" } },
   }));
-
-  writeChecks({
-    unit: { command: "npm test" },
-    quality: { command: `"${process.execPath}" -e "if(process.env.KILLEROS_EVENT!=='goal_check'||process.env.KILLEROS_GOAL_CHECK!=='quality')process.exit(2)"` },
-  });
-  assert.deepEqual(listGoalCompletionChecks(extensionCtx), ["quality", "unit"]);
-  const first = resolveGoalCompletionCheck(extensionCtx, "quality");
-  assert.deepEqual(resolveGoalCompletionCheck(extensionCtx, "quality"), first);
-  await runGoalCompletionCheck(extensionCtx, first);
-
-  writeChecks({ quality: { command: `"${process.execPath}" -e "process.exit(0)"`, timeoutMs: 30_001 } });
-  assert.notEqual(resolveGoalCompletionCheck(extensionCtx, "quality").configHash, first.configHash);
-  ctx.isProjectTrusted = () => false;
-  assert.throws(() => listGoalCompletionChecks(extensionCtx), /trusted project/u);
-  assert.throws(() => resolveGoalCompletionCheck(extensionCtx, "quality"), /trusted project/u);
-});
-
-test("goal checks reject malformed definitions", async (t) => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-check-invalid-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  mkdirSync(path.join(directory, ".pi"));
-  const configPath = path.join(directory, ".pi", "killeros-hooks.json");
+  const { handlers } = createHarness();
   const { ctx } = createTuiContext();
   ctx.cwd = directory;
-  const extensionCtx = extensionContextTestAdapter(ctx);
-  const invalid = [
-    { "Bad Name": { command: "exit 0" } },
-    { "bad\x1b]2;owned\x07": { command: "exit 0" } },
-    { quality: { command: "" } },
-    { quality: { command: "exit 0", timeoutMs: 0 } },
-    Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`check-${index}`, { command: "exit 0" }])),
-  ];
-  for (const goalChecks of invalid) {
-    writeFileSync(configPath, JSON.stringify({ goalChecks }));
-    const safeError = (error: unknown) => error instanceof Error && !error.message.includes("\x1b") && !error.message.includes("\x07");
-    assert.throws(() => listGoalCompletionChecks(extensionCtx), safeError);
-    assert.throws(() => resolveGoalCompletionCheck(extensionCtx, "quality"), safeError);
-  }
+  for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+  await emitSequentially(getHandlers(handlers, "tool_call"), { toolCallId: "ignored-checks", toolName: "write", input: {} }, ctx);
+  assert.equal(readFileSync(marker, "utf8"), "ran");
 });
 
 test("hook config rejects malformed roots without executing hooks", async () => {

@@ -9,7 +9,7 @@ export const GOAL_ENTRY_TYPE = "killeros-goal";
 const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
 export const GOAL_UPDATE_TOOL = "killeros_goal_update";
 
-export type GoalEntryEvent = "set" | "replace" | "edit" | "check" | "limit" | "turn" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
+export type GoalEntryEvent = "set" | "replace" | "limit" | "turn" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
 export interface GoalEntryData {
   version: 1;
   event: GoalEntryEvent;
