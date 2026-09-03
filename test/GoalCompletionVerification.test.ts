@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Killeros from "../Killeros.ts";
-import { captureGoalFileBaseline } from "../killeros/goal-state.ts";
+import { captureGoalFileBaseline, inferGoalVerification } from "../killeros/goal-state.ts";
 import { extensionApiTestAdapter } from "./PiTestAdapters.ts";
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
@@ -426,6 +426,13 @@ test("explicit file goals support extensionless absolute destinations", async (t
   const ctx = createContext();
   const active = await startGoal(harness, ctx, `Create the file at \`${requested}\``);
   assert.deepEqual(active.verification, { kind: "file", path: requested, baseline: { exists: false } });
+});
+
+test("unquoted goal paths shed sentence punctuation while quoted paths stay exact", async () => {
+  assert.equal((await inferGoalVerification("create file report to /tmp/out.md. Thanks"))?.path, "/tmp/out.md");
+  assert.equal((await inferGoalVerification("create file report to /tmp/out.md) Thanks"))?.path, "/tmp/out.md");
+  assert.equal((await inferGoalVerification("create file report to /tmp/out(1)"))?.path, "/tmp/out(1)");
+  assert.equal((await inferGoalVerification('Create the file at "/tmp/out.md."'))?.path, "/tmp/out.md.");
 });
 
 test("old goal state restores, while malformed persisted verification fails closed", async () => {

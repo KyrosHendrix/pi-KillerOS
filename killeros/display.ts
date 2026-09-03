@@ -40,12 +40,14 @@ export function formatTime(milliseconds: number): string {
 
 export function formatTokens(value: number): string {
   if (!Number.isFinite(value)) return "0";
-  const amount = Math.max(0, value);
-  if (amount < 1_000) return `${Math.round(amount)}`;
-  if (amount >= 1_000_000) {
-    const precision = amount >= 10_000_000 ? 0 : 1;
-    return `${Number((amount / 1_000_000).toFixed(precision))}M`;
+  const rounded = Math.round(Math.max(0, value));
+  if (rounded < 1_000) return `${rounded}`;
+  if (rounded >= 1_000_000) {
+    const precision = rounded >= 10_000_000 ? 0 : 1;
+    return `${Number((rounded / 1_000_000).toFixed(precision))}M`;
   }
-  const precision = amount >= 100_000 ? 0 : 1;
-  return `${Number((amount / 1_000).toFixed(precision))}k`;
+  const precision = rounded >= 100_000 ? 0 : 1;
+  const inK = Number((rounded / 1_000).toFixed(precision));
+  if (inK >= 1_000) return `${Number((rounded / 1_000_000).toFixed(1))}M`;
+  return `${inK}k`;
 }

@@ -64,6 +64,14 @@ function isAbsoluteFilePath(value: string): boolean {
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
+function stripUnquotedPathPunctuation(value: string): string {
+  const pathWithoutMarks = value.replace(/[.!?]+$/u, "");
+  const trailingClosers = pathWithoutMarks.match(/\)+$/u)?.[0].length ?? 0;
+  const unmatchedClosers = Math.max(0, pathWithoutMarks.split(")").length - pathWithoutMarks.split("(").length);
+  const punctuationLength = Math.min(trailingClosers, unmatchedClosers);
+  return pathWithoutMarks.slice(0, punctuationLength ? -punctuationLength : undefined);
+}
+
 function isGoalFileVerification(value: unknown): value is GoalFileVerification {
   return isUnknownRecord(value)
     && value.kind === "file"
@@ -242,7 +250,11 @@ export async function captureGoalFileBaseline(
 export async function inferGoalVerification(objective: string): Promise<GoalFileVerification | undefined> {
   const destination = /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b\s+(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
   const paths = [...objective.matchAll(destination)]
-    .map((match) => (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim())
+    .map((match) => {
+      const quoted = match[1] ?? match[2] ?? match[3];
+      if (quoted !== undefined) return quoted.trim();
+      return stripUnquotedPathPunctuation((match[4] ?? "").trim());
+    })
     .filter(isAbsoluteFilePath);
   const unique = [...new Set(paths)];
   const filePath = unique.length === 1 ? unique[0] : undefined;

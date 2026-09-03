@@ -51,6 +51,11 @@ test("display formatters contain non-finite telemetry and honor Windows path cas
   }
 });
 
+test("token unit thresholds follow rounding", () => {
+  assert.equal(formatTokens(999.6), "1k");
+  assert.equal(formatTokens(999999), "1M");
+});
+
 test("context telemetry uses plain language without a progress bar", () => {
   assert.equal(formatContextProgress(50_000, 1_050_000, theme), "95% left (1M)");
   assert.equal(formatContextProgress(860_000, 1_000_000, theme), "14% left (140k) · /compact");
