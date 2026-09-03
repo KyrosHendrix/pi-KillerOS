@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.1.23] - 2026-09-04
+
 ### Changed
 
 - Simplified `/goal` to five forms with proof-by-prose and silent file proof, removing configured completion checks.
