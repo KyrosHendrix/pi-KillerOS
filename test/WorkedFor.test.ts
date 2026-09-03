@@ -457,7 +457,7 @@ test("response collection keeps the first baseline and records checks in event o
 
 test("check overflow keeps the first 20 attempts and unavailable collection warns once", async () => {
   const harness = createWorkedForHarness("tui", async () => ({
-    finish: async () => ({ state: "unavailable", reason: "timeout" }),
+    finish: async () => ({ state: "unavailable", reason: "error" }),
     dispose: async () => undefined,
   }));
   for (let response = 0; response < 2; response += 1) {
@@ -473,7 +473,18 @@ test("check overflow keeps the first 20 attempts and unavailable collection warn
   }
   assert.equal((harness.appendedEntries[0]?.data.checks as unknown[]).length, 20);
   assert.deepEqual(harness.appendedEntries[0]?.data.omittedChecks, { passed: 1, failed: 1 });
-  assert.deepEqual(harness.notices, [{ message: "Change receipt unavailable: timeout", level: "warning" }]);
+  assert.deepEqual(harness.notices, [{ message: "Change receipt unavailable: error", level: "warning" }]);
+});
+
+test("timeout collection falls back inline without a warning notification", async () => {
+  const harness = createWorkedForHarness("tui", async () => ({
+    finish: async () => ({ state: "unavailable", reason: "timeout" }),
+    dispose: async () => undefined,
+  }));
+  await harness.emit("agent_start");
+  await harness.emit("agent_settled");
+  assert.deepEqual(harness.appendedEntries[0]?.data.changes, { state: "unavailable", reason: "timeout" });
+  assert.deepEqual(harness.notices, []);
 });
 
 test("all Pi stop reasons map to truthful outcomes", async () => {

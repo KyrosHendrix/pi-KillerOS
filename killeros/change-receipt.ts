@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { inflate } from "node:zlib";
 
-const GIT_TIMEOUT_MS = 1_000;
+const GIT_TIMEOUT_MS = 5_000;
 const GIT_OUTPUT_LIMIT = 16 * 1024 * 1024;
 const SNAPSHOT_CONTENT_LIMIT = 128 * 1024 * 1024;
 const MAX_DIFF_OPERATIONS = 500_000;

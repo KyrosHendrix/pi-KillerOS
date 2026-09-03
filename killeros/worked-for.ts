@@ -348,7 +348,7 @@ export function registerWorkedFor(
     const settled = active;
     active = undefined;
     const changes = await (await settled.collection).finish();
-    if (changes.state === "unavailable" && changes.reason !== "not-git" && !collectionNoticeShown) {
+    if (changes.state === "unavailable" && changes.reason !== "not-git" && changes.reason !== "timeout" && !collectionNoticeShown) {
       collectionNoticeShown = true;
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");
     }

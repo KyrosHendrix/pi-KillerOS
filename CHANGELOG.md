@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Increased change-receipt Git timeouts to five seconds and stopped timeout failures from showing warning notifications.
+
 ## [2.1.22] - 2026-09-03
 
 ### Added
