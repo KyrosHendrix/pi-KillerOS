@@ -10,6 +10,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Kept the automatic 20-turn goal pause silent as documented.
 - Stripped sentence punctuation from unquoted inferred goal paths and picked token units after rounding so 999.6 shows as 1k and 999999 as 1M.
 - Increased change-receipt Git timeouts to five seconds and stopped timeout failures from showing warning notifications.
 

@@ -169,9 +169,11 @@ test("resume at the lifetime ceiling stays paused", async () => {
   assert.match(last(notifications).message, /lifetime limit.*Set a new objective/u);
 });
 
-test("the 20th default-limited turn settles without starting turn 21", async () => {
+test("the 20th default-limited turn settles silently without starting turn 21", async () => {
   const { appendedEntries, commands, handlers, sentMessages } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
   await getCommand(commands, "goal").handler("Finish within the default limit", ctx);
 
   for (let turn = 1; turn <= 20; turn += 1) {
@@ -183,6 +185,7 @@ test("the 20th default-limited turn settles without starting turn 21", async () 
   assert.equal(last(appendedEntries).data.event, "limit");
   assert.equal(last(appendedEntries).data.state.status, "paused");
   assert.equal(last(appendedEntries).data.state.turns, 20);
+  assert.deepEqual(notifications.filter(({ level }) => level === "warning"), []);
 });
 
 test("completion wins on the last allowed goal turn", async () => {

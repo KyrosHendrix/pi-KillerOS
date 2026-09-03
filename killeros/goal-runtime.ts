@@ -125,14 +125,12 @@ export function pauseGoalAtTurnLimit(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   ctx: ExtensionContext,
-  notify = true,
 ): boolean {
   const state = runtime.state;
   if (state?.status !== "active" || state.maxTurns === undefined || state.turns < state.maxTurns) return false;
   const result = `Turn limit reached (${state.turns}/${state.maxTurns}).`;
   try {
     transitionGoal(pi, runtime, "limit", "paused", result);
-    if (notify) ctx.ui.notify(`Goal paused: turn limit reached (${state.turns}/${state.maxTurns})`, "warning");
   } catch (error) {
     pauseGoalAfterFailure(pi, runtime, ctx, `turn limit pause could not be saved: ${error instanceof Error ? error.message : String(error)}`);
   }
