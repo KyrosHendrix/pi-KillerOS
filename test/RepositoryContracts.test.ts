@@ -165,17 +165,23 @@ test("CI blocks moderate dependency advisories without running lifecycle scripts
 test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.match(ci, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- dev/u);
   assert.match(ci, /Pi latest compatibility/u);
+  assert.match(ci, /Pi floor compatibility/u);
   assert.match(ci, /npm view "@earendil-works\/pi-coding-agent@>=0\.84\.3 <1" version/u);
   assert.match(ci, /dependencies\.@earendil-works\/pi-ai/u);
   assert.match(ci, /dependencies\.@earendil-works\/pi-tui/u);
   assert.match(ci, /@earendil-works\/pi-ai@\$PI_AI_RANGE/u);
   assert.match(ci, /@earendil-works\/pi-coding-agent@\$PI_VERSION/u);
+  assert.match(ci, /@earendil-works\/pi-server@\$PI_VERSION/u);
   assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
+  assert.match(ci, /@earendil-works\/pi-ai@0\.84\.3/u);
+  assert.match(ci, /@earendil-works\/pi-coding-agent@0\.84\.3/u);
+  assert.match(ci, /@earendil-works\/pi-server@0\.84\.3/u);
+  assert.match(ci, /@earendil-works\/pi-tui@0\.84\.3/u);
   assert.match(ci, /--package-lock=false/u);
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "0.84.3");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.84.3");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "0.84.3");
-  assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.84.3 <1");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "0.85.0");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.85.0");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-server"], "0.85.0");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "0.85.0");
 });
 
 test("GitHub releases require green current main and consistent package provenance", () => {
