@@ -19,7 +19,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## Requirements
 
 - Node.js 22.19.0+
-- Pi 0.84.3 or later within the 0.x release line
+- Pi 0.85.0 or later within the 0.x release line
 - An interactive TUI session for the custom header, editor, footer, `question`, and `/init`
 
 ## Install

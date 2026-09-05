@@ -6,7 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Changed
 
-- Raised the locked Pi development packages to 0.85.0 (including `@earendil-works/pi-server`) while keeping the supported Pi peer floor at 0.84.3, and added a Pi floor compatibility CI job.
+- Raised the locked Pi development packages and minimum supported Pi peer version to 0.85.0, including `@earendil-works/pi-server`.
 
 ## [2.1.23] - 2026-09-04
 

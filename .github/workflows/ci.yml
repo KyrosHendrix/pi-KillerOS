@@ -86,7 +86,7 @@ jobs:
 
       - name: Install latest matched Pi packages
         run: |
-          PI_VERSION=$(npm view "@earendil-works/pi-coding-agent@>=0.84.3 <1" version --json | node -e 'const value=JSON.parse(require("node:fs").readFileSync(0)); console.log(Array.isArray(value) ? value.at(-1) : value)')
+          PI_VERSION=$(npm view "@earendil-works/pi-coding-agent@>=0.85.0 <1" version --json | node -e 'const value=JSON.parse(require("node:fs").readFileSync(0)); console.log(Array.isArray(value) ? value.at(-1) : value)')
           PI_AI_RANGE=$(npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies.@earendil-works/pi-ai)
           PI_TUI_RANGE=$(npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies.@earendil-works/pi-tui)
           test -n "$PI_AI_RANGE" && test -n "$PI_TUI_RANGE"
@@ -100,41 +100,6 @@ jobs:
         run: npm run check
 
       - name: Test against latest Pi
-        run: npm test
-
-  pi-floor:
-    name: Pi floor compatibility
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.19.0'
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install locked dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Install supported Pi floor packages
-        run: |
-          npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false \
-            "@earendil-works/pi-ai@0.84.3" \
-            "@earendil-works/pi-coding-agent@0.84.3" \
-            "@earendil-works/pi-server@0.84.3" \
-            "@earendil-works/pi-tui@0.84.3"
-
-      - name: Type-check against Pi floor
-        run: npm run check
-
-      - name: Test against Pi floor
         run: npm test
 
   package:
