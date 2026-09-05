@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.1.24] - 2026-09-05
+
 ### Added
 
 - Appended the settled model display name to version 4 worked-for receipts for single-model TUI runs.
