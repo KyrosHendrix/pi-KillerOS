@@ -14,6 +14,7 @@ import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 type WorkedForEvent = {
   type: string;
   messages?: Array<{ role?: string; stopReason?: StopReason }>;
+  message?: { role: string; provider?: string; model?: string; responseModel?: string };
   toolName?: string;
   input?: Record<string, unknown>;
   isError?: boolean;
@@ -25,6 +26,7 @@ type WorkedForSessionEntry =
 type WorkedForContext = {
   cwd: string;
   mode: ExtensionContext["mode"];
+  model?: Pick<NonNullable<ExtensionContext["model"]>, "provider" | "id" | "name">;
   hasPendingMessages(): boolean;
   isIdle(): boolean;
   sessionManager: { getEntries(): WorkedForSessionEntry[] };
@@ -57,6 +59,7 @@ type WorkedForHarness = {
   renderers: Map<string, WorkedForRenderer>;
   setAppendError(error: Error | undefined): void;
   setIdle(value: boolean): void;
+  setModel(model: WorkedForContext["model"]): void;
   setPendingMessages(value: boolean): void;
   setSessionEntries(entries: WorkedForSessionEntry[]): void;
   setSessionError(error: Error | undefined): void;
@@ -117,6 +120,7 @@ function createWorkedForHarness(
     renderers,
     setAppendError: (error: Error | undefined) => { appendError = error; },
     setIdle: (value: boolean) => { idle = value; },
+    setModel: (model) => { ctx.model = model; },
     setPendingMessages: (value: boolean) => { pendingMessages = value; },
     setSessionEntries: (entries: WorkedForSessionEntry[]) => { sessionEntries = entries; },
     setSessionError: (error: Error | undefined) => { sessionError = error; },
@@ -170,6 +174,56 @@ test("a settled TUI run appends one durable timing entry measured from its first
     customType: "killeros-worked-for",
     data: { version: 4, milliseconds: 8_000, outcome: "done", tokens: 54_000, ...EMPTY_V4 },
   }]);
+});
+
+test("single-model receipts persist a safe display name and render it after reload", async () => {
+  const harness = createWorkedForHarness();
+  harness.setModel({ provider: "openai", id: "model-id", name: " \x1b[31mModel\x1b[0m\n Name\0 " });
+  await harness.emit("agent_start");
+  await harness.emit("message_end", { message: { role: "user" } });
+  await harness.emit("message_end", { message: { role: "assistant", provider: "openai", model: "model-id" } });
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await harness.emit("agent_settled");
+  const data = harness.appendedEntries[0]?.data;
+  assert.equal(data?.model, "Model Name");
+
+  const renderer = createWorkedForHarness().renderers.get("killeros-worked-for");
+  assert.ok(renderer);
+  const component = renderer({ data: JSON.parse(JSON.stringify(data)) }, { expanded: false }, theme);
+  assert.ok(component);
+  assert.equal(component.render(80)[0], "Done · 1s · ↑ 0 tokens · Model Name");
+  assert.ok(component.render(30).every((line) => visibleWidth(line) <= 30));
+});
+
+test("mixed-model continuations omit attribution and the next run resets it", async () => {
+  const harness = createWorkedForHarness();
+  const message = { role: "assistant", provider: "openai", model: "model-id" };
+  harness.setModel({ provider: "openai", id: "model-id", name: "" });
+  await harness.emit("agent_start");
+  await harness.emit("message_end", { message: { ...message, model: "other-model" } });
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error" }] });
+  await harness.emit("agent_start");
+  await harness.emit("message_end", { message });
+  await harness.emit("agent_settled");
+  assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "model"), false);
+
+  await harness.emit("agent_start");
+  await harness.emit("message_end", { message });
+  await harness.emit("agent_settled");
+  assert.equal(harness.appendedEntries[1]?.data.model, "model-id");
+});
+
+test("a differing provider response model prevents attribution for the whole run", async () => {
+  const harness = createWorkedForHarness();
+  const message = { role: "assistant", provider: "openai", model: "model-id" };
+  harness.setModel({ provider: "openai", id: "model-id", name: "Model Name" });
+  await harness.emit("agent_start");
+  await harness.emit("message_end", { message: { ...message, responseModel: "routed-model" } });
+  await harness.emit("message_end", { message });
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await harness.emit("agent_settled");
+  assert.equal(harness.appendedEntries[0]?.data.outcome, "done");
+  assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "model"), false);
 });
 
 test("task tokens include model, tool, and compaction usage without recounting history", async () => {
@@ -266,10 +320,10 @@ test("the durable entry renders task tokens and preserves older history", () => 
   });
 
   const cases: ReadonlyArray<readonly [Record<string, unknown>, string]> = [
-    [{ version: 3, milliseconds: 18_000, outcome: "done", tokens: 54_000 }, "<success>✓ Done</success><dim> · 18s · ↑ 54k tokens</dim>"],
+    [{ version: 3, milliseconds: 18_000, outcome: "done", tokens: 54_000 }, "<success>Done</success><dim> · 18s · ↑ 54k tokens</dim>"],
     [{ version: 3, milliseconds: 18_000, outcome: "stopped", tokens: 999 }, "<warning>■ Stopped</warning><dim> · 18s · ↑ 999 tokens</dim>"],
     [{ version: 3, milliseconds: 18_000, outcome: "failed", tokens: 1_250_000 }, "<error>× Failed</error><dim> · 18s · ↑ 1.3M tokens</dim>"],
-    [{ version: 2, milliseconds: 18_000, outcome: "done" }, "<success>✓ Done</success><dim> · 18s</dim>"],
+    [{ version: 2, milliseconds: 18_000, outcome: "done" }, "<success>Done</success><dim> · 18s</dim>"],
     [{ version: 2, milliseconds: 18_000, outcome: "stopped" }, "<warning>■ Stopped</warning><dim> · 18s</dim>"],
     [{ version: 2, milliseconds: 18_000, outcome: "failed" }, "<error>× Failed</error><dim> · 18s</dim>"],
     [{ version: 1, milliseconds: 125_000 }, "<dim>✻ Worked for 2m 05s</dim>"],
@@ -306,6 +360,7 @@ test("version 4 receipts render compact and expanded change details within every
     milliseconds: 84_000,
     outcome: "done",
     tokens: 18_200,
+    model: "Model Name",
     changes: {
       state: "available",
       totalFiles: 3,
@@ -327,7 +382,7 @@ test("version 4 receipts render compact and expanded change details within every
   const compact = renderer({ data }, { expanded: false }, theme);
   assert.ok(compact);
   assert.deepEqual(compact.render(80), [
-    "✓ Done · 1m 24s · ↑ 18.2k tokens",
+    "Done · 1m 24s · ↑ 18.2k tokens · Model Name",
     "  Changed 3 files · +84 −21",
     "  Checks: 2 passed",
   ]);
@@ -388,6 +443,7 @@ test("version 4 validation rejects malformed and oversized durable data", () => 
     milliseconds: 1,
     outcome: "done",
     tokens: 1,
+    model: "\x1b[31mModel\x1b[0m\n Name\0",
     changes: { state: "available", totalFiles: 1, additions: 1, deletions: 0, files: [{ kind: "added", path: "safe\npath.ts", additions: 1, deletions: 0 }], omittedFiles: 0 },
     checks: [{ label: "npm test", outcome: "passed" }],
     omittedChecks: { passed: 0, failed: 0 },
@@ -395,6 +451,12 @@ test("version 4 validation rejects malformed and oversized durable data", () => 
   const component = renderer({ data: valid }, { expanded: true }, theme);
   assert.ok(component);
   assert.match(component.render(100).join("\n"), /safe⏎path\.ts/u);
+  assert.equal(component.render(100)[0], "Done · 1s · ↑ 1 tokens · Model Name");
+  for (const model of [42, "x".repeat(201)]) {
+    const withoutModel = renderer({ data: { ...valid, model } }, { expanded: false }, theme);
+    assert.ok(withoutModel);
+    assert.equal(withoutModel.render(100)[0], "Done · 1s · ↑ 1 tokens");
+  }
   for (const data of [
     { ...valid, milliseconds: 1.5 },
     { ...valid, tokens: Number.POSITIVE_INFINITY },

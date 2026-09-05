@@ -51,3 +51,10 @@ export function formatTokens(value: number): string {
   if (inK >= 1_000) return `${Number((rounded / 1_000_000).toFixed(1))}M`;
   return `${inK}k`;
 }
+
+/** Resolves a terminal-safe model display name, preferring the name over the id. */
+export function modelDisplayName(model: { name?: string; id?: string }): string {
+  const name = safeTerminalText(model.name ?? "").replaceAll("\n", "").trim();
+  if (name) return name;
+  return safeTerminalText(model.id ?? "").replaceAll("\n", "").trim();
+}

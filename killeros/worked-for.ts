@@ -12,7 +12,7 @@ import {
   type ChangedFile,
   type CheckAttempt,
 } from "./change-receipt.ts";
-import { formatTokens } from "./display.ts";
+import { formatTokens, modelDisplayName } from "./display.ts";
 import { errorMessage } from "./errors.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
@@ -47,15 +47,16 @@ export interface WorkedForEntryDataV4 {
   changes: ChangeSummary;
   checks: CheckAttempt[];
   omittedChecks: { passed: number; failed: number };
+  model?: string;
 }
 
 type WorkedForEntryData = WorkedForEntryDataV1 | WorkedForEntryDataV2 | WorkedForEntryDataV3 | WorkedForEntryDataV4;
 
 const OUTCOMES = {
-  done: { marker: "✓", label: "Done", color: "success" },
-  stopped: { marker: "■", label: "Stopped", color: "warning" },
-  failed: { marker: "×", label: "Failed", color: "error" },
-} as const satisfies Record<WorkedForOutcome, { marker: string; label: string; color: string }>;
+  done: { label: "Done", color: "success" },
+  stopped: { label: "■ Stopped", color: "warning" },
+  failed: { label: "× Failed", color: "error" },
+} as const satisfies Record<WorkedForOutcome, { label: string; color: string }>;
 
 function isWorkedForOutcome(value: unknown): value is WorkedForOutcome {
   return value === "done" || value === "stopped" || value === "failed";
@@ -121,6 +122,12 @@ function parseChanges(value: unknown): ChangeSummary | undefined {
   };
 }
 
+function parseModelName(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 200) return undefined;
+  const sanitized = safeTerminalText(value).replaceAll("\n", "").trim();
+  return sanitized || undefined;
+}
+
 function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefined {
   try {
     if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_PAYLOAD_BYTES) return undefined;
@@ -139,6 +146,7 @@ function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefine
     if (!label) return undefined;
     checks.push({ label, outcome: check.outcome });
   }
+  const model = parseModelName(data.model);
   return {
     version: 4,
     milliseconds: data.milliseconds,
@@ -147,6 +155,7 @@ function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefine
     changes,
     checks,
     omittedChecks: { passed: data.omittedChecks.passed, failed: data.omittedChecks.failed },
+    ...(model ? { model } : {}),
   };
 }
 
@@ -210,8 +219,10 @@ class WorkedForV4Component implements Component {
     if (width <= 0) return [];
     const { data, theme } = this;
     const outcome = OUTCOMES[data.outcome];
+    const headline = theme.fg(outcome.color, outcome.label);
+    const modelSuffix = data.model ? ` · ${data.model}` : "";
     const lines = [
-      `${theme.fg(outcome.color, `${outcome.marker} ${outcome.label}`)}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)} · ↑ ${formatTokens(data.tokens)} tokens`)}`,
+      `${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)} · ↑ ${formatTokens(data.tokens)} tokens${modelSuffix}`)}`,
     ];
     if (data.changes.state === "unavailable") lines.push(theme.fg("dim", "  Changes unavailable"));
     else if (data.changes.totalFiles === 0) lines.push(theme.fg("dim", "  No files changed"));
@@ -272,7 +283,21 @@ type ActiveReceipt = {
   collection: Promise<ChangeReceiptCollection>;
   checks: CheckAttempt[];
   omittedChecks: { passed: number; failed: number };
+  modelProvider: string | undefined;
+  modelId: string | undefined;
+  modelMismatch: boolean;
 };
+
+function receiptModelName(
+  settled: ActiveReceipt,
+  model: ExtensionContext["model"],
+): string | undefined {
+  if (settled.modelMismatch || settled.modelProvider === undefined || settled.modelId === undefined) return undefined;
+  if (!model || model.provider !== settled.modelProvider || model.id !== settled.modelId) return undefined;
+  const resolved = modelDisplayName(model);
+  if (!resolved || resolved.length > 200) return undefined;
+  return resolved;
+}
 
 function fitPayload(data: WorkedForEntryDataV4): WorkedForEntryDataV4 {
   if (data.changes.state === "unavailable") return data;
@@ -300,7 +325,8 @@ export function registerWorkedFor(
     if (data.version === 4) return new WorkedForV4Component(data, options.expanded, theme);
     const outcome = OUTCOMES[data.outcome];
     const tokens = data.version === 3 ? ` · ↑ ${formatTokens(data.tokens)} tokens` : "";
-    return new Text(`${theme.fg(outcome.color, `${outcome.marker} ${outcome.label}`)}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)}${tokens}`)}`, 0, 0);
+    const headline = theme.fg(outcome.color, outcome.label);
+    return new Text(`${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)}${tokens}`)}`, 0, 0);
   });
 
   pi.on("session_start", async () => {
@@ -319,10 +345,33 @@ export function registerWorkedFor(
       collection: collect(ctx.cwd),
       checks: [],
       omittedChecks: { passed: 0, failed: 0 },
+      modelProvider: undefined,
+      modelId: undefined,
+      modelMismatch: false,
     };
     active = state;
     const collection = await state.collection;
     if (active !== state) await collection.dispose();
+  });
+
+  pi.on("message_end", (event, ctx) => {
+    if (ctx.mode !== "tui" || !active) return;
+    if (event.message.role !== "assistant") return;
+    const provider: unknown = event.message.provider;
+    const modelId: unknown = event.message.model;
+    if (typeof provider !== "string" || typeof modelId !== "string") {
+      active.modelMismatch = true;
+      return;
+    }
+    if (active.modelProvider === undefined || active.modelId === undefined) {
+      active.modelProvider = provider;
+      active.modelId = modelId;
+    } else if (active.modelProvider !== provider || active.modelId !== modelId) {
+      active.modelMismatch = true;
+    }
+    if (event.message.responseModel !== undefined && event.message.responseModel !== modelId) {
+      active.modelMismatch = true;
+    }
   });
 
   pi.on("tool_result", (event: ToolResultEvent, ctx) => {
@@ -347,6 +396,7 @@ export function registerWorkedFor(
     if (ctx.mode !== "tui" || !active) return;
     const settled = active;
     active = undefined;
+    const model = receiptModelName(settled, ctx.model);
     const changes = await (await settled.collection).finish();
     if (changes.state === "unavailable" && changes.reason !== "not-git" && changes.reason !== "timeout" && !collectionNoticeShown) {
       collectionNoticeShown = true;
@@ -361,6 +411,7 @@ export function registerWorkedFor(
       changes,
       checks: settled.checks,
       omittedChecks: settled.omittedChecks,
+      ...(model ? { model } : {}),
     });
     try {
       pi.appendEntry<WorkedForEntryDataV4>(WORKED_FOR_ENTRY_TYPE, data);

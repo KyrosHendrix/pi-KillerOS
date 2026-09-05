@@ -3,7 +3,7 @@ import { watch } from "node:fs";
 import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
-import { formatCwd, formatTime, formatTokens, padRight } from "./display.ts";
+import { formatCwd, formatTime, formatTokens, modelDisplayName, padRight } from "./display.ts";
 import { goalElapsedMilliseconds } from "./goal-state.ts";
 import type { GoalRuntime, GoalState } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -296,11 +296,6 @@ function formatProviderName(provider: string): string {
     .join(" ") || "Unknown provider";
 }
 
-function modelDisplayName(model: NonNullable<ExtensionContext["model"]>): string {
-  const name = safeTerminalText(model.name ?? "").replaceAll("\n", "").trim();
-  return name || safeTerminalText(model.id).replaceAll("\n", "").trim() || "Unknown model";
-}
-
 export function formatModel(
   model: ExtensionContext["model"],
   theme: Theme,
@@ -308,7 +303,7 @@ export function formatModel(
   showCodexFast = false,
 ): string {
   if (!model) return theme.fg("dim", "No model");
-  const name = theme.fg("text", theme.bold(modelDisplayName(model)));
+  const name = theme.fg("text", theme.bold(modelDisplayName(model) || "Unknown model"));
   const fast = showCodexFast && model.provider === CODEX_PROVIDER
     ? theme.fg("accent", theme.bold("Fast"))
     : "";

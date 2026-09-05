@@ -4,8 +4,13 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Appended the settled model display name to version 4 worked-for receipts for single-model TUI runs.
+
 ### Changed
 
+- Rendered settled `Done` receipts without the `✓` marker, keeping `■ Stopped`, `× Failed`, and version 1 history unchanged.
 - Raised the locked Pi development packages and minimum supported Pi peer version to 0.85.0, including `@earendil-works/pi-server`.
 
 ## [2.1.23] - 2026-09-04
