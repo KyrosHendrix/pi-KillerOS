@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.1.25] - 2026-09-06
+
 ### Fixed
 
 - Left-aligned settled `✓ Done` receipt lines so every row shares the assistant text edge.
