@@ -22,7 +22,6 @@ import { registerPersonalInstructions } from "./killeros/personal-instructions.t
 import { registerQuestionTool } from "./killeros/question.ts";
 import { createGoalRuntime, createInitRuntime } from "./killeros/runtime.ts";
 import { registerShellUi } from "./killeros/shell-ui.ts";
-import { registerVariants } from "./killeros/variants.ts";
 import { registerWorkedFor } from "./killeros/worked-for.ts";
 
 export { contextPercentRemaining, formatCost, formatContextProgress } from "./killeros/footer.ts";
@@ -49,7 +48,6 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerHandoff(pi, goalRuntime, options.handoffMaxTokens);
   registerSlashAutocomplete(pi, commandResolver);
   registerFooter(pi, goalRuntime);
-  registerVariants(pi);
   registerCodexFastMode(pi);
   registerInitCommand(pi, initRuntime, goalRuntime);
   registerLifecycleHooks(pi);

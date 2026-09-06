@@ -46,7 +46,7 @@ const KILLEROS_VERSION = readPackageVersion(new URL("../package.json", import.me
 
 const STARTUP_TIPS = [
   "Press Shift+Enter to insert a line break without sending.",
-  "Run /variants to tune the model's reasoning depth.",
+  "Run /thinking to tune the model's reasoning depth.",
   "Type / to browse every command available in this session.",
   "Run /notification to enable a terminal bell when work settles.",
   "Run /goal <objective> to keep long-running work moving across turns.",

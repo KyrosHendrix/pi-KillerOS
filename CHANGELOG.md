@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the `/variants` reasoning-level command in favor of Pi's native `/thinking` selector.
+
 ## [2.1.24] - 2026-09-05
 
 ### Added

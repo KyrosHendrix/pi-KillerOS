@@ -220,7 +220,7 @@ test("public documentation exposes current requirements and commands", () => {
   assert.match(readme, /^\/goal resume/mu);
   assert.match(readme, /^\/goal clear/mu);
   assert.doesNotMatch(readme, /\/goal (start|check|checks|limit|history|edit)/u);
-  for (const command of ["init", "variants", "codex-fast", "notification", "handoff", "clear", "exit"] as const) {
+  for (const command of ["init", "codex-fast", "notification", "handoff", "clear", "exit"] as const) {
     assert.match(readme, new RegExp(`^/${command}(?:\\s|$)`, "mu"));
   }
   assert.match(readme, /^\/handoff \[focus\]/mu);

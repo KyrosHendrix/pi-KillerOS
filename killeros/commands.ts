@@ -72,7 +72,6 @@ const BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
 const COMMAND_SYNTAX_HINTS: Readonly<Record<string, string>> = {
   goal: "/goal [objective|pause|resume|clear]",
   handoff: "/handoff [next-session focus]",
-  variants: "/variants [level]",
   model: "/model [provider/model]",
   "scoped-models": "/scoped-models",
   login: "/login [provider]",
