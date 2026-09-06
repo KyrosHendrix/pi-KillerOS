@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, last, requireEditor, requiredFactory, theme } from "./ExtensionTestHarness.ts";
+import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { getKeybindings } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import { resolveGitBranch } from "../killeros/shell-ui.ts";
@@ -60,7 +61,7 @@ test("shell startup contains no synchronous child process call", () => {
   assert.doesNotMatch(source, /execFileSync/u);
 });
 
-test("header renders the compact KillerOS card", () => {
+test("header renders the masthead", () => {
   const { handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
   ctx.cwd = path.join(path.parse(process.cwd()).root, "work", "pi-KillerOS");
@@ -70,7 +71,7 @@ test("header renders the compact KillerOS card", () => {
       ? `\x1B[37m${text}\x1B[39m`
       : color === "dim"
         ? `\x1B[90m${text}\x1B[39m`
-        : color === "mdLink" ? `\x1B[34m${text}\x1B[39m` : text,
+        : text,
   };
   ctx.ui.theme = themeTestAdapter({ ...theme, ...headerTheme });
   for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
@@ -80,26 +81,22 @@ test("header renders the compact KillerOS card", () => {
   const strip = (line: string) => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   const rendered = header.render(120);
   const wide = rendered.map(strip);
-  assert.equal(wide.length, 9);
-  assert.match(wide[1], new RegExp(`› KillerOS \\(v${PACKAGE_VERSION.replaceAll(".", "\\.")}\\)`));
-  assert.match(wide[3], /Test model Test · high \/model/);
-  assert.match(wide[4], /pi-KillerOS(?: · \S+)?/);
+  assert.ok(wide.length >= 5);
+  assert.equal(wide[0], `██████   Pi ${PI_VERSION} | KillerOS ${PACKAGE_VERSION}`);
+  assert.equal(wide[1], "▓▓▓▓▓▓   model: test-model high");
+  assert.match(wide[2], /^░░░░░░   directory: .*pi-KillerOS( \S+)?$/);
+  assert.equal(wide[3], "");
+  assert.match(wide.slice(4).join(" "), /^Tip: /);
   assert.doesNotMatch(wide.join("\n"), /context/);
-  assert.match(wide[5], /^╰─+╯$/);
-  assert.equal(wide[6].trim(), "");
-  assert.match(wide[7].trim(), /^Tip: /);
-  assert.match(rendered[1], /\x1B\[90m›\x1B\[39m \x1B\[37m\x1B\[1mKillerOS\x1B\[22m\x1B\[39m/u);
-  assert.match(rendered[3], /\x1B\[37m\x1B\[1mTest model\x1B\[22m\x1B\[39m \x1B\[90mTest\x1B\[39m/u);
-  assert.ok(rendered.some((line) => line.includes("\x1B[34m/model\x1B[39m")));
+  assert.doesNotMatch(wide.join("\n"), /╭|╰|│/);
+  assert.doesNotMatch(rendered[0], /\x1B\[1m/);
+  assert.match(rendered[0], /\x1B\[37mPi\x1B\[39m/);
+  assert.match(rendered[1], /\x1B\[90mmodel: \x1B\[39m/);
   assert.doesNotMatch(wide.join("\n"), /READY|MCP adapter|Web access/);
   assert.doesNotMatch(wide.join("\n"), /KILLEROS/);
-  assert.ok(wide.every((line) => [...line].length === 52));
-  for (let width = 1; width <= 100; width += 1) {
+  for (let width = 28; width <= 100; width += 1) {
     const lines = header.render(width).map(strip);
     assert.ok(lines.every((line) => [...line].length <= width), `header overflowed at width ${width}`);
-    if (width >= 28) {
-      assert.ok(lines.every((line) => [...line].length === Math.min(width, 52)), `header was ragged at width ${width}`);
-    }
   }
   assert.deepEqual(header.render(4).map(strip), ["Kill"]);
   assert.deepEqual(header.render(0), []);

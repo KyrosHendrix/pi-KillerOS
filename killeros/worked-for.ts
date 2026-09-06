@@ -53,7 +53,7 @@ export interface WorkedForEntryDataV4 {
 type WorkedForEntryData = WorkedForEntryDataV1 | WorkedForEntryDataV2 | WorkedForEntryDataV3 | WorkedForEntryDataV4;
 
 const OUTCOMES = {
-  done: { label: "Done", color: "success" },
+  done: { label: "✓ Done", color: "success" },
   stopped: { label: "■ Stopped", color: "warning" },
   failed: { label: "× Failed", color: "error" },
 } as const satisfies Record<WorkedForOutcome, { label: string; color: string }>;
@@ -224,47 +224,47 @@ class WorkedForV4Component implements Component {
     const lines = [
       `${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)} · ↑ ${formatTokens(data.tokens)} tokens${modelSuffix}`)}`,
     ];
-    if (data.changes.state === "unavailable") lines.push(theme.fg("dim", "  Changes unavailable"));
-    else if (data.changes.totalFiles === 0) lines.push(theme.fg("dim", "  No files changed"));
+    if (data.changes.state === "unavailable") lines.push(theme.fg("dim", "Changes unavailable"));
+    else if (data.changes.totalFiles === 0) lines.push(theme.fg("dim", "No files changed"));
     else {
       const count = `${data.changes.totalFiles} ${data.changes.totalFiles === 1 ? "file" : "files"}`;
-      lines.push(`${theme.fg("accent", `  ${width < 40 ? count : `Changed ${count}`}`)}${theme.fg("dim", " · ")}${theme.fg("success", `+${data.changes.additions}`)} ${theme.fg("error", `−${data.changes.deletions}`)}`);
+      lines.push(`${theme.fg("accent", `${width < 40 ? count : `Changed ${count}`}`)}${theme.fg("dim", " · ")}${theme.fg("success", `+${data.changes.additions}`)} ${theme.fg("error", `−${data.changes.deletions}`)}`);
     }
     const passed = data.checks.filter((check) => check.outcome === "passed").length + data.omittedChecks.passed;
     const failed = data.checks.filter((check) => check.outcome === "failed").length + data.omittedChecks.failed;
     const totalChecks = passed + failed;
     if (totalChecks === 0) {
-      if (data.changes.state === "available" && data.changes.totalFiles > 0) lines.push(theme.fg("warning", "  No check recorded"));
+      if (data.changes.state === "available" && data.changes.totalFiles > 0) lines.push(theme.fg("warning", "No check recorded"));
     } else if (totalChecks === 1) {
       const check = data.checks[0];
-      if (check?.outcome === "passed") lines.push(theme.fg("success", `  Check passed: ${check.label} ✓`));
-      else if (check) lines.push(theme.fg("error", `  Check failed: ${check.label} ×`));
+      if (check?.outcome === "passed") lines.push(theme.fg("success", `Check passed: ${check.label} ✓`));
+      else if (check) lines.push(theme.fg("error", `Check failed: ${check.label} ×`));
     } else if (failed === 0) {
-      lines.push(theme.fg("success", `  Checks: ${passed} passed`));
+      lines.push(theme.fg("success", `Checks: ${passed} passed`));
     } else {
-      lines.push(`  ${theme.fg("accent", "Checks:")} ${theme.fg("success", `${passed} passed`)}${theme.fg("dim", " · ")}${theme.fg("error", `${failed} failed`)}`);
+      lines.push(`${theme.fg("accent", "Checks:")} ${theme.fg("success", `${passed} passed`)}${theme.fg("dim", " · ")}${theme.fg("error", `${failed} failed`)}`);
     }
     if (this.expanded && data.changes.state === "available") {
       for (const file of data.changes.files) {
         const marker = file.kind === "added" ? "A" : file.kind === "deleted" ? "D" : file.kind === "renamed" ? "R" : "M";
         const label = file.kind === "renamed" ? `${safePath(file.previousPath)} → ${safePath(file.path)}` : safePath(file.path);
-        const prefix = `    ${marker} `;
+        const prefix = `${marker} `;
         const detail = file.detail ? ` ${file.detail}` : ` +${file.additions} −${file.deletions}`;
-        const labelWidth = width - visibleWidth(prefix) - visibleWidth(detail);
+        const labelWidth = width - 1 - visibleWidth(prefix) - visibleWidth(detail);
         const fittedLabel = labelWidth > 0 ? truncateToWidth(label, labelWidth, "…") : "";
         const styledDetail = file.detail
           ? theme.fg("dim", detail)
           : `${theme.fg("success", ` +${file.additions}`)} ${theme.fg("error", `−${file.deletions}`)}`;
         lines.push(`${theme.fg("accent", `${prefix}${fittedLabel}`)}${styledDetail}`);
       }
-      if (data.changes.omittedFiles > 0) lines.push(theme.fg("dim", `    … ${data.changes.omittedFiles} more files`));
+      if (data.changes.omittedFiles > 0) lines.push(theme.fg("dim", `… ${data.changes.omittedFiles} more files`));
     }
     if (this.expanded) {
-      for (const check of data.checks) lines.push(theme.fg(check.outcome === "passed" ? "success" : "error", `    ${check.outcome === "passed" ? "✓" : "×"} ${check.label}`));
+      for (const check of data.checks) lines.push(theme.fg(check.outcome === "passed" ? "success" : "error", `${check.outcome === "passed" ? "✓" : "×"} ${check.label}`));
       const omitted = data.omittedChecks.passed + data.omittedChecks.failed;
-      if (omitted > 0) lines.push(theme.fg("dim", `    … ${omitted} more checks`));
+      if (omitted > 0) lines.push(theme.fg("dim", `… ${omitted} more checks`));
     }
-    return lines.map((line) => truncateToWidth(line, width, "…"));
+    return lines.map((line) => truncateToWidth(` ${line}`, width, "…"));
   }
 
   invalidate(): void {}
@@ -321,12 +321,12 @@ export function registerWorkedFor(
   pi.registerEntryRenderer<WorkedForEntryData>(WORKED_FOR_ENTRY_TYPE, (entry, options, theme) => {
     const data = parseWorkedForEntryData(entry.data);
     if (!data) return undefined;
-    if (data.version === 1) return new Text(theme.fg("dim", `✻ Worked for ${formatWorkedForDuration(data.milliseconds)}`), 0, 0);
+    if (data.version === 1) return new Text(theme.fg("dim", `✻ Worked for ${formatWorkedForDuration(data.milliseconds)}`), 1, 0);
     if (data.version === 4) return new WorkedForV4Component(data, options.expanded, theme);
     const outcome = OUTCOMES[data.outcome];
     const tokens = data.version === 3 ? ` · ↑ ${formatTokens(data.tokens)} tokens` : "";
     const headline = theme.fg(outcome.color, outcome.label);
-    return new Text(`${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)}${tokens}`)}`, 0, 0);
+    return new Text(`${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)}${tokens}`)}`, 1, 0);
   });
 
   pi.on("session_start", async () => {

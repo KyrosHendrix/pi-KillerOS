@@ -4,6 +4,18 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Left-aligned settled `✓ Done` receipt lines so every row shares the assistant text edge.
+
+### Changed
+
+- Replaced the boxed startup card with a three-row masthead: coral fade mark, versions, model and reasoning level, directory and branch, and an italic tip.
+- Swapped the working indicator to the 10-frame Braille orbit at 80 ms per frame.
+- Restored the leading `❯` prompt marker in white in the chat editor.
+- Rendered footer model names and the `fast` badge in non-bold white.
+- Showed the current Pi version beside the KillerOS version in the startup header.
+
 ### Removed
 
 - Removed the `/variants` reasoning-level command in favor of Pi's native `/thinking` selector.

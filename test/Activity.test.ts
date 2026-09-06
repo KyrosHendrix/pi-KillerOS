@@ -185,8 +185,8 @@ test("activity keeps the animated orange glyph loop and uses contextual request 
   for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   assert.deepEqual(captured.workingIndicator, {
-    frames: ["·", "✢", "✱", "✶", "✻", "✽", "✽", "✻", "✶", "✱", "✢", "·"],
-    intervalMs: 120,
+    frames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+    intervalMs: 80,
   });
   assert.equal(captured.hiddenThinkingLabel, "└ Thinking…");
   for (const handler of getHandlers(handlers, "agent_start")) handler({}, ctx);
@@ -208,11 +208,11 @@ test("activity styles the glyph and causal verb orange with a gray bold interrup
 
   assert.deepEqual(captured.workingIndicator, {
     frames: [
-      "<accent>·</accent>", "<accent>✢</accent>", "<accent>✱</accent>", "<accent>✶</accent>",
-      "<accent>✻</accent>", "<accent>✽</accent>", "<accent>✽</accent>", "<accent>✻</accent>",
-      "<accent>✶</accent>", "<accent>✱</accent>", "<accent>✢</accent>", "<accent>·</accent>",
+      "<accent>⠋</accent>", "<accent>⠙</accent>", "<accent>⠹</accent>", "<accent>⠸</accent>",
+      "<accent>⠼</accent>", "<accent>⠴</accent>", "<accent>⠦</accent>", "<accent>⠧</accent>",
+      "<accent>⠇</accent>", "<accent>⠏</accent>",
     ],
-    intervalMs: 120,
+    intervalMs: 80,
   });
   for (const handler of getHandlers(handlers, "agent_start")) handler({}, ctx);
 

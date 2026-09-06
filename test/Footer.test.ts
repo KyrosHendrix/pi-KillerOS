@@ -59,7 +59,7 @@ test("footer survives unavailable context telemetry", () => {
     onBranchChange: () => () => {},
   });
   assert.doesNotThrow(() => footer.render(80));
-  assert.match(footer.render(80).join("\n"), /—% left \(—\)/u);
+  assert.match(footer.render(80).join("\n"), /ctx —%/u);
   disposeTestComponent(footer);
 });
 
@@ -438,7 +438,7 @@ test("footer cuts down by priority while preserving model and context", () => {
   assert.equal(wideRender[0], `<borderMuted>${"─".repeat(160)}</borderMuted>`);
   const widePrimary = wideRender[1] ?? "";
   const wideSecondary = wideRender[2] ?? "";
-  assert.match(widePrimary, /GPT-5\.6 Sol OpenAI · high · 95% left \(1M\)/u);
+  assert.match(widePrimary, /gpt-5\.6-sol openai · high · ctx 5%/u);
   assert.match(widePrimary, /\d+s · \$10\.00/u);
   assert.match(wideSecondary, /main/u);
   const normalizedHome = (process.env.HOME || process.env.USERPROFILE || os.homedir()).replace(/[\\/]+$/u, "");
@@ -451,23 +451,23 @@ test("footer cuts down by priority while preserving model and context", () => {
       : ctx.cwd;
   assert.ok(wideSecondary.includes(`\x1B[38;2;240;248;154m${displayedCwd}\x1B[39m`));
 
-  const focused = footer.render(48);
-  assert.match(focused[1] ?? "", /GPT-5\.6 Sol OpenAI · high · 95% left \(1M\)/u);
+  const focused = footer.render(44);
+  assert.match(focused[1] ?? "", /gpt-5\.6-sol openai · high · ctx 5%/u);
   assert.match(focused[2] ?? "", /…\/pi-KillerOS/u);
   assert.doesNotMatch(focused[1] ?? "", /\d+s|\$10\.00/u);
 
-  const compact = footer.render(40);
-  assert.match(compact[1] ?? "", /GPT-5\.6 Sol OpenAI · 95% left \(1M\)/u);
+  const compact = footer.render(32);
+  assert.match(compact[1] ?? "", /gpt-5\.6-sol openai · ctx 5%/u);
   assert.match(compact[2] ?? "", /main/u);
   assert.match(compact[2] ?? "", /…\/pi-KillerOS/u);
 
   const tiny = footer.render(19);
   assert.doesNotMatch(tiny[2] ?? "", /pi-KillerOS/u);
 
-  const emergency = footer.render(35)[1] ?? "";
-  assert.match(emergency, /GPT-5\.6 Sol/u);
-  assert.match(emergency, /95% left \(1M\)/u);
-  assert.doesNotMatch(emergency, /OpenAI/u);
+  const emergency = footer.render(26)[1] ?? "";
+  assert.match(emergency, /gpt-5\.6-sol/u);
+  assert.match(emergency, /ctx 5%/u);
+  assert.doesNotMatch(emergency, /openai/u);
 
   for (let width = 1; width <= 180; width += 1) {
     const lines = footer.render(width);
@@ -500,8 +500,8 @@ test("footer uses model metadata and formats unknown provider names", () => {
     onBranchChange: () => () => {},
   });
   const firstRender = footer.render(120)[1] ?? "";
-  assert.match(firstRender, /\x1B\[37m\x1B\[1mProfessional Model\x1B\[22m\x1B\[39m/u);
-  assert.match(firstRender, /\x1B\[90mMy Private AI\x1B\[39m/u);
+  assert.match(firstRender, /\x1B\[37mraw-model-v1\x1B\[39m/u);
+  assert.match(firstRender, /\x1B\[90mmy private ai\x1B\[39m/u);
 
   for (const handler of getHandlers(handlers, "model_select")) {
     handler({ model: {
@@ -512,12 +512,12 @@ test("footer uses model metadata and formats unknown provider names", () => {
     } });
   }
   const updated = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
-  assert.match(updated, /Next Model Future Provider/u);
+  assert.match(updated, /next model future provider/u);
 
   for (const handler of getHandlers(handlers, "model_select")) {
     handler({ model: { ...ctx.model, id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", provider: "deepseek" } });
   }
   const deepSeek = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
-  assert.match(deepSeek, /DeepSeek V4 Flash DeepSeek/u);
+  assert.match(deepSeek, /deepseek-v4-flash deepseek/u);
   disposeTestComponent(footer);
 });

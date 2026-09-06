@@ -57,9 +57,9 @@ test("token unit thresholds follow rounding", () => {
 });
 
 test("context telemetry uses plain language without a progress bar", () => {
-  assert.equal(formatContextProgress(50_000, 1_050_000, theme), "95% left (1M)");
-  assert.equal(formatContextProgress(860_000, 1_000_000, theme), "14% left (140k) · /compact");
-  assert.equal(formatContextProgress(null, 1_000_000, theme), "—% left (—)");
-  assert.equal(formatContextProgress(Number.NaN, 1_000_000, theme), "—% left (—)");
+  assert.equal(formatContextProgress(50_000, 1_050_000, theme), "ctx 5%");
+  assert.equal(formatContextProgress(860_000, 1_000_000, theme), "ctx 86% · /compact");
+  assert.equal(formatContextProgress(null, 1_000_000, theme), "ctx —%");
+  assert.equal(formatContextProgress(Number.NaN, 1_000_000, theme), "ctx —%");
   assert.doesNotMatch(formatContextProgress(50_000, 1_050_000, theme), /[█░]/u);
 });

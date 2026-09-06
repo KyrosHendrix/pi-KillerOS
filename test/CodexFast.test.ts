@@ -102,7 +102,11 @@ test("/codex-fast state survives extension reloads and renders inline for Codex"
   const semanticTheme = themeTestAdapter({
     ...theme,
     bold: (text: string) => `<bold>${text}</bold>`,
-    fg: (color: string, text: string) => color === "accent" ? `<accent>${text}</accent>` : text,
+    fg: (color: string, text: string) => color === "accent"
+      ? `<accent>${text}</accent>`
+      : color === "text"
+        ? `<text>${text}</text>`
+        : text,
   });
   const footer = captured.footerFactory(tui, semanticTheme, {
     getGitBranch: () => undefined,
@@ -110,19 +114,19 @@ test("/codex-fast state survives extension reloads and renders inline for Codex"
     onBranchChange: () => () => {},
   });
   const enabledRender = footer.render(120).join("\n");
-  assert.match(enabledRender, /Test model.*Fast.*OpenAI/u);
-  assert.match(enabledRender, /<accent><bold>Fast<\/bold><\/accent>/u);
+  assert.match(enabledRender, /test-model.*fast.*openai/u);
+  assert.match(enabledRender, /<text>fast<\/text>/u);
   assert.equal(footer.render(120).length, 3);
 
   for (const handler of getHandlers(second, "model_select") ?? []) {
     handler({ model: { ...ctx.model, provider: "openai" } });
   }
-  assert.doesNotMatch(footer.render(120).join("\n"), /Fast/u);
+  assert.doesNotMatch(footer.render(120).join("\n"), /fast/u);
 
   for (const handler of getHandlers(second, "model_select") ?? []) {
     handler({ model: { ...ctx.model, provider: "openai-codex" } });
   }
-  assert.match(footer.render(120).join("\n"), /Test model.*Fast.*OpenAI/u);
+  assert.match(footer.render(120).join("\n"), /test-model.*fast.*openai/u);
   disposeTestComponent(footer);
   resetCodexFastState();
 });

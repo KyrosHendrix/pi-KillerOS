@@ -52,9 +52,9 @@ export function formatTokens(value: number): string {
   return `${inK}k`;
 }
 
-/** Resolves a terminal-safe model display name, preferring the name over the id. */
+/** Resolves a lowercase model id for display, falling back to the name. */
 export function modelDisplayName(model: { name?: string; id?: string }): string {
-  const name = safeTerminalText(model.name ?? "").replaceAll("\n", "").trim();
-  if (name) return name;
-  return safeTerminalText(model.id ?? "").replaceAll("\n", "").trim();
+  const id = safeTerminalText(model.id ?? "").replaceAll("\n", "").trim();
+  if (id) return id.toLowerCase();
+  return safeTerminalText(model.name ?? "").replaceAll("\n", "").trim().toLowerCase();
 }

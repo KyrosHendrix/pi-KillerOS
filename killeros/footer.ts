@@ -3,7 +3,7 @@ import { watch } from "node:fs";
 import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
-import { formatCwd, formatTime, formatTokens, modelDisplayName, padRight } from "./display.ts";
+import { formatCwd, formatTime, modelDisplayName, padRight } from "./display.ts";
 import { goalElapsedMilliseconds } from "./goal-state.ts";
 import type { GoalRuntime, GoalState } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -14,7 +14,7 @@ const GIT_STATUS_TIMEOUT_MS = 5_000;
 const GIT_STATUS_WATCH_DEBOUNCE_MS = 250;
 const GIT_STATUS_WATCH_INTERVAL_MS = 5_000;
 const CODEX_PROVIDER = "openai-codex";
-const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
+export const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
 export interface GitFileChanges {
   modified: number;
@@ -239,13 +239,13 @@ export function contextPercentRemaining(ctx: ExtensionContext): number | null {
 }
 
 export function formatContextProgress(tokensUsed: number | null, contextWindow: number, theme: Theme): string {
-  if (tokensUsed === null || !Number.isFinite(tokensUsed)) return theme.fg("dim", "—% left (—)");
+  if (tokensUsed === null || !Number.isFinite(tokensUsed)) return theme.fg("dim", "ctx —%");
   const windowSize = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 128_000;
-  const remaining = Math.max(0, Math.min(windowSize, windowSize - Math.max(0, tokensUsed)));
-  const percentLeft = Math.max(0, Math.min(100, Math.round((remaining / windowSize) * 100)));
-  const color: ThemeColor = percentLeft < 20 ? "error" : percentLeft <= 50 ? "warning" : "success";
-  const action = percentLeft < 15 ? " · /compact" : "";
-  return theme.fg(color, `${percentLeft}% left (${formatTokens(remaining)})${action}`);
+  const used = Math.max(0, Math.min(windowSize, Math.max(0, tokensUsed)));
+  const percentUsed = Math.max(0, Math.min(100, Math.round((used / windowSize) * 100)));
+  const color: ThemeColor = percentUsed > 80 ? "error" : percentUsed >= 50 ? "warning" : "success";
+  const action = percentUsed >= 85 ? " · /compact" : "";
+  return theme.fg(color, `ctx ${percentUsed}%${action}`);
 }
 
 function sumSessionCost(ctx: ExtensionContext): number {
@@ -275,25 +275,11 @@ const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   openrouter: "OpenRouter",
 };
 
-const PROVIDER_WORDS: Readonly<Record<string, string>> = {
-  ai: "AI",
-  api: "API",
-  deepseek: "DeepSeek",
-  github: "GitHub",
-  llm: "LLM",
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-};
-
 function formatProviderName(provider: string): string {
   const normalized = safeTerminalText(provider).replaceAll("\n", "").trim();
   const known = PROVIDER_LABELS[normalized.toLowerCase()];
-  if (known) return known;
-  return normalized
-    .split(/[-_]+/u)
-    .filter(Boolean)
-    .map((word) => PROVIDER_WORDS[word.toLowerCase()] ?? `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
-    .join(" ") || "Unknown provider";
+  if (known) return known.toLowerCase();
+  return normalized.toLowerCase().split(/[-_]+/u).filter(Boolean).join(" ") || "unknown provider";
 }
 
 export function formatModel(
@@ -302,11 +288,10 @@ export function formatModel(
   includeProvider = true,
   showCodexFast = false,
 ): string {
-  if (!model) return theme.fg("dim", "No model");
-  const name = theme.fg("text", theme.bold(modelDisplayName(model) || "Unknown model"));
-  const fast = showCodexFast && model.provider === CODEX_PROVIDER
-    ? theme.fg("accent", theme.bold("Fast"))
-    : "";
+  if (!model) return theme.fg("dim", "no model");
+  const displayName = modelDisplayName(model) || "unknown model";
+  const name = theme.fg("text", displayName);
+  const fast = showCodexFast && model.provider === CODEX_PROVIDER ? theme.fg("text", "fast") : "";
   const provider = includeProvider ? theme.fg("dim", formatProviderName(model.provider)) : "";
   return [name, fast, provider].filter(Boolean).join(" ");
 }

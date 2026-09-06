@@ -104,7 +104,7 @@ test("editor has a top border, is focus-aware and width-safe, and supports Shift
   assert.match(last(scrolledUp) ?? "", /^  ↓ \d+ more/u);
 });
 
-test("editor arrow alone carries focus color", async () => {
+test("editor arrow uses white text", async () => {
   const styledTheme: TestFullStyle = {
     bold: (text) => text,
     fg: (color, text) => `<${color}>${text}</${color}>`,
@@ -119,9 +119,9 @@ test("editor arrow alone carries focus color", async () => {
 
   editor.setText("hello");
   editor.focused = false;
-  assert.match(editor.render(20)[1], /^<dim>❯\u00A0<\/dim>hello/u);
+  assert.match(editor.render(20)[1], /^<text>❯\u00A0<\/text>hello/u);
   editor.focused = true;
-  assert.match(editor.render(20)[1], /^<accent>❯\u00A0<\/accent>/u);
+  assert.match(editor.render(20)[1], /^<text>❯\u00A0<\/text>hello/u);
 });
 
 test("shell UI preserves an existing custom editor factory", async () => {

@@ -185,13 +185,13 @@ test("single-model receipts persist a safe display name and render it after relo
   await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
   await harness.emit("agent_settled");
   const data = harness.appendedEntries[0]?.data;
-  assert.equal(data?.model, "Model Name");
+  assert.equal(data?.model, "model-id");
 
   const renderer = createWorkedForHarness().renderers.get("killeros-worked-for");
   assert.ok(renderer);
   const component = renderer({ data: JSON.parse(JSON.stringify(data)) }, { expanded: false }, theme);
   assert.ok(component);
-  assert.equal(component.render(80)[0], "Done · 1s · ↑ 0 tokens · Model Name");
+  assert.equal(component.render(80)[0].trimEnd(), " ✓ Done · 1s · ↑ 0 tokens · model-id");
   assert.ok(component.render(30).every((line) => visibleWidth(line) <= 30));
 });
 
@@ -320,13 +320,13 @@ test("the durable entry renders task tokens and preserves older history", () => 
   });
 
   const cases: ReadonlyArray<readonly [Record<string, unknown>, string]> = [
-    [{ version: 3, milliseconds: 18_000, outcome: "done", tokens: 54_000 }, "<success>Done</success><dim> · 18s · ↑ 54k tokens</dim>"],
-    [{ version: 3, milliseconds: 18_000, outcome: "stopped", tokens: 999 }, "<warning>■ Stopped</warning><dim> · 18s · ↑ 999 tokens</dim>"],
-    [{ version: 3, milliseconds: 18_000, outcome: "failed", tokens: 1_250_000 }, "<error>× Failed</error><dim> · 18s · ↑ 1.3M tokens</dim>"],
-    [{ version: 2, milliseconds: 18_000, outcome: "done" }, "<success>Done</success><dim> · 18s</dim>"],
-    [{ version: 2, milliseconds: 18_000, outcome: "stopped" }, "<warning>■ Stopped</warning><dim> · 18s</dim>"],
-    [{ version: 2, milliseconds: 18_000, outcome: "failed" }, "<error>× Failed</error><dim> · 18s</dim>"],
-    [{ version: 1, milliseconds: 125_000 }, "<dim>✻ Worked for 2m 05s</dim>"],
+    [{ version: 3, milliseconds: 18_000, outcome: "done", tokens: 54_000 }, " <success>✓ Done</success><dim> · 18s · ↑ 54k tokens</dim>"],
+    [{ version: 3, milliseconds: 18_000, outcome: "stopped", tokens: 999 }, " <warning>■ Stopped</warning><dim> · 18s · ↑ 999 tokens</dim>"],
+    [{ version: 3, milliseconds: 18_000, outcome: "failed", tokens: 1_250_000 }, " <error>× Failed</error><dim> · 18s · ↑ 1.3M tokens</dim>"],
+    [{ version: 2, milliseconds: 18_000, outcome: "done" }, " <success>✓ Done</success><dim> · 18s</dim>"],
+    [{ version: 2, milliseconds: 18_000, outcome: "stopped" }, " <warning>■ Stopped</warning><dim> · 18s</dim>"],
+    [{ version: 2, milliseconds: 18_000, outcome: "failed" }, " <error>× Failed</error><dim> · 18s</dim>"],
+    [{ version: 1, milliseconds: 125_000 }, " <dim>✻ Worked for 2m 05s</dim>"],
   ];
   for (const [data, expected] of cases) {
     const component = renderer({ data }, {}, styledTheme);
@@ -382,9 +382,9 @@ test("version 4 receipts render compact and expanded change details within every
   const compact = renderer({ data }, { expanded: false }, theme);
   assert.ok(compact);
   assert.deepEqual(compact.render(80), [
-    "Done · 1m 24s · ↑ 18.2k tokens · Model Name",
-    "  Changed 3 files · +84 −21",
-    "  Checks: 2 passed",
+    " ✓ Done · 1m 24s · ↑ 18.2k tokens · Model Name",
+    " Changed 3 files · +84 −21",
+    " Checks: 2 passed",
   ]);
   const expanded = renderer({ data }, { expanded: true }, theme);
   assert.ok(expanded);
@@ -420,10 +420,10 @@ test("version 4 receipts describe observed checks without verification claims", 
   assert.ok(renderer);
   const changed = { state: "available", totalFiles: 1, additions: 1, deletions: 0, files: [{ kind: "added", path: "file.ts", additions: 1, deletions: 0 }], omittedFiles: 0 };
   const cases = [
-    { checks: [{ label: "npm test", outcome: "passed" }], omittedChecks: { passed: 0, failed: 0 }, expected: "  Check passed: npm test ✓" },
-    { checks: [{ label: "npm test", outcome: "failed" }], omittedChecks: { passed: 0, failed: 0 }, expected: "  Check failed: npm test ×" },
-    { checks: [{ label: "npm test", outcome: "passed" }, { label: "npm run check", outcome: "failed" }], omittedChecks: { passed: 0, failed: 0 }, expected: "  Checks: 1 passed · 1 failed" },
-    { checks: [], omittedChecks: { passed: 0, failed: 0 }, expected: "  No check recorded" },
+    { checks: [{ label: "npm test", outcome: "passed" }], omittedChecks: { passed: 0, failed: 0 }, expected: " Check passed: npm test ✓" },
+    { checks: [{ label: "npm test", outcome: "failed" }], omittedChecks: { passed: 0, failed: 0 }, expected: " Check failed: npm test ×" },
+    { checks: [{ label: "npm test", outcome: "passed" }, { label: "npm run check", outcome: "failed" }], omittedChecks: { passed: 0, failed: 0 }, expected: " Checks: 1 passed · 1 failed" },
+    { checks: [], omittedChecks: { passed: 0, failed: 0 }, expected: " No check recorded" },
   ] as const;
   for (const receipt of cases) {
     const component = renderer({ data: { version: 4, milliseconds: 1, outcome: "done", tokens: 1, changes: changed, checks: receipt.checks, omittedChecks: receipt.omittedChecks } }, { expanded: false }, theme);
@@ -451,11 +451,11 @@ test("version 4 validation rejects malformed and oversized durable data", () => 
   const component = renderer({ data: valid }, { expanded: true }, theme);
   assert.ok(component);
   assert.match(component.render(100).join("\n"), /safe⏎path\.ts/u);
-  assert.equal(component.render(100)[0], "Done · 1s · ↑ 1 tokens · Model Name");
+  assert.equal(component.render(100)[0], " ✓ Done · 1s · ↑ 1 tokens · Model Name");
   for (const model of [42, "x".repeat(201)]) {
     const withoutModel = renderer({ data: { ...valid, model } }, { expanded: false }, theme);
     assert.ok(withoutModel);
-    assert.equal(withoutModel.render(100)[0], "Done · 1s · ↑ 1 tokens");
+    assert.equal(withoutModel.render(100)[0], " ✓ Done · 1s · ↑ 1 tokens");
   }
   for (const data of [
     { ...valid, milliseconds: 1.5 },

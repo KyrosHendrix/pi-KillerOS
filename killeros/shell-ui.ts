@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   CustomEditor,
+  VERSION as PI_VERSION,
   type ExtensionAPI,
   type ExtensionContext,
   type KeybindingsManager,
@@ -11,22 +12,18 @@ import {
   CURSOR_MARKER,
   stripTerminalSequences,
   truncateToWidth,
-  visibleWidth,
   wrapTextWithAnsi,
   type EditorTheme,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { formatCwd, padRight } from "./display.ts";
+import { formatCwd, modelDisplayName, padRight } from "./display.ts";
+import { colorDirectory } from "./footer.ts";
 import {
   createSlashCommandResolver,
   findSlashCommandTokens,
   type SlashCommandResolver,
 } from "./commands.ts";
 import { reportError } from "./errors.ts";
-import { formatModel } from "./footer.ts";
-import { LEVEL_COLORS } from "./variants.ts";
-
-const COMPACT_HEADER_MAX_WIDTH = 52;
 
 function readPackageVersion(path: string | URL): string | undefined {
   try {
@@ -119,10 +116,8 @@ function nextEditorSuggestion(): string {
   return editorSuggestionDeck.pop() ?? EDITOR_SUGGESTIONS[0];
 }
 
-function compactBoxLine(content: string, width: number, theme: Theme): string {
-  if (width < 4) return truncateToWidth(content, width, "");
-  return `${theme.fg("dim", "│")} ${padRight(content, width - 4)} ${theme.fg("dim", "│")}`;
-}
+const MASTHEAD_MARK = ["██████", "▓▓▓▓▓▓", "░░░░░░"];
+const MASTHEAD_GAP = "   ";
 
 class PiStartupHeader {
   private readonly pi: ExtensionAPI;
@@ -145,10 +140,8 @@ class PiStartupHeader {
   }
 
   private tipLines(width: number, theme: Theme): string[] {
-    const indent = "  ";
-    const text = `${theme.fg("text", theme.bold("Tip:"))}${theme.fg("dim", ` ${this.tip}`)}`;
-    return wrapTextWithAnsi(text, width - indent.length)
-      .map((line) => padRight(`${indent}${line}`, width));
+    const text = theme.italic(`${theme.fg("text", theme.bold("Tip:"))}${theme.fg("dim", ` ${this.tip}`)}`);
+    return wrapTextWithAnsi(text, width);
   }
 
   render(width: number): string[] {
@@ -156,34 +149,18 @@ class PiStartupHeader {
     const theme = this.ctx.ui.theme;
     if (width < 28) return [truncateToWidth(theme.fg("text", theme.bold("KillerOS")), width, "")];
 
-    const panelWidth = Math.min(width, COMPACT_HEADER_MAX_WIDTH);
-    const innerWidth = panelWidth - 4;
-    const version = KILLEROS_VERSION ? theme.fg("dim", ` (v${KILLEROS_VERSION})`) : "";
-    const identity = `${theme.fg("dim", "›")} ${theme.fg("text", theme.bold("KillerOS"))}${version}`;
+    const textWidth = Math.max(0, width - MASTHEAD_MARK[0].length - MASTHEAD_GAP.length);
+    const identity = `${theme.fg("text", "Pi")}${theme.fg("dim", ` ${PI_VERSION} | `)}${theme.fg("text", "KillerOS")}${KILLEROS_VERSION ? theme.fg("dim", ` ${KILLEROS_VERSION}`) : ""}`;
     const thinkingLevel = this.pi.getThinkingLevel();
-    const reasoning = this.ctx.model?.reasoning === false
-      ? theme.fg("thinkingOff", "no reasoning")
-      : theme.fg(LEVEL_COLORS[thinkingLevel], thinkingLevel);
-    const agent = `${formatModel(this.ctx.model, theme)}${theme.fg("dim", " · ")}${reasoning}`;
+    const reasoning = this.ctx.model?.reasoning === false ? "no reasoning" : thinkingLevel;
+    const modelName = this.ctx.model ? modelDisplayName(this.ctx.model) || "unknown model" : "no model";
+    const agent = `${theme.fg("dim", "model: ")}${theme.fg("text", `${modelName} ${reasoning}`)}`;
     const directory = formatCwd(this.ctx.cwd);
-    const repository = this.branch
-      ? `${directory} ${theme.fg("dim", `· ${this.branch}`)}`
-      : directory;
-    const modelCommand = theme.fg("mdLink", "/model");
-    const agentWidth = Math.max(0, innerWidth - visibleWidth(modelCommand) - 1);
-    const agentCommand = `${truncateToWidth(agent, agentWidth, "…")} ${modelCommand}`;
-    const border = (left: string, right: string): string => theme.fg("dim", `${left}${"─".repeat(panelWidth - 2)}${right}`);
-    const lines = [
-      border("╭", "╮"),
-      compactBoxLine(identity, panelWidth, theme),
-      compactBoxLine("", panelWidth, theme),
-      compactBoxLine(agentCommand, panelWidth, theme),
-      compactBoxLine(repository, panelWidth, theme),
-      border("╰", "╯"),
-      " ".repeat(panelWidth),
-      ...this.tipLines(panelWidth, theme),
-    ];
-    return lines;
+    const repository = `${theme.fg("dim", "directory: ")}${theme.fg("text", directory)}${this.branch ? ` ${colorDirectory(this.branch)}` : ""}`;
+    const rows = [identity, agent, repository].map((text, index) =>
+      `${theme.fg("accent", MASTHEAD_MARK[index] ?? "")}${MASTHEAD_GAP}${truncateToWidth(text, textWidth, "…")}`,
+    );
+    return [...rows, "", ...this.tipLines(width, theme)];
   }
 
   invalidate(): void {}
@@ -353,9 +330,7 @@ class PiCodeEditor extends CustomEditor {
 
     for (let index = 1; index < bottomBorderIndex; index += 1) {
       const isPromptLine = index === 1 && !isScrolledHeader;
-      const prefix = isPromptLine
-        ? this.runtimeTheme.fg(this.focused ? "accent" : "dim", "❯\u00A0")
-        : "  ";
+      const prefix = isPromptLine ? this.runtimeTheme.fg("text", "❯\u00A0") : "  ";
       let content = lines[index] ?? "";
       if (isPromptLine && this.getText() === "") {
         const first = this.suggestion.slice(0, 1);
@@ -387,10 +362,10 @@ class PiCodeEditor extends CustomEditor {
 }
 
 const ACTIVITY_FRAMES = [
-  "·", "✢", "✱", "✶", "✻", "✽",
-  "✽", "✻", "✶", "✱", "✢", "·",
+  "⠋", "⠙", "⠹", "⠸", "⠼",
+  "⠴", "⠦", "⠧", "⠇", "⠏",
 ] as const;
-const ACTIVITY_FRAME_INTERVAL_MS = 120;
+const ACTIVITY_FRAME_INTERVAL_MS = 80;
 
 let killerosEditorFactory: ReturnType<ExtensionContext["ui"]["getEditorComponent"]>;
 
