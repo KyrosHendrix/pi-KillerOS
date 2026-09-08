@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.1.26] - 2026-09-08
+
 ### Fixed
 
 - Restored Pi lifecycle loading, blocked footer Git status from invoking configured filesystem monitors, and kept replaced `/init` guidance at a disclosed recovery path so late writes remain recoverable.
