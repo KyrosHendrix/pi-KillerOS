@@ -119,47 +119,23 @@ function missingFile(error: unknown): boolean {
   return error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
 }
 
-type FilterConfiguration = { names: readonly string[]; sources: ReadonlyMap<string, Buffer> };
 type Repository = {
   root: string;
   gitDirectory: string;
   commonDirectory: string;
   objectDirectory: string;
-  filterConfiguration: FilterConfiguration;
   blobCache: Map<string, Buffer>;
   blobCacheBytes: number;
 };
 const repositoryCache = new Map<string, Promise<Repository>>();
 
-async function loadFilterConfiguration(root: string, gitDirectory: string): Promise<FilterConfiguration> {
-  const records = decode(await runGit(root, ["config", "--null", "--show-origin", "--name-only", "--list"])).split("\0");
+async function loadFilterNames(root: string): Promise<readonly string[]> {
+  const records = decode(await runGit(root, ["config", "--null", "--name-only", "--list"])).split("\0");
   const names = new Set<string>();
-  const sourcePaths = new Set<string>([path.join(gitDirectory, "HEAD")]);
-  for (let index = 0; index + 1 < records.length; index += 2) {
-    const origin = records[index];
-    const key = records[index + 1];
-    if (origin?.startsWith("file:")) sourcePaths.add(path.resolve(root, origin.slice("file:".length)));
+  for (const key of records) {
     if (key && /^filter\..*\.(clean|process)$/u.test(key)) names.add(key.slice("filter.".length, key.lastIndexOf(".")));
   }
-  const sources = new Map<string, Buffer>();
-  for (const sourcePath of sourcePaths) sources.set(sourcePath, await readBoundedFile(sourcePath, GIT_OUTPUT_LIMIT));
-  return { names: [...names], sources };
-}
-
-async function currentFilterNames(repo: Repository): Promise<readonly string[]> {
-  for (const [sourcePath, previous] of repo.filterConfiguration.sources) {
-    try {
-      if (!(await readBoundedFile(sourcePath, GIT_OUTPUT_LIMIT)).equals(previous)) {
-        repo.filterConfiguration = await loadFilterConfiguration(repo.root, repo.gitDirectory);
-        break;
-      }
-    } catch (error) {
-      if (!missingFile(error)) throw error;
-      repo.filterConfiguration = await loadFilterConfiguration(repo.root, repo.gitDirectory);
-      break;
-    }
-  }
-  return repo.filterConfiguration.names;
+  return [...names];
 }
 
 async function repository(cwd: string): Promise<Repository> {
@@ -174,7 +150,6 @@ async function repository(cwd: string): Promise<Repository> {
       gitDirectory,
       commonDirectory,
       objectDirectory: path.join(commonDirectory, "objects"),
-      filterConfiguration: await loadFilterConfiguration(root, gitDirectory),
       blobCache: new Map(),
       blobCacheBytes: 0,
     };
@@ -278,7 +253,7 @@ function discardMonitor(monitor: RepositoryMonitor): void {
 }
 
 async function snapshot(repo: Repository, paths?: readonly string[]): Promise<Snapshot> {
-  const filterNames = await currentFilterNames(repo);
+  const filterNames = await loadFilterNames(repo.root);
   const output = decode(await runGit(repo.root, [
     "-c", "core.fsmonitor=false",
     ...filterNames.flatMap((name) => ["-c", `filter.${name}.clean=`, "-c", `filter.${name}.process=`, "-c", `filter.${name}.required=false`]),

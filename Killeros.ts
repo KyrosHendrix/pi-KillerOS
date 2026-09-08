@@ -53,7 +53,7 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerLifecycleHooks(pi);
   registerWorkedFor(pi);
   const goalCompaction = registerGoalSettlement(pi, goalRuntime, initRuntime);
-  registerAutoCompaction(pi, { goal: goalCompaction });
+  registerAutoCompaction(pi, { goal: goalCompaction, isInitActive: () => initRuntime.active });
   registerInitSettlement(pi, initRuntime);
   registerRequestActivity(pi);
   registerCompletionNotifications(pi, options.completionNotifications);

@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept `/init` isolated from proactive compaction, refreshed Git filter safeguards for each receipt scan, and preserved compaction recovery after cancelled session replacements.
+
 ## [2.1.25] - 2026-09-06
 
 ### Fixed

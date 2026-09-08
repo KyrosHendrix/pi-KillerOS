@@ -301,6 +301,72 @@ test("settlement disables filters configured after collection starts", async (t)
   await assert.rejects(readFile(sentinel), { code: "ENOENT" });
 });
 
+test("settlement disables a filter from an included config that appears after collection starts", async (t) => {
+  const root = await fixture();
+  const sentinelDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-filter-test-"));
+  const sentinel = path.join(sentinelDirectory, "sentinel");
+  const tripwire = path.join(sentinelDirectory, "tripwire.cjs");
+  const includedConfig = path.join(root, ".git", "late-filter.config");
+  t.after(async () => Promise.all([
+    rm(root, { recursive: true, force: true }),
+    rm(sentinelDirectory, { recursive: true, force: true }),
+  ]));
+  await writeFile(tripwire, "require('node:fs').writeFileSync(process.argv[2], 'invoked');process.stdin.pipe(process.stdout);\n");
+  await writeFile(path.join(root, ".gitattributes"), "*.txt filter=late\n");
+  git(root, "add", ".gitattributes");
+  git(root, "commit", "--quiet", "-m", "attributes");
+  git(root, "config", "include.path", "late-filter.config");
+  const collection = await beginChangeReceipt(root);
+
+  await writeFile(includedConfig, `[filter "late"]\n\tclean = node "${tripwire.replaceAll("\\", "/")}" "${sentinel.replaceAll("\\", "/")}"\n`);
+  await writeFile(path.join(root, "clean.txt"), "changed\n");
+  const summary = await collection.finish();
+
+  assert.equal(summary.state, "available");
+  await assert.rejects(readFile(sentinel), { code: "ENOENT" });
+});
+
+test("settlement disables a filter supplied by newly effective Git environment configuration", async (t) => {
+  const root = await fixture();
+  const sentinelDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-filter-test-"));
+  const sentinel = path.join(sentinelDirectory, "sentinel");
+  const tripwire = path.join(sentinelDirectory, "tripwire.cjs");
+  t.after(async () => Promise.all([
+    rm(root, { recursive: true, force: true }),
+    rm(sentinelDirectory, { recursive: true, force: true }),
+  ]));
+  await writeFile(tripwire, "require('node:fs').writeFileSync(process.argv[2], 'invoked');process.stdin.pipe(process.stdout);\n");
+  await writeFile(path.join(root, ".gitattributes"), "*.txt filter=environment-late\n");
+  git(root, "add", ".gitattributes");
+  git(root, "commit", "--quiet", "-m", "attributes");
+  const previousConfigEnvironment = new Map(
+    Object.keys(process.env)
+      .filter((key) => key.startsWith("GIT_CONFIG_"))
+      .map((key) => [key, process.env[key]] as const),
+  );
+  try {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("GIT_CONFIG_")) delete process.env[key];
+    }
+    const collection = await beginChangeReceipt(root);
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = "filter.environment-late.clean";
+    process.env.GIT_CONFIG_VALUE_0 = `node "${tripwire.replaceAll("\\", "/")}" "${sentinel.replaceAll("\\", "/")}"`;
+    await writeFile(path.join(root, "clean.txt"), "changed\n");
+    const summary = await collection.finish();
+
+    assert.equal(summary.state, "available");
+    await assert.rejects(readFile(sentinel), { code: "ENOENT" });
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("GIT_CONFIG_")) delete process.env[key];
+    }
+    for (const [key, value] of previousConfigEnvironment) {
+      if (value !== undefined) process.env[key] = value;
+    }
+  }
+});
+
 test("settlement disables filters activated by a branch-conditional include", async (t) => {
   const root = await fixture();
   const sentinelDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-branch-filter-test-"));

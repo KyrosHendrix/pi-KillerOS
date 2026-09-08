@@ -33,6 +33,7 @@ export interface AutoCompactionDependencies {
   loadPreference?: (ctx: ExtensionContext) => AutoCompactionPreference;
   getCompactionSettings?: (ctx: ExtensionContext) => CompactionSettings;
   goal?: AutoCompactionGoalHandlers;
+  isInitActive?: () => boolean;
 }
 
 type AutoCompactionRequest = {
@@ -192,7 +193,7 @@ export function registerAutoCompaction(
   };
 
   pi.on("turn_end", (_event, ctx) => {
-    if (!supportedMode(ctx) || request) return;
+    if (!supportedMode(ctx) || dependencies.isInitActive?.() === true || request) return;
 
     let preference: AutoCompactionPreference;
     let compactionSettings: CompactionSettings;
@@ -288,6 +289,4 @@ export function registerAutoCompaction(
   pi.on("session_start", resetForLifecycle);
   pi.on("session_shutdown", resetForLifecycle);
   pi.on("session_tree", resetForLifecycle);
-  pi.on("session_before_switch", resetForLifecycle);
-  pi.on("session_before_fork", resetForLifecycle);
 }

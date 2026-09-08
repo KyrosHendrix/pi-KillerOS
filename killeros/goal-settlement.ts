@@ -224,10 +224,6 @@ export function registerGoalSettlement(
     recoverGoalAfterManualCompaction(pi, runtime, initState, ctx);
   });
 
-  const resetAutomaticRecovery = (): void => { runtime.automaticCompaction = undefined; };
-  pi.on("session_before_switch", resetAutomaticRecovery);
-  pi.on("session_before_fork", resetAutomaticRecovery);
-
   return {
     isActive: (ctx: ExtensionContext): boolean => isGoalModeSupported(ctx)
       && isSavedSession(ctx)

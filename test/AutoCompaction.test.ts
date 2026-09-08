@@ -21,6 +21,7 @@ import {
 import { registerGoalInterface } from "../killeros/goal-interface.ts";
 import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
 import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
+import { registerInitCommand, registerInitSettlement } from "../killeros/init.ts";
 import { createGoalRuntime, createInitRuntime } from "../killeros/runtime.ts";
 import { createKillerosSettingsStore } from "../killeros/settings.ts";
 import { extensionApiTestAdapter, extensionContextTestAdapter } from "./PiTestAdapters.ts";
@@ -38,6 +39,7 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
 }
 
 interface AutoHarness {
+  activeTools: string[];
   compactCalls: CompactOptions[];
   notifications: Array<{ message: string; type: string | undefined }>;
   sentMessages: Array<{ message: unknown; options: unknown }>;
@@ -51,19 +53,25 @@ function createHarness(
   mode: "tui" | "rpc" = "tui",
   initialUsage: ContextUsage | undefined = { tokens: 90_000, contextWindow: 100_000, percent: 90 },
   goal?: AutoCompactionGoalHandlers,
+  initState?: ReturnType<typeof createInitRuntime>,
 ): AutoHarness {
   const handlers = new Map<string, Handler[]>();
+  const activeTools = ["read", "bash", "edit", "write"];
   const compactCalls: CompactOptions[] = [];
   const notifications: AutoHarness["notifications"] = [];
   const sentMessages: AutoHarness["sentMessages"] = [];
   let usage: ContextUsage | undefined = initialUsage;
   let continuationError: Error | undefined;
   const api = extensionApiTestAdapter({
+    getActiveTools: () => [...activeTools],
     on(eventName: string, handler: Handler): void {
       const current = handlers.get(eventName) ?? [];
       current.push(handler);
       handlers.set(eventName, current);
     },
+    registerCommand: () => {},
+    registerTool: () => {},
+    setActiveTools: (names: string[]) => { activeTools.splice(0, activeTools.length, ...names); },
     sendMessage(message: unknown, options: unknown): void {
       if (continuationError) throw continuationError;
       sentMessages.push({ message, options });
@@ -86,12 +94,16 @@ function createHarness(
     },
   });
   let compactError: Error | undefined;
+  if (initState) registerInitCommand(api, initState, createGoalRuntime());
   registerAutoCompaction(api, {
     loadPreference: () => ({ enabled: true, percentRemaining: 15 }),
     getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }),
     goal,
+    isInitActive: () => initState?.active === true,
   });
+  if (initState) registerInitSettlement(api, initState);
   return {
+    activeTools,
     compactCalls,
     notifications,
     sentMessages,
@@ -105,6 +117,34 @@ function createHarness(
     },
   };
 }
+
+test("active /init keeps its tools isolated and blocks proactive compaction", async () => {
+  const initState = createInitRuntime();
+  initState.active = true;
+  const harness = createHarness("tui", undefined, undefined, initState);
+
+  await harness.emit("before_agent_start");
+  assert.deepEqual(harness.activeTools, [
+    "killeros_init_read",
+    "killeros_init_list",
+    "killeros_init_write",
+    "killeros_init_conflict",
+  ]);
+  assert.deepEqual(await harness.emit("tool_call", { type: "tool_call", toolName: "bash" }), {
+    block: true,
+    reason: "/init may use only its bounded evidence and terminal tools",
+  });
+
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 0);
+
+  await harness.emit("agent_settled");
+  assert.equal(initState.active, false);
+  assert.deepEqual(harness.activeTools, ["read", "bash", "edit", "write"]);
+
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 1);
+});
 
 function compactResult(): { summary: string; firstKeptEntryId: string; tokensBefore: number } {
   return { summary: "summary", firstKeptEntryId: "entry-1", tokensBefore: 90_000 };
@@ -300,13 +340,43 @@ test("ordinary continuation also waits when compaction completion precedes settl
   assert.equal(harness.sentMessages.length, 1);
 });
 
-test("a stale ordinary continuation cannot dispatch after a lifecycle reset", async () => {
-  for (const event of ["session_start", "session_shutdown", "session_tree", "session_before_switch", "session_before_fork"] as const) {
+test("a stale ordinary continuation cannot dispatch after a committed lifecycle reset", async () => {
+  for (const event of ["session_start", "session_shutdown", "session_tree"] as const) {
     const harness = createHarness();
     await harness.emit("turn_end");
     const callbacks = harness.compactCalls[0];
 
     await harness.emit(event);
+    callbacks?.onComplete?.(compactResult());
+    await harness.emit("agent_settled");
+
+    assert.equal(harness.sentMessages.length, 0, event);
+  }
+});
+
+test("a cancelled session replacement preserves ordinary compaction recovery", async () => {
+  for (const event of ["session_before_switch", "session_before_fork"] as const) {
+    const harness = createHarness();
+    await harness.emit("turn_end");
+    await harness.emit("agent_settled");
+    const callbacks = harness.compactCalls[0];
+
+    await harness.emit(event);
+    callbacks?.onComplete?.(compactResult());
+
+    assert.equal(harness.sentMessages.length, 1, event);
+  }
+});
+
+test("a committed session replacement invalidates callbacks during teardown", async () => {
+  for (const event of ["session_before_switch", "session_before_fork"] as const) {
+    const harness = createHarness();
+    await harness.emit("turn_end");
+    await harness.emit("agent_settled");
+    const callbacks = harness.compactCalls[0];
+
+    await harness.emit(event);
+    await harness.emit("session_shutdown");
     callbacks?.onComplete?.(compactResult());
     await harness.emit("agent_settled");
 
@@ -467,16 +537,45 @@ test("explicit /goal pause during automatic compaction prevents recovery", async
   assert.equal(harness.sentMessages.length, 1);
 });
 
-test("session switch and fork reset automatic goal recovery", async () => {
+test("a cancelled session replacement preserves automatic goal recovery", async () => {
   for (const event of ["session_before_switch", "session_before_fork"] as const) {
     const harness = createGoalHarness();
-    await harness.startGoal(`Stay paused after ${event}`);
+    await harness.startGoal(`Resume after cancelled ${event}`);
     await harness.emit("turn_end");
+    await harness.emit("agent_end", {
+      type: "agent_end",
+      messages: [{ role: "assistant", stopReason: "aborted" }],
+    });
+    await harness.emit("agent_settled");
 
     await harness.emit(event);
+    assert.ok(harness.state().automaticCompaction, event);
+    harness.compactCalls[0]?.onComplete?.(compactResult());
+    await new Promise((resolve) => setImmediate(resolve));
 
-    assert.equal(harness.state().automaticCompaction, undefined, event);
-    assert.equal(harness.state().state?.status, "paused", event);
+    assert.equal(harness.state().state?.status, "active", event);
+    assert.equal(harness.sentMessages.length, 2, event);
+  }
+});
+
+test("a committed goal session replacement invalidates recovery during teardown", async () => {
+  for (const event of ["session_before_switch", "session_before_fork"] as const) {
+    const harness = createGoalHarness();
+    await harness.startGoal(`Do not resume after ${event}`);
+    await harness.emit("turn_end");
+    await harness.emit("agent_end", {
+      type: "agent_end",
+      messages: [{ role: "assistant", stopReason: "aborted" }],
+    });
+    await harness.emit("agent_settled");
+    const callbacks = harness.compactCalls[0];
+
+    await harness.emit(event);
+    await harness.emit("session_shutdown");
+    callbacks?.onComplete?.(compactResult());
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(harness.sentMessages.length, 1, event);
   }
 });
 

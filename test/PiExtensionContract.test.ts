@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
+  createAgentSessionRuntime,
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
@@ -234,6 +235,149 @@ test("real Pi delivery starts one hidden ordinary continuation after turn_end ->
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("cancelled real session replacements preserve automatic compaction recovery", { timeout: 30_000 }, async () => {
+  for (const operation of ["newSession", "fork"] as const) {
+    const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-cancelled-replacement-"));
+    const cwd = path.join(directory, "project");
+    const agentDir = path.join(directory, "agent");
+    mkdirSync(cwd);
+    mkdirSync(agentDir);
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    let releaseCompaction: (() => void) | undefined;
+    let resolveCompactionStarted: (() => void) | undefined;
+    let runtimeHost: Awaited<ReturnType<typeof createAgentSessionRuntime>> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    try {
+      writeFileSync(path.join(agentDir, "killeros.json"), JSON.stringify({
+        autoCompaction: { enabled: true, percentRemaining: 100 },
+      }));
+      writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({
+        compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
+      }));
+
+      const providerName = `killeros-cancelled-${operation}`;
+      const faux = fauxProvider({
+        provider: providerName,
+        models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }],
+      });
+      faux.setResponses([
+        fauxAssistantMessage("ordinary turn finished"),
+        fauxAssistantMessage("continuation turn finished"),
+      ]);
+      const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+      modelRuntime.registerNativeProvider(faux.provider);
+      await modelRuntime.setRuntimeApiKey(providerName, "local-test-key");
+      const settingsManager = SettingsManager.inMemory({
+        compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
+      });
+      const compactionStarted = new Promise<void>((resolve) => { resolveCompactionStarted = resolve; });
+      const loader = new DefaultResourceLoader({
+        cwd,
+        agentDir,
+        additionalExtensionPaths: [path.join(repositoryRoot, "Killeros.ts")],
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        settingsManager,
+        extensionFactories: [(pi) => {
+          if (operation === "newSession") pi.on("session_before_switch", () => ({ cancel: true }));
+          else pi.on("session_before_fork", () => ({ cancel: true }));
+          pi.on("session_before_compact", (event) => new Promise((resolve) => {
+            releaseCompaction = () => resolve({
+              compaction: {
+                summary: "Compacted ordinary task context.",
+                firstKeptEntryId: event.preparation.firstKeptEntryId,
+                tokensBefore: event.preparation.tokensBefore,
+              },
+            });
+            resolveCompactionStarted?.();
+          }));
+        }],
+      });
+      await loader.reload();
+      assert.deepEqual(loader.getExtensions().errors, []);
+
+      const sessionManager = SessionManager.inMemory(cwd);
+      sessionManager.appendMessage({ role: "user", content: "Earlier task context", timestamp: Date.now() - 2 });
+      sessionManager.appendMessage(fauxAssistantMessage("Earlier work", { timestamp: Date.now() - 1 }));
+      const lifecycleErrors: string[] = [];
+      runtimeHost = await createAgentSessionRuntime(async (options) => {
+        const created = await createAgentSession({
+          cwd: options.cwd,
+          agentDir: options.agentDir,
+          model: faux.getModel(),
+          modelRuntime,
+          resourceLoader: loader,
+          sessionManager: options.sessionManager,
+          settingsManager,
+          noTools: "all",
+          sessionStartEvent: options.sessionStartEvent,
+        });
+        await created.session.bindExtensions({
+          mode: "rpc",
+          shutdownHandler() {},
+          onError(error) { lifecycleErrors.push(`${error.event}: ${error.error}`); },
+        });
+        return {
+          ...created,
+          services: {
+            cwd: options.cwd,
+            agentDir: options.agentDir,
+            modelRuntime,
+            settingsManager,
+            resourceLoader: loader,
+            diagnostics: [],
+          },
+          diagnostics: [],
+        };
+      }, { cwd, agentDir, sessionManager });
+
+      let agentStarts = 0;
+      let settledCount = 0;
+      let resolveInitialSettlement: (() => void) | undefined;
+      let resolveContinuation: (() => void) | undefined;
+      const initialSettlement = new Promise<void>((resolve) => { resolveInitialSettlement = resolve; });
+      const continuation = new Promise<void>((resolve) => { resolveContinuation = resolve; });
+      unsubscribe = runtimeHost.session.subscribe((event) => {
+        if (event.type === "agent_start") agentStarts += 1;
+        if (event.type === "agent_settled" && settledCount++ === 0) resolveInitialSettlement?.();
+        if (event.type === "message_end"
+          && event.message.role === "assistant"
+          && event.message.content.some((part) => part.type === "text" && part.text === "continuation turn finished")) {
+          resolveContinuation?.();
+        }
+      });
+
+      const prompt = runtimeHost.session.prompt("Continue the ordinary task");
+      await Promise.all([compactionStarted, initialSettlement]);
+      const replacement = operation === "newSession"
+        ? await runtimeHost.newSession()
+        : await runtimeHost.fork("not-an-entry");
+      assert.deepEqual(replacement, { cancelled: true });
+      releaseCompaction?.();
+      await continuation;
+      await prompt;
+      await runtimeHost.session.waitForIdle();
+
+      assert.equal(agentStarts, 2);
+      assert.equal(faux.state.callCount, 2);
+      assert.equal(runtimeHost.session.messages.filter((message) => message.role === "custom"
+        && message.customType === "killeros-auto-compaction").length, 1);
+      assert.deepEqual(lifecycleErrors, []);
+    } finally {
+      releaseCompaction?.();
+      unsubscribe?.();
+      await runtimeHost?.dispose();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      rmSync(directory, { recursive: true, force: true });
+    }
   }
 });
 
