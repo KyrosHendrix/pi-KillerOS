@@ -270,12 +270,13 @@ async function snapshot(repo: Repository, paths?: readonly string[]): Promise<Sn
     if (record.startsWith("? ")) {
       const filePath = record.slice(2);
       if (!filePath || filePath.endsWith("/")) continue;
+      const stats = await lstat(path.join(repo.root, ...filePath.split("/")));
       files.set(filePath, {
         ...files.get(filePath),
         path: filePath,
         indexMode: undefined,
         indexObjectId: undefined,
-        mode: "100644",
+        mode: stats.isSymbolicLink() ? "120000" : stats.mode & 0o111 ? "100755" : "100644",
         contentObjectId: undefined,
       });
       continue;

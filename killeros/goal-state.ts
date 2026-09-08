@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { Guard } from "typebox/guard";
 import type { GoalBlockerAudit, GoalFileBaseline, GoalFileVerification, GoalState, GoalStateCommon, GoalStatus } from "./runtime.ts";
 
 export const DEFAULT_GOAL_MAX_TURNS = 20;
@@ -91,7 +92,7 @@ function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): 
     || typeof value.streak !== "number" || !Number.isInteger(value.streak) || value.streak < 1 || value.streak > 3
     || typeof value.lastTurn !== "number" || !Number.isInteger(value.lastTurn) || value.lastTurn < 1 || value.lastTurn > turns
     || value.evidence !== undefined && (typeof value.evidence !== "string"
-      || value.evidence !== value.evidence.trim() || !value.evidence || value.evidence.length > 2_000)) {
+      || value.evidence !== value.evidence.trim() || !value.evidence || !Guard.IsMaxLength(value.evidence, 2_000))) {
     return false;
   }
   if (status === "complete") return false;

@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Preserved Unicode blocker evidence when restoring goals, rejected cancelled goal updates before completion is saved, and read untracked symlink destinations instead of their targets in change receipts.
 - Kept `/init` isolated from proactive compaction, refreshed Git filter safeguards for each receipt scan, and preserved compaction recovery after cancelled session replacements.
 
 ## [2.1.25] - 2026-09-06

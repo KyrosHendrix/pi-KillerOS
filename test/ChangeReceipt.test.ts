@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { chmod, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
@@ -100,6 +100,46 @@ test("Git collection reports only the response delta and cleans its temporary di
   assert.match(status, /preexisting\.txt/u);
   const tempAfter = new Set((await readdir(os.tmpdir())).filter((name) => name.startsWith("killeros-change-receipt-")));
   assert.deepEqual(tempAfter, tempBefore);
+});
+
+test("untracked and tracked symlinks compare destinations without following targets", async (t) => {
+  const root = await fixture();
+  const outside = await mkdtemp(path.join(os.tmpdir(), "killeros-link-target-"));
+  t.after(async () => {
+    disposeChangeReceipts();
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+  const target = path.join(outside, "target.txt");
+  await writeFile(target, "one\ntwo\nthree\n");
+  try {
+    await symlink("missing.txt", path.join(root, "dangling"), "file");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && ["EPERM", "EACCES", "ENOSYS"].includes(String(error.code))) {
+      t.skip("Filesystem does not permit symlinks");
+      return;
+    }
+    throw error;
+  }
+  git(root, "config", "core.symlinks", "true");
+  await symlink(target, path.join(root, "tracked"), "file");
+  git(root, "add", "tracked");
+  git(root, "commit", "--quiet", "-m", "tracked link");
+  const collection = await beginChangeReceipt(root);
+  await symlink(target, path.join(root, "file-link"), "file");
+  await symlink(outside, path.join(root, "directory-link"), "dir");
+  await rm(path.join(root, "tracked"));
+  await symlink("missing.txt", path.join(root, "tracked"), "file");
+  await writeFile(path.join(root, "clean.txt"), "clean\nchanged\n");
+  assert.deepEqual(await collection.finish(), {
+    state: "available", totalFiles: 4, additions: 4, deletions: 1,
+    files: [
+      { kind: "modified", path: "clean.txt", additions: 1, deletions: 0 },
+      { kind: "added", path: "directory-link", additions: 1, deletions: 0 },
+      { kind: "added", path: "file-link", additions: 1, deletions: 0 },
+      { kind: "modified", path: "tracked", additions: 1, deletions: 1 },
+    ], omittedFiles: 0,
+  });
 });
 
 test("finish detects an immediate write without waiting for watcher delivery", async (t) => {

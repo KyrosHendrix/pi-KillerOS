@@ -574,11 +574,11 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
   };
-  const restore = async (blockerAudit: unknown) => {
+  const restore = async (blockerAudit: unknown, turns = activeState.turns) => {
     const entries = [{
       type: "custom",
       customType: "killeros-goal",
-      data: { version: 1, event: "blocker-audit", state: { ...activeState, blockerAudit } },
+      data: { version: 1, event: "blocker-audit", state: { ...activeState, turns, blockerAudit } },
     }];
     const harness = createHarness<GoalEntryData>();
     const { ctx } = createTuiContext(entries);
@@ -605,6 +605,20 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
   );
   assert.equal(last(valid.appendedEntries).data.state.status, "blocked");
 
+  const evidence = "😀".repeat(1_000) + "e\u0301".repeat(1_000);
+  const unicode = await restore({ key: "external", streak: 1, lastTurn: 1, evidence });
+  assert.equal(unicode.sentMessages.length, 1);
+  assert.deepEqual(last(unicode.appendedEntries).data.state.blockerAudit, { key: "external", streak: 1, lastTurn: 1, evidence });
+  await emitGoalStart(unicode.handlers, unicode.ctx);
+  await getTool(unicode, "killeros_goal_update").execute(
+    "unicode-audit", { status: "blocked", blockerKey: "external", evidence },
+    new AbortController().signal, () => {}, unicode.ctx,
+  );
+  const saved = last(unicode.appendedEntries).data.state;
+  const roundTrip = await restore(saved.blockerAudit, saved.turns);
+  assert.equal(roundTrip.sentMessages.length, 1);
+  assert.deepEqual(last(roundTrip.appendedEntries).data.state.blockerAudit, saved.blockerAudit);
+
   const malformed = [
     { key: "", streak: 1, lastTurn: 1 },
     { key: "UPPERCASE", streak: 1, lastTurn: 1 },
@@ -617,6 +631,7 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
     { key: "valid", streak: 1, lastTurn: 1, evidence: "" },
     { key: "valid", streak: 1, lastTurn: 1, evidence: " padded" },
     { key: "valid", streak: 1, lastTurn: 1, evidence: "x".repeat(2_001) },
+    { key: "valid", streak: 1, lastTurn: 1, evidence: evidence + "x" },
   ];
   for (const audit of malformed) {
     const restored = await restore(audit);

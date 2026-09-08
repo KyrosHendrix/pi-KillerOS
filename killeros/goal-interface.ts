@@ -90,6 +90,7 @@ export function registerGoalInterface(
     parameters: GoalUpdateParams,
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      signal?.throwIfAborted();
       if (!isGoalModeSupported(ctx)) throw new Error("KillerOS goals require TUI or RPC mode");
       if (!isSavedSession(ctx)) throw new Error("KillerOS goals require a saved session");
       const state = runtime.state;
@@ -98,6 +99,7 @@ export function registerGoalInterface(
       if (!evidence) throw new Error("Goal evidence must not be empty");
       if (params.status === "complete") {
         if (state.verification) await verifyGoalDeliverable(state.verification);
+        signal?.throwIfAborted();
         if (runtime.state !== state) throw new Error("Goal changed while completion was being verified");
         const verification = state.verification ? "file" : "model-reported";
         transitionGoal(pi, runtime, "complete", "complete", evidence, { resetBlockedAudit: true });

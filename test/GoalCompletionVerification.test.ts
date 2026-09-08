@@ -100,15 +100,38 @@ async function startGoal(harness: ReturnType<typeof createHarness>, ctx: ReturnT
   return requiredState(last(harness.appendedEntries));
 }
 
-function complete(harness: ReturnType<typeof createHarness>, ctx: ReturnType<typeof createContext>) {
+function complete(harness: ReturnType<typeof createHarness>, ctx: ReturnType<typeof createContext>, signal = new AbortController().signal) {
   return requiredMapValue(harness.tools, "killeros_goal_update").execute(
     "complete",
     { status: "complete", evidence: "Verified deliverable" },
-    new AbortController().signal,
+    signal,
     () => {},
     ctx,
   );
 }
+
+test("cancelled goal updates never persist, including during file verification", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-abort-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const requested = path.join(directory, "requested.md");
+  const harness = createHarness();
+  const ctx = createContext();
+  await startGoal(harness, ctx, `Write the Markdown file to \`${requested}\``);
+  writeFileSync(requested, "verified deliverable");
+  const entryCount = harness.appendedEntries.length;
+  const controller = new AbortController();
+  const pending = complete(harness, ctx, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  for (const status of ["complete", "blocked"]) {
+    await assert.rejects(requiredMapValue(harness.tools, "killeros_goal_update").execute(
+      "cancelled", { status, evidence: "Done", blockerKey: "external" }, controller.signal, () => {}, ctx,
+    ), { name: "AbortError" });
+  }
+  assert.equal(harness.appendedEntries.length, entryCount);
+  assert.equal(requiredState(last(harness.appendedEntries)).status, "active");
+  assert.equal((await complete(harness, ctx)).details.status, "complete");
+});
 
 test("completion cannot finish a goal restored while its file check is running", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-file-race-"));
