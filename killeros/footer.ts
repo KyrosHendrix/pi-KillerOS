@@ -43,7 +43,7 @@ export function resolveGitFileChanges(
   return new Promise((resolve) => {
     execute(
       "git",
-      ["-C", cwd, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      ["-C", cwd, "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
       {
         encoding: "utf8",
         env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },

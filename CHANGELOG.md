@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Restored Pi lifecycle loading, blocked footer Git status from invoking configured filesystem monitors, and kept replaced `/init` guidance at a disclosed recovery path so late writes remain recoverable.
 - Preserved Unicode blocker evidence when restoring goals, rejected cancelled goal updates before completion is saved, and read untracked symlink destinations instead of their targets in change receipts.
 - Kept `/init` isolated from proactive compaction, refreshed Git filter safeguards for each receipt scan, and preserved compaction recovery after cancelled session replacements.
 

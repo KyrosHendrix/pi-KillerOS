@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
-import { Guard } from "typebox/guard";
 import type { GoalBlockerAudit, GoalFileBaseline, GoalFileVerification, GoalState, GoalStateCommon, GoalStatus } from "./runtime.ts";
 
 export const DEFAULT_GOAL_MAX_TURNS = 20;
@@ -11,6 +10,7 @@ export const GOAL_MAX_TURNS = 10_000;
 export const GOAL_VERSION = 1;
 const FILE_HASH_CHUNK_SIZE = 64 * 1024;
 export const FILE_HASH_LIMIT = 64 * 1024 * 1024;
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 type OpenGoalFile = (filePath: string) => Promise<FileHandle>;
 const openGoalFile: OpenGoalFile = (filePath) => open(filePath, "r");
 
@@ -85,6 +85,14 @@ function isMaxTurns(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= GOAL_MAX_TURNS;
 }
 
+function exceedsBlockerEvidenceLimit(value: string): boolean {
+  let length = 0;
+  for (const _ of graphemeSegmenter.segment(value)) {
+    if (++length > 2_000) return true;
+  }
+  return false;
+}
+
 function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): value is GoalBlockerAudit {
   if (!isUnknownRecord(value)
     || typeof value.key !== "string"
@@ -92,7 +100,7 @@ function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): 
     || typeof value.streak !== "number" || !Number.isInteger(value.streak) || value.streak < 1 || value.streak > 3
     || typeof value.lastTurn !== "number" || !Number.isInteger(value.lastTurn) || value.lastTurn < 1 || value.lastTurn > turns
     || value.evidence !== undefined && (typeof value.evidence !== "string"
-      || value.evidence !== value.evidence.trim() || !value.evidence || !Guard.IsMaxLength(value.evidence, 2_000))) {
+      || value.evidence !== value.evidence.trim() || !value.evidence || exceedsBlockerEvidenceLimit(value.evidence))) {
     return false;
   }
   if (status === "complete") return false;

@@ -13,7 +13,7 @@ import {
 } from "./init-evidence.ts";
 import {
   captureInitTargetBaseline,
-  installInitAgentsFile,
+  installInitAgentsFileWithRecovery,
   validateGeneratedGuidance,
 } from "./init-target.ts";
 import { resetInitRuntime, type GoalRuntime, type InitOutcome, type InitRuntime } from "./runtime.ts";
@@ -109,11 +109,12 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
       if (!initState.targetPath || !initState.baseline) throw new Error("/init target baseline is unavailable");
       const validationError = validateGeneratedGuidance(content);
       if (validationError) throw new Error(validationError);
-      await installInitAgentsFile(initState.targetPath, content, initState.baseline);
-      initState.outcome = { kind: "written" };
+      const recoveryPath = await installInitAgentsFileWithRecovery(initState.targetPath, content, initState.baseline);
+      initState.outcome = { kind: "written", ...(recoveryPath ? { recoveryPath } : {}) };
+      const recoveryNotice = recoveryPath ? ` Previous AGENTS.md preserved at ${safeTerminalText(recoveryPath)}.` : "";
       return {
-        content: [{ type: "text" as const, text: "Generated root AGENTS.md; read it once with killeros_init_read." }],
-        details: { path: initState.targetPath },
+        content: [{ type: "text" as const, text: `Generated root AGENTS.md.${recoveryNotice} Read it once with killeros_init_read.` }],
+        details: { path: initState.targetPath, ...(recoveryPath ? { recoveryPath } : {}) },
       };
     },
   });
@@ -244,6 +245,9 @@ export function registerInitCommand(pi: ExtensionAPI, initState: InitRuntime, go
       const outcome = await settled;
       switch (outcome.kind) {
         case "written":
+          if (outcome.recoveryPath) {
+            ctx.ui.notify(`/init preserved the previous AGENTS.md at ${safeTerminalText(outcome.recoveryPath)}`, "info");
+          }
           await new Promise<void>((resolve) => setImmediate(resolve));
           try {
             await ctx.reload();

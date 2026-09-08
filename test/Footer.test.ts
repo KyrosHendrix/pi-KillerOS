@@ -12,7 +12,7 @@ import {
 } from "../killeros/footer.ts";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { themeTestAdapter } from "./PiTestAdapters.ts";
 
 type TestStyle = {
@@ -130,6 +130,26 @@ test("Git status uses a five-second deadline and settles timeouts as unavailable
 
   assert.equal(configuredTimeout, 5_000);
   assert.equal(result, undefined);
+});
+
+test("footer Git status does not execute a configured filesystem monitor", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-fsmonitor-"));
+  try {
+    const sentinel = path.join(directory, ".git", "fsmonitor-executed");
+    const monitor = path.join(directory, "fsmonitor.cjs");
+    execFileSync("git", ["init", "-q"], { cwd: directory });
+    writeFileSync(monitor, "require('node:fs').writeFileSync(process.argv[2], 'executed'); process.stdout.write('0\\n');\n");
+    writeFileSync(path.join(directory, "tracked.txt"), "initial\n");
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: directory });
+    execFileSync("git", ["config", "core.fsmonitor", `node "${monitor.replaceAll("\\", "/")}" "${sentinel.replaceAll("\\", "/")}"`], { cwd: directory });
+    writeFileSync(path.join(directory, "tracked.txt"), "changed\n");
+
+    assert.deepEqual(await resolveGitFileChanges(directory), { modified: 1, added: 0, deleted: 0 });
+    assert.equal(existsSync(sentinel), false);
+  } finally {
+    await removeDirectoryEventually(directory);
+  }
 });
 
 test("footer Git status keeps the last successful result through failure and accepts clean recovery", async () => {

@@ -3,7 +3,7 @@ import type { InitTargetBaseline } from "./init-target.ts";
 
 export type InitOutcome =
   | { kind: "pending" }
-  | { kind: "written" }
+  | { kind: "written"; recoveryPath?: string }
   | { kind: "policy-conflict"; reason: string }
   | { kind: "cancelled" }
   | { kind: "no-outcome" };

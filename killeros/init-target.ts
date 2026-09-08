@@ -155,12 +155,12 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 /** Installs generated guidance atomically and preserves any target changed after baseline capture. */
-export async function installInitAgentsFile(
+export async function installInitAgentsFileWithRecovery(
   targetPath: string,
   content: string,
   baseline: InitTargetBaseline,
   operations: InitInstallOperations = {},
-): Promise<void> {
+): Promise<string | undefined> {
   const validationError = validateGeneratedGuidance(content);
   if (validationError) throw new Error(validationError);
   const renameFile = operations.renameFile ?? fs.rename;
@@ -208,8 +208,8 @@ export async function installInitAgentsFile(
         return;
       }
 
-      // Node cannot lock arbitrary external writers. The exclusive links, held-target
-      // boundary, final held-file hash, and Pi mutation queue make installation fail closed.
+      // Node cannot lock arbitrary external writers, so keep the original inode named
+      // after commit. Writers with an open handle then remain recoverable.
       await renameFile(targetPath, heldPath);
       held = true;
       const moved = await captureExistingTarget(heldPath);
@@ -242,10 +242,12 @@ export async function installInitAgentsFile(
       if (!sameBaseline(finalHeld, baseline) || !await installedCandidateMatches(targetPath, candidate)) {
         throw new Error("/init target changed while /init was generating; the newer AGENTS.md was preserved");
       }
-      await unlinkFile(heldPath);
+      retainedRecovery = recoveryPath(targetPath);
+      await renameFile(heldPath, retainedRecovery);
       held = false;
       await removeCandidateName(candidatePath, unlinkFile);
       installed = false;
+      return retainedRecovery;
     } catch (error) {
       if (held) {
         if (installed && candidate && await installedCandidateMatches(targetPath, candidate)) {
@@ -286,6 +288,15 @@ export async function installInitAgentsFile(
       }
     }
   });
+}
+
+export async function installInitAgentsFile(
+  targetPath: string,
+  content: string,
+  baseline: InitTargetBaseline,
+  operations: InitInstallOperations = {},
+): Promise<void> {
+  await installInitAgentsFileWithRecovery(targetPath, content, baseline, operations);
 }
 
 export async function writeInitAgentsFile(

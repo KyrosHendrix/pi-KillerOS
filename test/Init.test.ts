@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { INIT_WORKFLOW_PROMPT, captureInitTargetBaseline, installInitAgentsFile, validateGeneratedGuidance, writeInitAgentsFile } from "../Killeros.ts";
+import { installInitAgentsFileWithRecovery } from "../killeros/init-target.ts";
 import { createHarness, createTuiContext, emitSequentially, getCommand, getHandlers, getTool, last, resultReason, waitFor, type TestHandler, type TestSentMessage, type TestTool, type TestTuiContext } from "./ExtensionTestHarness.ts";
 import { execFileSync } from "node:child_process";
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -325,12 +326,13 @@ test("/init preserves compatible protected policy and blocks every other mutatio
     writeFileSync(path.join(directory, "AGENTS.md"), "# AGENTS.md\n\nPreserve this workflow.\n");
     writeFileSync(path.join(directory, "src-index.ts"), "export const value = 1;\n");
     const { commands, handlers, sentMessages, tools } = createHarness();
+    const notifications: TestNotification[] = [];
     const ctx = {
       cwd: directory,
       isProjectTrusted: () => true,
       mode: "tui",
       reload: async () => {},
-      ui: { notify() {} },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
       waitForIdle: async () => {},
     };
     const initRun = getCommand(commands, "init").handler("", ctx);
@@ -351,7 +353,9 @@ test("/init preserves compatible protected policy and blocks every other mutatio
       input: { content: generated },
     }, ctx);
     assert.equal(replacement.some((result) => result?.block), false);
-    await getTool(tools, "killeros_init_write").execute("replace-existing", { content: generated }, new AbortController().signal, () => {}, ctx);
+    const writeResult = await getTool(tools, "killeros_init_write").execute("replace-existing", { content: generated }, new AbortController().signal, () => {}, ctx);
+    assert.match(writeResult.content[0]?.text ?? "", /Previous AGENTS\.md preserved at/u);
+    assert.equal(typeof writeResult.details.recoveryPath, "string");
     assert.equal(readFileSync(path.join(directory, "AGENTS.md"), "utf8"), generated);
 
     const secondWrite = await emitSequentially(getHandlers(handlers, "tool_call"), {
@@ -377,6 +381,7 @@ test("/init preserves compatible protected policy and blocks every other mutatio
 
     await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
     await initRun;
+    assert.match(last(notifications).message, /preserved the previous AGENTS\.md at/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -426,16 +431,55 @@ test("/init does not report failure after committed candidate cleanup fails", as
     const baseline = await captureInitTargetBaseline(target);
     let unlinkCalls = 0;
     const { unlink } = await import("node:fs/promises");
-    await installInitAgentsFile(target, validGeneratedGuidance, baseline, {
+    const recovery = await installInitAgentsFileWithRecovery(target, validGeneratedGuidance, baseline, {
       unlinkFile: async (filePath) => {
         unlinkCalls += 1;
-        if (unlinkCalls === 2) throw new Error("candidate cleanup failed");
+        if (unlinkCalls === 1) throw new Error("candidate cleanup failed");
         await unlink(filePath);
       },
     });
     assert.equal(readFileSync(target, "utf8"), validGeneratedGuidance);
-    assert.deepEqual(readdirSync(directory), ["AGENTS.md"]);
+    assert.equal(typeof recovery, "string");
+    if (typeof recovery === "string") assert.equal(readFileSync(recovery, "utf8"), "# AGENTS.md\n\nOriginal.\n");
+    assert.equal(readdirSync(directory).length, 2);
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/init keeps late writes to the original inode at a disclosed recovery path", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-open-writer-"));
+  const target = path.join(directory, "AGENTS.md");
+  writeFileSync(target, "# AGENTS.md\n\nOriginal.\n");
+  const baseline = await captureInitTargetBaseline(target);
+  const { open, rename, unlink } = await import("node:fs/promises");
+  const writer = await open(target, "r+");
+  const lateContent = "# AGENTS.md\n\nLate editor write.\n";
+  let wroteLateContent = false;
+  const writeLateContent = async (): Promise<void> => {
+    if (wroteLateContent) return;
+    wroteLateContent = true;
+    const bytes = Buffer.from(lateContent);
+    await writer.truncate(0);
+    await writer.write(bytes, 0, bytes.length, 0);
+    await writer.sync();
+  };
+  try {
+    const recovery = await installInitAgentsFileWithRecovery(target, validGeneratedGuidance, baseline, {
+      renameFile: async (source, destination) => {
+        if (path.basename(source.toString()) === "held.md") await writeLateContent();
+        await rename(source, destination);
+      },
+      unlinkFile: async (filePath) => {
+        if (path.basename(filePath.toString()) === "held.md") await writeLateContent();
+        await unlink(filePath);
+      },
+    });
+    assert.equal(readFileSync(target, "utf8"), validGeneratedGuidance);
+    assert.equal(typeof recovery, "string");
+    if (typeof recovery === "string") assert.equal(readFileSync(recovery, "utf8"), lateContent);
+  } finally {
+    await writer.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });
