@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { chmod, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
@@ -267,6 +267,61 @@ test("oversized response files fail before diffing and reset the next baseline",
     files: [],
     omittedFiles: 0,
   });
+});
+
+test("oversized HEAD blobs are unavailable in loose and packed storage", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const largePath = path.join(root, "large.bin");
+  await writeFile(largePath, "");
+  await truncate(largePath, 128 * 1024 * 1024 + 1);
+  git(root, "add", "large.bin");
+  git(root, "commit", "--quiet", "-m", "large blob");
+
+  const looseCollection = await beginChangeReceipt(root);
+  await rm(largePath);
+  assert.deepEqual(await looseCollection.finish(), { state: "unavailable", reason: "too-large" });
+
+  git(root, "checkout", "--", "large.bin");
+  git(root, "repack", "-ad");
+  const packedCollection = await beginChangeReceipt(root);
+  await rm(largePath);
+  assert.deepEqual(await packedCollection.finish(), { state: "unavailable", reason: "too-large" });
+});
+
+test("total HEAD blob content is bounded across objects", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "a-small.bin"), "x");
+  const largePath = path.join(root, "b-large.bin");
+  await writeFile(largePath, "");
+  await truncate(largePath, 128 * 1024 * 1024);
+  git(root, "add", "a-small.bin", "b-large.bin");
+  git(root, "commit", "--quiet", "-m", "aggregate blob limit");
+
+  const looseCollection = await beginChangeReceipt(root);
+  await Promise.all([rm(path.join(root, "a-small.bin")), rm(largePath)]);
+  assert.deepEqual(await looseCollection.finish(), { state: "unavailable", reason: "too-large" });
+
+  git(root, "checkout", "--", "a-small.bin", "b-large.bin");
+  git(root, "repack", "-ad");
+  const packedCollection = await beginChangeReceipt(root);
+  await Promise.all([rm(path.join(root, "a-small.bin")), rm(largePath)]);
+  assert.deepEqual(await packedCollection.finish(), { state: "unavailable", reason: "too-large" });
+});
+
+test("truncated loose blobs fail as unavailable errors", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const id = git(root, "rev-parse", "HEAD:clean.txt").toString("ascii").trim();
+  const objectPath = path.join(root, ".git", "objects", id.slice(0, 2), id.slice(2));
+  const object = await readFile(objectPath);
+  await chmod(objectPath, 0o644);
+  await writeFile(objectPath, object.subarray(0, -1));
+
+  const collection = await beginChangeReceipt(root);
+  await rm(path.join(root, "clean.txt"));
+  assert.deepEqual(await collection.finish(), { state: "unavailable", reason: "error" });
 });
 
 test("restored changes disappear and unavailable repositories stay truthful", async (t) => {

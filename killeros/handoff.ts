@@ -104,6 +104,33 @@ function hasRequiredHandoffContent(document: string, focus: string): boolean {
   });
 }
 
+function handoffAvailable(ctx: ExtensionCommandContext, goalRuntime: GoalRuntime): boolean {
+  return ctx.isIdle() && !ctx.hasPendingMessages() && goalRuntime.state?.status !== "active";
+}
+
+function sourceHandoffAvailable(
+  ctx: ExtensionCommandContext,
+  goalRuntime: GoalRuntime,
+  sourceSession: string,
+  sourceLeaf: string | undefined,
+): boolean {
+  try {
+    return ctx.sessionManager.getSessionFile() === sourceSession
+      && handoffAvailable(ctx, goalRuntime)
+      && ctx.sessionManager.buildContextEntries().at(-1)?.id === sourceLeaf;
+  } catch {
+    return false;
+  }
+}
+
+function notifyHandoffUnavailable(ctx: ExtensionCommandContext): void {
+  try {
+    ctx.ui.notify(HANDOFF_UNAVAILABLE, "error");
+  } catch {
+    // A session replaced during generation has no valid source UI to notify.
+  }
+}
+
 function assertHandoffContextReserve(ctx: ExtensionCommandContext, maxTokens: number): void {
   let usage: ReturnType<ExtensionCommandContext["getContextUsage"]>;
   try {
@@ -160,8 +187,8 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
   pi.registerCommand("handoff", {
     description: "Create a fresh session with a continuation handoff",
     handler: async (args, ctx) => {
-      if (!ctx.isIdle() || ctx.hasPendingMessages() || goalRuntime.state?.status === "active") {
-        ctx.ui.notify(HANDOFF_UNAVAILABLE, "error");
+      if (!handoffAvailable(ctx, goalRuntime)) {
+        notifyHandoffUnavailable(ctx);
         return;
       }
 
@@ -175,8 +202,9 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
       let document: string;
       let focus: string;
       try {
-        const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);
-        const conversation = serializeConversation(convertToLlm(messages));
+        const entries = ctx.sessionManager.buildContextEntries();
+        const sourceLeaf = entries.at(-1)?.id;
+        const conversation = serializeConversation(convertToLlm(entries.flatMap(sessionEntryToContextMessages)));
         if (!conversation.trim()) throw new Error("No usable session context is available");
         focus = safeTerminalText(args).trim();
         let maxTokens = handoffMaxTokens;
@@ -214,6 +242,10 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
         document = handoffDocument(generation.summary);
         if (!hasRequiredHandoffContent(document, focus)) {
           throw new Error("The handoff summary did not contain every required section");
+        }
+        if (!sourceHandoffAvailable(ctx, goalRuntime, sourceSession, sourceLeaf)) {
+          notifyHandoffUnavailable(ctx);
+          return;
         }
       } catch (error) {
         reportError(ctx, "Handoff failed", error);

@@ -93,8 +93,8 @@ test("/init truncation preserves complete UTF-8 characters", async () => {
   try {
     execFileSync("git", ["init"], { cwd: directory, stdio: "ignore", windowsHide: true });
     mkdirSync(path.join(directory, "src"));
-    writeFileSync(path.join(directory, "README.md"), `${"a".repeat(8_191)}😀`, "utf8");
-    writeFileSync(path.join(directory, "src", "large.ts"), `${"b".repeat(32_767)}😀`, "utf8");
+    writeFileSync(path.join(directory, "README.md"), `${"a".repeat(8_191)}\u{10400}`, "utf8");
+    writeFileSync(path.join(directory, "src", "large.ts"), `${"b".repeat(32_767)}\u{10400}`, "utf8");
 
     const { index } = await buildInitEvidenceFromKilleros(directory);
 

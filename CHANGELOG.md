@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept passive footer Git status from running configured filters, bounded loose and packed receipt blobs, and stopped stale `/handoff` summaries from replacing sessions with new work.
+
 ## [2.1.26] - 2026-09-08
 
 ### Fixed

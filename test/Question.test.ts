@@ -339,7 +339,7 @@ test("multi-select filter edits can be discarded, cleared, pasted, and bounded",
   question.component.handleInput("\x1B");
   assert.match(question.component.render(60).join("\n"), /Alpha/u);
   question.component.handleInput("/");
-  question.component.handleInput(`\x1B[200~${"😀".repeat(4_001)}\x1B[201~`);
+  question.component.handleInput(`\x1B[200~${"\u{10400}".repeat(4_001)}\x1B[201~`);
   assert.match(last(question.notifications).message, /4,000 characters.*16,000 bytes/u);
   question.component.handleInput("\x1B");
   question.component.handleInput("\x1B");
@@ -528,7 +528,7 @@ test("multiline custom answers stay within tiny terminal row and width limits", 
   const { tools } = createHarness();
   const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 3);
   question.component.handleInput("2");
-  question.component.handleInput("first 😀界");
+  question.component.handleInput("first \u{10400}界");
   question.component.handleInput("\x1B[13;2u");
   question.component.handleInput("second line that clips");
 
@@ -603,8 +603,8 @@ test("question filtering decodes Kitty input, paste, and grapheme backspace", as
   assert.match(question.component.render(80).join("\n"), /Filter 7\/4,000/u);
 
   question.component.handleInput("\x1B");
-  question.component.handleInput("\x1B[200~👨‍👩‍👧‍👦\x1B[201~");
-  assert.match(question.component.render(80).join("\n"), /Filter 7\/4,000/u);
+  question.component.handleInput("\x1B[200~e\u0301\x1B[201~");
+  assert.match(question.component.render(80).join("\n"), /Filter 2\/4,000/u);
   question.component.handleInput("\x7F");
   assert.doesNotMatch(question.component.render(80).join("\n"), /Filter /u);
 
@@ -643,10 +643,10 @@ test("question filter bounds character and byte input", async () => {
   await question.result;
 
   const unicode = await startQuestion(getTool(tools, "question"));
-  const emojiBoundary = "😀".repeat(4_000);
-  unicode.component.handleInput(`\x1B[200~${emojiBoundary}\x1B[201~`);
+  const unicodeBoundary = "\u{10400}".repeat(4_000);
+  unicode.component.handleInput(`\x1B[200~${unicodeBoundary}\x1B[201~`);
   assert.match(unicode.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
-  unicode.component.handleInput("\x1B[200~😀\x1B[201~");
+  unicode.component.handleInput("\x1B[200~\u{10400}\x1B[201~");
   assert.match(last(unicode.notifications).message, /4,000 characters|16,000 bytes/u);
   assert.match(unicode.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
   unicode.finish({ kind: "cancelled" });
@@ -681,10 +681,10 @@ test("custom-answer history enforces Unicode character and byte limits", async (
   const { tools, handlers } = createHarness();
   const first = await startQuestion(getTool(tools, "question"));
   first.component.handleInput("2");
-  const boundary = "😀".repeat(4_000);
+  const boundary = "\u{10400}".repeat(4_000);
   first.component.handleInput(`\x1B[200~${boundary}\x1B[201~`);
   assert.equal(first.notifications.length, 0);
-  first.component.handleInput("\x1B[200~😀\x1B[201~");
+  first.component.handleInput("\x1B[200~\u{10400}\x1B[201~");
   assert.match(last(first.notifications).message, /4000 characters/u);
   first.component.handleInput("\r");
   await first.result;
@@ -692,7 +692,7 @@ test("custom-answer history enforces Unicode character and byte limits", async (
   for (let index = 0; index < 5; index += 1) {
     const answer = await startQuestion(getTool(tools, "question"));
     answer.component.handleInput("2");
-    answer.component.handleInput(`\x1B[200~answer-${index}-${"😀".repeat(3_991)}\x1B[201~`);
+    answer.component.handleInput(`\x1B[200~answer-${index}-${"\u{10400}".repeat(3_991)}\x1B[201~`);
     answer.component.handleInput("\r");
     await answer.result;
   }
@@ -708,7 +708,7 @@ test("custom-answer history enforces Unicode character and byte limits", async (
   const afterNewSession = await startQuestion(getTool(tools, "question"));
   afterNewSession.component.handleInput("2");
   afterNewSession.component.handleInput("\x1B[A");
-  assert.doesNotMatch(afterNewSession.component.render(80).join("\n"), /😀/u);
+  assert.doesNotMatch(afterNewSession.component.render(80).join("\n"), /\u{10400}/u);
   afterNewSession.finish({ kind: "cancelled" });
   await afterNewSession.result;
 });

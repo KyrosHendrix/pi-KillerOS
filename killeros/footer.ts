@@ -35,42 +35,80 @@ type GitStatusExecutor = (
   callback: (error: Error | null, stdout: string) => void,
 ) => unknown;
 
+function filterStatusArgs(config: string): string[] | undefined {
+  const records = config.split("\0");
+  if (records.at(-1) !== "") return undefined;
+  const names = new Set<string>();
+  for (const key of records) {
+    if (!key) continue;
+    const match = /^filter\.(.+)\.(?:clean|process)$/u.exec(key);
+    if (!match) continue;
+    const name = match[1];
+    if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(name)) return undefined;
+    names.add(name);
+  }
+  return [...names].flatMap((name) => [
+    "-c", `filter.${name}.clean=`,
+    "-c", `filter.${name}.process=`,
+    "-c", `filter.${name}.required=false`,
+  ]);
+}
+
 /** Resolves changed-file counts with a bounded asynchronous Git status process. */
 export function resolveGitFileChanges(
   cwd: string,
   execute: GitStatusExecutor = execFile,
 ): Promise<GitFileChanges | undefined> {
   return new Promise((resolve) => {
-    execute(
-      "git",
-      ["-C", cwd, "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      {
-        encoding: "utf8",
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-        maxBuffer: 4 * 1024 * 1024,
-        timeout: GIT_STATUS_TIMEOUT_MS,
-        windowsHide: true,
-      },
-      (error, stdout) => {
+    const options = {
+      encoding: "utf8" as const,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: GIT_STATUS_TIMEOUT_MS,
+      windowsHide: true as const,
+    };
+    const runStatus = (args: string[]): void => {
+      try {
+        execute("git", args, options, (error, stdout) => {
+          if (error) {
+            resolve(undefined);
+            return;
+          }
+
+          const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
+          const entries = stdout.split("\0");
+          for (let index = 0; index < entries.length; index += 1) {
+            const entry = entries[index];
+            if (!entry) continue;
+            const status = entry.slice(0, 2);
+            if (status.includes("D")) changes.deleted += 1;
+            else if (status === "??" || status.includes("A")) changes.added += 1;
+            else changes.modified += 1;
+            if (status.includes("R") || status.includes("C")) index += 1;
+          }
+          resolve(changes);
+        });
+      } catch {
+        resolve(undefined);
+      }
+    };
+
+    try {
+      execute("git", ["-C", cwd, "config", "--includes", "--null", "--name-only", "--list"], options, (error, config) => {
         if (error) {
           resolve(undefined);
           return;
         }
-
-        const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
-        const entries = stdout.split("\0");
-        for (let index = 0; index < entries.length; index += 1) {
-          const entry = entries[index];
-          if (!entry) continue;
-          const status = entry.slice(0, 2);
-          if (status.includes("D")) changes.deleted += 1;
-          else if (status === "??" || status.includes("A")) changes.added += 1;
-          else changes.modified += 1;
-          if (status.includes("R") || status.includes("C")) index += 1;
+        const overrides = filterStatusArgs(config);
+        if (!overrides) {
+          resolve(undefined);
+          return;
         }
-        resolve(changes);
-      },
-    );
+        runStatus(["-C", cwd, "-c", "core.fsmonitor=false", ...overrides, "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+      });
+    } catch {
+      resolve(undefined);
+    }
   });
 }
 

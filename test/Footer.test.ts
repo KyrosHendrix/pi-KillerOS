@@ -152,6 +152,29 @@ test("footer Git status does not execute a configured filesystem monitor", async
   }
 });
 
+test("footer Git status does not execute configured clean filters", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-clean-filter-"));
+  try {
+    const sentinel = path.join(directory, "filter-executed");
+    const filter = path.join(directory, "clean-filter.cjs");
+    execFileSync("git", ["init", "-q"], { cwd: directory });
+    writeFileSync(filter, "require('node:fs').writeFileSync(process.argv[2], 'executed'); process.stdin.pipe(process.stdout);\n");
+    writeFileSync(path.join(directory, "tracked.txt"), "initial\n");
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: directory });
+    writeFileSync(path.join(directory, ".gitattributes"), "*.txt filter=tripwire\n");
+    execFileSync("git", ["add", ".gitattributes"], { cwd: directory });
+    execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "attributes"], { cwd: directory });
+    execFileSync("git", ["config", "filter.tripwire.clean", `node \"${filter.replaceAll("\\", "/")}\" \"${sentinel.replaceAll("\\", "/")}\"`], { cwd: directory });
+    writeFileSync(path.join(directory, "tracked.txt"), "changed\n");
+
+    assert.deepEqual(await resolveGitFileChanges(directory), { modified: 1, added: 0, deleted: 0 });
+    assert.equal(existsSync(sentinel), false);
+  } finally {
+    await removeDirectoryEventually(directory);
+  }
+});
+
 test("footer Git status keeps the last successful result through failure and accepts clean recovery", async () => {
   const dirty: GitFileChanges = { modified: 2, added: 1, deleted: 1 };
   const clean: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
@@ -176,6 +199,17 @@ test("footer Git status keeps the last successful result through failure and acc
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(results, [dirty, clean]);
   refresh.dispose();
+});
+
+test("footer Git status reports no result when filter discovery fails", async () => {
+  const calls: string[][] = [];
+  const result = await resolveGitFileChanges("repo", (_file, args, _options, callback) => {
+    calls.push(args);
+    callback(new Error("config unavailable"), "");
+  });
+
+  assert.equal(result, undefined);
+  assert.deepEqual(calls, [["-C", "repo", "config", "--includes", "--null", "--name-only", "--list"]]);
 });
 
 test("footer Git status recovers after an unavailable initial refresh without recreation", async () => {

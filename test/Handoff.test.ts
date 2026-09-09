@@ -369,6 +369,53 @@ test("/handoff rejects an output reserve larger than the known remaining context
   assert.match(notifications[0]?.message ?? "", /\/compact.*handoffMaxTokens/iu);
 });
 
+test("/handoff keeps the current session when work finishes during RPC generation", async () => {
+  const { commands } = createHarness();
+  const notifications: TestNotification[] = [];
+  const summary = createCompleteHandoffSummary("Continue the current work.");
+  let resolveCompletion: ((response: unknown) => void) | undefined;
+  let completeStarted: (() => void) | undefined;
+  const completionStarted = new Promise<void>((resolve) => { completeStarted = resolve; });
+  const completion = new Promise<unknown>((resolve) => { resolveCompletion = resolve; });
+  let sourceLeaf = "source-leaf";
+  let newSessions = 0;
+  let aborts = 0;
+
+  const handler = getCommand(commands, "handoff").handler("", {
+    mode: "rpc",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    abort: () => { aborts += 1; },
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      complete: async () => {
+        completeStarted?.();
+        return await completion;
+      },
+    },
+    sessionManager: {
+      getSessionFile: () => "source.jsonl",
+      getSessionName: () => undefined,
+      buildContextEntries: () => [{ id: sourceLeaf, type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+    },
+    newSession: async () => { newSessions += 1; return { cancelled: false }; },
+    ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+    getSystemPromptOptions: () => ({ skills: [] }),
+  });
+
+  await completionStarted;
+  sourceLeaf = "completed-work-leaf";
+  resolveCompletion?.({ content: [{ type: "text", text: summary }], stopReason: "stop" });
+  await handler;
+
+  assert.equal(newSessions, 0);
+  assert.equal(aborts, 0);
+  assert.deepEqual(notifications, [{
+    message: "/handoff is not available while an agent or /goal is running.",
+    level: "error",
+  }]);
+});
+
 test("/handoff owns TUI input while generating the summary", async () => {
   const { commands } = createHarness();
   const summary = createCompleteHandoffSummary("Finish the release checks.");

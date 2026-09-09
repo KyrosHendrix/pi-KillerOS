@@ -605,7 +605,7 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
   );
   assert.equal(last(valid.appendedEntries).data.state.status, "blocked");
 
-  const evidence = "😀".repeat(1_000) + "e\u0301".repeat(1_000);
+  const evidence = "\u{10400}".repeat(1_000) + "e\u0301".repeat(1_000);
   const unicode = await restore({ key: "external", streak: 1, lastTurn: 1, evidence });
   assert.equal(unicode.sentMessages.length, 1);
   assert.deepEqual(last(unicode.appendedEntries).data.state.blockerAudit, { key: "external", streak: 1, lastTurn: 1, evidence });

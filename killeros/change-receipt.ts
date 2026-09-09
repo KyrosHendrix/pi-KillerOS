@@ -1,16 +1,15 @@
 import { spawn } from "node:child_process";
-import { watch } from "node:fs";
-import { lstat, open, readFile, readlink } from "node:fs/promises";
+import { createReadStream, watch } from "node:fs";
+import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
-import { inflate } from "node:zlib";
+import { createInflate } from "node:zlib";
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_OUTPUT_LIMIT = 16 * 1024 * 1024;
 const SNAPSHOT_CONTENT_LIMIT = 128 * 1024 * 1024;
 const MAX_DIFF_OPERATIONS = 500_000;
 const MAX_FILES = 20;
-const inflateAsync = promisify(inflate);
+const GIT_OBJECT_HEADER_LIMIT = 1_024;
 
 export type ChangeUnavailableReason = "not-git" | "timeout" | "too-large" | "error";
 
@@ -402,59 +401,180 @@ function createMonitor(repo: Repository, initialSnapshot: Snapshot): RepositoryM
   return monitor;
 }
 
-async function looseBlob(objectDirectory: string, id: string): Promise<Buffer | undefined> {
+function boundedBlobSize(value: string, limit: number): number {
+  const size = Number(value);
+  if (!Number.isSafeInteger(size) || size > limit) throw new GitFailure("too-large");
+  return size;
+}
+
+async function looseBlob(objectDirectory: string, id: string, limit: number): Promise<Buffer | undefined> {
+  const source = createReadStream(path.join(objectDirectory, id.slice(0, 2), id.slice(2)));
+  const inflater = createInflate();
+  source.once("error", (error) => inflater.destroy(error));
+  source.pipe(inflater);
+  let header = Buffer.alloc(0);
+  let expectedSize: number | undefined;
+  let body: Buffer | undefined;
+  let bodyBytes = 0;
   try {
-    const inflated = await inflateAsync(await readFile(path.join(objectDirectory, id.slice(0, 2), id.slice(2))));
-    const separator = inflated.indexOf(0);
-    if (separator < 0 || !inflated.subarray(0, separator).toString("ascii").startsWith("blob ")) throw new Error("invalid blob");
-    return inflated.subarray(separator + 1);
+    for await (const chunk of inflater) {
+      let data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (expectedSize === undefined) {
+        const separator = data.indexOf(0);
+        if (separator < 0) {
+          if (header.length + data.length > GIT_OBJECT_HEADER_LIMIT) throw new Error("invalid blob header");
+          header = header.length === 0 ? Buffer.from(data) : Buffer.concat([header, data]);
+          continue;
+        }
+        if (header.length + separator > GIT_OBJECT_HEADER_LIMIT) throw new Error("invalid blob header");
+        const headerBytes = header.length === 0 ? data.subarray(0, separator) : Buffer.concat([header, data.subarray(0, separator)]);
+        const match = /^blob ([0-9]+)$/u.exec(headerBytes.toString("ascii"));
+        if (!match) throw new Error("invalid blob");
+        expectedSize = boundedBlobSize(match[1], limit);
+        body = Buffer.alloc(expectedSize);
+        data = data.subarray(separator + 1);
+      }
+      if (!body || expectedSize === undefined || data.length > expectedSize - bodyBytes) throw new Error("invalid blob");
+      data.copy(body, bodyBytes);
+      bodyBytes += data.length;
+    }
+    if (expectedSize === undefined || !body || bodyBytes !== expectedSize) throw new Error("invalid blob");
+    return body;
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
+    if (missingFile(error)) return undefined;
     throw error;
+  } finally {
+    source.destroy();
+    inflater.destroy();
   }
 }
 
 function cacheBlob(repo: Repository, id: string, content: Buffer): void {
+  if (content.length > SNAPSHOT_CONTENT_LIMIT) return;
   if (repo.blobCacheBytes + content.length > SNAPSHOT_CONTENT_LIMIT) {
     repo.blobCache.clear();
     repo.blobCacheBytes = 0;
   }
-  if (content.length > SNAPSHOT_CONTENT_LIMIT) return;
   repo.blobCache.set(id, content);
   repo.blobCacheBytes += content.length;
+}
+
+function loadPackedBlobs(repo: Repository, ids: readonly string[], limit: number): Promise<Map<string, Buffer>> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", ["cat-file", "--batch"], {
+      cwd: repo.root,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const blobs = new Map<string, Buffer>();
+    let blobBytes = 0;
+    let header = Buffer.alloc(0);
+    let current: { id: string; content: Buffer; offset: number } | undefined;
+    let idIndex = 0;
+    let failure: GitFailure | undefined;
+    const fail = (error: GitFailure): void => {
+      if (failure) return;
+      failure = error;
+      child.kill();
+    };
+    const timer = setTimeout(() => fail(new GitFailure("timeout")), GIT_TIMEOUT_MS);
+    timer.unref();
+    const parse = (chunk: Buffer): void => {
+      let offset = 0;
+      while (offset < chunk.length) {
+        if (!current) {
+          const lineEnd = chunk.indexOf(10, offset);
+          if (lineEnd < 0) {
+            const part = chunk.subarray(offset);
+            if (header.length + part.length > GIT_OBJECT_HEADER_LIMIT) throw new Error("invalid batch blob");
+            header = header.length === 0 ? Buffer.from(part) : Buffer.concat([header, part]);
+            return;
+          }
+          const line = header.length === 0 ? chunk.subarray(offset, lineEnd) : Buffer.concat([header, chunk.subarray(offset, lineEnd)]);
+          header = Buffer.alloc(0);
+          const id = ids[idIndex];
+          const match = /^([0-9a-f]+) ([a-z]+) ([0-9]+)$/u.exec(line.toString("ascii"));
+          if (!id || !match || match[1] !== id || match[2] !== "blob") throw new Error("invalid batch blob");
+          const size = boundedBlobSize(match[3], limit - blobBytes);
+          blobBytes += size;
+          current = { id, content: Buffer.alloc(size), offset: 0 };
+          idIndex += 1;
+          offset = lineEnd + 1;
+          continue;
+        }
+        const remaining = current.content.length - current.offset;
+        const copied = Math.min(remaining, chunk.length - offset);
+        if (copied > 0) {
+          chunk.copy(current.content, current.offset, offset, offset + copied);
+          current.offset += copied;
+          offset += copied;
+        }
+        if (current.offset < current.content.length) return;
+        if (offset >= chunk.length) return;
+        if (chunk[offset] !== 10) throw new Error("invalid batch body");
+        offset += 1;
+        blobs.set(current.id, current.content);
+        cacheBlob(repo, current.id, current.content);
+        current = undefined;
+      }
+    };
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (failure) return;
+      try {
+        parse(chunk);
+      } catch (error) {
+        fail(error instanceof GitFailure ? error : new GitFailure("error"));
+      }
+    });
+    child.stderr.resume();
+    child.stdin.once("error", () => fail(new GitFailure("error")));
+    child.once("error", () => fail(new GitFailure("error")));
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (failure) {
+        reject(failure);
+        return;
+      }
+      if (code !== 0) {
+        reject(new GitFailure("error"));
+        return;
+      }
+      if (header.length > 0 || current || idIndex !== ids.length) {
+        reject(new GitFailure("error"));
+        return;
+      }
+      resolve(blobs);
+    });
+    try {
+      child.stdin.end(Buffer.from(`${ids.join("\n")}\n`));
+    } catch {
+      fail(new GitFailure("error"));
+    }
+  });
 }
 
 async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<Map<string, Buffer>> {
   const blobs = new Map<string, Buffer>();
   const missing: string[] = [];
+  let blobBytes = 0;
   for (const id of new Set(ids)) {
     const cached = repo.blobCache.get(id);
-    if (cached) {
+    if (cached !== undefined) {
+      if (cached.length > SNAPSHOT_CONTENT_LIMIT - blobBytes) throw new GitFailure("too-large");
+      blobBytes += cached.length;
       blobs.set(id, cached);
       continue;
     }
-    const content = await looseBlob(repo.objectDirectory, id);
-    if (content) {
+    const content = await looseBlob(repo.objectDirectory, id, SNAPSHOT_CONTENT_LIMIT - blobBytes);
+    if (content !== undefined) {
+      blobBytes += content.length;
       blobs.set(id, content);
       cacheBlob(repo, id, content);
     } else missing.push(id);
   }
   if (missing.length > 0) {
-    const output = await runGit(repo.root, ["cat-file", "--batch"], Buffer.from(`${missing.join("\n")}\n`));
-    let offset = 0;
-    for (const id of missing) {
-      const headerEnd = output.indexOf(10, offset);
-      const match = /^([0-9a-f]+) blob (\d+)$/u.exec(output.subarray(offset, headerEnd).toString("ascii"));
-      if (!match || match[1] !== id) throw new Error("invalid batch blob");
-      const size = Number(match[2]);
-      const start = headerEnd + 1;
-      const end = start + size;
-      if (output[end] !== 10) throw new Error("invalid batch body");
-      const content = Buffer.from(output.subarray(start, end));
-      blobs.set(id, content);
-      cacheBlob(repo, id, content);
-      offset = end + 1;
-    }
+    for (const [id, content] of await loadPackedBlobs(repo, missing, SNAPSHOT_CONTENT_LIMIT - blobBytes)) blobs.set(id, content);
   }
   return blobs;
 }

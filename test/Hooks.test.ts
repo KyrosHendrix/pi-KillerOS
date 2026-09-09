@@ -410,12 +410,12 @@ test("hook output preserves split UTF-8 and flushes incomplete final bytes", asy
   const child = new ChunkedHook();
   const spawnChild: HookSpawnProcess = () => child;
   const resultPromise = executeHook({ command: "ignored", cwd: process.cwd(), environment: {}, timeoutMs: 1_000, spawnProcess: spawnChild });
-  child.stdout.write(Buffer.from([0xf0, 0x9f]));
-  child.stdout.write(Buffer.from([0x98, 0x80]));
+  child.stdout.write(Buffer.from([0xf0, 0x90]));
+  child.stdout.write(Buffer.from([0x90, 0x80]));
   child.emit("close", 0);
 
   const result = await resultPromise;
-  assert.equal(result.stdout, "😀");
+  assert.equal(result.stdout, "\u{10400}");
 
   const incompleteChild = new ChunkedHook();
   const incompleteResultPromise = executeHook({
@@ -425,7 +425,7 @@ test("hook output preserves split UTF-8 and flushes incomplete final bytes", asy
     timeoutMs: 1_000,
     spawnProcess: () => incompleteChild,
   });
-  incompleteChild.stderr.write(Buffer.from([0xf0, 0x9f]));
+  incompleteChild.stderr.write(Buffer.from([0xf0, 0x90]));
   incompleteChild.emit("close", 1);
   assert.equal((await incompleteResultPromise).stderr, "�");
 });
