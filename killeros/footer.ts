@@ -4,6 +4,7 @@ import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor }
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, modelDisplayName, padRight } from "./display.ts";
+import { PASSIVE_GIT_CONFIG_ARGS, passiveStatusSafetyArgs } from "./passive-git-status.ts";
 import { goalElapsedMilliseconds } from "./goal-state.ts";
 import type { GoalRuntime, GoalState } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -34,25 +35,6 @@ type GitStatusExecutor = (
   },
   callback: (error: Error | null, stdout: string) => void,
 ) => unknown;
-
-function filterStatusArgs(config: string): string[] | undefined {
-  const records = config.split("\0");
-  if (records.at(-1) !== "") return undefined;
-  const names = new Set<string>();
-  for (const key of records) {
-    if (!key) continue;
-    const match = /^filter\.(.+)\.(?:clean|process)$/u.exec(key);
-    if (!match) continue;
-    const name = match[1];
-    if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(name)) return undefined;
-    names.add(name);
-  }
-  return [...names].flatMap((name) => [
-    "-c", `filter.${name}.clean=`,
-    "-c", `filter.${name}.process=`,
-    "-c", `filter.${name}.required=false`,
-  ]);
-}
 
 /** Resolves changed-file counts with a bounded asynchronous Git status process. */
 export function resolveGitFileChanges(
@@ -94,17 +76,17 @@ export function resolveGitFileChanges(
     };
 
     try {
-      execute("git", ["-C", cwd, "config", "--includes", "--null", "--name-only", "--list"], options, (error, config) => {
+      execute("git", ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, config) => {
         if (error) {
           resolve(undefined);
           return;
         }
-        const overrides = filterStatusArgs(config);
-        if (!overrides) {
+        const safetyArgs = passiveStatusSafetyArgs(config);
+        if (!safetyArgs) {
           resolve(undefined);
           return;
         }
-        runStatus(["-C", cwd, "-c", "core.fsmonitor=false", ...overrides, "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+        runStatus(["-C", cwd, ...safetyArgs, "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
       });
     } catch {
       resolve(undefined);

@@ -10,6 +10,7 @@ import {
   scheduleGitStatusWatch,
   type GitFileChanges,
 } from "../killeros/footer.ts";
+import { passiveStatusSafetyArgs } from "../killeros/passive-git-status.ts";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -130,6 +131,15 @@ test("Git status uses a five-second deadline and settles timeouts as unavailable
 
   assert.equal(configuredTimeout, 5_000);
   assert.equal(result, undefined);
+});
+
+test("passive Git status rejects incomplete or unsafe filter discovery", () => {
+  assert.equal(passiveStatusSafetyArgs("filter.tripwire.clean"), undefined);
+  assert.equal(passiveStatusSafetyArgs("filter.bad/name.clean\0"), undefined);
+  assert.deepEqual(passiveStatusSafetyArgs("filter.tripwire.process\0filter.tripwire.clean\0"), [
+    "-c", "core.fsmonitor=false",
+    "-c", "filter.tripwire.clean=", "-c", "filter.tripwire.process=", "-c", "filter.tripwire.required=false",
+  ]);
 });
 
 test("footer Git status does not execute a configured filesystem monitor", async () => {

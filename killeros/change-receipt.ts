@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, watch } from "node:fs";
+import { PASSIVE_GIT_CONFIG_ARGS, passiveStatusSafetyArgs } from "./passive-git-status.ts";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
 import { createInflate } from "node:zlib";
@@ -133,15 +134,6 @@ type Repository = {
 };
 const repositoryCache = new Map<string, Promise<Repository>>();
 
-async function loadFilterNames(root: string): Promise<readonly string[]> {
-  const records = decode(await runGit(root, ["config", "--null", "--name-only", "--list"])).split("\0");
-  const names = new Set<string>();
-  for (const key of records) {
-    if (key && /^filter\..*\.(clean|process)$/u.test(key)) names.add(key.slice("filter.".length, key.lastIndexOf(".")));
-  }
-  return [...names];
-}
-
 async function repository(cwd: string): Promise<Repository> {
   const cached = repositoryCache.get(cwd);
   if (cached) return cached;
@@ -257,10 +249,10 @@ function discardMonitor(monitor: RepositoryMonitor): void {
 }
 
 async function snapshot(repo: Repository, paths?: readonly string[]): Promise<Snapshot> {
-  const filterNames = await loadFilterNames(repo.root);
+  const safetyArgs = passiveStatusSafetyArgs(decode(await runGit(repo.root, PASSIVE_GIT_CONFIG_ARGS)));
+  if (!safetyArgs) throw new GitFailure("error");
   const output = decode(await runGit(repo.root, [
-    "-c", "core.fsmonitor=false",
-    ...filterNames.flatMap((name) => ["-c", `filter.${name}.clean=`, "-c", `filter.${name}.process=`, "-c", `filter.${name}.required=false`]),
+    ...safetyArgs,
     "status", "--porcelain=v2", "--branch", "--no-ahead-behind", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all",
     ...(paths ? ["--", ...paths] : []),
   ]));

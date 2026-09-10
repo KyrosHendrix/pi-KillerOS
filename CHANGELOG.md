@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Shared one passive Git status policy between footer telemetry and change receipts. Both scans now disable filesystem monitors and clean/process filters, and skip status when filter discovery is unavailable or unsafe.
 - Recorded focused Node test runs in response receipts without persisting their test paths.
 - Kept passive footer Git status from running configured filters, bounded loose and packed receipt blobs, and stopped stale `/handoff` summaries from replacing sessions with new work.
 
