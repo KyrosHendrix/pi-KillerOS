@@ -67,6 +67,46 @@ test("check recognition stores only exact canonical commands", () => {
   }
 });
 
+test("focused Node test recognition stores one canonical label and rejects ambiguity", () => {
+  assert.deepEqual(
+    recognizedCheck("node --test test/WorkedFor.test.ts", false),
+    { label: "node --test (focused)", outcome: "passed" },
+  );
+  assert.deepEqual(
+    recognizedCheck("node --test --experimental-strip-types test/WorkedFor.test.ts", true),
+    { label: "node --test (focused)", outcome: "failed" },
+  );
+  assert.deepEqual(
+    recognizedCheck(" \tnode --test test\\WorkedFor.test.ts\t ", false),
+    { label: "node --test (focused)", outcome: "passed" },
+  );
+  for (const command of [
+    "node --test --help",
+    "node --test --experimental-strip-types",
+    "node --test --test-name-pattern name test/WorkedFor.test.ts",
+    "node --test test/WorkedFor.test.ts test/Footer.test.ts",
+    "node --test ../test/WorkedFor.test.ts",
+    "node --test \"test/Worked For.test.ts\"",
+    "node --test test/*.test.ts",
+    "node --test test/WorkedFor.test.ts || true",
+    "node --test test/WorkedFor.test.ts # focused",
+    "API_TOKEN=secret node --test test/WorkedFor.test.ts",
+    "node --test test/test-helper.ts",
+    "node --test -test/WorkedFor.test.ts",
+    "node --test /test/WorkedFor.test.ts",
+    "node --test C:\\test\\WorkedFor.test.ts",
+    "node --test https://example.test/WorkedFor.test.ts",
+    "node --test test/./WorkedFor.test.ts",
+    "node --test test/foo.test.TS",
+    "node --test test/foo.test.tsx",
+    "node --test test/$(printf WorkedFor).test.ts",
+    "node --test test/WorkedFor.test.ts>receipt",
+    "node --test test/WorkedFor.test.ts\n",
+  ]) {
+    assert.equal(recognizedCheck(command, false), undefined, command);
+  }
+});
+
 test("Git collection reports only the response delta and cleans its temporary directory", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));

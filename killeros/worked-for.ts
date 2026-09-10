@@ -142,7 +142,8 @@ function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefine
   const checks: CheckAttempt[] = [];
   for (const check of data.checks) {
     if (!record(check) || check.outcome !== "passed" && check.outcome !== "failed") return undefined;
-    const label = CHECK_LABELS.find((candidate) => candidate === check.label);
+    const label = CHECK_LABELS.find((candidate) => candidate === check.label)
+      ?? (check.label === "node --test (focused)" ? "node --test (focused)" : undefined);
     if (!label) return undefined;
     checks.push({ label, outcome: check.outcome });
   }

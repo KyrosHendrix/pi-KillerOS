@@ -421,6 +421,7 @@ test("version 4 receipts describe observed checks without verification claims", 
   const changed = { state: "available", totalFiles: 1, additions: 1, deletions: 0, files: [{ kind: "added", path: "file.ts", additions: 1, deletions: 0 }], omittedFiles: 0 };
   const cases = [
     { checks: [{ label: "npm test", outcome: "passed" }], omittedChecks: { passed: 0, failed: 0 }, expected: " Check passed: npm test ✓" },
+    { checks: [{ label: "node --test (focused)", outcome: "passed" }], omittedChecks: { passed: 0, failed: 0 }, expected: " Check passed: node --test (focused) ✓" },
     { checks: [{ label: "npm test", outcome: "failed" }], omittedChecks: { passed: 0, failed: 0 }, expected: " Check failed: npm test ×" },
     { checks: [{ label: "npm test", outcome: "passed" }, { label: "npm run check", outcome: "failed" }], omittedChecks: { passed: 0, failed: 0 }, expected: " Checks: 1 passed · 1 failed" },
     { checks: [], omittedChecks: { passed: 0, failed: 0 }, expected: " No check recorded" },
@@ -515,6 +516,22 @@ test("response collection keeps the first baseline and records checks in event o
     ],
     omittedChecks: { passed: 0, failed: 0 },
   });
+});
+
+test("focused Node test receipts keep paths out of durable data", async () => {
+  const harness = createWorkedForHarness();
+  await harness.emit("agent_start");
+  await harness.emit("tool_result", { toolName: "bash", input: { command: "node --test test/WorkedFor.test.ts" }, isError: false });
+  await harness.emit("tool_result", { toolName: "powershell", input: { command: "node --test --experimental-strip-types test/WorkedFor.test.ts" }, isError: true });
+  await harness.emit("agent_settled");
+
+  const data = harness.appendedEntries[0]?.data;
+  assert.ok(data);
+  assert.deepEqual(data.checks, [
+    { label: "node --test (focused)", outcome: "passed" },
+    { label: "node --test (focused)", outcome: "failed" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(data), /WorkedFor\.test\.ts/u);
 });
 
 test("check overflow keeps the first 20 attempts and unavailable collection warns once", async () => {

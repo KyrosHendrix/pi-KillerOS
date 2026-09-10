@@ -42,7 +42,12 @@ export const CHECK_LABELS = [
   ...GRADLE_CHECK_LABELS,
 ] as const;
 
-export type CheckLabel = typeof CHECK_LABELS[number];
+const FOCUSED_CHECK_LABEL = "node --test (focused)";
+const FOCUSED_TEST_UNSAFE_CHARACTERS = [
+  '"', "'", "`", "$", ";", "&", "|", "<", ">", "*", "?", "[", "]", "{", "}", "(", ")", "#", "!",
+] as const;
+
+export type CheckLabel = typeof CHECK_LABELS[number] | typeof FOCUSED_CHECK_LABEL;
 
 export interface ChangeReceiptCollection {
   finish(): Promise<ChangeSummary>;
@@ -753,11 +758,27 @@ async function compare(repo: Repository, baseline: Snapshot, settlement: Snapsho
   return { state: "available", totalFiles: changes.length, additions, deletions, files: changes.slice(0, MAX_FILES), omittedFiles: Math.max(0, changes.length - MAX_FILES) };
 }
 
+function isFocusedTestFile(value: string): boolean {
+  if (value.startsWith("-") || value.startsWith("~") || path.posix.isAbsolute(value) || path.win32.isAbsolute(value)
+    || /^[A-Za-z][A-Za-z\d+.-]*:/u.test(value) || /[\s\p{Cc}]/u.test(value)
+    || FOCUSED_TEST_UNSAFE_CHARACTERS.some((character) => value.includes(character))) return false;
+  const segments = value.split(/[\\/]/u);
+  const filename = segments.at(-1);
+  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..")
+    && filename !== undefined
+    && filename.includes(".test.")
+    && /\.(?:js|cjs|mjs|ts|cts|mts)$/u.test(filename);
+}
+
 export function recognizedCheck(command: unknown, failed: boolean): CheckAttempt | undefined {
   if (typeof command !== "string") return undefined;
   const normalized = command.replace(/^[\t ]+|[\t ]+$/gu, "");
+  const outcome = failed ? "failed" : "passed";
   const label = CHECK_LABELS.find((candidate) => normalized === candidate);
-  return label ? { label, outcome: failed ? "failed" : "passed" } : undefined;
+  if (label) return { label, outcome };
+  const focused = /^node --test(?: --experimental-strip-types)? ([^ \t]+)$/u.exec(normalized);
+  if (!focused?.[1] || !isFocusedTestFile(focused[1])) return undefined;
+  return { label: FOCUSED_CHECK_LABEL, outcome };
 }
 
 export async function beginChangeReceipt(cwd: string): Promise<ChangeReceiptCollection> {
