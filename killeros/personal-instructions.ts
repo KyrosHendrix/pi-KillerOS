@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { InitRuntime } from "./runtime.ts";
 
 const PERSONAL_INSTRUCTIONS_FILE = "AGENTS.local.md";
 const PERSONAL_INSTRUCTIONS_LIMIT = 32 * 1024;
@@ -107,9 +106,9 @@ export function resolvePersonalInstructions(cwd: string): string | undefined {
   return `<personal_instructions>\n${content}\n</personal_instructions>`;
 }
 
-export function registerPersonalInstructions(pi: ExtensionAPI, initState: InitRuntime): void {
+export function registerPersonalInstructions(pi: ExtensionAPI): void {
   pi.on("before_agent_start", (event, ctx) => {
-    if (initState.active || !ctx.isProjectTrusted()) return;
+    if (!ctx.isProjectTrusted()) return;
     const personal = resolvePersonalInstructions(ctx.cwd);
     if (!personal) return;
     return {

@@ -10,9 +10,15 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Closed the filter-configuration race in automatic Git inspection. Footer and change-receipt scans now run Git without `PATH` resolution, re-check effective filters after status, and skip results the scan cannot produce without an extension process or remote fetch. Change receipts no longer fetch missing objects from partial-clone remotes.
+- Stopped attaching single-file verification to goals that name several files. Multi-file goals now complete through the model-reported path.
 - Shared one passive Git status policy between footer telemetry and change receipts. Both scans now disable filesystem monitors and clean/process filters, and skip status when filter discovery is unavailable or unsafe.
 - Recorded focused Node test runs in response receipts without persisting their test paths.
 - Kept passive footer Git status from running configured filters, bounded loose and packed receipt blobs, and stopped stale `/handoff` summaries from replacing sessions with new work.
+
+### Removed
+
+- Removed `/init` and its `killeros_init_*` tools, prompts, workflow APIs, runtime state, and lifecycle handlers. Upgrading leaves existing `AGENTS.md` and recovery files untouched, and commands from other providers named `/init` pass through KillerOS unhandled.
 
 ## [2.1.26] - 2026-09-08
 

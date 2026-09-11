@@ -12,7 +12,6 @@ import { registerGoalRuntime } from "./killeros/goal-runtime.ts";
 import { registerGoalSettlement } from "./killeros/goal-settlement.ts";
 import { registerHandoff } from "./killeros/handoff.ts";
 import { registerLifecycleHooks } from "./killeros/hooks.ts";
-import { registerInitCommand, registerInitSettlement } from "./killeros/init.ts";
 import {
   registerCompletionNotifications,
   type CompletionNotificationDependencies,
@@ -20,15 +19,12 @@ import {
 import { registerCodexFastMode } from "./killeros/codex-fast.ts";
 import { registerPersonalInstructions } from "./killeros/personal-instructions.ts";
 import { registerQuestionTool } from "./killeros/question.ts";
-import { createGoalRuntime, createInitRuntime } from "./killeros/runtime.ts";
+import { createGoalRuntime } from "./killeros/runtime.ts";
 import { registerShellUi } from "./killeros/shell-ui.ts";
 import { registerWorkedFor } from "./killeros/worked-for.ts";
 
 export { contextPercentRemaining, formatCost, formatContextProgress } from "./killeros/footer.ts";
 export { executeHook } from "./killeros/hooks.ts";
-export { INIT_WORKFLOW_PROMPT } from "./killeros/init.ts";
-export { buildInitEvidence, listInitEvidence, readInitEvidence } from "./killeros/init-evidence.ts";
-export { captureInitTargetBaseline, installInitAgentsFile, validateGeneratedGuidance, writeInitAgentsFile } from "./killeros/init-target.ts";
 export interface KillerosOptions {
   completionNotifications?: CompletionNotificationDependencies;
   /** Output-token budget for /handoff summaries; invalid values fall back to killeros.json, then the default. */
@@ -36,25 +32,22 @@ export interface KillerosOptions {
 }
 
 export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}): void {
-  const initRuntime = createInitRuntime();
   const goalRuntime = createGoalRuntime();
   const commandResolver = createSlashCommandResolver(pi);
   registerShellUi(pi, commandResolver);
-  registerGoalInterface(pi, goalRuntime, initRuntime);
-  registerGoalRuntime(pi, goalRuntime, initRuntime);
-  registerPersonalInstructions(pi, initRuntime);
+  registerGoalInterface(pi, goalRuntime);
+  registerGoalRuntime(pi, goalRuntime);
+  registerPersonalInstructions(pi);
   registerQuestionTool(pi);
   registerAliases(pi);
   registerHandoff(pi, goalRuntime, options.handoffMaxTokens);
   registerSlashAutocomplete(pi, commandResolver);
   registerFooter(pi, goalRuntime);
   registerCodexFastMode(pi);
-  registerInitCommand(pi, initRuntime, goalRuntime);
   registerLifecycleHooks(pi);
   registerWorkedFor(pi);
-  const goalCompaction = registerGoalSettlement(pi, goalRuntime, initRuntime);
-  registerAutoCompaction(pi, { goal: goalCompaction, isInitActive: () => initRuntime.active });
-  registerInitSettlement(pi, initRuntime);
+  const goalCompaction = registerGoalSettlement(pi, goalRuntime);
+  registerAutoCompaction(pi, { goal: goalCompaction });
   registerRequestActivity(pi);
   registerCompletionNotifications(pi, options.completionNotifications);
 }

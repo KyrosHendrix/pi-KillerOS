@@ -3,7 +3,7 @@ import type { AutoCompactionGoalHandlers } from "./auto-compaction.ts";
 import { reportError } from "./errors.ts";
 import { isGoalModeSupported, isSavedSession, pauseGoalAfterFailure, pauseGoalAtTurnLimit, scheduleGoalContinuation, syncGoalUpdateTool, transitionGoal } from "./goal-runtime.ts";
 import { pauseGoalState } from "./goal-state.ts";
-import type { GoalRuntime, InitRuntime } from "./runtime.ts";
+import type { GoalRuntime } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 function pauseGoalForPossibleManualCompaction(
@@ -36,12 +36,10 @@ function pauseGoalForPossibleManualCompaction(
 function recoverGoalAfterManualCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
-  initState: InitRuntime,
   ctx: ExtensionContext,
 ): boolean {
   if (runtime.state?.status !== "paused"
-    || runtime.state.resumeAfterManualCompaction !== true
-    || initState.active) return false;
+    || runtime.state.resumeAfterManualCompaction !== true) return false;
   try {
     transitionGoal(pi, runtime, "resume", "active", undefined, { resetBlockedAudit: true });
   } catch (error) {
@@ -52,7 +50,7 @@ function recoverGoalAfterManualCompaction(
   runtime.continuationScheduled = false;
   runtime.automaticCompaction = undefined;
   ctx.ui.notify("Manual compaction complete. Goal resumed.", "info");
-  setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+  setImmediate(() => scheduleGoalContinuation(pi, runtime, ctx));
   return true;
 }
 
@@ -60,7 +58,6 @@ function recoverGoalAfterManualCompaction(
 function finalizeAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
-  initState: InitRuntime,
   ctx: ExtensionContext,
 ): void {
   const recovery = runtime.automaticCompaction;
@@ -68,8 +65,7 @@ function finalizeAutomaticCompaction(
   const skipped = recovery.outcome === "skipped";
   runtime.automaticCompaction = undefined;
   if (runtime.state?.status !== "paused"
-    || runtime.state.revision !== recovery.pausedRevision
-    || initState.active) return;
+    || runtime.state.revision !== recovery.pausedRevision) return;
   try {
     transitionGoal(pi, runtime, "resume", "active", undefined, { resetBlockedAudit: true });
   } catch (error) {
@@ -80,31 +76,29 @@ function finalizeAutomaticCompaction(
     return;
   }
   runtime.continuationScheduled = false;
-  setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+  setImmediate(() => scheduleGoalContinuation(pi, runtime, ctx));
 }
 
 /** Records Pi's successful compaction callback and attempts guarded recovery. */
 function completeAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
-  initState: InitRuntime,
   ctx: ExtensionContext,
 ): void {
   if (!runtime.automaticCompaction) return;
   runtime.automaticCompaction.outcome = "completed";
-  finalizeAutomaticCompaction(pi, runtime, initState, ctx);
+  finalizeAutomaticCompaction(pi, runtime, ctx);
 }
 
 /** Records Pi's expected session-too-small rejection and resumes without claiming compaction succeeded. */
 function skipAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
-  initState: InitRuntime,
   ctx: ExtensionContext,
 ): void {
   if (!runtime.automaticCompaction) return;
   runtime.automaticCompaction.outcome = "skipped";
-  finalizeAutomaticCompaction(pi, runtime, initState, ctx);
+  finalizeAutomaticCompaction(pi, runtime, ctx);
 }
 
 /** Consumes automatic recovery and records its failure on the eligible paused goal. */
@@ -151,7 +145,6 @@ function failAutomaticCompaction(
 export function registerGoalSettlement(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
-  initState: InitRuntime,
 ): AutoCompactionGoalHandlers {
   pi.on("agent_settled", (_event, ctx) => {
     const wasGoalTurn = runtime.goalTurnInFlight;
@@ -182,15 +175,15 @@ export function registerGoalSettlement(
         return;
       }
       runtime.automaticCompaction.turnSettled = true;
-      finalizeAutomaticCompaction(pi, runtime, initState, ctx);
+      finalizeAutomaticCompaction(pi, runtime, ctx);
       return;
     }
 
-    if (!wasGoalTurn || runtime.state?.status !== "active" || initState.active) {
-      if (continuationWasScheduled && runtime.state?.status === "active" && !initState.active) {
+    if (!wasGoalTurn || runtime.state?.status !== "active") {
+      if (continuationWasScheduled && runtime.state?.status === "active") {
         pauseGoalAfterFailure(pi, runtime, ctx, "the goal continuation ended before an agent turn started");
-      } else if (runtime.state?.status === "active" && !initState.active) {
-        scheduleGoalContinuation(pi, runtime, initState, ctx);
+      } else if (runtime.state?.status === "active") {
+        scheduleGoalContinuation(pi, runtime, ctx);
       }
       return;
     }
@@ -215,20 +208,19 @@ export function registerGoalSettlement(
     runtime.lastStopReason = undefined;
     runtime.lastError = undefined;
     if (pauseGoalAtTurnLimit(pi, runtime, ctx)) return;
-    scheduleGoalContinuation(pi, runtime, initState, ctx);
+    scheduleGoalContinuation(pi, runtime, ctx);
   });
 
   pi.on("session_compact", (event, ctx) => {
     if (runtime.automaticCompaction !== undefined) return;
     if (event.reason !== "manual") return;
-    recoverGoalAfterManualCompaction(pi, runtime, initState, ctx);
+    recoverGoalAfterManualCompaction(pi, runtime, ctx);
   });
 
   return {
     isActive: (ctx: ExtensionContext): boolean => isGoalModeSupported(ctx)
       && isSavedSession(ctx)
-      && runtime.state?.status === "active"
-      && !initState.active,
+      && runtime.state?.status === "active",
     onRequested: (): void => {
       if (runtime.state?.status !== "active") return;
       try {
@@ -250,8 +242,8 @@ export function registerGoalSettlement(
         throw error;
       }
     },
-    onCompleted: (ctx: ExtensionContext): void => completeAutomaticCompaction(pi, runtime, initState, ctx),
+    onCompleted: (ctx: ExtensionContext): void => completeAutomaticCompaction(pi, runtime, ctx),
     onFailed: (ctx: ExtensionContext, error: unknown): void => failAutomaticCompaction(pi, runtime, ctx, error),
-    onSkipped: (ctx: ExtensionContext): void => skipAutomaticCompaction(pi, runtime, initState, ctx),
+    onSkipped: (ctx: ExtensionContext): void => skipAutomaticCompaction(pi, runtime, ctx),
   };
 }

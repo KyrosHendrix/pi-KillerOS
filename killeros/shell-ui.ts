@@ -47,7 +47,6 @@ const STARTUP_TIPS = [
   "Type / to browse every command available in this session.",
   "Run /notification to enable a terminal bell when work settles.",
   "Run /goal <objective> to keep long-running work moving across turns.",
-  "Run /init to generate root AGENTS.md from bounded repository evidence.",
   "Run /handoff [focus] to continue work in a fresh linked session.",
   "Run /codex-fast to toggle priority requests for Codex models.",
   "Run /clear to start a fresh session after confirmation.",

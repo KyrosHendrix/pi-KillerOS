@@ -526,6 +526,55 @@ test("settlement disables filters activated by a branch-conditional include", as
   await assert.rejects(readFile(sentinel), { code: "ENOENT" });
 });
 
+test("receipts neither fetch promised blobs nor report verified changes", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "killeros-partial-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const source = path.join(parent, "source");
+  const root = path.join(parent, "clone");
+  git(parent, "init", "--quiet", "source");
+  git(source, "config", "user.email", "killeros@example.invalid");
+  git(source, "config", "user.name", "KillerOS test");
+  await writeFile(path.join(source, "file.txt"), "present\n");
+  await writeFile(path.join(source, "big.bin"), `${"x".repeat(10_000)}\n`);
+  git(source, "add", ".");
+  git(source, "commit", "--quiet", "-m", "fixture");
+  const promised = git(source, "rev-parse", "HEAD:big.bin").toString().trim();
+
+  execFileSync("git", ["clone", "--quiet", source, root], { stdio: ["ignore", "pipe", "pipe"] });
+  git(root, "config", "user.email", "killeros@example.invalid");
+  git(root, "config", "user.name", "KillerOS test");
+  for (const entry of await readdir(path.join(root, ".git", "objects", "pack"))) {
+    if (!entry.endsWith(".pack")) continue;
+    const pack = await readFile(path.join(root, ".git", "objects", "pack", entry));
+    execFileSync("git", ["unpack-objects"], { cwd: root, input: pack, stdio: ["pipe", "pipe", "pipe"] });
+  }
+  for (const entry of await readdir(path.join(root, ".git", "objects", "pack"))) {
+    await rm(path.join(root, ".git", "objects", "pack", entry));
+  }
+  await rm(path.join(root, ".git", "objects", promised.slice(0, 2), promised.slice(2)));
+  git(root, "remote", "add", "promisor", source);
+  git(root, "config", "extensions.partialClone", "promisor");
+  git(root, "config", "remote.promisor.promisor", "true");
+  assert.throws(() => execFileSync(
+    "git",
+    ["cat-file", "-e", promised],
+    { cwd: root, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" }, stdio: ["ignore", "pipe", "pipe"] },
+  ));
+  const beforeObjects = await inventory(path.join(root, ".git", "objects"));
+
+  const collection = await beginChangeReceipt(root);
+  const staged = git(root, "hash-object", "-w", "file.txt").toString().trim();
+  git(root, "update-index", "--cacheinfo", `100644,${staged},big.bin`);
+  assert.deepEqual(await collection.finish(), { state: "unavailable", reason: "error" });
+
+  assert.deepEqual(await inventory(path.join(root, ".git", "objects")), beforeObjects);
+  assert.throws(() => execFileSync(
+    "git",
+    ["cat-file", "-e", promised],
+    { cwd: root, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" }, stdio: ["ignore", "pipe", "pipe"] },
+  ));
+});
+
 test("line-ending-only edits remain visible with normalized line counts", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));

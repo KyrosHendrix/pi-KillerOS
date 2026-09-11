@@ -220,9 +220,11 @@ test("public documentation exposes current requirements and commands", () => {
   assert.match(readme, /^\/goal resume/mu);
   assert.match(readme, /^\/goal clear/mu);
   assert.doesNotMatch(readme, /\/goal (start|check|checks|limit|history|edit)/u);
-  for (const command of ["init", "codex-fast", "notification", "handoff", "clear", "exit"] as const) {
+  for (const command of ["codex-fast", "notification", "handoff", "clear", "exit"] as const) {
     assert.match(readme, new RegExp(`^/${command}(?:\\s|$)`, "mu"));
   }
+  assert.doesNotMatch(readme, /^\/init(?:\s|$)/mu);
+  assert.doesNotMatch(readme, /killeros_init_/u);
   assert.match(readme, /^\/handoff \[focus\]/mu);
   assert.match(readme, /off by default/iu);
   assert.match(readme, /Nerd Font/iu);
@@ -238,13 +240,16 @@ test("public documentation exposes current requirements and commands", () => {
 
 test("request activity observes continuation scheduling before settlement cleanup", () => {
   const goalSettlement = main.indexOf("registerGoalSettlement(pi");
-  const initSettlement = main.indexOf("registerInitSettlement(pi");
   const activity = main.indexOf("registerRequestActivity(pi");
   const notifications = main.indexOf("registerCompletionNotifications(pi");
   const workedFor = main.indexOf("registerWorkedFor(pi");
 
   assert.ok(workedFor < goalSettlement);
   assert.ok(goalSettlement < activity);
-  assert.ok(initSettlement < activity);
   assert.ok(activity < notifications);
+});
+
+test("removed init workflow leaves no command, tool, or runtime behind", () => {
+  assert.doesNotMatch(main, /registerInit|killeros_init_|InitRuntime|createInitRuntime/u);
+  assert.doesNotMatch(main, /^\s*pi\.registerCommand\("init"/mu);
 });

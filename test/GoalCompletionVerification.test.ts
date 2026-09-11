@@ -402,6 +402,58 @@ test("direct verb targets bind only when a quoted path immediately follows", asy
   assert.equal(await inferGoalVerification("Fix `docs/output/`", directory), undefined);
 });
 
+test("goals naming several files do not bind single-file proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-multi-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const first = path.join(directory, "a.ts");
+  const second = path.join(directory, "b.ts");
+  for (const objective of [
+    `Fix \`${first}\` and \`${second}\``,
+    `Fix \`${first}\`, \`${second}\``,
+    `Fix \`${first}\` and "${second}"`,
+    `Update \`${first}\` and update \`${second}\``,
+    "Fix `a.ts` and src/b.ts",
+    "Fix `README` and `LICENSE`",
+    `Write the Markdown file to \`${first}\` and \`${second}\``,
+  ]) {
+    const harness = createHarness();
+    const ctx = createContext();
+    const active = await startGoal(harness, ctx, objective);
+    assert.equal(active.verification, undefined, objective);
+  }
+});
+
+test("changing one file of a two-file goal completes without file proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-partial-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const first = path.join(directory, "a.ts");
+  const second = path.join(directory, "b.ts");
+  const harness = createHarness();
+  const ctx = createContext();
+  const active = await startGoal(harness, ctx, `Fix \`${first}\` and \`${second}\``);
+  assert.equal(active.verification, undefined);
+
+  writeFileSync(first, "only the first file changed");
+  const result = await complete(harness, ctx);
+  assert.equal(result.details.status, "complete");
+  assert.equal(result.details.verification, "model-reported");
+});
+
+test("repeated references to one file still bind file proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-repeat-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const requested = path.join(directory, "requested.md");
+  const harness = createHarness();
+  const ctx = createContext();
+  const active = await startGoal(harness, ctx, `Write the Markdown file to \`${requested}\` (see \`${requested}\` again)`);
+  assert.deepEqual(active.verification, { kind: "file", path: requested, baseline: { exists: false } });
+
+  writeFileSync(requested, "deliverable");
+  const result = await complete(harness, ctx);
+  assert.equal(result.details.status, "complete");
+  assert.equal(result.details.verification, "file");
+});
+
 test("old goal state restores, while malformed persisted verification fails closed", async () => {
   const now = Date.now();
   const baseState = {

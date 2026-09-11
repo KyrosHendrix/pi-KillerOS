@@ -1,25 +1,3 @@
-import type { InitEvidenceIndex } from "./init-evidence.ts";
-import type { InitTargetBaseline } from "./init-target.ts";
-
-export type InitOutcome =
-  | { kind: "pending" }
-  | { kind: "written"; recoveryPath?: string }
-  | { kind: "policy-conflict"; reason: string }
-  | { kind: "cancelled" }
-  | { kind: "no-outcome" };
-
-export interface InitRuntime {
-  active: boolean;
-  starting?: symbol;
-  targetPath?: string;
-  projectRoot?: string;
-  activeTools?: string[];
-  evidence?: InitEvidenceIndex;
-  baseline?: InitTargetBaseline;
-  outcome: InitOutcome;
-  settle?: (outcome: InitOutcome) => void;
-}
-
 export type GoalStatus = "active" | "paused" | "blocked" | "complete";
 
 export interface GoalBlockerAudit {
@@ -106,10 +84,6 @@ export interface GoalRuntime {
   requestRender?: () => void;
 }
 
-export function createInitRuntime(): InitRuntime {
-  return { active: false, outcome: { kind: "pending" } };
-}
-
 export function createGoalRuntime(): GoalRuntime {
   return {
     continuationScheduled: false,
@@ -119,16 +93,4 @@ export function createGoalRuntime(): GoalRuntime {
     automaticCompaction: undefined,
     persistenceRetryNeeded: false,
   };
-}
-
-export function resetInitRuntime(state: InitRuntime): void {
-  state.active = false;
-  state.starting = undefined;
-  state.targetPath = undefined;
-  state.projectRoot = undefined;
-  state.activeTools = undefined;
-  state.evidence = undefined;
-  state.baseline = undefined;
-  state.outcome = { kind: "pending" };
-  state.settle = undefined;
 }

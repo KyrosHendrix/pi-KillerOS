@@ -242,6 +242,45 @@ export async function captureGoalFileBaseline(
   }
 }
 
+const GOAL_URL_PATTERN = /(?:https?|file):\/\/[^\s"'`]+/giu;
+const GOAL_QUOTED_PATTERN = /`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'/gu;
+const GOAL_ABSOLUTE_PATTERN = /(?:^|[\s"'`(\[{,;])([A-Za-z]:[\\/][^\s,;'"`]+|\/[^\s,;'"`]+)/gu;
+const GOAL_LIST_FILE_PATTERN = /(?:\band\b|\bor\b|[,;&+])\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b)/giu;
+
+function isQuotedGoalFileMention(raw: string): boolean {
+  const value = raw.trim();
+  if (!value || /[\s\p{Cc}]/u.test(value) || /^(?:https?|file):\/\//iu.test(value) || /[\\/]$/u.test(value)) return false;
+  return /[\/\\.:]/u.test(value);
+}
+
+function normalizeGoalFileMention(raw: string, cwd: string): string | undefined {
+  const value = raw.trim().replace(/[.,;:!?)\]}]+$/u, "");
+  if (!value || /[\s\p{Cc}]/u.test(value)) return undefined;
+  const absolute = path.isAbsolute(value) || path.win32.isAbsolute(value) ? value : path.resolve(cwd, value);
+  if (!isAbsoluteFilePath(absolute)) return undefined;
+  return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+}
+
+/** Counts distinct path-shaped mentions so several files cannot bind proof to one. */
+function countGoalTargetFiles(objective: string, cwd: string, target: string): number {
+  const prose = objective.replace(GOAL_URL_PATTERN, " ");
+  const mentions = new Set<string>();
+  const add = (raw: string): void => {
+    const normalized = normalizeGoalFileMention(raw, cwd);
+    if (normalized) mentions.add(normalized);
+  };
+  add(target);
+  for (const match of prose.matchAll(GOAL_QUOTED_PATTERN)) {
+    const raw = match[1] ?? match[2] ?? match[3] ?? "";
+    if (isQuotedGoalFileMention(raw)) add(raw);
+  }
+  for (const match of prose.matchAll(GOAL_ABSOLUTE_PATTERN)) {
+    if (match[1]) add(stripUnquotedPathPunctuation(match[1].trim()));
+  }
+  for (const match of prose.matchAll(GOAL_LIST_FILE_PATTERN)) add(match[1] ?? match[2] ?? match[3] ?? match[4] ?? "");
+  return mentions.size;
+}
+
 /** Captures one explicit output path so goal completion can verify its creation or modification. */
 export async function inferGoalVerification(objective: string, cwd: string): Promise<GoalFileVerification | undefined> {
   const candidates: string[] = [];
@@ -262,8 +301,12 @@ export async function inferGoalVerification(objective: string, cwd: string): Pro
     if (isAbsoluteFilePath(absolute)) resolved.push(absolute);
   }
   const unique = [...new Set(resolved)];
-  const filePath = unique.length === 1 ? unique[0] : undefined;
-  return filePath ? { kind: "file", path: filePath, baseline: await captureGoalFileBaseline(filePath) } : undefined;
+  if (unique.length !== 1) return undefined;
+  // A goal that names several files must not verify from one file alone.
+  // Repeated references to the same file count as one target.
+  const filePath = unique[0];
+  if (countGoalTargetFiles(objective, cwd, filePath) > 1) return undefined;
+  return { kind: "file", path: filePath, baseline: await captureGoalFileBaseline(filePath) };
 }
 
 export async function verifyGoalDeliverable(verification: GoalFileVerification): Promise<void> {

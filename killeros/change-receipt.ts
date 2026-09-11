@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, watch } from "node:fs";
-import { PASSIVE_GIT_CONFIG_ARGS, passiveStatusSafetyArgs } from "./passive-git-status.ts";
+import { PASSIVE_GIT_CONFIG_ARGS, passiveGitCommand, passiveGitEnv, passiveStatusSafetyArgs, samePassiveFilters } from "./passive-git-status.ts";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
 import { createInflate } from "node:zlib";
@@ -68,9 +68,9 @@ class GitFailure extends Error {
 
 function runGit(cwd: string, args: readonly string[], input?: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, {
+    const child = spawn(passiveGitCommand(), args, {
       cwd,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      env: passiveGitEnv(),
       stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -249,13 +249,15 @@ function discardMonitor(monitor: RepositoryMonitor): void {
 }
 
 async function snapshot(repo: Repository, paths?: readonly string[]): Promise<Snapshot> {
-  const safetyArgs = passiveStatusSafetyArgs(decode(await runGit(repo.root, PASSIVE_GIT_CONFIG_ARGS)));
+  const config = decode(await runGit(repo.root, PASSIVE_GIT_CONFIG_ARGS));
+  const safetyArgs = passiveStatusSafetyArgs(config);
   if (!safetyArgs) throw new GitFailure("error");
   const output = decode(await runGit(repo.root, [
     ...safetyArgs,
     "status", "--porcelain=v2", "--branch", "--no-ahead-behind", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all",
     ...(paths ? ["--", ...paths] : []),
   ]));
+  if (!samePassiveFilters(config, decode(await runGit(repo.root, PASSIVE_GIT_CONFIG_ARGS)))) throw new GitFailure("error");
   const records = output.split("\0").filter(Boolean);
   const headRecord = records.find((record) => record.startsWith("# branch.oid "));
   if (!headRecord) throw new Error("missing HEAD state");
@@ -458,9 +460,9 @@ function cacheBlob(repo: Repository, id: string, content: Buffer): void {
 
 function loadPackedBlobs(repo: Repository, ids: readonly string[], limit: number): Promise<Map<string, Buffer>> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", ["cat-file", "--batch"], {
+    const child = spawn(passiveGitCommand(), ["cat-file", "--batch"], {
       cwd: repo.root,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      env: passiveGitEnv(),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });

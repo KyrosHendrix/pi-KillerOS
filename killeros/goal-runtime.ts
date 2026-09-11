@@ -2,7 +2,7 @@ import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext 
 import { reportError } from "./errors.ts";
 import { beginGoalTurnState, checkpointActiveGoalState, GOAL_VERSION, parseGoalState, pauseGoalState, transitionGoalState, type GoalTransitionOptions } from "./goal-state.ts";
 import { resolvePersonalInstructions } from "./personal-instructions.ts";
-import type { GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import type { GoalRuntime, GoalState, GoalStatus } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 export const GOAL_ENTRY_TYPE = "killeros-goal";
@@ -204,7 +204,6 @@ function beginGoalTurn(
 export function scheduleGoalContinuation(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
-  initState: InitRuntime,
   ctx: ExtensionContext,
 ): boolean {
   if (isGoalModeSupported(ctx) && isSavedSession(ctx) && pauseGoalAtTurnLimit(pi, runtime, ctx)) return false;
@@ -214,7 +213,6 @@ export function scheduleGoalContinuation(
     || runtime.continuationScheduled
     || runtime.continuationHeld
     || runtime.goalTurnInFlight
-    || initState.active
     || !ctx.isIdle()
     || ctx.hasPendingMessages()) return false;
   runtime.continuationScheduled = true;
@@ -282,7 +280,6 @@ export function isSavedSession(ctx: ExtensionContext): boolean {
 export function registerGoalRuntime(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
-  initState: InitRuntime,
 ): void {
   const restoreGoal = (ctx: ExtensionContext): void => {
     const restored = restoreGoalState(ctx);
@@ -298,7 +295,7 @@ export function registerGoalRuntime(
     runtime.lastError = undefined;
     runtime.requestRender?.();
     if (runtime.state?.status === "active") {
-      setImmediate(() => scheduleGoalContinuation(pi, runtime, initState, ctx));
+      setImmediate(() => scheduleGoalContinuation(pi, runtime, ctx));
     }
   };
 
@@ -330,7 +327,7 @@ export function registerGoalRuntime(
     runtime.continuationScheduled = false;
     if (!runtime.goalTurnInFlight && isGoalModeSupported(ctx) && isSavedSession(ctx) && pauseGoalAtTurnLimit(pi, runtime, ctx)) return;
     const current = runtime.state;
-    if (!isGoalModeSupported(ctx) || !isSavedSession(ctx) || !current || current.status !== "active" || initState.active) return;
+    if (!isGoalModeSupported(ctx) || !isSavedSession(ctx) || !current || current.status !== "active") return;
     if (runtime.goalTurnInFlight) return { systemPrompt: `${event.systemPrompt}\n\n${goalSystemPrompt(current)}` };
     const next = beginGoalTurn(pi, runtime, ctx, current);
     if (!next) return;

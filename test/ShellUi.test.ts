@@ -151,6 +151,6 @@ test("startup tips and editor suggestions stay fixed per session and exhaust the
     Math.random = originalRandom;
   }
 
-  assert.equal(new Set(tips).size, 10);
+  assert.equal(new Set(tips).size, 9);
   assert.equal(new Set(suggestions).size, 10);
 });

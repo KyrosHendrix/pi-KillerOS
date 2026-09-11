@@ -4,7 +4,7 @@ import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor }
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, modelDisplayName, padRight } from "./display.ts";
-import { PASSIVE_GIT_CONFIG_ARGS, passiveStatusSafetyArgs } from "./passive-git-status.ts";
+import { PASSIVE_GIT_CONFIG_ARGS, passiveGitCommand, passiveGitEnv, passiveStatusSafetyArgs, samePassiveFilters } from "./passive-git-status.ts";
 import { goalElapsedMilliseconds } from "./goal-state.ts";
 import type { GoalRuntime, GoalState } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -44,18 +44,32 @@ export function resolveGitFileChanges(
   return new Promise((resolve) => {
     const options = {
       encoding: "utf8" as const,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      env: passiveGitEnv(),
       maxBuffer: 4 * 1024 * 1024,
       timeout: GIT_STATUS_TIMEOUT_MS,
       windowsHide: true as const,
     };
-    const runStatus = (args: string[]): void => {
+    const verifyFiltersUnchanged = (before: string, done: (unchanged: boolean) => void): void => {
       try {
-        execute("git", args, options, (error, stdout) => {
+        execute(passiveGitCommand(), ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, after) => {
+          done(!error && samePassiveFilters(before, after));
+        });
+      } catch {
+        done(false);
+      }
+    };
+    const runStatus = (config: string, args: string[]): void => {
+      try {
+        execute(passiveGitCommand(), args, options, (error, stdout) => {
           if (error) {
             resolve(undefined);
             return;
           }
+          verifyFiltersUnchanged(config, (unchanged) => {
+            if (!unchanged) {
+              resolve(undefined);
+              return;
+            }
 
           const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
           const entries = stdout.split("\0");
@@ -69,6 +83,7 @@ export function resolveGitFileChanges(
             if (status.includes("R") || status.includes("C")) index += 1;
           }
           resolve(changes);
+          });
         });
       } catch {
         resolve(undefined);
@@ -76,7 +91,7 @@ export function resolveGitFileChanges(
     };
 
     try {
-      execute("git", ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, config) => {
+      execute(passiveGitCommand(), ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, config) => {
         if (error) {
           resolve(undefined);
           return;
@@ -86,7 +101,7 @@ export function resolveGitFileChanges(
           resolve(undefined);
           return;
         }
-        runStatus(["-C", cwd, ...safetyArgs, "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+        runStatus(config, ["-C", cwd, ...safetyArgs, "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
       });
     } catch {
       resolve(undefined);

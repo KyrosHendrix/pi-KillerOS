@@ -6,7 +6,6 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 
 - A custom TUI: startup masthead with versions, model, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.
 - `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. New goals pause after 20 turns; `/goal resume` grants another 20.
-- `/init`: generates a root `AGENTS.md` from repository evidence, preserving compatible existing rules.
 - `/codex-fast`: toggles the `priority` service tier on Codex requests or reports its status.
 - `/handoff`: starts a fresh linked session carrying visible continuation context.
 - Automatic context compaction when remaining tokens drop below 15% of the window (configurable).
@@ -19,7 +18,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 
 - Node.js 22.19.0+
 - Pi 0.85.0 or later within the 0.x release line
-- An interactive TUI session for the custom header, editor, footer, `question`, and `/init`
+- An interactive TUI session for the custom header, editor, footer, and `question`
 
 ## Install
 
@@ -38,7 +37,6 @@ Pin a release by appending its tag, for example `@v2.1.26`. Add `-l` to install 
 ## Commands
 
 ```text
-/init                     Generate root AGENTS.md from repository evidence
 /goal                     View the current goal
 /goal <objective>        Set an objective
 /goal pause               Stop automatic continuation
@@ -56,8 +54,8 @@ Pin a release by appending its tag, for example `@v2.1.26`. Add `-l` to install 
 | Mode | What works |
 | --- | --- |
 | TUI | Everything |
-| RPC | Goals, proactive compaction; no TUI components, `/init`, sounds, title indicator |
-| Print/JSON | No interactive questions, `/goal`, `/init`, or proactive compaction |
+| RPC | Goals, proactive compaction; no TUI components, sounds, title indicator |
+| Print/JSON | No interactive questions, `/goal`, or proactive compaction |
 
 ## Configuration
 

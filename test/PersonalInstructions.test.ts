@@ -2,39 +2,9 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createHarness, emitSequentially, getCommand, getHandlers, waitFor } from "./ExtensionTestHarness.ts";
+import { createHarness, getHandlers } from "./ExtensionTestHarness.ts";
 import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { resolvePersonalInstructions } from "../killeros/personal-instructions.ts";
-
-test("does not inject AGENTS.local.md into the /init generation turn", async () => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-init-personal-"));
-  try {
-    writeFileSync(path.join(directory, "AGENTS.local.md"), "PRIVATE-INIT-GUIDANCE\n");
-    const { commands, handlers, sentMessages } = createHarness();
-    const ctx = {
-      cwd: directory,
-      isProjectTrusted: () => true,
-      mode: "tui",
-      reload: async () => {},
-      ui: { notify() {} },
-      waitForIdle: async () => {},
-    };
-    const initRun = getCommand(commands, "init").handler("", ctx);
-    await waitFor(() => sentMessages.length === 1);
-
-    let event = { systemPrompt: "shared AGENTS context" };
-    for (const handler of getHandlers(handlers, "before_agent_start")) {
-      const update = await handler(event, ctx);
-      if (update?.systemPrompt) event = { ...event, systemPrompt: update.systemPrompt };
-    }
-    assert.doesNotMatch(event.systemPrompt, /PRIVATE-INIT-GUIDANCE|personal_instructions/u);
-
-    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
-    await initRun;
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
 
 test("personal instruction imports stay inside Pi's agent directory", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-personal-"));

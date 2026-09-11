@@ -8,7 +8,7 @@ import { reportError } from "./errors.ts";
 import { parseGoalCommand } from "./goal-command.ts";
 import { GOAL_ENTRY_TYPE, GOAL_UPDATE_TOOL, isGoalModeSupported, isSavedSession, pauseGoalAfterFailure, persistGoalState, scheduleGoalContinuation, stopGoalRun, sumGoalTokens, syncGoalUpdateTool, transitionGoal, type GoalEntryData } from "./goal-runtime.ts";
 import { checkpointPausedGoalState, createNewGoalState, DEFAULT_GOAL_MAX_TURNS, GOAL_MAX_TURNS, goalElapsedMilliseconds, GOAL_VERSION, inferGoalVerification, parseGoalState, recordGoalBlockerAudit, transitionGoalState, verifyGoalDeliverable } from "./goal-state.ts";
-import type { GoalRuntime, GoalState, GoalStatus, InitRuntime } from "./runtime.ts";
+import type { GoalRuntime, GoalState, GoalStatus } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const GoalUpdateParams = Type.Object({
@@ -65,7 +65,6 @@ function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
 export function registerGoalInterface(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
-  initState: InitRuntime,
 ): void {
   pi.registerEntryRenderer<GoalEntryData>(GOAL_ENTRY_TYPE, (entry, options, theme) => {
     const data = entry.data;
@@ -286,10 +285,6 @@ export function registerGoalInterface(
       }
 
       if (command.kind === "resume") {
-        if (initState.active) {
-          ctx.ui.notify("Wait for /init to finish before resuming a goal", "error");
-          return;
-        }
         if (!runtime.state) {
           ctx.ui.notify("No goal is set", "info");
           return;
@@ -313,7 +308,7 @@ export function registerGoalInterface(
             const base = transitionGoalState(runtime.state, "active", undefined, { resetBlockedAudit: true }, Date.now());
             persistGoalState(pi, runtime, "resume", { ...base, maxTurns: renewed });
             runtime.continuationScheduled = false;
-            if (scheduleGoalContinuation(pi, runtime, initState, ctx)) ctx.ui.notify("Goal resumed", "info");
+            if (scheduleGoalContinuation(pi, runtime, ctx)) ctx.ui.notify("Goal resumed", "info");
           } catch (error) {
             reportError(ctx, "Goal could not be resumed", error);
           }
@@ -322,17 +317,13 @@ export function registerGoalInterface(
         try {
           transitionGoal(pi, runtime, "resume", "active", undefined, { resetBlockedAudit: true });
           runtime.continuationScheduled = false;
-          if (scheduleGoalContinuation(pi, runtime, initState, ctx)) ctx.ui.notify("Goal resumed", "info");
+          if (scheduleGoalContinuation(pi, runtime, ctx)) ctx.ui.notify("Goal resumed", "info");
         } catch (error) {
           reportError(ctx, "Goal could not be resumed", error);
         }
         return;
       }
 
-      if (initState.active) {
-        ctx.ui.notify("Wait for /init to finish before starting a goal", "error");
-        return;
-      }
       switch (command.kind) {
         case "objective":
           break;
@@ -364,7 +355,7 @@ export function registerGoalInterface(
       }
       if (waitError) {
         reportError(ctx, "Goal could not wait for the active turn", waitError);
-        scheduleGoalContinuation(pi, runtime, initState, ctx);
+        scheduleGoalContinuation(pi, runtime, ctx);
         return;
       }
       let verification: Awaited<ReturnType<typeof inferGoalVerification>>;
@@ -375,7 +366,7 @@ export function registerGoalInterface(
           reportError(ctx, "Goal could not be started", error);
         } else {
           reportError(ctx, "Goal could not be replaced", error);
-          scheduleGoalContinuation(pi, runtime, initState, ctx);
+          scheduleGoalContinuation(pi, runtime, ctx);
         }
         return;
       }
@@ -384,7 +375,7 @@ export function registerGoalInterface(
           maxTurns: DEFAULT_GOAL_MAX_TURNS,
         });
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
-        if (scheduleGoalContinuation(pi, runtime, initState, ctx)) {
+        if (scheduleGoalContinuation(pi, runtime, ctx)) {
           ctx.ui.notify("Goal active. KillerOS will continue until completion, a repeated blocker, or pause.", "info");
         }
       } catch (error) {

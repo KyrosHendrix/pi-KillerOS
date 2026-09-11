@@ -10,7 +10,7 @@ import {
   scheduleGitStatusWatch,
   type GitFileChanges,
 } from "../killeros/footer.ts";
-import { passiveStatusSafetyArgs } from "../killeros/passive-git-status.ts";
+import { passiveGitEnv, passiveStatusSafetyArgs, samePassiveFilters } from "../killeros/passive-git-status.ts";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -140,6 +140,56 @@ test("passive Git status rejects incomplete or unsafe filter discovery", () => {
     "-c", "core.fsmonitor=false",
     "-c", "filter.tripwire.clean=", "-c", "filter.tripwire.process=", "-c", "filter.tripwire.required=false",
   ]);
+});
+
+test("passive Git children run without PATH resolution or lazy fetching", () => {
+  const env = passiveGitEnv();
+  assert.equal(env.GIT_OPTIONAL_LOCKS, "0");
+  assert.equal(env.GIT_NO_LAZY_FETCH, "1");
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === "path") assert.equal(value, "");
+  }
+  assert.ok(Object.keys(env).some((key) => key.toLowerCase() === "path"));
+});
+
+test("passive filter comparison detects mid-scan configuration changes", () => {
+  assert.equal(samePassiveFilters("filter.a.clean\0", "filter.a.clean\0"), true);
+  assert.equal(samePassiveFilters("filter.a.clean\0", "filter.a.clean\0filter.b.process\0"), false);
+  assert.equal(samePassiveFilters("filter.a.clean", "filter.a.clean\0"), false);
+  assert.equal(samePassiveFilters("filter.bad/name.clean\0", "filter.bad/name.clean\0"), false);
+});
+
+test("footer Git status skips results when filters change mid-scan", async () => {
+  const discovered = "filter.early.clean\0";
+  const changed = "filter.early.clean\0filter.late.clean\0";
+  let calls = 0;
+  let statusEnv: NodeJS.ProcessEnv | undefined;
+  const result = await resolveGitFileChanges("repo", (_file, args, options, callback) => {
+    calls += 1;
+    if (args.includes("config")) {
+      callback(null, calls === 1 ? discovered : changed);
+      return;
+    }
+    statusEnv = options.env;
+    callback(null, " M changed.txt\0");
+  });
+
+  assert.equal(result, undefined);
+  assert.equal(calls, 3);
+  assert.equal(statusEnv?.GIT_NO_LAZY_FETCH, "1");
+});
+
+test("footer Git status accepts results when filters are stable mid-scan", async () => {
+  const discovered = "filter.early.clean\0";
+  const result = await resolveGitFileChanges("repo", (_file, args, _options, callback) => {
+    if (args.includes("config")) {
+      callback(null, discovered);
+      return;
+    }
+    callback(null, " M changed.txt\0");
+  });
+
+  assert.deepEqual(result, { modified: 1, added: 0, deleted: 0 });
 });
 
 test("footer Git status does not execute a configured filesystem monitor", async () => {

@@ -21,8 +21,7 @@ import {
 import { registerGoalInterface } from "../killeros/goal-interface.ts";
 import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
 import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
-import { registerInitCommand, registerInitSettlement } from "../killeros/init.ts";
-import { createGoalRuntime, createInitRuntime } from "../killeros/runtime.ts";
+import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createKillerosSettingsStore } from "../killeros/settings.ts";
 import { extensionApiTestAdapter, extensionContextTestAdapter } from "./PiTestAdapters.ts";
 
@@ -53,7 +52,6 @@ function createHarness(
   mode: "tui" | "rpc" = "tui",
   initialUsage: ContextUsage | undefined = { tokens: 90_000, contextWindow: 100_000, percent: 90 },
   goal?: AutoCompactionGoalHandlers,
-  initState?: ReturnType<typeof createInitRuntime>,
 ): AutoHarness {
   const handlers = new Map<string, Handler[]>();
   const activeTools = ["read", "bash", "edit", "write"];
@@ -94,14 +92,11 @@ function createHarness(
     },
   });
   let compactError: Error | undefined;
-  if (initState) registerInitCommand(api, initState, createGoalRuntime());
   registerAutoCompaction(api, {
     loadPreference: () => ({ enabled: true, percentRemaining: 15 }),
     getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }),
     goal,
-    isInitActive: () => initState?.active === true,
   });
-  if (initState) registerInitSettlement(api, initState);
   return {
     activeTools,
     compactCalls,
@@ -117,34 +112,6 @@ function createHarness(
     },
   };
 }
-
-test("active /init keeps its tools isolated and blocks proactive compaction", async () => {
-  const initState = createInitRuntime();
-  initState.active = true;
-  const harness = createHarness("tui", undefined, undefined, initState);
-
-  await harness.emit("before_agent_start");
-  assert.deepEqual(harness.activeTools, [
-    "killeros_init_read",
-    "killeros_init_list",
-    "killeros_init_write",
-    "killeros_init_conflict",
-  ]);
-  assert.deepEqual(await harness.emit("tool_call", { type: "tool_call", toolName: "bash" }), {
-    block: true,
-    reason: "/init may use only its bounded evidence and terminal tools",
-  });
-
-  await harness.emit("turn_end");
-  assert.equal(harness.compactCalls.length, 0);
-
-  await harness.emit("agent_settled");
-  assert.equal(initState.active, false);
-  assert.deepEqual(harness.activeTools, ["read", "bash", "edit", "write"]);
-
-  await harness.emit("turn_end");
-  assert.equal(harness.compactCalls.length, 1);
-});
 
 function compactResult(): { summary: string; firstKeptEntryId: string; tokensBefore: number } {
   return { summary: "summary", firstKeptEntryId: "entry-1", tokensBefore: 90_000 };
@@ -194,10 +161,9 @@ function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
     setActiveTools: (names: string[]) => activeTools.splice(0, activeTools.length, ...names),
   });
   const runtime = createGoalRuntime();
-  const initRuntime = createInitRuntime();
-  registerGoalInterface(api, runtime, initRuntime);
-  registerGoalRuntime(api, runtime, initRuntime);
-  const goal = registerGoalSettlement(api, runtime, initRuntime);
+  registerGoalInterface(api, runtime);
+  registerGoalRuntime(api, runtime);
+  const goal = registerGoalSettlement(api, runtime);
   registerAutoCompaction(api, {
     loadPreference: () => ({ enabled: true, percentRemaining: 15 }),
     getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }),
