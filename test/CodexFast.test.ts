@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHarness, createTuiContext, disposeTestComponent, getCommand, getHandlers, last, theme } from "./ExtensionTestHarness.ts";
-import { resetCodexFastState } from "../killeros/codex-fast-state.ts";
+import { isCodexFastEnabled, resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { themeTestAdapter } from "./PiTestAdapters.ts";
 
 type TestNotification = { message: string; level?: string };
@@ -49,6 +49,25 @@ test("/codex-fast is registered once and toggles Codex priority requests", async
   assert.deepEqual(last(notifications), { message: "Fast enabled", level: "info" });
 });
 
+test("/codex-fast status reports mode without changing state", async () => {
+  resetCodexFastState();
+  const harness = createHarness();
+  const notifications: TestNotification[] = [];
+  const { ctx } = createTuiContext();
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  const command = getCommand(harness, "codex-fast");
+  assert.ok(command);
+
+  await command.handler("status", ctx);
+  assert.deepEqual(last(notifications), { message: "Codex fast mode: disabled", level: "info" });
+  assert.equal(isCodexFastEnabled(), false);
+
+  await command.handler("", ctx);
+  await command.handler("  status  ", ctx);
+  assert.deepEqual(last(notifications), { message: "Codex fast mode: enabled", level: "info" });
+  assert.equal(isCodexFastEnabled(), true);
+});
+
 test("/codex-fast rejects arguments without changing its state", async () => {
   resetCodexFastState();
   const harness = createHarness();
@@ -63,15 +82,15 @@ test("/codex-fast rejects arguments without changing its state", async () => {
   const payload = { model: "gpt-5.5", input: [] };
   const codexContext = { ...ctx, model: { ...ctx.model, provider: "openai-codex" } };
   await command.handler("", ctx);
-  await command.handler("status", ctx);
-  assert.deepEqual(last(notifications), { message: "Usage: /codex-fast", level: "error" });
+  await command.handler("on", ctx);
+  assert.deepEqual(last(notifications), { message: "Usage: /codex-fast [status]", level: "error" });
   assert.deepEqual(
     await requestHandler({ type: "before_provider_request", payload }, codexContext),
     { model: "gpt-5.5", input: [], service_tier: "priority" },
   );
 
   await command.handler("off now", ctx);
-  assert.deepEqual(last(notifications), { message: "Usage: /codex-fast", level: "error" });
+  assert.deepEqual(last(notifications), { message: "Usage: /codex-fast [status]", level: "error" });
   assert.deepEqual(
     await requestHandler({ type: "before_provider_request", payload }, codexContext),
     { model: "gpt-5.5", input: [], service_tier: "priority" },

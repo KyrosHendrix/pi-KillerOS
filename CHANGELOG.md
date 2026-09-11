@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added `/codex-fast status` to report whether Codex fast mode is enabled without changing it.
+
 ### Fixed
 
 - Shared one passive Git status policy between footer telemetry and change receipts. Both scans now disable filesystem monitors and clean/process filters, and skip status when filter discovery is unavailable or unsafe.

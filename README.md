@@ -7,7 +7,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 - A custom TUI: startup masthead with versions, model, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.
 - `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. New goals pause after 20 turns; `/goal resume` grants another 20.
 - `/init`: generates a root `AGENTS.md` from repository evidence, preserving compatible existing rules.
-- `/codex-fast`: toggles the `priority` service tier on Codex requests.
+- `/codex-fast`: toggles the `priority` service tier on Codex requests or reports its status.
 - `/handoff`: starts a fresh linked session carrying visible continuation context.
 - Automatic context compaction when remaining tokens drop below 15% of the window (configurable).
 - A `question` tool with single-select and multi-select modes.
@@ -44,7 +44,7 @@ Pin a release by appending its tag, for example `@v2.1.26`. Add `-l` to install 
 /goal pause               Stop automatic continuation
 /goal resume              Resume automatic continuation
 /goal clear               Remove the current goal
-/codex-fast               Toggle Codex fast mode
+/codex-fast [status]      Toggle or report Codex fast mode
 /notification             Configure the completion sound
 /handoff [focus]          Fresh session with continuation context
 /clear                    New session after confirmation

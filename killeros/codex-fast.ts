@@ -10,10 +10,15 @@ function isRequestPayload(value: unknown): value is RequestPayload {
 
 export function registerCodexFastMode(pi: ExtensionAPI): void {
   pi.registerCommand("codex-fast", {
-    description: "Toggle Codex fast mode",
+    description: "Toggle or report Codex fast mode",
     handler: async (args, ctx) => {
-      if (args.trim()) {
-        ctx.ui.notify("Usage: /codex-fast", "error");
+      const trimmed = args.trim();
+      if (trimmed === "status") {
+        ctx.ui.notify(`Codex fast mode: ${isCodexFastEnabled() ? "enabled" : "disabled"}`, "info");
+        return;
+      }
+      if (trimmed) {
+        ctx.ui.notify("Usage: /codex-fast [status]", "error");
         return;
       }
 
