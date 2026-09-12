@@ -1,14 +1,13 @@
 import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
-// Passive Git inspection must not start fsmonitor, clean/process filters,
-// a promisor fetch, or a repository-supplied executable. Config discovery
+// Passive Git inspection disables fsmonitor, known clean/process filters,
+// promisor fetches, and repository-supplied Git executables. Config discovery
 // and status run in separate Git processes, so a filter configured between
-// them would be absent from the safety overrides. Callers close that gap
-// two ways: automatic Git children run with passiveGitEnv, where an empty
-// PATH stops bare filter commands from resolving, and each scan re-reads
-// discovery after status and skips the result when the effective filter set
-// changed mid-scan.
+// them would be absent from the safety overrides. Automatic Git children run
+// without PATH resolution, and each scan rejects results when the effective
+// filter set changed. Absolute filter commands remain possible, so product
+// callers run these scans only after project trust is granted.
 //
 // Executable discovery itself is passive: it never starts a command shell,
 // locator process, or other helper executable, and never executes a bare
@@ -187,8 +186,8 @@ export function samePassiveFilters(before: string, after: string): boolean {
 // Environment for automatic Git children: no optional locks, no lazy fetch
 // from a promisor remote, and no PATH so a filter command that becomes
 // effective after discovery cannot resolve a bare command name. Absolute
-// filter paths are still possible; callers detect mid-scan config changes
-// with samePassiveFilters and skip those results.
+// filter paths are still possible; trusted-project callers detect mid-scan
+// config changes with samePassiveFilters and skip those results.
 export function passiveGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...base,

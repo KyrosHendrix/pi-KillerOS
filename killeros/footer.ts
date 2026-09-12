@@ -36,11 +36,13 @@ type GitStatusExecutor = (
   callback: (error: Error | null, stdout: string) => void,
 ) => unknown;
 
-/** Resolves changed-file counts with a bounded asynchronous Git status process. */
+/** Resolves changed-file counts with a bounded asynchronous Git status process in a trusted project. */
 export function resolveGitFileChanges(
   cwd: string,
   execute: GitStatusExecutor = execFile,
+  trusted = true,
 ): Promise<GitFileChanges | undefined> {
+  if (!trusted) return Promise.resolve(undefined);
   return new Promise((resolve) => {
     let gitCommand: string;
     try {
@@ -436,7 +438,7 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
         if (JSON.stringify(changes) === JSON.stringify(gitFileChanges)) return;
         gitFileChanges = changes;
         tui.requestRender();
-      });
+      }, (cwd) => resolveGitFileChanges(cwd, execFile, ctx.isProjectTrusted()));
       const unsubscribe = footerData.onBranchChange(() => {
         gitStatus.request();
         tui.requestRender();

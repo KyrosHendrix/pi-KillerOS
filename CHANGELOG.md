@@ -10,6 +10,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Restricted automatic startup, footer, and change-receipt Git scans to trusted projects, preventing repository executables and configuration races from launching commands before trust is granted.
 - Resolved passive Git executable discovery without starting a locator or repository executable. Footer and change-receipt scans now use an absolute Git path outside the inspected repository and report unavailable when none exists.
 - Closed the filter-configuration race in automatic Git inspection. Footer and change-receipt scans now run Git without `PATH` resolution, re-check effective filters after status, and skip results the scan cannot produce without an extension process or remote fetch. Change receipts no longer fetch missing objects from partial-clone remotes.
 - Stopped attaching single-file verification to goals that name several files. Multi-file goals now complete through the model-reported path.

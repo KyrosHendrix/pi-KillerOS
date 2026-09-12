@@ -43,6 +43,10 @@ test("Git branch resolution is asynchronous and bounded", async () => {
   assert.ok(branch === undefined || branch === "detached" || branch.length > 0);
 });
 
+test("untrusted projects do not resolve a Git branch", async () => {
+  assert.equal(await resolveGitBranch(process.cwd(), false), undefined);
+});
+
 test("disposed startup headers ignore late Git results", async () => {
   const { handlers } = createHarness();
   const { captured, ctx } = createTuiContext();

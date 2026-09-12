@@ -133,6 +133,17 @@ test("Git status uses a five-second deadline and settles timeouts as unavailable
   assert.equal(result, undefined);
 });
 
+test("untrusted projects never start footer Git status", async () => {
+  let calls = 0;
+  const result = await resolveGitFileChanges("repo", (_file, _args, _options, callback) => {
+    calls += 1;
+    callback(new Error("must not run"), "");
+  }, false);
+
+  assert.equal(result, undefined);
+  assert.equal(calls, 0);
+});
+
 test("passive Git status rejects incomplete or unsafe filter discovery", () => {
   assert.equal(passiveStatusSafetyArgs("filter.tripwire.clean"), undefined);
   assert.equal(passiveStatusSafetyArgs("filter.bad/name.clean\0"), undefined);

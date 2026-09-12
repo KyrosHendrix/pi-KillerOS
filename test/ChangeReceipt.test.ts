@@ -107,6 +107,13 @@ test("focused Node test recognition stores one canonical label and rejects ambig
   }
 });
 
+test("untrusted projects never start change collection", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  assert.deepEqual(await (await beginChangeReceipt(root, false)).finish(), { state: "unavailable", reason: "error" });
+});
+
 test("Git collection reports only the response delta and cleans its temporary directory", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -327,6 +334,27 @@ test("oversized HEAD blobs are unavailable in loose and packed storage", async (
   const packedCollection = await beginChangeReceipt(root);
   await rm(largePath);
   assert.deepEqual(await packedCollection.finish(), { state: "unavailable", reason: "too-large" });
+});
+
+test("packed HEAD blobs below the snapshot limit remain available", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const largePath = path.join(root, "large.bin");
+  await writeFile(largePath, Buffer.alloc(16 * 1024 * 1024 + 1));
+  git(root, "add", "large.bin");
+  git(root, "commit", "--quiet", "-m", "packed blob");
+  git(root, "repack", "-ad");
+
+  const collection = await beginChangeReceipt(root);
+  await rm(largePath);
+  assert.deepEqual(await collection.finish(), {
+    state: "available",
+    totalFiles: 1,
+    additions: 0,
+    deletions: 0,
+    files: [{ kind: "deleted", path: "large.bin", additions: 0, deletions: 0, detail: "binary" }],
+    omittedFiles: 0,
+  });
 });
 
 test("total HEAD blob content is bounded across objects", async (t) => {

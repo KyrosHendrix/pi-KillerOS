@@ -24,6 +24,7 @@ import {
   type SlashCommandResolver,
 } from "./commands.ts";
 import { reportError } from "./errors.ts";
+import { passiveGitCommand, passiveGitEnv } from "./passive-git-status.ts";
 
 function readPackageVersion(path: string | URL): string | undefined {
   try {
@@ -66,13 +67,22 @@ const EDITOR_SUGGESTIONS = [
   'Try "draft an implementation plan for <feature>"',
 ] as const;
 
-export function resolveGitBranch(cwd: string): Promise<string | undefined> {
+export function resolveGitBranch(cwd: string, trusted = true): Promise<string | undefined> {
+  if (!trusted) return Promise.resolve(undefined);
+  let gitCommand: string | undefined;
+  try {
+    gitCommand = passiveGitCommand(cwd);
+  } catch {
+    return Promise.resolve(undefined);
+  }
+  if (!gitCommand) return Promise.resolve(undefined);
   return new Promise((resolve) => {
     execFile(
-      "git",
+      gitCommand,
       ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
       {
         encoding: "utf8",
+        env: passiveGitEnv(),
         maxBuffer: 64 * 1024,
         timeout: 500,
         windowsHide: true,
@@ -131,7 +141,7 @@ class PiStartupHeader {
     this.ctx = ctx;
     this.tip = tip;
     this.tui = tui;
-    void resolveGitBranch(ctx.cwd).then((branch) => {
+    void resolveGitBranch(ctx.cwd, ctx.isProjectTrusted()).then((branch) => {
       if (this.disposed) return;
       this.branch = branch;
       this.tui.requestRender();

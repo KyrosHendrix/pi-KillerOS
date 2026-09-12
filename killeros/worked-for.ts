@@ -338,7 +338,7 @@ export function registerWorkedFor(
   });
 
   pi.on("agent_start", async (_event, ctx) => {
-    if (ctx.mode !== "tui" || active) return;
+    if (ctx.mode !== "tui" || active || !ctx.isProjectTrusted()) return;
     const state: ActiveReceipt = {
       startedAt: now(),
       startedTokens: sessionTokenTotal(ctx),

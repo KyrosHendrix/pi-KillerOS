@@ -66,7 +66,7 @@ class GitFailure extends Error {
   }
 }
 
-function runGit(cwd: string, args: readonly string[], input?: Buffer): Promise<Buffer> {
+function runGit(cwd: string, args: readonly string[], input?: Buffer, stdoutLimit = GIT_OUTPUT_LIMIT): Promise<Buffer> {
   let gitCommand: string;
   try {
     const found = passiveGitCommand(cwd);
@@ -95,7 +95,7 @@ function runGit(cwd: string, args: readonly string[], input?: Buffer): Promise<B
     timer.unref();
     const capture = (chunks: Buffer[], isStdout: boolean) => (chunk: Buffer): void => {
       const nextBytes = (isStdout ? stdoutBytes : stderrBytes) + chunk.length;
-      if (nextBytes > GIT_OUTPUT_LIMIT) {
+      if (nextBytes > (isStdout ? stdoutLimit : GIT_OUTPUT_LIMIT)) {
         failure = new GitFailure("too-large");
         child.kill();
         return;
@@ -466,109 +466,6 @@ function cacheBlob(repo: Repository, id: string, content: Buffer): void {
   repo.blobCacheBytes += content.length;
 }
 
-function loadPackedBlobs(repo: Repository, ids: readonly string[], limit: number): Promise<Map<string, Buffer>> {
-  let gitCommand: string;
-  try {
-    const found = passiveGitCommand(repo.root);
-    if (!found) return Promise.reject(new GitFailure("error"));
-    gitCommand = found;
-  } catch {
-    return Promise.reject(new GitFailure("error"));
-  }
-  return new Promise((resolve, reject) => {
-    const child = spawn(gitCommand, ["cat-file", "--batch"], {
-      cwd: repo.root,
-      env: passiveGitEnv(),
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    const blobs = new Map<string, Buffer>();
-    let blobBytes = 0;
-    let header = Buffer.alloc(0);
-    let current: { id: string; content: Buffer; offset: number } | undefined;
-    let idIndex = 0;
-    let failure: GitFailure | undefined;
-    const fail = (error: GitFailure): void => {
-      if (failure) return;
-      failure = error;
-      child.kill();
-    };
-    const timer = setTimeout(() => fail(new GitFailure("timeout")), GIT_TIMEOUT_MS);
-    timer.unref();
-    const parse = (chunk: Buffer): void => {
-      let offset = 0;
-      while (offset < chunk.length) {
-        if (!current) {
-          const lineEnd = chunk.indexOf(10, offset);
-          if (lineEnd < 0) {
-            const part = chunk.subarray(offset);
-            if (header.length + part.length > GIT_OBJECT_HEADER_LIMIT) throw new Error("invalid batch blob");
-            header = header.length === 0 ? Buffer.from(part) : Buffer.concat([header, part]);
-            return;
-          }
-          const line = header.length === 0 ? chunk.subarray(offset, lineEnd) : Buffer.concat([header, chunk.subarray(offset, lineEnd)]);
-          header = Buffer.alloc(0);
-          const id = ids[idIndex];
-          const match = /^([0-9a-f]+) ([a-z]+) ([0-9]+)$/u.exec(line.toString("ascii"));
-          if (!id || !match || match[1] !== id || match[2] !== "blob") throw new Error("invalid batch blob");
-          const size = boundedBlobSize(match[3], limit - blobBytes);
-          blobBytes += size;
-          current = { id, content: Buffer.alloc(size), offset: 0 };
-          idIndex += 1;
-          offset = lineEnd + 1;
-          continue;
-        }
-        const remaining = current.content.length - current.offset;
-        const copied = Math.min(remaining, chunk.length - offset);
-        if (copied > 0) {
-          chunk.copy(current.content, current.offset, offset, offset + copied);
-          current.offset += copied;
-          offset += copied;
-        }
-        if (current.offset < current.content.length) return;
-        if (offset >= chunk.length) return;
-        if (chunk[offset] !== 10) throw new Error("invalid batch body");
-        offset += 1;
-        blobs.set(current.id, current.content);
-        cacheBlob(repo, current.id, current.content);
-        current = undefined;
-      }
-    };
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (failure) return;
-      try {
-        parse(chunk);
-      } catch (error) {
-        fail(error instanceof GitFailure ? error : new GitFailure("error"));
-      }
-    });
-    child.stderr.resume();
-    child.stdin.once("error", () => fail(new GitFailure("error")));
-    child.once("error", () => fail(new GitFailure("error")));
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      if (failure) {
-        reject(failure);
-        return;
-      }
-      if (code !== 0) {
-        reject(new GitFailure("error"));
-        return;
-      }
-      if (header.length > 0 || current || idIndex !== ids.length) {
-        reject(new GitFailure("error"));
-        return;
-      }
-      resolve(blobs);
-    });
-    try {
-      child.stdin.end(Buffer.from(`${ids.join("\n")}\n`));
-    } catch {
-      fail(new GitFailure("error"));
-    }
-  });
-}
-
 async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<Map<string, Buffer>> {
   const blobs = new Map<string, Buffer>();
   const missing: string[] = [];
@@ -589,7 +486,25 @@ async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<
     } else missing.push(id);
   }
   if (missing.length > 0) {
-    for (const [id, content] of await loadPackedBlobs(repo, missing, SNAPSHOT_CONTENT_LIMIT - blobBytes)) blobs.set(id, content);
+    const batchOutputLimit = SNAPSHOT_CONTENT_LIMIT + missing.reduce((total, id) => total + id.length + 32, 0);
+    const output = await runGit(repo.root, ["cat-file", "--batch"], Buffer.from(`${missing.join("\n")}\n`), batchOutputLimit);
+    let offset = 0;
+    for (const id of missing) {
+      const headerEnd = output.indexOf(10, offset);
+      if (headerEnd < 0 || headerEnd - offset > GIT_OBJECT_HEADER_LIMIT) throw new Error("invalid batch blob");
+      const match = /^([0-9a-f]+) blob ([0-9]+)$/u.exec(output.subarray(offset, headerEnd).toString("ascii"));
+      if (!match || match[1] !== id) throw new Error("invalid batch blob");
+      const size = boundedBlobSize(match[2], SNAPSHOT_CONTENT_LIMIT - blobBytes);
+      const start = headerEnd + 1;
+      const end = start + size;
+      if (output[end] !== 10) throw new Error("invalid batch body");
+      const content = Buffer.from(output.subarray(start, end));
+      blobBytes += size;
+      blobs.set(id, content);
+      cacheBlob(repo, id, content);
+      offset = end + 1;
+    }
+    if (offset !== output.length) throw new Error("invalid batch blob");
   }
   return blobs;
 }
@@ -791,7 +706,13 @@ export function recognizedCheck(command: unknown, failed: boolean): CheckAttempt
   return { label: FOCUSED_CHECK_LABEL, outcome };
 }
 
-export async function beginChangeReceipt(cwd: string): Promise<ChangeReceiptCollection> {
+export async function beginChangeReceipt(cwd: string, trusted = true): Promise<ChangeReceiptCollection> {
+  if (!trusted) {
+    return {
+      finish: async () => ({ state: "unavailable", reason: "error" }),
+      dispose: async () => undefined,
+    };
+  }
   try {
     const repo = await repository(cwd);
     let monitor = repositoryMonitors.get(repo.root);

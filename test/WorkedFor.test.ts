@@ -29,6 +29,7 @@ type WorkedForContext = {
   model?: Pick<NonNullable<ExtensionContext["model"]>, "provider" | "id" | "name">;
   hasPendingMessages(): boolean;
   isIdle(): boolean;
+  isProjectTrusted(): boolean;
   sessionManager: { getEntries(): WorkedForSessionEntry[] };
   ui: Pick<ExtensionContext["ui"], "notify">;
 };
@@ -61,6 +62,7 @@ type WorkedForHarness = {
   setIdle(value: boolean): void;
   setModel(model: WorkedForContext["model"]): void;
   setPendingMessages(value: boolean): void;
+  setProjectTrusted(value: boolean): void;
   setSessionEntries(entries: WorkedForSessionEntry[]): void;
   setSessionError(error: Error | undefined): void;
   setTime(milliseconds: number): void;
@@ -77,6 +79,7 @@ function createWorkedForHarness(
   let appendError: Error | undefined;
   let idle = true;
   let pendingMessages = false;
+  let projectTrusted = true;
   let sessionEntries: WorkedForSessionEntry[] = [];
   let sessionError: Error | undefined;
   const appendedEntries: WorkedForEntry[] = [];
@@ -102,6 +105,7 @@ function createWorkedForHarness(
     cwd: process.cwd(),
     hasPendingMessages: () => pendingMessages,
     isIdle: () => idle,
+    isProjectTrusted: () => projectTrusted,
     mode,
     sessionManager: { getEntries: () => {
       if (sessionError) throw sessionError;
@@ -122,6 +126,7 @@ function createWorkedForHarness(
     setIdle: (value: boolean) => { idle = value; },
     setModel: (model) => { ctx.model = model; },
     setPendingMessages: (value: boolean) => { pendingMessages = value; },
+    setProjectTrusted: (value: boolean) => { projectTrusted = value; },
     setSessionEntries: (entries: WorkedForSessionEntry[]) => { sessionEntries = entries; },
     setSessionError: (error: Error | undefined) => { sessionError = error; },
     setTime: (milliseconds: number) => { currentTime = milliseconds; },
@@ -470,6 +475,21 @@ test("version 4 validation rejects malformed and oversized durable data", () => 
     { ...valid, changes: { ...valid.changes, files: [{ kind: "modified", path: "binary.bin", additions: 1, deletions: 0, detail: "binary" }] } },
     { ...valid, changes: { ...valid.changes, files: [{ kind: "added", path: "x".repeat(70_000), additions: 1, deletions: 0 }] } },
   ]) assert.equal(renderer({ data }, { expanded: false }, theme), undefined);
+});
+
+test("untrusted projects do not start worked-for change collection", async () => {
+  let starts = 0;
+  const harness = createWorkedForHarness("tui", async () => {
+    starts += 1;
+    return {
+      finish: async () => ({ state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0 }),
+      dispose: async () => undefined,
+    };
+  });
+  harness.setProjectTrusted(false);
+
+  await harness.emit("agent_start");
+  assert.equal(starts, 0);
 });
 
 test("response collection keeps the first baseline and records checks in event order", async () => {
