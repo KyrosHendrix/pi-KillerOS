@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.1.27] - 2026-09-12
+
 ### Added
 
 - Added `/codex-fast status` to report whether Codex fast mode is enabled without changing it.
