@@ -67,8 +67,16 @@ class GitFailure extends Error {
 }
 
 function runGit(cwd: string, args: readonly string[], input?: Buffer): Promise<Buffer> {
+  let gitCommand: string;
+  try {
+    const found = passiveGitCommand(cwd);
+    if (!found) return Promise.reject(new GitFailure("error"));
+    gitCommand = found;
+  } catch {
+    return Promise.reject(new GitFailure("error"));
+  }
   return new Promise((resolve, reject) => {
-    const child = spawn(passiveGitCommand(), args, {
+    const child = spawn(gitCommand, args, {
       cwd,
       env: passiveGitEnv(),
       stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
@@ -459,8 +467,16 @@ function cacheBlob(repo: Repository, id: string, content: Buffer): void {
 }
 
 function loadPackedBlobs(repo: Repository, ids: readonly string[], limit: number): Promise<Map<string, Buffer>> {
+  let gitCommand: string;
+  try {
+    const found = passiveGitCommand(repo.root);
+    if (!found) return Promise.reject(new GitFailure("error"));
+    gitCommand = found;
+  } catch {
+    return Promise.reject(new GitFailure("error"));
+  }
   return new Promise((resolve, reject) => {
-    const child = spawn(passiveGitCommand(), ["cat-file", "--batch"], {
+    const child = spawn(gitCommand, ["cat-file", "--batch"], {
       cwd: repo.root,
       env: passiveGitEnv(),
       stdio: ["pipe", "pipe", "pipe"],

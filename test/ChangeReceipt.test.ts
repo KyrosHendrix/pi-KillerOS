@@ -606,3 +606,72 @@ test("mode-only changes carry no line count", { skip: process.platform === "win3
     omittedFiles: 0,
   });
 });
+
+async function writeReceiptShims(repository: string, sentinel: string): Promise<void> {
+  const portable = sentinel.replaceAll("\\", "/").replaceAll('"', '\\"');
+  const shell = `#!/bin/sh\nprintf executed > "${portable}"\n`;
+  for (const name of ["where", "which", "git"]) {
+    const shim = path.join(repository, name);
+    await writeFile(shim, shell);
+    try {
+      await chmod(shim, 0o755);
+    } catch {
+      // Windows repositories do not need the executable bit.
+    }
+  }
+  const batch = `@echo off\r\necho executed> "${portable}"\r\n`;
+  for (const name of ["where.cmd", "where.bat", "which.cmd", "which.bat", "git.cmd", "git.bat"]) {
+    await writeFile(path.join(repository, name), batch);
+  }
+}
+
+async function sentinelAbsent(filePath: string): Promise<void> {
+  await assert.rejects(readFile(filePath), { code: "ENOENT" });
+}
+
+test("change receipt never runs repository-local locator or Git shims", async (t) => {
+  const root = await fixture();
+  const probe = await mkdtemp(path.join(os.tmpdir(), "killeros-receipt-probe-"));
+  const sentinel = path.join(probe, "sentinel");
+  t.after(() => rm(probe, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeReceiptShims(root, sentinel);
+  const previousCwd = process.cwd();
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = ["", ".", root, ...(previousPath ?? "").split(path.delimiter)].join(path.delimiter);
+    process.chdir(root);
+    const collection = await beginChangeReceipt(root);
+    await writeFile(path.join(root, "clean.txt"), "changed\n");
+    const summary = await collection.finish();
+    assert.equal(summary.state, "available");
+    await sentinelAbsent(sentinel);
+  } finally {
+    process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+});
+
+test("change receipt fails closed without a safe Git executable", async (t) => {
+  const root = await fixture();
+  const probe = await mkdtemp(path.join(os.tmpdir(), "killeros-receipt-closed-probe-"));
+  const sentinel = path.join(probe, "sentinel");
+  t.after(() => rm(probe, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeReceiptShims(root, sentinel);
+  const previousCwd = process.cwd();
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = ["", ".", root].join(path.delimiter);
+    process.chdir(root);
+    const summary = await (await beginChangeReceipt(root)).finish();
+    assert.equal(summary.state, "unavailable");
+    assert.notEqual(summary.state, "available");
+    await sentinelAbsent(sentinel);
+  } finally {
+    process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+});

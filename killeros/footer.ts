@@ -42,6 +42,18 @@ export function resolveGitFileChanges(
   execute: GitStatusExecutor = execFile,
 ): Promise<GitFileChanges | undefined> {
   return new Promise((resolve) => {
+    let gitCommand: string;
+    try {
+      const found = passiveGitCommand(cwd);
+      if (!found) {
+        resolve(undefined);
+        return;
+      }
+      gitCommand = found;
+    } catch {
+      resolve(undefined);
+      return;
+    }
     const options = {
       encoding: "utf8" as const,
       env: passiveGitEnv(),
@@ -51,7 +63,7 @@ export function resolveGitFileChanges(
     };
     const verifyFiltersUnchanged = (before: string, done: (unchanged: boolean) => void): void => {
       try {
-        execute(passiveGitCommand(), ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, after) => {
+        execute(gitCommand, ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, after) => {
           done(!error && samePassiveFilters(before, after));
         });
       } catch {
@@ -60,7 +72,7 @@ export function resolveGitFileChanges(
     };
     const runStatus = (config: string, args: string[]): void => {
       try {
-        execute(passiveGitCommand(), args, options, (error, stdout) => {
+        execute(gitCommand, args, options, (error, stdout) => {
           if (error) {
             resolve(undefined);
             return;
@@ -91,7 +103,7 @@ export function resolveGitFileChanges(
     };
 
     try {
-      execute(passiveGitCommand(), ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, config) => {
+      execute(gitCommand, ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, config) => {
         if (error) {
           resolve(undefined);
           return;

@@ -10,10 +10,10 @@ import {
   scheduleGitStatusWatch,
   type GitFileChanges,
 } from "../killeros/footer.ts";
-import { passiveGitEnv, passiveStatusSafetyArgs, samePassiveFilters } from "../killeros/passive-git-status.ts";
+import { passiveGitCommand, passiveGitEnv, passiveStatusSafetyArgs, samePassiveFilters } from "../killeros/passive-git-status.ts";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { themeTestAdapter } from "./PiTestAdapters.ts";
 
 type TestStyle = {
@@ -634,4 +634,90 @@ test("footer uses model metadata and formats unknown provider names", () => {
   const deepSeek = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   assert.match(deepSeek, /deepseek-v4-flash deepseek/u);
   disposeTestComponent(footer);
+});
+
+function writeRepositoryShims(repository: string, sentinel: string): void {
+  const portable = sentinel.replaceAll("\\", "/").replaceAll('"', '\\"');
+  const shell = `#!/bin/sh\nprintf executed > "${portable}"\n`;
+  for (const name of ["where", "which", "git"]) {
+    const shim = path.join(repository, name);
+    writeFileSync(shim, shell);
+    try {
+      chmodSync(shim, 0o755);
+    } catch {
+      // Windows repositories do not need the executable bit.
+    }
+  }
+  const batch = `@echo off\r\necho executed> "${portable}"\r\n`;
+  for (const name of ["where.cmd", "where.bat", "which.cmd", "which.bat", "git.cmd", "git.bat"]) {
+    writeFileSync(path.join(repository, name), batch);
+  }
+}
+
+test("footer passive scan never runs repository-local locator or Git shims", async () => {
+  const repository = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-shim-"));
+  const probe = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-probe-"));
+  const sentinel = path.join(probe, "sentinel");
+  const previousCwd = process.cwd();
+  const previousPath = process.env.PATH;
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: repository });
+    writeFileSync(path.join(repository, "tracked.txt"), "initial\n");
+    execFileSync("git", ["add", "."], { cwd: repository });
+    execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: repository });
+    writeRepositoryShims(repository, sentinel);
+    try {
+      symlinkSync(repository, path.join(probe, "repository-link"), "dir");
+    } catch {
+      // Link privileges are unavailable; the direct repository PATH entry below still proves the boundary.
+    }
+    const unsafeEntries = [path.join(probe, "repository-link"), repository];
+    const crafted = ["", ".", ...unsafeEntries, ...(previousPath ?? "").split(path.delimiter)].join(path.delimiter);
+    process.env.PATH = crafted;
+    process.chdir(repository);
+
+    const discovered = passiveGitCommand(repository);
+    assert.ok(typeof discovered === "string" && discovered.length > 0, "expected a safe system Git");
+    assert.ok(path.isAbsolute(discovered));
+    const normalizedDiscovered = process.platform === "win32" ? discovered.toLowerCase() : discovered;
+    const normalizedRepository = process.platform === "win32" ? repository.toLowerCase() : repository;
+    assert.ok(!normalizedDiscovered.startsWith(`${normalizedRepository}${path.sep}`));
+    assert.notEqual(normalizedDiscovered, normalizedRepository);
+
+    assert.ok((await resolveGitFileChanges(repository)) !== undefined);
+    assert.equal(existsSync(sentinel), false);
+  } finally {
+    process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(repository, { recursive: true, force: true });
+    rmSync(probe, { recursive: true, force: true });
+  }
+});
+
+test("footer passive scan fails closed when only repository-local Git is discoverable", async () => {
+  const repository = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-closed-"));
+  const probe = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-closed-probe-"));
+  const sentinel = path.join(probe, "sentinel");
+  const previousCwd = process.cwd();
+  const previousPath = process.env.PATH;
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: repository });
+    writeFileSync(path.join(repository, "tracked.txt"), "initial\n");
+    execFileSync("git", ["add", "."], { cwd: repository });
+    execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: repository });
+    writeRepositoryShims(repository, sentinel);
+    process.env.PATH = ["", ".", repository].join(path.delimiter);
+    process.chdir(repository);
+
+    assert.equal(passiveGitCommand(repository), undefined);
+    assert.equal(await resolveGitFileChanges(repository), undefined);
+    assert.equal(existsSync(sentinel), false);
+  } finally {
+    process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(repository, { recursive: true, force: true });
+    rmSync(probe, { recursive: true, force: true });
+  }
 });

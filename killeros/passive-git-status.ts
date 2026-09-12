@@ -1,35 +1,152 @@
-import { execFileSync } from "node:child_process";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import path from "node:path";
 
 // Passive Git inspection must not start fsmonitor, clean/process filters,
-// or a promisor fetch. Config discovery and status run in separate Git
-// processes, so a filter configured between them would be absent from the
-// safety overrides. Callers close that gap two ways: automatic Git children
-// run with passiveGitEnv, where an empty PATH stops bare filter commands
-// from resolving, and each scan re-reads discovery after status and skips
-// the result when the effective filter set changed mid-scan.
+// a promisor fetch, or a repository-supplied executable. Config discovery
+// and status run in separate Git processes, so a filter configured between
+// them would be absent from the safety overrides. Callers close that gap
+// two ways: automatic Git children run with passiveGitEnv, where an empty
+// PATH stops bare filter commands from resolving, and each scan re-reads
+// discovery after status and skips the result when the effective filter set
+// changed mid-scan.
+//
+// Executable discovery itself is passive: it never starts a command shell,
+// locator process, or other helper executable, and never executes a bare
+// program name. It scans absolute search-path entries for an absolute Git
+// path outside the inspected repository and fails closed when none exists.
 export const PASSIVE_GIT_CONFIG_ARGS = ["config", "--includes", "--null", "--name-only", "--list"] as const;
 
 const SAFE_FILTER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 
-let cachedGitCommand: string | undefined;
+function searchPathEntries(env: NodeJS.ProcessEnv): string[] {
+  const values: string[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === "path" && typeof value === "string") values.push(value);
+  }
+  const entries: string[] = [];
+  for (const value of values) entries.push(...value.split(path.delimiter));
+  return entries;
+}
 
-// Absolute Git binary path so automatic scans can sanitize PATH (which
-// Node uses to resolve the child binary on some platforms) without losing
-// Git itself. Falls back to "git" when discovery fails, preserving the
-// callers' existing unavailable behavior.
-export function passiveGitCommand(): string {
-  cachedGitCommand ??= (() => {
-    try {
-      const found = execFileSync(process.platform === "win32" ? "where" : "which", ["git"], {
-        encoding: "utf8",
-        windowsHide: true,
-      }).split(/\r?\n/u).map((line) => line.trim()).find(Boolean);
-      return found ?? "git";
-    } catch {
-      return "git";
+function pathExtensionEntries(env: NodeJS.ProcessEnv): string[] {
+  let raw: string | undefined;
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === "pathext" && typeof value === "string") {
+      raw = value;
+      break;
     }
-  })();
-  return cachedGitCommand;
+  }
+  raw ??= ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL";
+  return raw.split(";").map((entry) => entry.trim()).filter(Boolean).map((entry) => entry.startsWith(".") ? entry : `.${entry}`);
+}
+
+function unquoted(entry: string): string {
+  if (entry.length >= 2) {
+    const first = entry[0];
+    const last = entry[entry.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) return entry.slice(1, -1);
+  }
+  return entry;
+}
+
+function inspectedRoot(cwd: string): string | undefined {
+  if (!cwd || typeof cwd !== "string") return undefined;
+  let start: string;
+  try {
+    start = path.resolve(cwd);
+  } catch {
+    return undefined;
+  }
+  let base: string;
+  try {
+    base = realpathSync(start);
+  } catch {
+    base = start;
+  }
+  let current = base;
+  for (;;) {
+    try {
+      if (existsSync(path.join(current, ".git"))) {
+        try {
+          return realpathSync(current);
+        } catch {
+          return current;
+        }
+      }
+    } catch {
+      // Unreadable directory: keep walking toward the filesystem root.
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return base;
+}
+
+function insideInspected(candidate: string, root: string): boolean {
+  if (process.platform === "win32") {
+    const normalizedCandidate = path.win32.normalize(candidate).toLowerCase();
+    const normalizedRoot = path.win32.normalize(root).toLowerCase();
+    const trimmed = normalizedRoot.length > 3 && normalizedRoot.endsWith(path.win32.sep)
+      ? normalizedRoot.slice(0, -1)
+      : normalizedRoot;
+    if (normalizedCandidate === trimmed) return true;
+    return normalizedCandidate.startsWith(`${trimmed}${path.win32.sep}`);
+  }
+  const normalizedCandidate = path.normalize(candidate);
+  const normalizedRoot = path.normalize(root);
+  const trimmed = normalizedRoot.length > 1 && normalizedRoot.endsWith(path.sep)
+    ? normalizedRoot.slice(0, -1)
+    : normalizedRoot;
+  if (normalizedCandidate === trimmed) return true;
+  return normalizedCandidate.startsWith(`${trimmed}${path.sep}`);
+}
+
+// Absolute Git binary outside the inspected repository, or undefined when
+// no safe candidate exists. Never starts a helper process and never
+// returns a bare command name, so opening a repository cannot execute a
+// repository-local locator or Git executable. Empty and relative
+// search-path entries are ignored because they can resolve against the
+// current directory. A candidate that resolves through a link returns its
+// final path only when that path is also outside the repository.
+export function passiveGitCommand(cwd: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const root = inspectedRoot(cwd);
+  if (!root) return undefined;
+  const entries = searchPathEntries(env);
+  if (entries.length === 0) return undefined;
+  const windows = process.platform === "win32";
+  const baseNames = windows ? ["git", ...pathExtensionEntries(env).map((extension) => `git${extension}`)] : ["git"];
+  for (const raw of entries) {
+    if (raw === "" || raw.trim() === "") continue;
+    const directory = unquoted(raw);
+    if (directory === "" || directory.trim() === "") continue;
+    if (!path.isAbsolute(directory)) continue;
+    for (const base of baseNames) {
+      const candidate = path.join(directory, base);
+      try {
+        if (!statSync(candidate).isFile()) continue;
+      } catch {
+        continue;
+      }
+      if (!windows) {
+        try {
+          accessSync(candidate, constants.X_OK);
+        } catch {
+          continue;
+        }
+      }
+      let resolved: string;
+      try {
+        resolved = realpathSync(candidate);
+      } catch {
+        continue;
+      }
+      if (!path.isAbsolute(resolved)) continue;
+      if (insideInspected(resolved, root)) continue;
+      return resolved;
+    }
+  }
+  return undefined;
 }
 
 // Lists effective clean/process filter drivers in discovery order, or
