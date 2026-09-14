@@ -480,6 +480,8 @@ export function registerGoalInterface(
           maxTurns: DEFAULT_GOAL_MAX_TURNS,
         });
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
+        // The replacement supersedes any recovery still parked after waitForIdle().
+        if (unfinished) runtime.automaticCompaction = undefined;
         if (scheduleGoalContinuation(pi, runtime, ctx)) {
           ctx.ui.notify("Goal active. Each turn must record continue, complete, or a blocker decision before another turn starts.", "info");
         }

@@ -233,6 +233,12 @@ export function registerGoalSettlement(
       const error = safeTerminalText(runtime.lastError ?? "");
       runtime.lastStopReason = undefined;
       runtime.lastError = undefined;
+      if (runtime.automaticCompaction.turnSettled
+        && (settledTurn === undefined || settledTurn === runtime.automaticCompaction.turn)) {
+        // The interrupted turn already settled; a repeated settlement carries no new
+        // information, so keep waiting for compaction instead of failing the recovery.
+        return;
+      }
       const expectedInterruption = stopReason === "aborted"
         || stopReason === "error" && error === "This operation was aborted";
       if (!wasGoalTurn || !agentEndObserved) {
@@ -307,7 +313,9 @@ export function registerGoalSettlement(
     onRequested: (): void => {
       if (runtime.state?.status !== "active") return;
       const current = runtime.state;
-      const resumeSameTurn = runtime.goalTurnInFlight;
+      // A turn that already accepted continue or a blocker audit owns a pending
+      // authorization; recovery must take the next-turn path, never resume the decided turn.
+      const resumeSameTurn = runtime.goalTurnInFlight && current.turnDecision === undefined;
       try {
         const paused = transitionGoal(pi, runtime, "pause", "paused", undefined, {
           keepTurnForRecovery: true,

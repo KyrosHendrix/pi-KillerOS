@@ -26,6 +26,10 @@ import { createKillerosSettingsStore } from "../killeros/settings.ts";
 import { extensionApiTestAdapter, extensionContextTestAdapter } from "./PiTestAdapters.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
+type GoalTool = {
+  name: string;
+  execute: (id: string, params: unknown, signal: AbortSignal, onUpdate: () => void, ctx: ExtensionContext) => Promise<{ details: Record<string, unknown> }>;
+};
 
 function requiredMapValue<T>(values: ReadonlyMap<string, T>, key: string): T {
   const value = values.get(key);
@@ -125,13 +129,15 @@ function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
   state(): ReturnType<typeof createGoalRuntime>;
   failCompactionSynchronously(error?: Error): void;
   failPersistence(error?: Error): void;
+  lastState(): Record<string, unknown>;
+  decide(params: Record<string, unknown>): Promise<{ details: Record<string, unknown> }>;
   runGoalCommand(command: string): Promise<void>;
   startGoal(objective: string): Promise<void>;
   emit(eventName: string, event?: unknown): Promise<unknown>;
 } {
   const handlers = new Map<string, Handler[]>();
   const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
-  const tools = new Map<string, unknown>();
+  const tools = new Map<string, GoalTool>();
   const activeTools: string[] = [];
   const compactCalls: CompactOptions[] = [];
   const sentMessages: Array<{ message: unknown; options: unknown }> = [];
@@ -156,7 +162,7 @@ function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
     },
     registerCommand: (name: string, command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => commands.set(name, command),
     registerEntryRenderer: () => {},
-    registerTool: (tool: { name: string }) => tools.set(tool.name, tool),
+    registerTool: (tool: GoalTool) => tools.set(tool.name, tool),
     sendMessage: (message: unknown, options: unknown) => sentMessages.push({ message, options }),
     setActiveTools: (names: string[]) => activeTools.splice(0, activeTools.length, ...names),
   });
@@ -187,6 +193,7 @@ function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
       getSessionFile: () => `${process.cwd()}\session.jsonl`,
     },
     ui: {
+      confirm: async () => true,
       notify: (message: string, type?: string) => notifications.push({ message, type }),
     },
     waitForIdle: async () => {},
@@ -204,6 +211,18 @@ function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
     state: () => runtime,
     failCompactionSynchronously: (error) => { compactError = error ?? new Error("compaction unavailable"); },
     failPersistence: (error) => { persistenceError = error ?? new Error("session storage unavailable"); },
+    lastState: () => {
+      const data = entries.at(-1);
+      assert.ok(isUnknownRecord(data) && isUnknownRecord(data.data) && isUnknownRecord(data.data.state));
+      return data.data.state;
+    },
+    decide: (params) => requiredMapValue(tools, "killeros_goal_update").execute(
+      `decision-${entries.length}`,
+      params,
+      new AbortController().signal,
+      () => {},
+      ctx,
+    ),
     runGoalCommand: (command) => requiredMapValue(commands, "goal").handler(command, ctx),
     startGoal: (objective) => requiredMapValue(commands, "goal").handler(objective, ctx),
     emit,
@@ -463,6 +482,62 @@ test("an active goal pauses for automatic compaction and resumes once after sett
     assert.ok(isUnknownRecord(continuation));
     assert.equal(continuation.customType, "killeros-goal-continuation");
   }
+});
+
+test("an accepted goal decision survives automatic compaction and starts exactly one next turn", async () => {
+  const harness = createGoalHarness();
+  await harness.startGoal("Continue this goal after compaction");
+  await harness.decide({
+    status: "continue",
+    evidence: "The first step passed",
+    nextAction: "Run the remaining step",
+  });
+
+  await harness.emit("turn_end");
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "aborted" }],
+  });
+  await harness.emit("agent_settled");
+  await harness.emit("agent_settled");
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.sentMessages.length, 2);
+  assert.equal(harness.lastState().status, "active");
+  assert.equal(harness.lastState().turns, 2);
+  assert.equal(harness.lastState().turnDecision, undefined);
+  assert.deepEqual(harness.lastState().lastDecision, {
+    kind: "continue",
+    turn: 1,
+    evidence: "The first step passed",
+    nextAction: "Run the remaining step",
+  });
+});
+
+test("replacing a goal during compaction cannot revive the old goal", async () => {
+  const harness = createGoalHarness();
+  await harness.startGoal("Finish the old objective");
+  await harness.decide({
+    status: "continue",
+    evidence: "Old progress",
+    nextAction: "Old next action",
+  });
+  await harness.emit("turn_end");
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "aborted" }],
+  });
+  await harness.emit("agent_settled");
+
+  await harness.runGoalCommand("Finish the replacement objective");
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.sentMessages.length, 2);
+  assert.equal(harness.lastState().objective, "Finish the replacement objective");
+  assert.equal(harness.lastState().turns, 1);
 });
 
 test("automatic goal compaction also resumes once when completion precedes settlement", async () => {

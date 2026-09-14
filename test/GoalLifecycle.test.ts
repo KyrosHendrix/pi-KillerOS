@@ -63,6 +63,33 @@ test("/goal restores only the current branch and resumes active saved work", asy
   assert.match(last(notifications).message, /Finish the saved task/u);
 });
 
+test("resume and later transitions do not retain an old pause reason", async () => {
+  const { appendedEntries, commands, handlers, tools } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  await getCommand(commands, "goal").handler("Finish after resuming", ctx);
+  await emitSequentially(getHandlers(handlers, "agent_end"), {
+    messages: [{ role: "assistant", stopReason: "stop" }],
+  }, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
+  assert.equal(last(appendedEntries).data.state.stopReason, "no turn decision");
+
+  await getCommand(commands, "goal").handler("resume", ctx);
+  assert.equal(last(appendedEntries).data.state.stopReason, undefined);
+  await getCommand(commands, "goal").handler("pause", ctx);
+  assert.equal(last(appendedEntries).data.state.stopReason, undefined);
+
+  await getCommand(commands, "goal").handler("resume", ctx);
+  await getTool(tools, "killeros_goal_update").execute(
+    "complete-after-resume",
+    { status: "complete", evidence: "Verified" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  assert.equal(last(appendedEntries).data.state.status, "complete");
+  assert.equal(last(appendedEntries).data.state.stopReason, undefined);
+});
+
 test("/goal pauses an exhausted restored goal before continuation", async () => {
   const now = Date.now();
   const exhausted = {
@@ -140,9 +167,12 @@ test("/goal restore rejects contradictory status-specific fields", async () => {
   };
   const invalidStates = [
     { ...common, status: "active", activeStartedAt: -1 },
+    { ...common, status: "active", activeStartedAt: now, stopReason: "stale pause" },
     { ...common, status: "paused", activeStartedAt: now },
+    { ...common, status: "paused", stopReason: "" },
     { ...common, status: "blocked", activeStartedAt: now, result: "blocked" },
     { ...common, status: "complete", result: "done", blockerAudit: { key: "blocked", streak: 1, lastTurn: 1 } },
+    { ...common, status: "complete", result: "done", stopReason: "stale pause" },
   ];
 
   for (const state of invalidStates) {

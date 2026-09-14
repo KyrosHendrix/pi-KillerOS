@@ -222,7 +222,7 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     || turnDecision !== undefined && !isGoalPendingDecision(turnDecision, turns)
     || lastDecision !== undefined && !isGoalTurnDecision(lastDecision, turns)
     || lastContinueReport !== undefined && !isGoalContinueReport(lastContinueReport, turns)
-    || stopReason !== undefined && !isSafePersistedText(stopReason, GOAL_EVIDENCE_LIMIT, false)) {
+    || stopReason !== undefined && !isSafePersistedText(stopReason, GOAL_EVIDENCE_LIMIT)) {
     return undefined;
   }
 
@@ -241,6 +241,8 @@ export function parseGoalState(value: unknown): GoalState | undefined {
   if (status === "complete" && (turnPhase !== undefined || pending !== undefined)) return undefined;
   if (status === "blocked" && (turnPhase !== undefined || pending !== undefined)) return undefined;
   if (status === "paused" && turnPhase === "ready" && pending !== undefined) return undefined;
+  // A pause reason is only current while paused; on any other status it contradicts the state.
+  if (stopReason !== undefined && status !== "paused") return undefined;
 
   const common: GoalStateCommon = {
     version: GOAL_VERSION,
@@ -476,7 +478,7 @@ export function commonGoalState(state: GoalState): GoalStateCommon {
     ...(state.turnDecision === undefined ? {} : { turnDecision: state.turnDecision }),
     ...(state.lastDecision === undefined ? {} : { lastDecision: state.lastDecision }),
     ...(state.lastContinueReport === undefined ? {} : { lastContinueReport: state.lastContinueReport }),
-    ...(state.stopReason === undefined ? {} : { stopReason: state.stopReason }),
+    ...(state.status === "paused" && state.stopReason !== undefined ? { stopReason: state.stopReason } : {}),
   };
 }
 
@@ -614,7 +616,7 @@ export function transitionGoalState(
   };
   const blockerAudit = options.resetBlockedAudit ? undefined : options.blockerAudit ?? current.blockerAudit;
   const pending = options.preserveTurnAuthorization ? current.turnDecision : undefined;
-  const { turnDecision: _decision, turnPhase: _phase, ...withoutPending } = common;
+  const { turnDecision: _decision, turnPhase: _phase, stopReason: _stopReason, ...withoutPending } = common;
   switch (status) {
     case "active":
       return {

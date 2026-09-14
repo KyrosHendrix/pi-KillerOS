@@ -11,6 +11,8 @@ All notable changes to KillerOS are documented here.
 ### Fixed
 
 - Made goal continuation explicit: each settled turn now needs one accepted `continue`, `complete`, or blocker decision. Missing decisions, repeated continuation reports, unavailable goal tools, and runtime failures pause without scheduling another turn; compaction recovery resumes the same logical turn.
+- Preserved accepted goal decisions across automatic compaction: a `continue` or blocker audit recorded before compaction now authorizes exactly one next turn instead of being discarded and re-decided. Duplicate compaction and settlement callbacks cannot start a second turn.
+- Scoped goal pause reasons to the current paused state: resume and manual pause no longer surface an earlier automatic reason, terminal states keep no pause reason, and contradictory persisted states fail closed instead of starting automatic work.
 
 ## [2.1.27] - 2026-09-12
 
