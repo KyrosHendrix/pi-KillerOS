@@ -8,6 +8,10 @@ All notable changes to KillerOS are documented here.
 
 - Appended the selected model ID as a gray `· <model-id>` suffix to every TUI activity working message, retained for the full request cycle and falling back to `unknown model` when no usable ID exists.
 
+### Fixed
+
+- Made goal continuation explicit: each settled turn now needs one accepted `continue`, `complete`, or blocker decision. Missing decisions, repeated continuation reports, unavailable goal tools, and runtime failures pause without scheduling another turn; compaction recovery resumes the same logical turn.
+
 ## [2.1.27] - 2026-09-12
 
 ### Added

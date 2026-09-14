@@ -388,7 +388,7 @@ test("contextPercentRemaining remains a public display helper", async () => {
   })), null);
 });
 
-test("threshold compaction continues a goal only at Pi's settled boundary", async () => {
+test("threshold compaction does not continue a goal without a turn decision", async () => {
   const harness = createHarness();
   const { ctx } = createContext();
   await startGoalTurn(harness, ctx);
@@ -399,10 +399,11 @@ test("threshold compaction continues a goal only at Pi's settled boundary", asyn
   await emitSequentially(harness.handlers.get("session_compact"), compactEvent("threshold"), ctx);
   assert.equal(harness.sentMessages.length, 1, "session_compact is not the continuation gate");
   await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
-  assert.equal(harness.sentMessages.length, 2);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(lastAppendedEntry(harness).data.state.status, "paused");
 });
 
-test("threshold compaction failure remains Pi-owned and continues at settled", async () => {
+test("threshold compaction failure remains Pi-owned and pauses without a decision", async () => {
   const harness = createHarness();
   const { ctx } = createContext();
   await startGoalTurn(harness, ctx, "Continue after Pi retries compaction");
@@ -412,10 +413,11 @@ test("threshold compaction failure remains Pi-owned and continues at settled", a
 
   // Failed threshold compaction emits no session_compact extension event.
   await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
-  assert.equal(harness.sentMessages.length, 2);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(lastAppendedEntry(harness).data.state.status, "paused");
 });
 
-test("overflow retry produces one continuation after the final settled result", async () => {
+test("overflow retry does not continue without a goal decision", async () => {
   const harness = createHarness();
   const { ctx } = createContext();
   await startGoalTurn(harness, ctx, "Repair the overflowed task");
@@ -430,9 +432,10 @@ test("overflow retry produces one continuation after the final settled result", 
   assert.equal(harness.sentMessages.length, 1);
 
   await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
-  assert.equal(harness.sentMessages.length, 2);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(lastAppendedEntry(harness).data.state.status, "paused");
   await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
-  assert.equal(harness.sentMessages.length, 2);
+  assert.equal(harness.sentMessages.length, 1);
 });
 
 test("an unrecovered overflow pauses through normal goal error handling", async () => {
@@ -469,7 +472,7 @@ test("manual compaction resumes only the exact recovery-eligible paused goal", a
   assert.equal(resumed.status, "active");
   assert.equal(resumed.resumeAfterManualCompaction, undefined);
   assert.equal(harness.sentMessages.length, 2);
-  assert.match(notifications.at(-1)?.message ?? "", /compaction.*goal resumed/iu);
+  assert.match(notifications.at(-1)?.message ?? "", /compaction.*interrupted goal turn resumed/iu);
 });
 
 test("duplicate manual compaction events do not duplicate recovery", async () => {
@@ -479,6 +482,18 @@ test("duplicate manual compaction events do not duplicate recovery", async () =>
   await emitSequentially(harness.handlers.get("session_compact"), compactEvent("manual"), ctx);
   await emitSequentially(harness.handlers.get("session_compact"), compactEvent("manual"), ctx);
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.sentMessages.length, 2);
+});
+
+test("tree navigation invalidates a scheduled manual-compaction recovery", async () => {
+  const harness = createHarness();
+  const { ctx } = createContext();
+  await abortActiveGoal(harness, ctx);
+  await emitSequentially(harness.handlers.get("session_compact"), compactEvent("manual"), ctx);
+  await emitSequentially(harness.handlers.get("session_tree"), { type: "session_tree" }, ctx);
+  await getCommand(harness, "goal").handler("Start on the destination branch", ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+
   assert.equal(harness.sentMessages.length, 2);
 });
 

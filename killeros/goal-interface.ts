@@ -7,19 +7,24 @@ import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { parseGoalCommand } from "./goal-command.ts";
 import { GOAL_ENTRY_TYPE, GOAL_UPDATE_TOOL, isGoalModeSupported, isSavedSession, pauseGoalAfterFailure, persistGoalState, scheduleGoalContinuation, stopGoalRun, sumGoalTokens, syncGoalUpdateTool, transitionGoal, type GoalEntryData } from "./goal-runtime.ts";
-import { checkpointPausedGoalState, createNewGoalState, DEFAULT_GOAL_MAX_TURNS, GOAL_MAX_TURNS, goalElapsedMilliseconds, GOAL_VERSION, inferGoalVerification, parseGoalState, recordGoalBlockerAudit, transitionGoalState, verifyGoalDeliverable } from "./goal-state.ts";
+import { checkpointPausedGoalState, createNewGoalState, DEFAULT_GOAL_MAX_TURNS, GOAL_EVIDENCE_LIMIT, GOAL_MAX_TURNS, goalElapsedMilliseconds, GOAL_VERSION, inferGoalVerification, normalizeGoalText, parseGoalState, recordGoalDecision, transitionGoalState, verifyGoalDeliverable } from "./goal-state.ts";
 import type { GoalRuntime, GoalState, GoalStatus } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const GoalUpdateParams = Type.Object({
-  status: StringEnum(["complete", "blocked"] as const, {
-    description: "Mark the active goal complete or blocked",
+  status: StringEnum(["complete", "continue", "blocked"] as const, {
+    description: "Record exactly one active-goal decision: complete, continue, or blocked",
   }),
   evidence: Type.String({
     minLength: 1,
-    maxLength: 2_000,
-    description: "Concise evidence that the objective is complete, or the repeated blocker and attempted workarounds",
+    maxLength: GOAL_EVIDENCE_LIMIT,
+    description: "Concrete current-turn evidence for completion, progress, or the repeated blocker",
   }),
+  nextAction: Type.Optional(Type.String({
+    minLength: 1,
+    maxLength: GOAL_EVIDENCE_LIMIT,
+    description: "One concrete action toward the unchanged objective when status is continue",
+  })),
   blockerKey: Type.Optional(Type.String({
     minLength: 1,
     maxLength: 120,
@@ -29,8 +34,9 @@ const GoalUpdateParams = Type.Object({
 });
 
 interface GoalUpdateDetails {
-  status: "complete" | "blocked" | "blocker-audit";
+  status: "complete" | "continue" | "blocked" | "blocker-audit";
   evidence: string;
+  nextAction?: string;
   verification?: "file" | "model-reported";
   blockerKey?: string;
   streak?: number;
@@ -55,10 +61,34 @@ function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
     : `${state.turns}/${state.maxTurns} turns`;
   const lines = [
     `Goal ${goalStatusLabel(state.status).toLowerCase()} · ${turns} · ${formatTime(goalElapsedMilliseconds(state, Date.now()))} · ${formatTokens(usedTokens)} tokens`,
+    `Objective: ${state.objective}`,
     ...(state.verification === undefined ? [] : [`Deliverable: ${state.verification.path}`]),
-    state.objective,
   ];
-  if (state.result) lines.push(state.result);
+  const decision = state.turnDecision ?? state.lastDecision;
+  if (decision?.kind === "continue") {
+    lines.push(`Last decision: model-reported progress on turn ${decision.turn}`);
+    lines.push(`Next action: ${decision.nextAction}`);
+  } else if (decision?.kind === "blocker-audit") {
+    lines.push(`Last decision: blocker audit ${decision.streak}/3 on turn ${decision.turn}`);
+    lines.push(`Evidence: ${decision.evidence}`);
+  } else if (decision?.kind === "blocked") {
+    lines.push(`Last decision: blocked on turn ${decision.turn}`);
+    lines.push(`Evidence: ${decision.evidence}`);
+  } else if (decision?.kind === "complete") {
+    lines.push(`Completion: ${decision.verification === "file" ? `verified file ${state.verification?.path ?? "deliverable"}` : "model-reported"}`);
+    lines.push(`Evidence: ${decision.evidence}`);
+  }
+  if (state.status === "paused") {
+    const stoppedTurn = state.turns === 0 ? "before turn 1" : `on turn ${state.turns}`;
+    const reason = state.stopReason ?? state.result;
+    if (reason) lines.push(`Stopped ${stoppedTurn}: ${reason}`);
+    if (state.stopReason === "repeated continue report" && state.lastContinueReport) {
+      lines.push(`Repeated report turns: ${state.lastContinueReport.turn} and ${state.turns}`);
+    }
+    lines.push("No automatic continuation was started.");
+  } else if (state.result && decision?.kind !== "complete" && decision?.kind !== "blocked") {
+    lines.push(`Result: ${state.result}`);
+  }
   return safeTerminalText(lines.join("\n"));
 }
 
@@ -85,7 +115,7 @@ export function registerGoalInterface(
   pi.registerTool<typeof GoalUpdateParams, GoalUpdateDetails>({
     name: GOAL_UPDATE_TOOL,
     label: "Goal update",
-    description: "Mark the active KillerOS long-running goal complete after verification, or record the same blocker key on three consecutive goal turns before blocking it.",
+    description: "Record exactly one active-goal decision: complete after verification, continue with evidence and one next action, or audit the same blocker before blocking it.",
     parameters: GoalUpdateParams,
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -94,42 +124,110 @@ export function registerGoalInterface(
       if (!isSavedSession(ctx)) throw new Error("KillerOS goals require a saved session");
       const state = runtime.state;
       if (!state || state.status !== "active") throw new Error("There is no active KillerOS goal to update");
-      const evidence = params.evidence.trim();
-      if (!evidence) throw new Error("Goal evidence must not be empty");
+      if (!runtime.goalTurnInFlight
+        || runtime.goalTurn?.turn !== state.turns
+        || runtime.goalTurn.revision !== state.revision) {
+        throw new Error("A goal decision can only be recorded during an active KillerOS goal turn");
+      }
+      if (state.turnDecision !== undefined) {
+        throw new Error("Only one goal decision may be accepted per logical goal turn");
+      }
+      if (params.status !== "complete" && params.status !== "continue" && params.status !== "blocked") {
+        throw new Error("Goal update status is invalid");
+      }
+      if (typeof params.evidence !== "string") throw new Error("Goal evidence must be text");
+      const evidence = normalizeGoalText(params.evidence, GOAL_EVIDENCE_LIMIT, "Goal evidence");
+
       if (params.status === "complete") {
         if (state.verification) await verifyGoalDeliverable(state.verification);
         signal?.throwIfAborted();
-        if (runtime.state !== state) throw new Error("Goal changed while completion was being verified");
-        const verification = state.verification ? "file" : "model-reported";
-        transitionGoal(pi, runtime, "complete", "complete", evidence, { resetBlockedAudit: true });
-        const safeEvidence = safeTerminalText(evidence);
+        if (runtime.state !== state
+          || runtime.goalTurn?.turn !== state.turns
+          || runtime.goalTurn.revision !== state.revision
+          || state.turnDecision !== undefined
+          || !runtime.goalTurnInFlight) throw new Error("Goal changed while completion was being verified");
+        const verification: "file" | "model-reported" = state.verification ? "file" : "model-reported";
+        const decision = { kind: "complete" as const, turn: state.turns, evidence, verification };
+        try {
+          transitionGoal(pi, runtime, "complete", "complete", evidence, { resetBlockedAudit: true, decision });
+        } catch (error) {
+          pauseGoalAfterFailure(pi, runtime, ctx, `goal completion could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+          throw error;
+        }
         const text = state.verification
-          ? `Goal verified complete at ${safeTerminalText(state.verification.path)}: ${safeEvidence}`
-          : `Goal marked complete (model-reported): ${safeEvidence}`;
+          ? `Goal verified complete at ${safeTerminalText(state.verification.path)}: ${evidence}`
+          : `Goal marked complete (model-reported): ${evidence}`;
         return {
           content: [{ type: "text", text }],
           details: { status: "complete", evidence, verification },
         };
       }
-      if (!runtime.goalTurnInFlight) throw new Error("A blocker audit can only be recorded during an active KillerOS goal turn");
+
+      if (params.status === "continue") {
+        if (typeof params.nextAction !== "string") throw new Error("A continue decision requires a nextAction");
+        const nextAction = normalizeGoalText(params.nextAction, GOAL_EVIDENCE_LIMIT, "Goal nextAction");
+        const previous = state.lastContinueReport;
+        if (previous?.turn === state.turns - 1
+          && previous.evidence === evidence
+          && previous.nextAction === nextAction) {
+          pauseGoalAfterFailure(pi, runtime, ctx, "repeated continue report", "Run /goal resume only after choosing a different next action.", false);
+          ctx.ui.notify(
+            `Goal paused: repeated continue report on turns ${previous.turn} and ${state.turns}\nRun /goal resume only after choosing a different next action.`,
+            "error",
+          );
+          throw new Error("repeated continue report");
+        }
+        const decision = { kind: "continue" as const, turn: state.turns, evidence, nextAction };
+        try {
+          const next = recordGoalDecision(state, decision, Date.now());
+          persistGoalState(pi, runtime, "continue", next);
+          runtime.goalTurn = { turn: next.turns, revision: next.revision };
+        } catch (error) {
+          pauseGoalAfterFailure(pi, runtime, ctx, `goal decision could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+          throw error;
+        }
+        return {
+          content: [{ type: "text", text: `Model-reported progress recorded; the goal remains active: ${evidence}` }],
+          details: { status: "continue", evidence, nextAction },
+        };
+      }
+
       const blockerKey = params.blockerKey;
       if (!blockerKey || !/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(blockerKey)) {
         throw new Error("A blocked goal update requires a stable lowercase blockerKey");
       }
       const previous = state.blockerAudit;
-      const sameTurn = previous?.key === blockerKey && previous.lastTurn === state.turns;
+      if (previous?.lastTurn === state.turns) {
+        throw new Error("Only one goal decision may be accepted per logical goal turn");
+      }
       const consecutive = previous?.key === blockerKey && previous.lastTurn === state.turns - 1;
-      const streak = sameTurn ? previous.streak : consecutive ? previous.streak + 1 : 1;
+      const streak = consecutive ? previous.streak + 1 : 1;
       const blockerAudit = { key: blockerKey, streak, lastTurn: state.turns, evidence };
       if (streak < 3) {
-        const next = recordGoalBlockerAudit(state, blockerAudit, Date.now());
-        persistGoalState(pi, runtime, "blocker-audit", next);
+        const decision = { kind: "blocker-audit" as const, turn: state.turns, blockerKey, streak, evidence };
+        try {
+          const next = {
+            ...recordGoalDecision(state, decision, Date.now()),
+            blockerAudit,
+          };
+          persistGoalState(pi, runtime, "blocker-audit", next);
+          runtime.goalTurn = { turn: next.turns, revision: next.revision };
+        } catch (error) {
+          pauseGoalAfterFailure(pi, runtime, ctx, `blocker decision could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+          throw error;
+        }
         return {
           content: [{ type: "text", text: `Blocker audit ${streak}/3 recorded; the goal remains active: ${evidence}` }],
           details: { status: "blocker-audit", evidence, blockerKey, streak },
         };
       }
-      transitionGoal(pi, runtime, "blocked", "blocked", evidence, { blockerAudit });
+      const decision = { kind: "blocked" as const, turn: state.turns, blockerKey, streak: 3 as const, evidence };
+      try {
+        transitionGoal(pi, runtime, "blocked", "blocked", evidence, { blockerAudit, decision });
+      } catch (error) {
+        pauseGoalAfterFailure(pi, runtime, ctx, `blocked decision could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      }
       return {
         content: [{ type: "text", text: `Goal marked blocked: ${evidence}` }],
         details: { status: "blocked", evidence, blockerKey, streak },
@@ -146,11 +244,18 @@ export function registerGoalInterface(
       }
       const details = result.details;
       if (!details) return new BoundedText(theme.fg("dim", "Goal updated"));
-      const label = details.status === "complete" ? "✓ Complete" : details.status === "blocked" ? "! Blocked" : `! Blocker audit ${details.streak}/3`;
+      const label = details.status === "complete"
+        ? "✓ Complete"
+        : details.status === "blocked"
+          ? "! Blocked"
+          : details.status === "continue"
+            ? "→ Progress recorded"
+            : `! Blocker audit ${details.streak}/3`;
       const text = `${theme.fg(details.status === "complete" ? "success" : "warning", label)}${theme.fg("dim", ` · ${safeTerminalText(details.evidence)}`)}`;
       return new BoundedText(text, options.expanded ? undefined : 3);
     },
   });
+  syncGoalUpdateTool(pi, runtime);
   const handleGoalCommand = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
       const command = parseGoalCommand(args);
       if (ctx.mode === "print" || ctx.mode === "json") {
@@ -376,7 +481,7 @@ export function registerGoalInterface(
         });
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
         if (scheduleGoalContinuation(pi, runtime, ctx)) {
-          ctx.ui.notify("Goal active. KillerOS will continue until completion, a repeated blocker, or pause.", "info");
+          ctx.ui.notify("Goal active. Each turn must record continue, complete, or a blocker decision before another turn starts.", "info");
         }
       } catch (error) {
         if (!unfinished) {

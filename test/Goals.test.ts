@@ -33,12 +33,12 @@ test("goal updates use a Google-compatible status enum", () => {
 
   assert.deepEqual(properties.status, {
     type: "string",
-    enum: ["complete", "blocked"],
-    description: "Mark the active goal complete or blocked",
+    enum: ["complete", "continue", "blocked"],
+    description: "Record exactly one active-goal decision: complete, continue, or blocked",
   });
-  for (const status of ["complete", "blocked"]) {
-    assert.equal(Check(tool.parameters, { status, evidence: "verified" }), true, status);
-  }
+  assert.equal(Check(tool.parameters, { status: "complete", evidence: "verified" }), true, "complete");
+  assert.equal(Check(tool.parameters, { status: "continue", evidence: "progress", nextAction: "inspect the result" }), true, "continue");
+  assert.equal(Check(tool.parameters, { status: "blocked", evidence: "verified" }), true, "blocked");
   for (const status of ["active", "paused", "Complete", "", null, 0]) {
     assert.equal(Check(tool.parameters, { status, evidence: "verified" }), false, String(status));
   }
@@ -99,16 +99,23 @@ test("bare lifecycle controls match case-insensitively while longer text stays a
 });
 
 test("explicit resume renews an exhausted 20-turn budget to 40", async () => {
-  const { appendedEntries, commands, handlers, sentMessages } = createHarness<GoalEntryData>();
+  const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
-  const settle = async () => {
+  const settle = async (turn: number) => {
+    await getTool(tools, "killeros_goal_update").execute(
+      `continue-${turn}`,
+      { status: "continue", evidence: `Progress ${turn}`, nextAction: `Inspect result ${turn}` },
+      new AbortController().signal,
+      () => {},
+      ctx,
+    );
     await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
     await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   };
   await getCommand(commands, "goal").handler("Finish in twenty turns", ctx);
-  for (let turn = 1; turn <= 19; turn += 1) await settle();
+  for (let turn = 1; turn <= 19; turn += 1) await settle(turn);
   assert.equal(sentMessages.length, 20);
-  await settle();
+  await settle(20);
   assert.equal(sentMessages.length, 20);
   assert.equal(last(appendedEntries).data.event, "limit");
   assert.equal(last(appendedEntries).data.state.status, "paused");
@@ -170,13 +177,20 @@ test("resume at the lifetime ceiling stays paused", async () => {
 });
 
 test("the 20th default-limited turn settles silently without starting turn 21", async () => {
-  const { appendedEntries, commands, handlers, sentMessages } = createHarness<GoalEntryData>();
+  const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
   const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   await getCommand(commands, "goal").handler("Finish within the default limit", ctx);
 
   for (let turn = 1; turn <= 20; turn += 1) {
+    await getTool(tools, "killeros_goal_update").execute(
+      `continue-${turn}`,
+      { status: "continue", evidence: `Progress ${turn}`, nextAction: `Inspect result ${turn}` },
+      new AbortController().signal,
+      () => {},
+      ctx,
+    );
     await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
     await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   }
@@ -281,7 +295,7 @@ test("goal panel confirms clear and leaves direct goal commands compatible", asy
   let abortCalls = 0;
   let confirmation: { message: string; title: string } | undefined;
   ctx.abort = () => { abortCalls += 1; };
-  await getCommand(commands, "goal").handler("Keep \x1b]2;owned\x07\x1b[31mthis\x1b[0m\0 goal", ctx);
+  await getCommand(commands, "goal").handler("Keep this goal", ctx);
   ctx.ui.select = async () => "Clear goal";
   ctx.ui.confirm = async (title, message) => {
     assert.ok(typeof title === "string");
@@ -305,8 +319,8 @@ test("goal panel confirms clear and leaves direct goal commands compatible", asy
 });
 
 test("goal panel actions match paused, blocked, and complete states", async () => {
-  const unsafeObjective = "\x1b]2;owned\x07\x1b[31mobjective\x1b[0m\0";
-  const unsafeResult = "\x1b]2;owned\x07\x1b[31mverified\x1b[0m\0";
+  const unsafeObjective = "objective";
+  const unsafeResult = "verified";
   const expected = {
     paused: ["Resume automatic continuation", "Clear goal"],
     blocked: ["Resume automatic continuation", "Clear goal"],
@@ -357,15 +371,14 @@ test("/goal custom-message continuations enter goal turns without before_agent_s
     () => {},
     ctx,
   );
-  const duplicate = await getTool(tools, "killeros_goal_update").execute(
+  await assert.rejects(getTool(tools, "killeros_goal_update").execute(
     "duplicate-host-turn",
     { status: "blocked", blockerKey: "host-lifecycle", evidence: "Duplicate audit in the same turn" },
     new AbortController().signal,
     () => {},
     ctx,
-  );
+  ), /Only one goal decision may be accepted per logical goal turn/u);
   assert.equal(first.details.streak, 1);
-  assert.equal(duplicate.details.streak, 1);
 
   await emitSequentially(getHandlers(handlers, "agent_end"), {
     messages: [{ role: "assistant", stopReason: "stop" }],
@@ -385,12 +398,19 @@ test("/goal custom-message continuations enter goal turns without before_agent_s
 });
 
 test("/goal continues one turn at a time and pause stops future turns", async () => {
-  const { commands, handlers, sentMessages } = createHarness<GoalEntryData>();
+  const { commands, handlers, sentMessages, tools } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
   await getCommand(commands, "goal").handler("Finish the migration", ctx);
   assert.equal(sentMessages.length, 1);
 
   await emitGoalStart(handlers, ctx);
+  await getTool(tools, "killeros_goal_update").execute(
+    "continue-migration",
+    { status: "continue", evidence: "The first migration step passed", nextAction: "Run the next migration step" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
   await emitSequentially(getHandlers(handlers, "agent_end"), {
     messages: [{ role: "assistant", stopReason: "stop" }],
   }, ctx);

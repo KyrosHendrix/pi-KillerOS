@@ -5,7 +5,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## What you get
 
 - A custom TUI: startup masthead with versions, model, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.
-- `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. New goals pause after 20 turns; `/goal resume` grants another 20.
+- `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Each turn must record `continue` with evidence and one next action, `complete`, or the existing blocker decision; otherwise the goal pauses. New goals pause after 20 turns; `/goal resume` grants another 20.
 - `/codex-fast`: toggles the `priority` service tier on Codex requests or reports its status.
 - `/handoff`: starts a fresh linked session carrying visible continuation context.
 - Automatic context compaction when remaining tokens drop below 15% of the window (configurable).
@@ -85,7 +85,7 @@ A direct quoted file target binds silent file proof:
 /goal Fix `killeros/footer.ts`, verified by npm test
 ```
 
-KillerOS captures the file baseline at goal start and only completes when the file is created or changed. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Restored goals keep their persisted limit.
+KillerOS captures the file baseline at goal start and only completes when the file is created or changed. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Restored goals keep their persisted limit.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 

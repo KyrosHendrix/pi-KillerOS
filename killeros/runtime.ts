@@ -1,5 +1,43 @@
 export type GoalStatus = "active" | "paused" | "blocked" | "complete";
 
+export type GoalTurnPhase = "ready" | "in-flight" | "authorized";
+
+export interface GoalContinueReport {
+  turn: number;
+  evidence: string;
+  nextAction: string;
+}
+
+export type GoalTurnDecision =
+  | {
+      kind: "continue";
+      turn: number;
+      evidence: string;
+      nextAction: string;
+    }
+  | {
+      kind: "blocker-audit";
+      turn: number;
+      blockerKey: string;
+      streak: number;
+      evidence: string;
+    }
+  | {
+      kind: "blocked";
+      turn: number;
+      blockerKey: string;
+      streak: 3;
+      evidence: string;
+    }
+  | {
+      kind: "complete";
+      turn: number;
+      evidence: string;
+      verification: "file" | "model-reported";
+    };
+
+export type GoalPendingDecision = Extract<GoalTurnDecision, { kind: "continue" | "blocker-audit" }>;
+
 export interface GoalBlockerAudit {
   key: string;
   streak: number;
@@ -29,6 +67,11 @@ export interface GoalStateCommon {
   baselineTokens: number;
   verification?: GoalFileVerification;
   maxTurns?: number;
+  turnPhase?: GoalTurnPhase;
+  turnDecision?: GoalPendingDecision;
+  lastDecision?: GoalTurnDecision;
+  lastContinueReport?: GoalContinueReport;
+  stopReason?: string;
 }
 
 export type GoalState = GoalStateCommon & (
@@ -69,6 +112,13 @@ export interface AutomaticGoalCompaction {
   pausedRevision: number;
   outcome: AutomaticGoalCompactionOutcome;
   turnSettled: boolean;
+  turn: number;
+  resumeSameTurn: boolean;
+}
+
+export interface GoalTurnExecution {
+  turn: number;
+  revision: number;
 }
 
 export interface GoalRuntime {
@@ -77,10 +127,12 @@ export interface GoalRuntime {
   continuationHeld: boolean;
   goalTurnInFlight: boolean;
   agentEndObserved: boolean;
+  goalTurn?: GoalTurnExecution;
   automaticCompaction?: AutomaticGoalCompaction;
   persistenceRetryNeeded: boolean;
   lastStopReason?: string;
   lastError?: string;
+  lifecycleGeneration: number;
   requestRender?: () => void;
 }
 
@@ -90,7 +142,9 @@ export function createGoalRuntime(): GoalRuntime {
     continuationHeld: false,
     goalTurnInFlight: false,
     agentEndObserved: false,
+    goalTurn: undefined,
     automaticCompaction: undefined,
     persistenceRetryNeeded: false,
+    lifecycleGeneration: 0,
   };
 }

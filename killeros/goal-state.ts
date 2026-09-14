@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
-import type { GoalBlockerAudit, GoalFileBaseline, GoalFileVerification, GoalState, GoalStateCommon, GoalStatus } from "./runtime.ts";
+import type { GoalBlockerAudit, GoalContinueReport, GoalFileBaseline, GoalFileVerification, GoalPendingDecision, GoalState, GoalStateCommon, GoalStatus, GoalTurnDecision, GoalTurnPhase } from "./runtime.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 export const DEFAULT_GOAL_MAX_TURNS = 20;
 export const GOAL_OBJECTIVE_LIMIT = 4_000;
+export const GOAL_EVIDENCE_LIMIT = 2_000;
 export const GOAL_MAX_TURNS = 10_000;
 export const GOAL_VERSION = 1;
 const FILE_HASH_CHUNK_SIZE = 64 * 1024;
@@ -18,6 +20,10 @@ export interface GoalTransitionOptions {
   resetBlockedAudit?: boolean;
   resumeAfterManualCompaction?: true;
   blockerAudit?: GoalBlockerAudit;
+  keepTurnForRecovery?: true;
+  resumeInterruptedTurn?: true;
+  preserveTurnAuthorization?: true;
+  decision?: GoalTurnDecision;
 }
 
 function isGoalStatus(value: unknown): value is GoalStatus {
@@ -44,6 +50,79 @@ function addGoalMilliseconds(accumulated: number, interval: number): number {
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function graphemeCount(value: string): number {
+  let length = 0;
+  for (const _ of graphemeSegmenter.segment(value)) length += 1;
+  return length;
+}
+
+function isSafePersistedText(value: unknown, limit: number, required = true): value is string {
+  return typeof value === "string"
+    && (required ? Boolean(value.trim()) : true)
+    && value === value.trim()
+    && safeTerminalText(value) === value
+    && graphemeCount(value) <= limit;
+}
+
+/** Normalizes model or user text before it crosses the persisted goal boundary. */
+export function normalizeGoalText(value: string, limit: number, label: string): string {
+  if (graphemeCount(value) > limit) throw new Error(`${label} must not exceed ${limit} characters`);
+  const normalized = safeTerminalText(value).trim();
+  if (!normalized) throw new Error(`${label} must not be empty`);
+  if (graphemeCount(normalized) > limit) throw new Error(`${label} must not exceed ${limit} characters`);
+  return normalized;
+}
+
+function isGoalTurnPhase(value: unknown): value is GoalTurnPhase {
+  return value === "ready" || value === "in-flight" || value === "authorized";
+}
+
+function isGoalContinueReport(value: unknown, turns: number): value is GoalContinueReport {
+  return isUnknownRecord(value)
+    && safeNonNegativeInteger(value.turn)
+    && value.turn >= 1
+    && value.turn <= turns
+    && isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)
+    && isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT);
+}
+
+function isGoalPendingDecision(value: unknown, turns: number): value is GoalPendingDecision {
+  if (!isUnknownRecord(value)
+    || !safeNonNegativeInteger(value.turn)
+    || value.turn < 1
+    || value.turn > turns
+    || !isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)) return false;
+  if (value.kind === "continue") return isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT);
+  return value.kind === "blocker-audit"
+    && typeof value.blockerKey === "string"
+    && /^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.blockerKey)
+    && typeof value.streak === "number"
+    && Number.isInteger(value.streak)
+    && value.streak >= 1
+    && value.streak < 3;
+}
+
+function isGoalTurnDecision(value: unknown, turns: number): value is GoalTurnDecision {
+  if (!isUnknownRecord(value)
+    || !safeNonNegativeInteger(value.turn)
+    || value.turn < 1
+    || value.turn > turns
+    || !isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)) return false;
+  if (value.kind === "continue") return isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT);
+  if (value.kind === "complete") return value.verification === "file" || value.verification === "model-reported";
+  return (value.kind === "blocker-audit"
+    && typeof value.blockerKey === "string"
+    && /^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.blockerKey)
+    && typeof value.streak === "number"
+    && Number.isInteger(value.streak)
+    && value.streak >= 1
+    && value.streak < 3)
+    || (value.kind === "blocked"
+      && typeof value.blockerKey === "string"
+      && /^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.blockerKey)
+      && value.streak === 3);
 }
 
 function isGoalFileBaseline(value: unknown): value is GoalFileBaseline {
@@ -75,8 +154,7 @@ function stripUnquotedPathPunctuation(value: string): string {
 function isGoalFileVerification(value: unknown): value is GoalFileVerification {
   return isUnknownRecord(value)
     && value.kind === "file"
-    && typeof value.path === "string"
-    && value.path === value.path.trim()
+    && isSafePersistedText(value.path, GOAL_OBJECTIVE_LIMIT)
     && isAbsoluteFilePath(value.path)
     && isGoalFileBaseline(value.baseline);
 }
@@ -85,22 +163,13 @@ function isMaxTurns(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= GOAL_MAX_TURNS;
 }
 
-function exceedsBlockerEvidenceLimit(value: string): boolean {
-  let length = 0;
-  for (const _ of graphemeSegmenter.segment(value)) {
-    if (++length > 2_000) return true;
-  }
-  return false;
-}
-
 function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): value is GoalBlockerAudit {
   if (!isUnknownRecord(value)
     || typeof value.key !== "string"
     || !/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.key)
     || typeof value.streak !== "number" || !Number.isInteger(value.streak) || value.streak < 1 || value.streak > 3
     || typeof value.lastTurn !== "number" || !Number.isInteger(value.lastTurn) || value.lastTurn < 1 || value.lastTurn > turns
-    || value.evidence !== undefined && (typeof value.evidence !== "string"
-      || value.evidence !== value.evidence.trim() || !value.evidence || exceedsBlockerEvidenceLimit(value.evidence))) {
+    || value.evidence !== undefined && !isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)) {
     return false;
   }
   if (status === "complete") return false;
@@ -126,10 +195,16 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     blockerAudit,
     verification,
     maxTurns,
+    turnPhase,
+    turnDecision,
+    lastDecision,
+    lastContinueReport,
+    stopReason,
   } = value;
   if (version !== GOAL_VERSION
     || !incrementableNonNegativeInteger(revision) || revision < 1
-    || typeof objective !== "string" || !objective.trim() || [...objective].length > GOAL_OBJECTIVE_LIMIT
+    || typeof objective !== "string" || !objective.trim() || safeTerminalText(objective) !== objective
+      || graphemeCount(objective.trim()) > GOAL_OBJECTIVE_LIMIT
     || !isGoalStatus(status)
     || !safeNonNegativeInteger(createdAt)
     || !safeNonNegativeInteger(updatedAt)
@@ -138,13 +213,34 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     || blockedAuditStartTurn !== undefined
       && (!safeNonNegativeInteger(blockedAuditStartTurn) || blockedAuditStartTurn > turns)
     || !safeNonNegativeInteger(baselineTokens)
-    || result !== undefined && typeof result !== "string"
+    || result !== undefined && !isSafePersistedText(result, GOAL_EVIDENCE_LIMIT, false)
     || verification !== undefined && !isGoalFileVerification(verification)
     || maxTurns !== undefined && !isMaxTurns(maxTurns)
     || resumeAfterManualCompaction !== undefined && resumeAfterManualCompaction !== true
-    || blockerAudit !== undefined && !isGoalBlockerAudit(blockerAudit, turns, status)) {
+    || blockerAudit !== undefined && !isGoalBlockerAudit(blockerAudit, turns, status)
+    || turnPhase !== undefined && !isGoalTurnPhase(turnPhase)
+    || turnDecision !== undefined && !isGoalPendingDecision(turnDecision, turns)
+    || lastDecision !== undefined && !isGoalTurnDecision(lastDecision, turns)
+    || lastContinueReport !== undefined && !isGoalContinueReport(lastContinueReport, turns)
+    || stopReason !== undefined && !isSafePersistedText(stopReason, GOAL_EVIDENCE_LIMIT, false)) {
     return undefined;
   }
+
+  const pending = turnDecision;
+  if (pending !== undefined && pending.turn !== turns) return undefined;
+  if (isGoalTurnDecision(lastDecision, turns)) {
+    if (lastDecision.kind === "complete") {
+      if (status !== "complete") return undefined;
+      if ((lastDecision.verification === "file") !== (verification !== undefined)) return undefined;
+    }
+    if (lastDecision.kind === "blocked" && status !== "blocked") return undefined;
+  }
+  if (pending !== undefined && turnPhase !== "authorized") return undefined;
+  if (turnPhase === "authorized" && pending === undefined) return undefined;
+  if (turnPhase === "ready" && pending !== undefined) return undefined;
+  if (status === "complete" && (turnPhase !== undefined || pending !== undefined)) return undefined;
+  if (status === "blocked" && (turnPhase !== undefined || pending !== undefined)) return undefined;
+  if (status === "paused" && turnPhase === "ready" && pending !== undefined) return undefined;
 
   const common: GoalStateCommon = {
     version: GOAL_VERSION,
@@ -158,6 +254,11 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     baselineTokens,
     ...(verification === undefined ? {} : { verification }),
     ...(maxTurns === undefined ? {} : { maxTurns }),
+    ...(turnPhase === undefined ? {} : { turnPhase }),
+    ...(pending === undefined ? {} : { turnDecision: pending }),
+    ...(lastDecision === undefined ? {} : { lastDecision }),
+    ...(lastContinueReport === undefined ? {} : { lastContinueReport }),
+    ...(stopReason === undefined ? {} : { stopReason }),
   };
   switch (status) {
     case "active":
@@ -339,10 +440,18 @@ export async function verifyGoalDeliverable(verification: GoalFileVerification):
   }
 }
 
+export function boundGoalText(value: string, limit = GOAL_EVIDENCE_LIMIT): string {
+  const safe = safeTerminalText(value).trim();
+  return [...graphemeSegmenter.segment(safe)]
+    .slice(0, limit)
+    .map(({ segment }) => segment)
+    .join("");
+}
+
 export function validateGoalObjective(input: string): string | undefined {
   const objective = input.trim();
-  if (!objective) return undefined;
-  return [...objective].length <= GOAL_OBJECTIVE_LIMIT ? objective : undefined;
+  if (!objective || safeTerminalText(objective) !== objective) return undefined;
+  return graphemeCount(objective) <= GOAL_OBJECTIVE_LIMIT ? objective : undefined;
 }
 
 export function goalElapsedMilliseconds(state: GoalState, now: number): number {
@@ -363,6 +472,11 @@ export function commonGoalState(state: GoalState): GoalStateCommon {
     baselineTokens: state.baselineTokens,
     ...(state.verification === undefined ? {} : { verification: state.verification }),
     ...(state.maxTurns === undefined ? {} : { maxTurns: state.maxTurns }),
+    ...(state.turnPhase === undefined ? {} : { turnPhase: state.turnPhase }),
+    ...(state.turnDecision === undefined ? {} : { turnDecision: state.turnDecision }),
+    ...(state.lastDecision === undefined ? {} : { lastDecision: state.lastDecision }),
+    ...(state.lastContinueReport === undefined ? {} : { lastContinueReport: state.lastContinueReport }),
+    ...(state.stopReason === undefined ? {} : { stopReason: state.stopReason }),
   };
 }
 
@@ -392,16 +506,33 @@ export function createNewGoalState(
     turns: 0,
     blockedAuditStartTurn: 0,
     baselineTokens,
+    turnPhase: "ready",
     ...(verification === undefined ? {} : { verification }),
     ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
   };
+}
+
+function nextRevision(current: { revision: number }): number {
+  if (!incrementableNonNegativeInteger(current.revision)) {
+    throw new Error("Goal revision cannot advance safely");
+  }
+  return current.revision + 1;
 }
 
 export function beginGoalTurnState(
   current: Extract<GoalState, { status: "active" }>,
   now: number,
 ): GoalState {
-  return { ...current, revision: current.revision + 1, turns: current.turns + 1, updatedAt: now };
+  if (!incrementableNonNegativeInteger(current.turns)) throw new Error("Goal turn counter cannot advance safely");
+  const { turnDecision: _decision, turnPhase: _phase, ...withoutPending } = current;
+  return {
+    ...withoutPending,
+    revision: nextRevision(current),
+    turns: current.turns + 1,
+    updatedAt: now,
+    turnPhase: "in-flight",
+    ...(current.turnDecision === undefined ? {} : { lastDecision: current.turnDecision }),
+  };
 }
 
 export function checkpointActiveGoalState(
@@ -410,7 +541,7 @@ export function checkpointActiveGoalState(
 ): GoalState {
   return {
     ...stopGoalClock(current, now),
-    revision: current.revision + 1,
+    revision: nextRevision(current),
     status: "active",
     updatedAt: now,
     activeStartedAt: now,
@@ -424,12 +555,17 @@ export function pauseGoalState(
   result: string | undefined,
   now: number,
   resumeAfterManualCompaction = false,
+  preserveTurnAuthorization = false,
 ): GoalState {
   const common = stopGoalClock(current, now);
+  const { turnDecision: _decision, turnPhase: _phase, ...withoutPending } = common;
   return {
-    ...common,
+    ...withoutPending,
     status: "paused",
+    turnPhase: preserveTurnAuthorization ? current.turnPhase : "ready",
+    ...(preserveTurnAuthorization && current.turnDecision !== undefined ? { turnDecision: current.turnDecision } : {}),
     ...(result === undefined ? {} : { result }),
+    ...(result === undefined ? {} : { stopReason: boundGoalText(result) }),
     ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
     ...(resumeAfterManualCompaction ? { resumeAfterManualCompaction: true as const } : {}),
   };
@@ -440,15 +576,26 @@ export function checkpointPausedGoalState(
   now: number,
 ): GoalState {
   const { resumeAfterManualCompaction: _resume, ...paused } = current;
-  return { ...paused, revision: paused.revision + 1, updatedAt: now };
+  return { ...paused, revision: nextRevision(current), updatedAt: now };
 }
 
-export function recordGoalBlockerAudit(
+export function recordGoalDecision(
   state: Extract<GoalState, { status: "active" }>,
-  blockerAudit: GoalBlockerAudit,
+  decision: GoalPendingDecision,
   now: number,
-): GoalState {
-  return { ...state, revision: state.revision + 1, updatedAt: now, blockerAudit };
+): Extract<GoalState, { status: "active" }> {
+  if (decision.turn !== state.turns) throw new Error("Goal decision does not match the active turn");
+  return {
+    ...state,
+    revision: nextRevision(state),
+    updatedAt: now,
+    turnPhase: "authorized",
+    turnDecision: decision,
+    lastDecision: decision,
+    ...(decision.kind === "continue"
+      ? { lastContinueReport: { turn: decision.turn, evidence: decision.evidence, nextAction: decision.nextAction } }
+      : {}),
+  };
 }
 
 export function transitionGoalState(
@@ -461,27 +608,49 @@ export function transitionGoalState(
   const stopped = stopGoalClock(current, now);
   const common: GoalStateCommon = {
     ...stopped,
-    revision: stopped.revision + 1,
+    revision: nextRevision(stopped),
     updatedAt: now,
     blockedAuditStartTurn: options.resetBlockedAudit ? stopped.turns : stopped.blockedAuditStartTurn,
   };
   const blockerAudit = options.resetBlockedAudit ? undefined : options.blockerAudit ?? current.blockerAudit;
+  const pending = options.preserveTurnAuthorization ? current.turnDecision : undefined;
+  const { turnDecision: _decision, turnPhase: _phase, ...withoutPending } = common;
   switch (status) {
     case "active":
-      return { ...common, status, activeStartedAt: now, ...(blockerAudit === undefined ? {} : { blockerAudit }) };
+      return {
+        ...withoutPending,
+        status,
+        activeStartedAt: now,
+        turnPhase: pending !== undefined ? "authorized" : options.resumeInterruptedTurn ? "in-flight" : "ready",
+        ...(pending === undefined ? {} : { turnDecision: pending }),
+        ...(blockerAudit === undefined ? {} : { blockerAudit }),
+      };
     case "paused":
       return {
-        ...common,
+        ...withoutPending,
         status,
-        ...(result === undefined ? {} : { result }),
+        turnPhase: options.keepTurnForRecovery ? current.turnPhase : "ready",
+        ...(options.keepTurnForRecovery && current.turnDecision !== undefined ? { turnDecision: current.turnDecision } : {}),
+        ...(result === undefined ? {} : { result, stopReason: boundGoalText(result) }),
         ...(blockerAudit === undefined ? {} : { blockerAudit }),
         ...(options.resumeAfterManualCompaction === undefined ? {} : { resumeAfterManualCompaction: true }),
       };
     case "blocked":
       if (result === undefined) throw new Error("A blocked goal requires a result");
-      return { ...common, status, result, ...(blockerAudit === undefined ? {} : { blockerAudit }) };
+      return {
+        ...withoutPending,
+        status,
+        result,
+        ...(options.decision === undefined ? {} : { lastDecision: options.decision }),
+        ...(blockerAudit === undefined ? {} : { blockerAudit }),
+      };
     case "complete":
       if (result === undefined) throw new Error("A complete goal requires a result");
-      return { ...common, status, result };
+      return {
+        ...withoutPending,
+        status,
+        result,
+        ...(options.decision === undefined ? {} : { lastDecision: options.decision }),
+      };
   }
 }

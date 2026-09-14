@@ -33,6 +33,7 @@ function createHarness(entries: Array<Record<string, unknown>> = []) {
   const commands = new Map<string, { handler: (args: string, ctx: ReturnType<typeof createContext>) => Promise<void> }>();
   const handlers = new Map<string, Array<(event: Record<string, unknown>, ctx: ReturnType<typeof createContext>) => unknown>>();
   const tools = new Map<string, { execute: (...args: unknown[]) => Promise<{ details: { status: string; verification?: string } }> }>();
+  const activeTools = ["killeros_goal_update"];
   const appendedEntries: Array<{ customType: string; data: { event: string; state: Record<string, unknown> | null } }> = [];
   const sentMessages: Array<unknown> = [];
   const api = {
@@ -52,12 +53,13 @@ function createHarness(entries: Array<Record<string, unknown>> = []) {
     sendMessage: (message: unknown) => sentMessages.push(message),
     sendUserMessage: () => {},
     setThinkingLevel: () => {},
-    getActiveTools: () => [],
-    setActiveTools: () => {},
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (names: string[]) => { activeTools.splice(0, activeTools.length, ...names); },
   };
   // Pi has no constructible extension host for tests; PiExtensionContract.test.ts proves the installed lifecycle.
   Killeros(extensionApiTestAdapter(api), { completionNotifications: { store: { load: () => false, save: () => {} }, ring: () => {} } });
-  return { appendedEntries, commands, entries, handlers, sentMessages, tools };
+  activeTools.push(...[...tools.keys()].filter((name) => !activeTools.includes(name)));
+  return { activeTools, appendedEntries, commands, entries, handlers, sentMessages, tools };
 }
 
 function createContext(entries: Array<Record<string, unknown>> = []) {
@@ -219,6 +221,7 @@ test("pre-existing file goals require a changed deliverable after restore", asyn
   const restoredHarness = createHarness(entries);
   const restoredContext = createContext(entries);
   for (const handler of restoredHarness.handlers.get("session_start") ?? []) await handler({}, restoredContext);
+  await requiredMapValue(restoredHarness.commands, "goal").handler("resume", restoredContext);
 
   await assert.rejects(complete(restoredHarness, restoredContext), /has not changed since the goal started/u);
   writeFileSync(requested, "changed deliverable");
@@ -313,6 +316,7 @@ test("file goals fail closed when their current content baseline is unavailable"
   const restoredHarness = createHarness(entries);
   const restoredContext = createContext(entries);
   for (const handler of restoredHarness.handlers.get("session_start") ?? []) await handler({}, restoredContext);
+  await requiredMapValue(restoredHarness.commands, "goal").handler("resume", restoredContext);
 
   await assert.rejects(complete(restoredHarness, restoredContext), /content cannot be verified/u);
 });
@@ -329,7 +333,7 @@ test("file goals reject baseline paths the filesystem cannot inspect", async () 
   assert.equal(harness.appendedEntries.length, 0);
   assert.equal(harness.sentMessages.length, 0);
   assert.equal(notifications.length, 1);
-  assert.match(last(notifications).message, /^Goal could not be started:/u);
+  assert.match(last(notifications).message, /objective may not exceed 4,000 characters/u);
   assert.equal(last(notifications).message.includes("\0"), false);
   assert.equal(last(notifications).level, "error");
 });

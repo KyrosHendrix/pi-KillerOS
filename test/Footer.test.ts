@@ -523,6 +523,7 @@ test("footer shows a compact active goal turn limit", async () => {
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
     maxTurns: 8,
+    turnPhase: "ready",
   };
   const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: "turn", state: goal } }];
   const { handlers } = createHarness();

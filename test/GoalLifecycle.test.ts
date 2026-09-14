@@ -41,6 +41,7 @@ test("/goal restores only the current branch and resumes active saved work", asy
     baselineTokens: 0,
     completionCheck: { kind: "named-command", name: "quality", configHash: "a".repeat(64) },
     maxTurns: 4,
+    turnPhase: "ready",
   };
   const branchEntries = [{
     type: "custom",
@@ -77,6 +78,7 @@ test("/goal pauses an exhausted restored goal before continuation", async () => 
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
     maxTurns: 2,
+    turnPhase: "ready",
   };
   const entries = [{ type: "custom", customType: "killeros-goal", data: { version: 1, event: "turn", state: exhausted } }];
   const { appendedEntries, handlers, sentMessages } = createHarness<GoalEntryData>();
@@ -106,18 +108,21 @@ test("/goal restores v2.0.18 active shutdown checkpoints", async () => {
     customType: "killeros-goal",
     data: { version: 1, event: "checkpoint", state: checkpoint },
   }];
-  const { commands, handlers, sentMessages } = createHarness<GoalEntryData>();
+  const { appendedEntries, commands, handlers, sentMessages } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext(branchEntries);
 
   await emitSequentially(getHandlers(handlers, "session_start"), { reason: "resume" }, ctx);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages.length, 0);
+  assert.equal(last(appendedEntries).data.event, "error");
+  assert.equal(last(appendedEntries).data.state.status, "paused");
   const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   ctx.mode = "rpc";
   await getCommand(commands, "goal").handler("", ctx);
-  assert.match(last(notifications).message, /Resume the checkpointed task/u);
+  assert.match(last(notifications).message, /Goal paused/u);
+  assert.match(last(notifications).message, /no turn decision/u);
 });
 
 test("/goal restore rejects contradictory status-specific fields", async () => {
@@ -212,23 +217,17 @@ test("goal duration arithmetic rejects unsafe integer results", () => {
   assert.throws(() => stopGoalClock(state, 10), /safe integer range/iu);
 });
 
-test("failed replacement inference keeps the old goal and reschedules continuation", async () => {
-  const { appendedEntries, commands, handlers, sentMessages } = createHarness<GoalEntryData>();
+test("unsafe replacement input leaves the current goal untouched", async () => {
+  const { appendedEntries, commands, sentMessages } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
   const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   await getCommand(commands, "goal").handler("Keep the original objective", ctx);
-  ctx.waitForIdle = async () => {
-    await emitSequentially(getHandlers(handlers, "agent_end"), {
-      messages: [{ role: "assistant", stopReason: "stop" }],
-    }, ctx);
-    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
-  };
   const badPath = `${process.cwd().replace(/\\/gu, "/")}/invalid\0file`;
   await getCommand(commands, "goal").handler(`Create the file at \`${badPath}\``, ctx);
   assert.equal(last(appendedEntries).data.state.objective, "Keep the original objective");
   assert.equal(last(appendedEntries).data.state.status, "active");
-  assert.equal(sentMessages.length, 2);
+  assert.equal(sentMessages.length, 1);
   assert.equal(last(notifications).level, "error");
 });
 
@@ -318,8 +317,8 @@ test("a goal blocks only after the same blocker is recorded on three consecutive
   assert.equal(first.details.streak, 1);
   assert.equal(last(appendedEntries).data.state.status, "active");
 
-  const duplicate = await blocked("duplicate");
-  assert.equal(duplicate.details.streak, 1, "duplicate calls in one turn must not advance the streak");
+  await assert.rejects(blocked("duplicate"), /Only one goal decision may be accepted per logical goal turn/u);
+  assert.equal(last(appendedEntries).data.state.turnPhase, "authorized");
   await finishTurn();
 
   await emitGoalStart(handlers, ctx);
@@ -357,6 +356,8 @@ test("resume and completion clear blocker audit progress", async () => {
       await getCommand(commands, "goal").handler("pause", ctx);
       await getCommand(commands, "goal").handler("resume", ctx);
     } else {
+      await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+      await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
       await getTool(tools, "killeros_goal_update").execute(
         "complete-after-audit",
         { status: "complete", evidence: "Verified complete" },
@@ -392,6 +393,13 @@ test("changed and skipped blocker turns reset the blocker streak", async () => {
   assert.equal((await blocked("changed-blocker")).details.streak, 1);
   await finishTurn();
   await emitGoalStart(handlers, ctx);
+  await getTool(tools, "killeros_goal_update").execute(
+    "continue-skipped-blocker",
+    { status: "continue", evidence: "The blocker was not observed this turn", nextAction: "Retry the blocked operation" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
   await finishTurn();
   await emitGoalStart(handlers, ctx);
   assert.equal((await blocked("changed-blocker")).details.streak, 1);
@@ -573,6 +581,7 @@ test("valid blocker audits restore and malformed audits fail closed", async () =
     turns: 2,
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
+    turnPhase: "ready",
   };
   const restore = async (blockerAudit: unknown, turns = activeState.turns) => {
     const entries = [{

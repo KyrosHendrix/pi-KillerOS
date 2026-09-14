@@ -758,7 +758,7 @@ test("a skipped goal stays fail-closed when its resume cannot be saved or the re
   assert.equal(unsavable.state().state?.status, "paused");
   assert.equal(unsavable.state().persistenceRetryNeeded, true);
   assert.equal(unsavable.sentMessages.length, 1);
-  assert.match(unsavable.notifications.at(-1)?.message ?? "", /skipped, but the goal could not be resumed/u);
+  assert.match(unsavable.notifications.at(-1)?.message ?? "", /interrupted goal turn could not be resumed/u);
 
   const superseded = createGoalHarness();
   await superseded.startGoal("Keep revision guards on skips");

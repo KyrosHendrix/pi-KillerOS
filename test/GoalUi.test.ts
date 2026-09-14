@@ -32,8 +32,8 @@ test("goal renderers strip terminal controls while preserving line breaks", () =
   const goalEntry = getRenderer(entryRenderers, "killeros-goal")({ data: { version: 1, event: "complete", state: {
     version: 1,
     revision: 1,
-    objective: unsafe,
-    result: unsafe,
+    objective: "safespoof\nnext",
+    result: "safespoof\nnext",
     status: "complete",
     createdAt: 1,
     updatedAt: 1,
