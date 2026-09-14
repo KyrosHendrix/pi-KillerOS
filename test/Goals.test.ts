@@ -275,15 +275,17 @@ test("bare /goal opens a context-valid action panel in TUI mode", async () => {
   await getCommand(commands, "goal").handler("Ship the release", ctx);
   ctx.ui.select = async (title, options) => {
     captured.selection = { title, options };
-    return "Pause automatic continuation";
+    return "Pause goal";
   };
 
   await getCommand(commands, "goal").handler("", ctx);
+  const panelLines = captured.selection.title.split("\n");
   assert.match(captured.selection.title, /Goal active/u);
   assert.match(captured.selection.title, /1\/20 turns/u);
   assert.match(captured.selection.title, /Ship the release/u);
+  assert.equal(panelLines[1], "Ship the release");
   assert.deepEqual(captured.selection.options, [
-    "Pause automatic continuation",
+    "Pause goal",
     "Clear goal",
   ]);
   assert.equal(last(appendedEntries).data.state.status, "paused");
@@ -322,8 +324,8 @@ test("goal panel actions match paused, blocked, and complete states", async () =
   const unsafeObjective = "objective";
   const unsafeResult = "verified";
   const expected = {
-    paused: ["Resume automatic continuation", "Clear goal"],
-    blocked: ["Resume automatic continuation", "Clear goal"],
+    paused: ["Resume goal", "Clear goal"],
+    blocked: ["Resume goal", "Clear goal"],
     complete: ["Clear goal"],
   };
   for (const [status, options] of Object.entries(expected)) {
@@ -456,22 +458,41 @@ test("/goal does not report start or resume success after dispatch failure", asy
     assert.equal(state.status, "paused", `${control} failure must pause the goal`);
     assert.match(state.result, /continuation could not start: provider unavailable/u);
     assert.equal(sentMessages.length, control === "start" ? 0 : 1);
-    assert.equal(notifications.some(({ message }) => new RegExp(control === "start" ? "Goal active" : "Goal resumed", "u").test(message)), false);
+    assert.equal(notifications.some(({ message }) => new RegExp(control === "start" ? "Goal started" : "Goal resumed", "u").test(message)), false);
     assert.equal(last(notifications).level, "error");
   }
 });
 
-test("/goal reports start and resume success after dispatch", async () => {
+test("/goal reports start and resume success in RPC mode and stays quiet in TUI mode", async () => {
   const { commands, sentMessages } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  ctx.mode = "rpc";
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await getCommand(commands, "goal").handler("Original objective", ctx);
+  assert.match(last(notifications).message, /Goal started/u);
+  await getCommand(commands, "goal").handler("pause", ctx);
+  assert.match(last(notifications).message, /Goal paused/u);
+  await getCommand(commands, "goal").handler("resume", ctx);
+  assert.match(last(notifications).message, /Goal resumed/u);
+  assert.equal(sentMessages.length, 2);
+});
+
+test("/goal suppresses duplicate success notifications in TUI mode", async () => {
+  const { appendedEntries, commands } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
   const notifications: TestNotification[] = [];
   ctx.ui.notify = (message, level) => notifications.push({ message, level });
   await getCommand(commands, "goal").handler("Original objective", ctx);
-  assert.match(last(notifications).message, /Goal active/u);
+  ctx.ui.confirm = async () => true;
+  await getCommand(commands, "goal").handler("Replacement objective", ctx);
   await getCommand(commands, "goal").handler("pause", ctx);
   await getCommand(commands, "goal").handler("resume", ctx);
-  assert.match(last(notifications).message, /Goal resumed/u);
-  assert.equal(sentMessages.length, 2);
+  await getCommand(commands, "goal").handler("clear", ctx);
+  assert.equal(last(appendedEntries).data.event, "clear");
+  const successes = notifications.filter(({ message }) =>
+    /Goal started|Goal replaced|Goal resumed|^Goal cleared$|Goal active\./u.test(message));
+  assert.deepEqual(successes, []);
 });
 
 test("/goal waits for an unrelated active run to settle before dispatch", async () => {
@@ -498,7 +519,7 @@ test("/goal does not claim success when a pending message defers dispatch", asyn
   await getCommand(commands, "goal").handler("Wait for the pending message", ctx);
   assert.equal(sentMessages.length, 0);
   assert.equal(last(appendedEntries).data.state.status, "active");
-  assert.equal(notifications.some(({ message }) => /Goal active/u.test(message)), false);
+  assert.equal(notifications.some(({ message }) => /Goal started/u.test(message)), false);
 });
 
 test("/goal pauses after an aborted or failed goal turn", async () => {

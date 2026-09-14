@@ -331,7 +331,7 @@ test("the durable entry renders task tokens and preserves older history", () => 
     [{ version: 2, milliseconds: 18_000, outcome: "done" }, " <success>✓ Done</success><dim> · 18s</dim>"],
     [{ version: 2, milliseconds: 18_000, outcome: "stopped" }, " <warning>■ Stopped</warning><dim> · 18s</dim>"],
     [{ version: 2, milliseconds: 18_000, outcome: "failed" }, " <error>× Failed</error><dim> · 18s</dim>"],
-    [{ version: 1, milliseconds: 125_000 }, " <dim>✻ Worked for 2m 05s</dim>"],
+    [{ version: 1, milliseconds: 125_000 }, " <dim>Worked for 2m 05s</dim>"],
   ];
   for (const [data, expected] of cases) {
     const component = renderer({ data }, {}, styledTheme);

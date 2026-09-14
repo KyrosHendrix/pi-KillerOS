@@ -16,7 +16,8 @@
     "success": "#8fa88b",
     "error": "#c8786c",
     "warning": "#bda36c",
-    "pink": "#b98aa5"
+    "pink": "#b98aa5",
+    "teal": "#6FAEB2"
   },
   "colors": {
     "accent": "coral",
@@ -36,7 +37,7 @@
     "userMessageText": "text",
     "customMessageBg": "surface",
     "customMessageText": "text",
-    "customMessageLabel": "coralBright",
+    "customMessageLabel": "teal",
     "toolPendingBg": "surface",
     "toolSuccessBg": "surface",
     "toolErrorBg": "surface",

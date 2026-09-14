@@ -29,7 +29,7 @@ async function emitGoalStart(handlers: Map<string, TestHandler[]>, ctx: unknown)
 test("goal renderers strip terminal controls while preserving line breaks", () => {
   const { entryRenderers, tools } = createHarness<GoalEntryData>();
   const unsafe = "safe\x1B[2Jspoof\u0007\nnext";
-  const goalEntry = getRenderer(entryRenderers, "killeros-goal")({ data: { version: 1, event: "complete", state: {
+  const goalEntry = getRenderer(entryRenderers, "killeros-goal")({ data: { version: 1, event: "error", state: {
     version: 1,
     revision: 1,
     objective: "safespoof\nnext",
@@ -114,26 +114,26 @@ test("goal transcript rows are compact until expanded", () => {
     blockedAuditStartTurn: 0,
     baselineTokens: 0,
   } } };
-  assert.ok(getRenderer(entryRenderers, "killeros-goal")(entry, { expanded: false }, theme).render(40).length <= 3);
+  assert.ok(getRenderer(entryRenderers, "killeros-goal")(entry, { expanded: false }, theme).render(40).length <= 1);
   assert.match(getRenderer(entryRenderers, "killeros-goal")(entry, { expanded: true }, theme).render(40).join("\n"), /Objective Objective/u);
 
   const result = { content: [], details: { status: "complete", evidence: "E".repeat(2_000) } };
-  assert.ok(getTool(tools, "killeros_goal_update").renderResult(result, { expanded: false }, theme).render(40).length <= 3);
+  assert.ok(getTool(tools, "killeros_goal_update").renderResult(result, { expanded: false }, theme).render(40).length <= 1);
   const expandedEvidence = getTool(tools, "killeros_goal_update").renderResult(result, { expanded: true }, theme).render(40).join("\n");
   assert.equal((expandedEvidence.match(/E/gu) ?? []).length, 2_000);
 });
 
-test("active, paused, and blocked goals replace the footer path with exact status text", async () => {
+test("active, paused, and blocked goals keep compact status text in the footer", async () => {
   const { appendedEntries, commands, handlers } = createHarness<GoalEntryData>();
   const { captured, ctx, tui } = createTuiContext();
   for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "startup" }, ctx);
   await getCommand(commands, "goal").handler("Keep working", ctx);
   const state = last(appendedEntries).data.state;
-  const yellowTheme = themeTestAdapter({
+  const tealTheme = themeTestAdapter({
     ...theme,
-    fg: (color: string, text: string) => color === "warning" ? `\x1B[33m${text}\x1B[39m` : text,
+    fg: (color: string, text: string) => color === "customMessageLabel" ? `\x1B[36m${text}\x1B[39m` : text,
   });
-  const footer = captured.footerFactory(tui, yellowTheme, {
+  const footer = captured.footerFactory(tui, tealTheme, {
     getGitBranch: () => "main",
     onBranchChange: () => () => {},
   });
@@ -142,33 +142,135 @@ test("active, paused, and blocked goals replace the footer path with exact statu
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 10_000;
   const seconds = footer.render(160)[2] ?? "";
-  assert.match(seconds, /\x1B\[33m\/goal is active 1\/20 \(10s\)\x1B\[39m/u);
-  assert.ok(stripAnsi(seconds).trimEnd().endsWith("/goal is active 1/20 (10s)"));
-  assert.doesNotMatch(stripAnsi(seconds), /✻ goal|pi-KillerOS/u);
+  assert.match(seconds, /\x1B\[36m\/goal active\x1B\[39m · 1\/20 · 10s/u);
+  assert.ok(stripAnsi(seconds).trimEnd().endsWith("/goal active · 1/20 · 10s"));
+  assert.doesNotMatch(stripAnsi(seconds), /✻|\/goal is active|pi-KillerOS/u);
 
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 125_000;
-  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal is active 1/20 (2m 05s)"));
+  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal active · 1/20 · 2m 05s"));
 
   state.activeStartedAt = Date.now();
   state.activeMilliseconds = 3_725_000;
-  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal is active 1/20 (1h 02m 05s)"));
+  assert.ok(stripAnsi(footer.render(40)[2] ?? "").trimEnd().endsWith("/goal active · 1/20 · 1h 02m 05s"));
+
+  state.maxTurns = undefined;
+  state.turns = 3;
+  state.activeStartedAt = Date.now();
+  state.activeMilliseconds = 10_000;
+  assert.ok(stripAnsi(footer.render(160)[2] ?? "").trimEnd().endsWith("/goal active · 3 turns · 10s"));
+  state.maxTurns = 20;
+  state.turns = 1;
 
   for (let width = 1; width <= 180; width += 1) {
     const lines = footer.render(width).map(stripAnsi);
     assert.equal(lines.length, 3, `goal footer rows at width ${width}`);
     assert.ok(lines.every((line) => [...line].length === width), `goal footer width mismatch at ${width}`);
   }
+  const narrow = stripAnsi(footer.render(20)[2] ?? "");
+  assert.match(narrow, /\/goal active/u);
 
   state.status = "paused";
   state.activeStartedAt = undefined;
   const paused = stripAnsi(footer.render(160)[2] ?? "");
-  assert.ok(paused.trimEnd().endsWith("/goal is paused"));
-  assert.doesNotMatch(paused, /Ⅱ goal paused/u);
+  assert.ok(paused.trimEnd().endsWith("/goal paused"));
+  assert.doesNotMatch(paused, /Ⅱ|\/goal is paused/u);
 
   state.status = "blocked";
   const blocked = stripAnsi(footer.render(160)[2] ?? "");
-  assert.ok(blocked.trimEnd().endsWith("/goal is blocked"));
-  assert.doesNotMatch(blocked, /! goal blocked/u);
+  assert.ok(blocked.trimEnd().endsWith("/goal blocked"));
+  assert.doesNotMatch(blocked, /! goal|\/goal is blocked/u);
   disposeTestComponent(footer);
+});
+
+function goalLifecycleState(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    version: 1,
+    revision: 1,
+    objective: "run",
+    status: "active",
+    createdAt: 1,
+    updatedAt: 1,
+    activeMilliseconds: 0,
+    activeStartedAt: 1,
+    turns: 1,
+    blockedAuditStartTurn: 0,
+    baselineTokens: 0,
+    ...overrides,
+  };
+}
+
+const taggingTheme = themeTestAdapter({
+  ...theme,
+  fg: (color: string, text: string) => `<${color}>${text}</>`,
+});
+
+function renderGoalEntry(event: string, state: Record<string, unknown> | null, expanded = false): string[] | undefined {
+  const { entryRenderers } = createHarness<GoalEntryData>();
+  const rendered = getRenderer(entryRenderers, "killeros-goal")(
+    { data: { version: 1, event, state } },
+    { expanded },
+    taggingTheme,
+  );
+  return rendered?.render(80);
+}
+
+function stripTags(line: string): string {
+  return line.replace(/<[^>]*>/gu, "");
+}
+
+test("goal history shows only lifecycle changes with event wording and no status icons", () => {
+  const visible: Array<[string, Record<string, unknown> | null, string, string]> = [
+    ["set", goalLifecycleState({}), "Goal started", "customMessageLabel"],
+    ["replace", goalLifecycleState({}), "Goal replaced", "customMessageLabel"],
+    ["resume", goalLifecycleState({}), "Goal resumed", "customMessageLabel"],
+    ["pause", goalLifecycleState({ status: "paused", activeStartedAt: undefined }), "Goal paused", "warning"],
+    ["limit", goalLifecycleState({ status: "paused", activeStartedAt: undefined, result: "Turn limit reached (20/20)." }), "Goal paused", "warning"],
+    ["error", goalLifecycleState({ status: "paused", activeStartedAt: undefined, result: "provider unavailable", stopReason: "provider unavailable" }), "Goal paused", "error"],
+    ["clear", null, "Goal cleared", "dim"],
+  ];
+  for (const [event, state, label, role] of visible) {
+    const lines = renderGoalEntry(event, state);
+    assert.ok(lines, `${event} must render a lifecycle row`);
+    assert.equal(lines.length, 1, `${event} must collapse to one row`);
+    assert.match(lines.join("\n"), new RegExp(`<${role}>${label}</>`, "u"), `${event} role`);
+    assert.doesNotMatch(stripTags(lines.join("\n")), /✻|Ⅱ|✓|→/u, `${event} must not add a status icon`);
+  }
+  assert.match(stripTags(renderGoalEntry("set", goalLifecycleState({}))!.join("\n")), /Goal started · run/u);
+  assert.match(stripTags(renderGoalEntry("limit", goalLifecycleState({ status: "paused", activeStartedAt: undefined, result: "Turn limit reached (20/20)." }))!.join("\n")), /Goal paused · Turn limit reached \(20\/20\)\./u);
+  assert.match(stripTags(renderGoalEntry("clear", null)!.join("\n")).trimEnd(), /^Goal cleared$/u);
+
+  for (const event of ["turn", "checkpoint", "continue", "blocker-audit", "blocked", "complete"]) {
+    assert.equal(renderGoalEntry(event, goalLifecycleState({})), undefined, `${event} must not render a custom row`);
+  }
+
+  const expanded = renderGoalEntry("error", goalLifecycleState({ status: "paused", activeStartedAt: undefined, result: "provider unavailable", stopReason: "provider unavailable" }), true)!.join("\n");
+  assert.match(stripTags(expanded), /run/u);
+  assert.match(stripTags(expanded), /provider unavailable/u);
+});
+
+test("goal decisions own progress, audit, blocked, and completed output", () => {
+  const { tools } = createHarness<GoalEntryData>();
+  const tool = getTool(tools, "killeros_goal_update");
+  const cases: Array<[Record<string, unknown>, string, string]> = [
+    [{ status: "continue", evidence: "first step passed" }, "Progress recorded", "customMessageLabel"],
+    [{ status: "blocker-audit", evidence: "still waiting", blockerKey: "missing-credential", streak: 2 }, "Blocker audit 2/3", "warning"],
+    [{ status: "blocked", evidence: "no credentials", blockerKey: "missing-credential", streak: 3 }, "Goal blocked", "error"],
+    [{ status: "complete", evidence: "all checks passed" }, "Goal completed", "success"],
+  ];
+  for (const [details, label, role] of cases) {
+    const lines = tool.renderResult({ content: [], details }, { expanded: false }, taggingTheme, {}).render(80);
+    assert.equal(lines.length, 1, `${label} must collapse to one row`);
+    assert.match(lines.join("\n"), new RegExp(`<${role}>${label}</>`, "u"), `${label} role`);
+    assert.doesNotMatch(stripTags(lines.join("\n")), /✻|Ⅱ|✓|→|!/u, `${label} must not add a status icon`);
+  }
+  const fallback = tool.renderResult({ content: [], details: {} }, { expanded: false }, taggingTheme, {}).render(80).join("\n");
+  assert.match(fallback, /<dim>Goal updated<\/>/u);
+  const expanded = tool.renderResult(
+    { content: [], details: { status: "continue", evidence: "first step passed", nextAction: "run the next step" } },
+    { expanded: true },
+    taggingTheme,
+    {},
+  ).render(80).join("\n");
+  assert.match(stripTags(expanded), /first step passed/u);
 });

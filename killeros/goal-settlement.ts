@@ -72,7 +72,7 @@ function recoverGoalAfterManualCompaction(
     runtime.goalTurn = { turn, revision: runtime.state?.revision ?? state.revision };
     runtime.goalTurnInFlight = true;
     runtime.agentEndObserved = false;
-    ctx.ui.notify("Manual compaction complete. The interrupted goal turn resumed.", "info");
+    if (ctx.mode !== "tui") ctx.ui.notify("Manual compaction complete. The interrupted goal turn resumed.", "info");
     setImmediate(() => {
       if (runtime.lifecycleGeneration !== generation || runtime.state !== resumed) return;
       resumeInterruptedGoalTurn(pi, runtime, ctx);
@@ -80,7 +80,7 @@ function recoverGoalAfterManualCompaction(
   } else {
     runtime.goalTurn = undefined;
     runtime.goalTurnInFlight = false;
-    if (scheduleGoalContinuation(pi, runtime, ctx)) ctx.ui.notify("Manual compaction complete. Goal resumed.", "info");
+    if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") ctx.ui.notify("Manual compaction complete. Goal resumed.", "info");
   }
   return true;
 }

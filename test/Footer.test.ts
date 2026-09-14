@@ -531,7 +531,7 @@ test("footer shows a compact active goal turn limit", async () => {
   ctx.hasPendingMessages = () => true;
   for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
   const footer = captured.footerFactory(tui, theme, { getGitBranch: () => "main", onBranchChange: () => () => {} });
-  assert.match(footer.render(120).join("\n"), /\/goal is active 3\/8/u);
+  assert.match(footer.render(120).join("\n"), /\/goal active · 3\/8/u);
   disposeTestComponent(footer);
 });
 

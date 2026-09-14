@@ -4,6 +4,11 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Simplified goal presentation without changing goal behavior: transcript history shows one iconless event row per lifecycle change (`Goal started`, `Goal replaced`, `Goal paused`, `Goal resumed`, `Goal cleared`), progress and blocker outcomes render once through the goal tool result, the footer shows compact `/goal active · 1/20 · 10s` status, the `/goal` panel leads with status then objective then `Pause goal` / `Resume goal` / `Clear goal` actions, and duplicate TUI success notifications are suppressed while RPC confirmations remain. Active-goal labels use muted teal `#6FAEB2` through the packaged theme's extension-label role.
+- Removed the legacy `✻` marker from version-1 `Worked for …` transcript rows; stored entries are unchanged and remain readable.
+
 ### Added
 
 - Appended the selected model ID as a gray `· <model-id>` suffix to every TUI activity working message, retained for the full request cycle and falling back to `unknown model` when no usable ID exists.

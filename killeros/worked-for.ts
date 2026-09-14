@@ -322,7 +322,7 @@ export function registerWorkedFor(
   pi.registerEntryRenderer<WorkedForEntryData>(WORKED_FOR_ENTRY_TYPE, (entry, options, theme) => {
     const data = parseWorkedForEntryData(entry.data);
     if (!data) return undefined;
-    if (data.version === 1) return new Text(theme.fg("dim", `✻ Worked for ${formatWorkedForDuration(data.milliseconds)}`), 1, 0);
+    if (data.version === 1) return new Text(theme.fg("dim", `Worked for ${formatWorkedForDuration(data.milliseconds)}`), 1, 0);
     if (data.version === 4) return new WorkedForV4Component(data, options.expanded, theme);
     const outcome = OUTCOMES[data.outcome];
     const tokens = data.version === 3 ? ` · ↑ ${formatTokens(data.tokens)} tokens` : "";

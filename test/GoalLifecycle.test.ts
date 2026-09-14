@@ -533,7 +533,9 @@ test("/goal pause and clear persist terminal state before stopping an active goa
       await emitGoalStart(handlers, ctx);
       await getCommand(commands, "goal").handler(control, ctx);
 
-      assert.deepEqual(calls, [`persist:${control === "pause" ? "paused" : "clear"}`, "abort", "waitForIdle", "notify"], `${mode} ${control}`);
+      assert.deepEqual(calls, mode === "tui"
+        ? [`persist:${control === "pause" ? "paused" : "clear"}`, "abort", "waitForIdle"]
+        : [`persist:${control === "pause" ? "paused" : "clear"}`, "abort", "waitForIdle", "notify"], `${mode} ${control}`);
       await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "aborted" }] }, ctx);
       await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
       assert.equal(sentMessages.length, 1, `${mode} ${control} must not continue after explicit cancellation`);

@@ -472,7 +472,8 @@ test("manual compaction resumes only the exact recovery-eligible paused goal", a
   assert.equal(resumed.status, "active");
   assert.equal(resumed.resumeAfterManualCompaction, undefined);
   assert.equal(harness.sentMessages.length, 2);
-  assert.match(notifications.at(-1)?.message ?? "", /compaction.*interrupted goal turn resumed/iu);
+  assert.equal(lastAppendedEntry(harness).data.event, "resume");
+  assert.match(notifications.at(-1)?.message ?? "", /paused.*\/compact|\/compact.*paused/iu);
 });
 
 test("duplicate manual compaction events do not duplicate recovery", async () => {

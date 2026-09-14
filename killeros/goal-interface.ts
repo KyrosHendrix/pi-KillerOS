@@ -42,14 +42,10 @@ interface GoalUpdateDetails {
   streak?: number;
 }
 
-function goalStatusLabel(status: GoalStatus): string {
-  return `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
-}
-
 function goalPanelActions(status: GoalStatus): Array<{ label: string; control: "pause" | "resume" | "clear" }> {
-  if (status === "active") return [{ label: "Pause automatic continuation", control: "pause" }, { label: "Clear goal", control: "clear" }];
+  if (status === "active") return [{ label: "Pause goal", control: "pause" }, { label: "Clear goal", control: "clear" }];
   if (status === "paused" || status === "blocked") {
-    return [{ label: "Resume automatic continuation", control: "resume" }, { label: "Clear goal", control: "clear" }];
+    return [{ label: "Resume goal", control: "resume" }, { label: "Clear goal", control: "clear" }];
   }
   return [{ label: "Clear goal", control: "clear" }];
 }
@@ -60,34 +56,32 @@ function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
     ? `${state.turns} turn${state.turns === 1 ? "" : "s"}`
     : `${state.turns}/${state.maxTurns} turns`;
   const lines = [
-    `Goal ${goalStatusLabel(state.status).toLowerCase()} · ${turns} · ${formatTime(goalElapsedMilliseconds(state, Date.now()))} · ${formatTokens(usedTokens)} tokens`,
-    `Objective: ${state.objective}`,
-    ...(state.verification === undefined ? [] : [`Deliverable: ${state.verification.path}`]),
+    `Goal ${state.status} · ${turns} · ${formatTime(goalElapsedMilliseconds(state, Date.now()))} · ${formatTokens(usedTokens)} tokens`,
+    state.objective,
+    ...(state.verification === undefined ? [] : [`Deliverable · ${state.verification.path}`]),
   ];
   const decision = state.turnDecision ?? state.lastDecision;
   if (decision?.kind === "continue") {
-    lines.push(`Last decision: model-reported progress on turn ${decision.turn}`);
-    lines.push(`Next action: ${decision.nextAction}`);
+    lines.push(`Progress · model-reported on turn ${decision.turn}`);
+    lines.push(`Next · ${decision.nextAction}`);
   } else if (decision?.kind === "blocker-audit") {
-    lines.push(`Last decision: blocker audit ${decision.streak}/3 on turn ${decision.turn}`);
-    lines.push(`Evidence: ${decision.evidence}`);
+    lines.push(`Blocker audit · ${decision.streak}/3 on turn ${decision.turn}`);
+    lines.push(`Evidence · ${decision.evidence}`);
   } else if (decision?.kind === "blocked") {
-    lines.push(`Last decision: blocked on turn ${decision.turn}`);
-    lines.push(`Evidence: ${decision.evidence}`);
+    lines.push(`Evidence · ${decision.evidence}`);
   } else if (decision?.kind === "complete") {
-    lines.push(`Completion: ${decision.verification === "file" ? `verified file ${state.verification?.path ?? "deliverable"}` : "model-reported"}`);
-    lines.push(`Evidence: ${decision.evidence}`);
+    lines.push(`Completion · ${decision.verification === "file" ? `verified file ${state.verification?.path ?? "deliverable"}` : "model-reported"}`);
+    lines.push(`Evidence · ${decision.evidence}`);
   }
   if (state.status === "paused") {
-    const stoppedTurn = state.turns === 0 ? "before turn 1" : `on turn ${state.turns}`;
+    lines.push(state.turns === 0 ? "Paused at · before turn 1" : `Paused at · turn ${state.turns}`);
     const reason = state.stopReason ?? state.result;
-    if (reason) lines.push(`Stopped ${stoppedTurn}: ${reason}`);
+    if (reason) lines.push(`Reason · ${reason}`);
     if (state.stopReason === "repeated continue report" && state.lastContinueReport) {
-      lines.push(`Repeated report turns: ${state.lastContinueReport.turn} and ${state.turns}`);
+      lines.push(`Repeated turns · ${state.lastContinueReport.turn} and ${state.turns}`);
     }
-    lines.push("No automatic continuation was started.");
   } else if (state.result && decision?.kind !== "complete" && decision?.kind !== "blocked") {
-    lines.push(`Result: ${state.result}`);
+    lines.push(`Result · ${state.result}`);
   }
   return safeTerminalText(lines.join("\n"));
 }
@@ -98,17 +92,56 @@ export function registerGoalInterface(
 ): void {
   pi.registerEntryRenderer<GoalEntryData>(GOAL_ENTRY_TYPE, (entry, options, theme) => {
     const data = entry.data;
-    if (!data || data.version !== GOAL_VERSION || data.event === "turn" || data.event === "checkpoint") return undefined;
+    if (!data || data.version !== GOAL_VERSION) return undefined;
     if (data.event === "clear" || data.state === null) return new Text(theme.fg("dim", "Goal cleared"), 0, 0);
+    const event = data.event;
+    if (event !== "set" && event !== "replace" && event !== "pause" && event !== "resume" && event !== "limit" && event !== "error") return undefined;
     const state = parseGoalState(data.state);
     if (!state) return undefined;
-    const icon = state.status === "active" ? "✻" : state.status === "paused" ? "Ⅱ" : state.status === "blocked" ? "!" : "✓";
-    const color: ThemeColor = state.status === "active" ? "accent" : state.status === "paused" ? "warning" : state.status === "blocked" ? "error" : "success";
-    const status = theme.fg(color, `${icon} Goal ${state.status}`);
+    const reason = state.stopReason ?? state.result;
     const objective = safeTerminalText(state.objective);
-    if (!options.expanded) return new BoundedText(`${status}${theme.fg("dim", ` · ${objective}`)}`, 3);
-    const lines = [status, theme.fg("dim", objective)];
-    if (state.result) lines.push(theme.fg("muted", safeTerminalText(state.result)));
+    let label: string;
+    let detail: string;
+    let color: ThemeColor;
+    switch (event) {
+      case "set":
+        label = "Goal started";
+        detail = objective;
+        color = "customMessageLabel";
+        break;
+      case "replace":
+        label = "Goal replaced";
+        detail = objective;
+        color = "customMessageLabel";
+        break;
+      case "resume":
+        label = "Goal resumed";
+        detail = objective;
+        color = "customMessageLabel";
+        break;
+      case "pause":
+        label = "Goal paused";
+        detail = reason ?? objective;
+        color = "warning";
+        break;
+      case "limit":
+        label = "Goal paused";
+        detail = reason ?? "";
+        color = "warning";
+        break;
+      case "error":
+        label = "Goal paused";
+        detail = reason ?? "";
+        color = "error";
+        break;
+    }
+    const safeDetail = safeTerminalText(detail);
+    const status = theme.fg(color, label);
+    if (!options.expanded) {
+      return new BoundedText(safeDetail ? `${status}${theme.fg("dim", " · ")}${safeDetail}` : status, 1);
+    }
+    const lines = [status, objective];
+    if (reason && reason !== objective) lines.push(theme.fg("muted", safeTerminalText(reason)));
     return new BoundedText(lines.join("\n"));
   });
 
@@ -240,19 +273,26 @@ export function registerGoalInterface(
       if (context?.isError) {
         const first = result.content[0];
         const message = first?.type === "text" ? safeTerminalText(first.text) : "Goal update failed";
-        return new BoundedText(theme.fg("error", message), options.expanded ? undefined : 3);
+        return new BoundedText(theme.fg("error", message), options.expanded ? undefined : 1);
       }
       const details = result.details;
-      if (!details) return new BoundedText(theme.fg("dim", "Goal updated"));
+      if (!details || typeof details.evidence !== "string") return new BoundedText(theme.fg("dim", "Goal updated"), options.expanded ? undefined : 1);
       const label = details.status === "complete"
-        ? "✓ Complete"
+        ? "Goal completed"
         : details.status === "blocked"
-          ? "! Blocked"
+          ? "Goal blocked"
           : details.status === "continue"
-            ? "→ Progress recorded"
-            : `! Blocker audit ${details.streak}/3`;
-      const text = `${theme.fg(details.status === "complete" ? "success" : "warning", label)}${theme.fg("dim", ` · ${safeTerminalText(details.evidence)}`)}`;
-      return new BoundedText(text, options.expanded ? undefined : 3);
+            ? "Progress recorded"
+            : `Blocker audit ${details.streak}/3`;
+      const color: ThemeColor = details.status === "complete"
+        ? "success"
+        : details.status === "blocked"
+          ? "error"
+          : details.status === "continue"
+            ? "customMessageLabel"
+            : "warning";
+      const text = `${theme.fg(color, label)}${theme.fg("dim", " · ")}${safeTerminalText(details.evidence)}`;
+      return new BoundedText(text, options.expanded ? undefined : 1);
     },
   });
   syncGoalUpdateTool(pi, runtime);
@@ -321,7 +361,7 @@ export function registerGoalInterface(
           return;
         }
         if (saved) {
-          ctx.ui.notify("Goal cleared", "info");
+          if (ctx.mode !== "tui") ctx.ui.notify("Goal cleared", "info");
         } else {
           ctx.ui.notify("Goal paused: the requested clear could not be saved\nAutomatic continuation is stopped. Retry /goal clear to remove the goal.", "error");
         }
@@ -382,7 +422,7 @@ export function registerGoalInterface(
           return;
         }
         if (saved) {
-          ctx.ui.notify("Goal paused. Run /goal resume to continue.", "info");
+          if (ctx.mode !== "tui") ctx.ui.notify("Goal paused. Run /goal resume to continue.", "info");
         } else {
           ctx.ui.notify(`Goal paused: ${failureReason}\nAutomatic continuation is stopped. If session storage is still unavailable, retry /goal pause after it recovers.`, "error");
         }
@@ -413,7 +453,7 @@ export function registerGoalInterface(
             const base = transitionGoalState(runtime.state, "active", undefined, { resetBlockedAudit: true }, Date.now());
             persistGoalState(pi, runtime, "resume", { ...base, maxTurns: renewed });
             runtime.continuationScheduled = false;
-            if (scheduleGoalContinuation(pi, runtime, ctx)) ctx.ui.notify("Goal resumed", "info");
+            if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") ctx.ui.notify("Goal resumed", "info");
           } catch (error) {
             reportError(ctx, "Goal could not be resumed", error);
           }
@@ -422,7 +462,7 @@ export function registerGoalInterface(
         try {
           transitionGoal(pi, runtime, "resume", "active", undefined, { resetBlockedAudit: true });
           runtime.continuationScheduled = false;
-          if (scheduleGoalContinuation(pi, runtime, ctx)) ctx.ui.notify("Goal resumed", "info");
+          if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") ctx.ui.notify("Goal resumed", "info");
         } catch (error) {
           reportError(ctx, "Goal could not be resumed", error);
         }
@@ -482,8 +522,8 @@ export function registerGoalInterface(
         persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
         // The replacement supersedes any recovery still parked after waitForIdle().
         if (unfinished) runtime.automaticCompaction = undefined;
-        if (scheduleGoalContinuation(pi, runtime, ctx)) {
-          ctx.ui.notify("Goal active. Each turn must record continue, complete, or a blocker decision before another turn starts.", "info");
+        if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") {
+          ctx.ui.notify(`${unfinished ? "Goal replaced" : "Goal started"}. Each turn must record continue, complete, or a blocker decision before another turn starts.`, "info");
         }
       } catch (error) {
         if (!unfinished) {
