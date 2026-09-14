@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { modelDisplayName } from "./display.ts";
 
 export type ActivityMessage =
   | { kind: "prompt" }
@@ -12,7 +13,7 @@ function safeToolName(toolName: string): string {
   return truncateToWidth(normalized || "tool", 32, "…");
 }
 
-export function formatActivityMessage(message: ActivityMessage, theme: Theme): string {
+export function formatActivityMessage(message: ActivityMessage, theme: Theme, modelId?: string): string {
   let verb: string;
   let detail: string;
 
@@ -58,38 +59,46 @@ export function formatActivityMessage(message: ActivityMessage, theme: Theme): s
     }
   }
 
-  return `${theme.fg("accent", verb)} ${theme.fg("dim", `(${theme.bold("esc")} to interrupt · ${detail})`)}`;
+  const suffix = modelDisplayName({ id: modelId }) || "unknown model";
+  return `${theme.fg("accent", verb)} ${theme.fg("dim", `(${theme.bold("esc")} to interrupt · ${detail})`)}${theme.fg("dim", ` · ${suffix}`)}`;
 }
 
 export function registerRequestActivity(pi: ExtensionAPI): void {
   let active = false;
+  let activeModel: string | undefined;
+
+  const render = (message: ActivityMessage, ctx: ExtensionContext): void => {
+    ctx.ui.setWorkingMessage(formatActivityMessage(message, ctx.ui.theme, activeModel));
+  };
 
   const clear = (ctx?: ExtensionContext): void => {
+    active = false;
+    activeModel = undefined;
     if (ctx?.mode === "tui") {
       ctx.ui.setWorkingMessage();
     }
-    active = false;
   };
 
   pi.on("agent_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
+    if (!active) activeModel = ctx.model?.id;
     active = true;
-    ctx.ui.setWorkingMessage(formatActivityMessage({ kind: "prompt" }, ctx.ui.theme));
+    render({ kind: "prompt" }, ctx);
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
     if (ctx.mode !== "tui" || !active) return;
-    ctx.ui.setWorkingMessage(formatActivityMessage({ kind: "tool", toolName: event.toolName }, ctx.ui.theme));
+    render({ kind: "tool", toolName: event.toolName }, ctx);
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
     if (ctx.mode !== "tui" || !active) return;
-    ctx.ui.setWorkingMessage(formatActivityMessage({ kind: "tool-result", failed: event.isError }, ctx.ui.theme));
+    render({ kind: "tool-result", failed: event.isError }, ctx);
   });
 
   pi.on("message_update", (event, ctx) => {
     if (ctx.mode !== "tui" || !active || event.assistantMessageEvent.type !== "text_start") return;
-    ctx.ui.setWorkingMessage(formatActivityMessage({ kind: "responding" }, ctx.ui.theme));
+    render({ kind: "responding" }, ctx);
   });
 
   pi.on("agent_settled", (_event, ctx) => {

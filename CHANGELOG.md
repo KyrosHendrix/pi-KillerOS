@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Appended the selected model ID as a gray `· <model-id>` suffix to every TUI activity working message, retained for the full request cycle and falling back to `unknown model` when no usable ID exists.
+
 ## [2.1.27] - 2026-09-12
 
 ### Added

@@ -18,12 +18,14 @@ type ActivityAPI = { on(event: string, handler: ActivityHandler): void };
 
 type ActivityContext = Pick<ExtensionContext, "mode" | "hasPendingMessages" | "isIdle"> & {
   ui: Pick<ExtensionContext["ui"], "theme" | "setWorkingMessage" | "setWidget">;
+  model?: { id?: string; name?: string };
 };
 
 type ActivityHarness = {
   emit(event: string, data?: Record<string, unknown>): Promise<void>;
   setIdle(value: boolean): void;
   setPendingMessages(value: boolean): void;
+  setModel(model: { id?: string; name?: string } | undefined): void;
   widgetCalls: boolean[];
   workingMessages: Array<string | undefined>;
 };
@@ -38,42 +40,57 @@ const styledTheme = themeTestAdapter({
   fg(color: string, text: string): string { return `<${color}>${text}</${color}>`; },
 });
 
-test("working messages use exact causal copy and sanitize custom tool names", () => {
+test("working messages append the model suffix to every activity state", () => {
   const cases: ReadonlyArray<readonly [ActivityMessage, string]> = [
-    [{ kind: "prompt" }, "Mapping… (esc to interrupt · understanding request)"],
-    [{ kind: "tool", toolName: "read" }, "Inspecting… (esc to interrupt · reading relevant code)"],
-    [{ kind: "tool", toolName: "edit" }, "Changing… (esc to interrupt · editing)"],
-    [{ kind: "tool", toolName: "bash" }, "Running… (esc to interrupt · command)"],
-    [{ kind: "tool-result", failed: false }, "Reviewing… (esc to interrupt · reading the result)"],
-    [{ kind: "tool-result", failed: true }, "Recovering… (esc to interrupt · tool failed)"],
-    [{ kind: "responding" }, "Responding… (esc to interrupt · assembling the answer)"],
+    [{ kind: "prompt" }, "Mapping… (esc to interrupt · understanding request) · gpt-5.4"],
+    [{ kind: "tool", toolName: "read" }, "Inspecting… (esc to interrupt · reading relevant code) · gpt-5.4"],
+    [{ kind: "tool", toolName: "edit" }, "Changing… (esc to interrupt · editing) · gpt-5.4"],
+    [{ kind: "tool", toolName: "bash" }, "Running… (esc to interrupt · command) · gpt-5.4"],
+    [{ kind: "tool", toolName: "my-tool" }, "Working… (esc to interrupt · using my-tool) · gpt-5.4"],
+    [{ kind: "tool-result", failed: false }, "Reviewing… (esc to interrupt · reading the result) · gpt-5.4"],
+    [{ kind: "tool-result", failed: true }, "Recovering… (esc to interrupt · tool failed) · gpt-5.4"],
+    [{ kind: "responding" }, "Responding… (esc to interrupt · assembling the answer) · gpt-5.4"],
   ];
-  for (const [message, expected] of cases) assert.equal(formatActivityMessage(message, plainTheme), expected);
+  for (const [message, expected] of cases) assert.equal(formatActivityMessage(message, plainTheme, "gpt-5.4"), expected);
 
   const custom = formatActivityMessage({
     kind: "tool",
     toolName: "danger\n\u0000  name ".repeat(10),
-  }, plainTheme);
+  }, plainTheme, "gpt-5.4");
   assert.match(custom, /^Working… \(esc to interrupt · using danger name/u);
+  assert.match(custom, / · gpt-5\.4$/u);
   assert.doesNotMatch(custom, /[\r\n\u0000]/u);
-  assert.ok(custom.length < 100);
+  assert.ok(custom.length < 120);
 
   assert.equal(
-    formatActivityMessage({ kind: "prompt" }, styledTheme),
-    "<accent>Mapping…</accent> <dim>(<bold>esc</bold> to interrupt · understanding request)</dim>",
+    formatActivityMessage({ kind: "prompt" }, styledTheme, "gpt-5.4"),
+    "<accent>Mapping…</accent> <dim>(<bold>esc</bold> to interrupt · understanding request)</dim><dim> · gpt-5.4</dim>",
   );
+  assert.equal(formatActivityMessage({ kind: "prompt" }, plainTheme),
+    "Mapping… (esc to interrupt · understanding request) · unknown model");
+  assert.equal(formatActivityMessage({ kind: "prompt" }, plainTheme, "  GPT-5.4  "),
+    "Mapping… (esc to interrupt · understanding request) · gpt-5.4");
+
+  const unsafeModel = formatActivityMessage({ kind: "prompt" }, plainTheme, "[31mGPT\n5.4");
+  assert.equal(unsafeModel, "Mapping… (esc to interrupt · understanding request) · gpt5.4");
+  assert.doesNotMatch(unsafeModel, /[\r\n]/u);
 });
 
-function createActivityHarness(mode: ActivityContext["mode"] = "tui"): ActivityHarness {
+function createActivityHarness(
+  mode: ActivityContext["mode"] = "tui",
+  model: { id?: string; name?: string } | undefined = { id: "gpt-5.4", name: "GPT" },
+): ActivityHarness {
   const handlers = new Map<string, ActivityHandler[]>();
   const workingMessages: Array<string | undefined> = [];
   const widgetCalls: boolean[] = [];
   let idle = true;
   let pendingMessages = false;
+  let currentModel: { id?: string; name?: string } | undefined = model;
   const ctx: ActivityContext = {
     mode,
     hasPendingMessages: () => pendingMessages,
     isIdle: () => idle,
+    get model(): { id?: string; name?: string } | undefined { return currentModel; },
     ui: {
       theme: plainTheme,
       setWorkingMessage: (message?: string) => { workingMessages.push(message); },
@@ -95,6 +112,7 @@ function createActivityHarness(mode: ActivityContext["mode"] = "tui"): ActivityH
     },
     setIdle: (value: boolean) => { idle = value; },
     setPendingMessages: (value: boolean) => { pendingMessages = value; },
+    setModel: (value: { id?: string; name?: string } | undefined) => { currentModel = value; },
     widgetCalls,
     workingMessages,
   };
@@ -113,13 +131,29 @@ test("lifecycle copy follows ordinary observed work", async () => {
   await harness.emit("message_update", { assistantMessageEvent: { type: "text_start" } });
 
   assert.deepEqual(harness.workingMessages, [
-    "Mapping… (esc to interrupt · understanding request)",
-    "Inspecting… (esc to interrupt · reading relevant code)",
-    "Reviewing… (esc to interrupt · reading the result)",
-    "Changing… (esc to interrupt · editing)",
-    "Reviewing… (esc to interrupt · reading the result)",
-    "Responding… (esc to interrupt · assembling the answer)",
+    "Mapping… (esc to interrupt · understanding request) · gpt-5.4",
+    "Inspecting… (esc to interrupt · reading relevant code) · gpt-5.4",
+    "Reviewing… (esc to interrupt · reading the result) · gpt-5.4",
+    "Changing… (esc to interrupt · editing) · gpt-5.4",
+    "Reviewing… (esc to interrupt · reading the result) · gpt-5.4",
+    "Responding… (esc to interrupt · assembling the answer) · gpt-5.4",
   ]);
+});
+
+test("the request cycle retains its starting model until settlement", async () => {
+  const harness = createActivityHarness();
+  await harness.emit("agent_start");
+
+  harness.setModel({ id: "claude-sonnet-4-6" });
+  await harness.emit("agent_start");
+  await harness.emit("tool_execution_start", { toolName: "read" });
+  assert.equal(harness.workingMessages.at(-1),
+    "Inspecting… (esc to interrupt · reading relevant code) · gpt-5.4");
+
+  await harness.emit("agent_settled");
+  await harness.emit("agent_start");
+  assert.equal(harness.workingMessages.at(-1),
+    "Mapping… (esc to interrupt · understanding request) · claude-sonnet-4-6");
 });
 
 test("settlement clears the working message after pending work finishes", async () => {
@@ -151,10 +185,12 @@ test("errors, custom tools, shutdown, and non-TUI modes stay truthful", async ()
   const customMessage = harness.workingMessages.at(-1);
   assert.ok(customMessage);
   assert.match(customMessage, /^Working… .*question unsafe/u);
+  assert.match(customMessage, / · gpt-5\.4$/u);
   await harness.emit("tool_execution_end", { toolName: "question", isError: true });
   const recoveryMessage = harness.workingMessages.at(-1);
   assert.ok(recoveryMessage);
   assert.match(recoveryMessage, /^Recovering…/u);
+  assert.match(recoveryMessage, / · gpt-5\.4$/u);
   await harness.emit("session_shutdown");
   assert.equal(harness.workingMessages.at(-1), undefined);
 
@@ -190,7 +226,7 @@ test("activity keeps the animated orange glyph loop and uses contextual request 
   });
   assert.equal(captured.hiddenThinkingLabel, "└ Thinking…");
   for (const handler of getHandlers(handlers, "agent_start")) handler({}, ctx);
-  assert.equal(last(captured.workingMessages), "Mapping… (esc to interrupt · understanding request)");
+  assert.equal(last(captured.workingMessages), "Mapping… (esc to interrupt · understanding request) · test-model");
   assert.equal(captured.widgetComponent, undefined);
 });
 
@@ -218,6 +254,6 @@ test("activity styles the glyph and causal verb orange with a gray bold interrup
 
   assert.match(
     last(captured.workingMessages) ?? "",
-    /^<accent>Mapping…<\/accent> <dim>\(<bold>esc<\/bold> to interrupt · understanding request\)<\/dim>$/u,
+    /^<accent>Mapping…<\/accent> <dim>\(<bold>esc<\/bold> to interrupt · understanding request\)<\/dim><dim> · test-model<\/dim>$/u,
   );
 });
