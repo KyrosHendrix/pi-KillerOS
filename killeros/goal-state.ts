@@ -447,7 +447,8 @@ export function boundGoalText(value: string, limit = GOAL_EVIDENCE_LIMIT): strin
   return [...graphemeSegmenter.segment(safe)]
     .slice(0, limit)
     .map(({ segment }) => segment)
-    .join("");
+    .join("")
+    .trimEnd();
 }
 
 export function validateGoalObjective(input: string): string | undefined {
@@ -621,6 +622,7 @@ export function transitionGoalState(
     case "active":
       return {
         ...withoutPending,
+        ...(current.status === "blocked" ? { lastDecision: undefined } : {}),
         status,
         activeStartedAt: now,
         turnPhase: pending !== undefined ? "authorized" : options.resumeInterruptedTurn ? "in-flight" : "ready",

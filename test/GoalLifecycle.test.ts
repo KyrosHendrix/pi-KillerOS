@@ -90,6 +90,22 @@ test("resume and later transitions do not retain an old pause reason", async () 
   assert.equal(last(appendedEntries).data.state.stopReason, undefined);
 });
 
+test("a provider error truncated at whitespace leaves a restorable paused goal", async () => {
+  const { appendedEntries, commands, handlers } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  await getCommand(commands, "goal").handler("Keep the goal after a provider failure", ctx);
+  await emitSequentially(getHandlers(handlers, "agent_end"), {
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "x".repeat(1_999) + " provider failure" }],
+  }, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
+
+  const saved = parseGoalState(last(appendedEntries).data.state);
+  assert.ok(saved);
+  assert.equal(saved.status, "paused");
+  assert.equal(saved.result, "x".repeat(1_999));
+  assert.equal(saved.stopReason, saved.result);
+});
+
 test("/goal pauses an exhausted restored goal before continuation", async () => {
   const now = Date.now();
   const exhausted = {
@@ -367,6 +383,19 @@ test("a goal blocks only after the same blocker is recorded on three consecutive
     lastTurn: 3,
     evidence: "Evidence for missing-credential",
   });
+
+  await getCommand(commands, "goal").handler("resume", ctx);
+  assert.equal(last(appendedEntries).data.state.turns, 4);
+  for (const entry of appendedEntries) assert.ok(parseGoalState(entry.data.state), entry.data.event);
+  await getCommand(commands, "goal").handler("pause", ctx);
+  const restored = createHarness<GoalEntryData>();
+  const restoredContext = createTuiContext([last(appendedEntries)]).ctx;
+  restoredContext.mode = "rpc";
+  const notices: string[] = [];
+  restoredContext.ui.notify = (message) => { notices.push(message); };
+  await emitSequentially(getHandlers(restored.handlers, "session_start"), {}, restoredContext);
+  await getCommand(restored.commands, "goal").handler("", restoredContext);
+  assert.match(last(notices), /Goal paused · 4\/20 turns/u);
 });
 
 test("resume and completion clear blocker audit progress", async () => {
