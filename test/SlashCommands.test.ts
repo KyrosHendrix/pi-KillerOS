@@ -242,6 +242,15 @@ test("autocomplete uses the same resolver and falls back to current base suggest
   assert.equal(resolver.isValidCommand("goal"), false);
 });
 
+test("/auto-compact is discovered with its syntax hint", () => {
+  const harness = createHarness();
+  assert.equal(harness.commands.has("auto-compact"), true);
+  assert.equal(
+    createSlashCommandResolver(extensionApiTestAdapter(harness.api)).getCommandCatalog().get("auto-compact")?.syntaxHint,
+    "/auto-compact [status|on|off|<percent>]",
+  );
+});
+
 test("goal completions include only lifecycle controls", () => {
   const goal = getCommand(createHarness(), "goal");
   assert.equal(goal.description, "Set a non-command objective or view the current goal");

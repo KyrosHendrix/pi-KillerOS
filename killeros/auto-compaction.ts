@@ -7,7 +7,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { errorMessage } from "./errors.ts";
-import { createKillerosSettingsStore } from "./settings.ts";
+import { createKillerosSettingsStore, type KillerosSettingsStore } from "./settings.ts";
 
 export const DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING = 15;
 export const AUTO_COMPACTION_MESSAGE_TYPE = "killeros-auto-compaction";
@@ -32,6 +32,7 @@ export interface AutoCompactionGoalHandlers {
 export interface AutoCompactionDependencies {
   loadPreference?: (ctx: ExtensionContext) => AutoCompactionPreference;
   getCompactionSettings?: (ctx: ExtensionContext) => CompactionSettings;
+  settingsStore?: KillerosSettingsStore;
   goal?: AutoCompactionGoalHandlers;
 }
 
@@ -66,8 +67,8 @@ export function readAutoCompactionPreference(
   };
 }
 
-function defaultPreference(): AutoCompactionPreference {
-  return readAutoCompactionPreference(createKillerosSettingsStore().load());
+function defaultPreference(store: KillerosSettingsStore): AutoCompactionPreference {
+  return readAutoCompactionPreference(store.load());
 }
 
 function defaultCompactionSettings(ctx: ExtensionContext): CompactionSettings {
@@ -115,7 +116,8 @@ export function registerAutoCompaction(
   pi: ExtensionAPI,
   dependencies: AutoCompactionDependencies = {},
 ): void {
-  const loadPreference = dependencies.loadPreference ?? (() => defaultPreference());
+  const settingsStore = dependencies.settingsStore ?? createKillerosSettingsStore();
+  const loadPreference = dependencies.loadPreference ?? (() => defaultPreference(settingsStore));
   const getCompactionSettings = dependencies.getCompactionSettings ?? defaultCompactionSettings;
   let request: AutoCompactionRequest | undefined;
   let armed = true;
@@ -126,6 +128,45 @@ export function registerAutoCompaction(
     armed = true;
     settingsErrorReported = false;
   };
+
+  pi.registerCommand("auto-compact", {
+    description: "Inspect or change automatic compaction",
+    handler: async (args, ctx) => {
+      const argument = args.trim();
+      if (!argument || argument === "status") {
+        try {
+          const preference = readAutoCompactionPreference(settingsStore.load());
+          ctx.ui.notify(preference.enabled
+            ? `Automatic compaction: on at ${preference.percentRemaining}% remaining`
+            : `Automatic compaction: off (threshold ${preference.percentRemaining}%)`, "info");
+        } catch (error) {
+          ctx.ui.notify(`Automatic compaction setting could not be read: ${errorMessage(error)}`, "error");
+        }
+        return;
+      }
+
+      const percent = /^\d+$/u.test(argument) ? Number(argument) : undefined;
+      if (argument !== "on" && argument !== "off" && (percent === undefined || percent > 100)) {
+        ctx.ui.notify("Usage: /auto-compact [status|on|off|<percent 0-100>]", "error");
+        return;
+      }
+
+      try {
+        const preference = readAutoCompactionPreference(settingsStore.load());
+        const updated = percent === undefined
+          ? { ...preference, enabled: argument === "on" }
+          : { ...preference, percentRemaining: percent };
+        settingsStore.update({ autoCompaction: updated });
+        ctx.ui.notify(percent === undefined
+          ? updated.enabled
+            ? `Automatic compaction: on at ${updated.percentRemaining}% remaining`
+            : `Automatic compaction: off (threshold ${updated.percentRemaining}%)`
+          : `Automatic compaction threshold: ${percent}% remaining (${updated.enabled ? "on" : "off"})`, "info");
+      } catch (error) {
+        ctx.ui.notify(`Automatic compaction setting could not be saved: ${errorMessage(error)}`, "error");
+      }
+    },
+  });
 
   const notifyFailure = (ctx: ExtensionContext, error: unknown): void => {
     ctx.ui.notify(`Automatic compaction failed: ${errorMessage(error)}`, "error");

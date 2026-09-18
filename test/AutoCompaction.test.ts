@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type {
   CompactOptions,
   ContextUsage,
+  ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -22,8 +23,12 @@ import { registerGoalInterface } from "../killeros/goal-interface.ts";
 import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
 import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
-import { createKillerosSettingsStore } from "../killeros/settings.ts";
-import { extensionApiTestAdapter, extensionContextTestAdapter } from "./PiTestAdapters.ts";
+import { createKillerosSettingsStore, type KillerosSettingsStore } from "../killeros/settings.ts";
+import {
+  extensionApiTestAdapter,
+  extensionCommandContextTestAdapter,
+  extensionContextTestAdapter,
+} from "./PiTestAdapters.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 type GoalTool = {
@@ -119,6 +124,55 @@ function createHarness(
 
 function compactResult(): { summary: string; firstKeptEntryId: string; tokensBefore: number } {
   return { summary: "summary", firstKeptEntryId: "entry-1", tokensBefore: 90_000 };
+}
+
+function createCommandHarness(
+  settingsStore: KillerosSettingsStore,
+  mode: "tui" | "rpc" = "tui",
+): {
+  compactCalls: CompactOptions[];
+  notifications: Array<{ message: string; type?: string }>;
+  run(args: string): Promise<void>;
+  turnEnd(): Promise<void>;
+} {
+  const handlers = new Map<string, Handler[]>();
+  const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => Promise<void>>();
+  const compactCalls: CompactOptions[] = [];
+  const notifications: Array<{ message: string; type?: string }> = [];
+  const api = extensionApiTestAdapter({
+    on(eventName: string, handler: Handler): void {
+      handlers.set(eventName, [...(handlers.get(eventName) ?? []), handler]);
+    },
+    registerCommand(
+      name: string,
+      command: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> },
+    ): void {
+      commands.set(name, command.handler);
+    },
+  });
+  const context = {
+    cwd: process.cwd(),
+    getContextUsage: () => ({ tokens: 84_000, contextWindow: 100_000, percent: 84 }),
+    isProjectTrusted: () => true,
+    mode,
+    compact: (options?: CompactOptions) => { if (options) compactCalls.push(options); },
+    ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) },
+  };
+  registerAutoCompaction(api, {
+    settingsStore,
+    getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }),
+  });
+  const command = requiredMapValue(commands, "auto-compact");
+  return {
+    compactCalls,
+    notifications,
+    run: (args) => command(args, extensionCommandContextTestAdapter(context)),
+    async turnEnd(): Promise<void> {
+      for (const handler of handlers.get("turn_end") ?? []) {
+        await handler({ type: "turn_end" }, extensionContextTestAdapter(context));
+      }
+    },
+  };
 }
 
 function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
@@ -286,6 +340,141 @@ test("auto-compaction shares the global KillerOS settings file without clobberin
   }
 });
 
+test("/auto-compact reports enabled and disabled status in TUI and RPC modes", async () => {
+  for (const mode of ["tui", "rpc"] as const) {
+    const settings = {
+      autoCompaction: { enabled: true, percentRemaining: 15 },
+    };
+    const harness = createCommandHarness({
+      load: () => settings,
+      update: () => {},
+    }, mode);
+
+    await harness.run("  ");
+    await harness.run(" status ");
+    settings.autoCompaction.enabled = false;
+    await harness.run("status");
+
+    assert.deepEqual(harness.notifications, [
+      { message: "Automatic compaction: on at 15% remaining", type: "info" },
+      { message: "Automatic compaction: on at 15% remaining", type: "info" },
+      { message: "Automatic compaction: off (threshold 15%)", type: "info" },
+    ], mode);
+  }
+});
+
+test("/auto-compact persists both effective fields and preserves unrelated settings", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-auto-command-"));
+  try {
+    const settingsPath = path.join(directory, "killeros.json");
+    writeFileSync(settingsPath, JSON.stringify({
+      completionSound: true,
+      handoffMaxTokens: 4096,
+      futureSetting: { retained: "exactly" },
+      autoCompaction: { enabled: true, percentRemaining: 12.5 },
+    }));
+    const harness = createCommandHarness(createKillerosSettingsStore(settingsPath));
+
+    await harness.run(" off ");
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), {
+      completionSound: true,
+      handoffMaxTokens: 4096,
+      futureSetting: { retained: "exactly" },
+      autoCompaction: { enabled: false, percentRemaining: 12.5 },
+    });
+    await harness.run("20");
+    await harness.run("on");
+    await harness.run("00");
+    await harness.run("15");
+    await harness.run("100");
+
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), {
+      completionSound: true,
+      handoffMaxTokens: 4096,
+      futureSetting: { retained: "exactly" },
+      autoCompaction: { enabled: true, percentRemaining: 100 },
+    });
+    assert.deepEqual(harness.notifications.map(({ message }) => message), [
+      "Automatic compaction: off (threshold 12.5%)",
+      "Automatic compaction threshold: 20% remaining (off)",
+      "Automatic compaction: on at 20% remaining",
+      "Automatic compaction threshold: 0% remaining (on)",
+      "Automatic compaction threshold: 15% remaining (on)",
+      "Automatic compaction threshold: 100% remaining (on)",
+    ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("/auto-compact rejects non-integer percentages and extra input without writing", async () => {
+  const invalid = ["-1", "101", "1.5", "1e1", "+10", "10%", "10 now", "ON", "unknown"];
+  let updates = 0;
+  const harness = createCommandHarness({
+    load: () => ({ autoCompaction: { enabled: true, percentRemaining: 15 } }),
+    update: () => { updates += 1; },
+  });
+
+  for (const value of invalid) await harness.run(value);
+
+  assert.equal(updates, 0);
+  assert.deepEqual(harness.notifications, invalid.map(() => ({
+    message: "Usage: /auto-compact [status|on|off|<percent 0-100>]",
+    type: "error",
+  })));
+});
+
+test("/auto-compact normalizes invalid stored fields before saving", async () => {
+  let saved: Readonly<Record<string, unknown>> | undefined;
+  const harness = createCommandHarness({
+    load: () => ({ autoCompaction: { enabled: "yes", percentRemaining: 900 } }),
+    update: (patch) => { saved = patch; },
+  });
+
+  await harness.run("off");
+  assert.deepEqual(saved, { autoCompaction: { enabled: false, percentRemaining: 15 } });
+
+  await harness.run("20");
+  assert.deepEqual(saved, { autoCompaction: { enabled: true, percentRemaining: 20 } });
+});
+
+test("/auto-compact reports read and save failures without success", async () => {
+  const readFailure = createCommandHarness({
+    load: () => { throw new Error("bad\x1B[31m file"); },
+    update: () => {},
+  });
+  await readFailure.run("status");
+  assert.deepEqual(readFailure.notifications, [{
+    message: "Automatic compaction setting could not be read: bad file",
+    type: "error",
+  }]);
+
+  const writeFailure = createCommandHarness({
+    load: () => ({ autoCompaction: { enabled: true, percentRemaining: 15 } }),
+    update: () => { throw new Error("disk full"); },
+  });
+  await writeFailure.run("off");
+  assert.deepEqual(writeFailure.notifications, [{
+    message: "Automatic compaction setting could not be saved: disk full",
+    type: "error",
+  }]);
+});
+
+test("/auto-compact changes the next eligibility check without compacting immediately", async () => {
+  let settings: Record<string, unknown> = {
+    autoCompaction: { enabled: true, percentRemaining: 15 },
+  };
+  const harness = createCommandHarness({
+    load: () => settings,
+    update: (patch) => { settings = { ...settings, ...patch }; },
+  });
+
+  await harness.run("20");
+  assert.equal(harness.compactCalls.length, 0);
+  await harness.turnEnd();
+  assert.equal(harness.compactCalls.length, 1);
+});
+
 test("TUI and RPC wait for turn_end -> agent_settled -> compaction completion before one hidden continuation", async () => {
   for (const mode of ["tui", "rpc"] as const) {
     const harness = createHarness(mode);
@@ -406,6 +595,7 @@ test("missing readings, disabled Pi compaction, and failed compaction do not ret
   // The harness supplies enabled Pi settings; replace the registration with a separate disabled probe.
   const disabledHandlers = new Map<string, Handler[]>();
   const disabledApi = extensionApiTestAdapter({
+    registerCommand: () => {},
     on(eventName: string, handler: Handler): void {
       const current = disabledHandlers.get(eventName) ?? [];
       current.push(handler);
@@ -883,6 +1073,7 @@ test("RPC mode skips identically while print mode never requests compaction", as
 
   const printHandlers = new Map<string, Handler[]>();
   const printApi = extensionApiTestAdapter({
+    registerCommand: () => {},
     on(eventName: string, handler: Handler): void {
       const current = printHandlers.get(eventName) ?? [];
       current.push(handler);

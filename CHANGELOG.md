@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added `/auto-compact [status|on|off|<percent>]` to inspect and update the global automatic compaction preference without restarting Pi.
+
 ## [2.1.28] - 2026-09-15
 
 ### Changed

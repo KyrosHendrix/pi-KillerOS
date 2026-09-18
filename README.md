@@ -8,7 +8,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 - `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Each turn must record `continue` with evidence and one next action, `complete`, or the existing blocker decision; otherwise the goal pauses. New goals pause after 20 turns; `/goal resume` grants another 20.
 - `/codex-fast`: toggles the `priority` service tier on Codex requests or reports its status.
 - `/handoff`: starts a fresh linked session carrying visible continuation context.
-- Automatic context compaction when remaining tokens drop below 15% of the window (configurable).
+- `/auto-compact`: reports, enables, disables, or tunes automatic context compaction.
 - A `question` tool with single-select and multi-select modes.
 - Lifecycle hooks (`tool_call`, `tool_result`, `agent_settled`) from `.pi/killeros-hooks.json`, plus `AGENTS.local.md` loading for trusted projects.
 - Optional completion sounds for settled requests.
@@ -43,6 +43,8 @@ Pin a release by appending its tag, for example `@v2.1.28`. Add `-l` to install 
 /goal resume              Resume automatic continuation
 /goal clear               Remove the current goal
 /codex-fast [status]      Toggle or report Codex fast mode
+/auto-compact [status|on|off|<percent>]
+                          Inspect or change automatic compaction
 /notification             Configure the completion sound
 /handoff [focus]          Fresh session with continuation context
 /clear                    New session after confirmation
@@ -70,6 +72,8 @@ The packaged `killeros` theme activates on TUI start. Compaction triggers by def
   "handoffMaxTokens": 8192
 }
 ```
+
+Use `/auto-compact status` to inspect the effective KillerOS preference, `/auto-compact on` or `/auto-compact off` to toggle it, and `/auto-compact <percent>` to set an integer threshold from 0 through 100. A threshold of 0 does not disable Pi's own token reserve.
 
 `handoffMaxTokens` caps the `/handoff` summary output at 8192 tokens by default; raise it when long sessions truncate the summary.
 
