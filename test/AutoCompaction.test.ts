@@ -20,7 +20,7 @@ import {
   type AutoCompactionGoalHandlers,
 } from "../killeros/auto-compaction.ts";
 import { registerGoalInterface } from "../killeros/goal-interface.ts";
-import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
+import { GOAL_CONTINUATION_TYPE, registerGoalRuntime } from "../killeros/goal-runtime.ts";
 import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createKillerosSettingsStore, type KillerosSettingsStore } from "../killeros/settings.ts";
@@ -61,6 +61,7 @@ function createHarness(
   mode: "tui" | "rpc" = "tui",
   initialUsage: ContextUsage | undefined = { tokens: 90_000, contextWindow: 100_000, percent: 90 },
   goal?: AutoCompactionGoalHandlers,
+  percentRemaining = 15,
 ): AutoHarness {
   const handlers = new Map<string, Handler[]>();
   const activeTools = ["read", "bash", "edit", "write"];
@@ -102,7 +103,7 @@ function createHarness(
   });
   let compactError: Error | undefined;
   registerAutoCompaction(api, {
-    loadPreference: () => ({ enabled: true, percentRemaining: 15 }),
+    loadPreference: () => ({ enabled: true, percentRemaining }),
     getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }),
     goal,
   });
@@ -175,7 +176,7 @@ function createCommandHarness(
   };
 }
 
-function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
+function createGoalHarness(mode: "tui" | "rpc" = "rpc", percentRemaining = 15): {
   compactCalls: CompactOptions[];
   notifications: Array<{ message: string; type?: string }>;
   persistedStatuses: string[];
@@ -225,7 +226,7 @@ function createGoalHarness(mode: "tui" | "rpc" = "rpc"): {
   registerGoalRuntime(api, runtime);
   const goal = registerGoalSettlement(api, runtime);
   registerAutoCompaction(api, {
-    loadPreference: () => ({ enabled: true, percentRemaining: 15 }),
+    loadPreference: () => ({ enabled: true, percentRemaining }),
     getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }),
     goal,
   });
@@ -888,7 +889,65 @@ test("a synchronous automatic goal compaction failure stays paused", async () =>
   assert.equal(harness.sentMessages.length, 1);
 });
 
-test("a successful compaction must be followed by a higher reading before another trigger", async () => {
+test("100 percent rearms on a later user request without compacting its ordinary continuation", async () => {
+  const harness = createHarness("tui", undefined, undefined, 100);
+  await harness.emit("turn_end");
+  await harness.emit("agent_settled");
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+
+  await harness.emit("message_start", {
+    type: "message_start",
+    message: { role: "custom", customType: AUTO_COMPACTION_MESSAGE_TYPE },
+  });
+  await harness.emit("message_start", {
+    type: "message_start",
+    message: { role: "assistant", content: [] },
+  });
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 1);
+
+  await harness.emit("message_start", {
+    type: "message_start",
+    message: { role: "user", content: "Start another request" },
+  });
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 2);
+});
+
+test("100 percent rearms for the next recovered goal turn", async () => {
+  const harness = createGoalHarness("rpc", 100);
+  await harness.startGoal("Continue after each successful compaction");
+  await harness.emit("turn_end");
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "aborted" }],
+  });
+  await harness.emit("agent_settled");
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await new Promise((resolve) => setImmediate(resolve));
+
+  await harness.emit("message_start", {
+    type: "message_start",
+    message: { role: "custom", customType: GOAL_CONTINUATION_TYPE },
+  });
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 2);
+});
+
+test("a failed compaction at 100 percent remains disarmed for later requests", async () => {
+  const harness = createHarness("tui", undefined, undefined, 100);
+  await harness.emit("turn_end");
+  harness.compactCalls[0]?.onError?.(new Error("provider unavailable"));
+
+  await harness.emit("message_start", {
+    type: "message_start",
+    message: { role: "user", content: "Try another request" },
+  });
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 1);
+});
+
+test("a successful compaction below 100 percent must be followed by a higher reading before another trigger", async () => {
   const harness = createHarness();
   await harness.emit("turn_end");
   await harness.emit("agent_settled");

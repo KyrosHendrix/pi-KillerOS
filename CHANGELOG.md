@@ -10,6 +10,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Kept the 100% automatic-compaction threshold active for later user requests and goal turns without compacting the generated ordinary continuation.
 - Prevented automatic footer and change-receipt scans from starting clean or process filters, including filters added and removed while a scan is running.
 
 ## [2.1.28] - 2026-09-15

@@ -7,6 +7,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { errorMessage } from "./errors.ts";
+import { GOAL_CONTINUATION_TYPE } from "./goal-runtime.ts";
 import { createKillerosSettingsStore, type KillerosSettingsStore } from "./settings.ts";
 
 export const DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING = 15;
@@ -121,11 +122,13 @@ export function registerAutoCompaction(
   const getCompactionSettings = dependencies.getCompactionSettings ?? defaultCompactionSettings;
   let request: AutoCompactionRequest | undefined;
   let armed = true;
+  let rearmOnNextLogicalRequest = false;
   let settingsErrorReported = false;
 
   const resetForLifecycle = (): void => {
     request = undefined;
     armed = true;
+    rearmOnNextLogicalRequest = false;
     settingsErrorReported = false;
   };
 
@@ -291,6 +294,7 @@ export function registerAutoCompaction(
       ctx.compact({
         onComplete: () => {
           if (request?.phase !== "compacting" || request.token !== token) return;
+          rearmOnNextLogicalRequest = preference.percentRemaining === 100;
           if (goal && dependencies.goal) {
             request = undefined;
             try {
@@ -321,9 +325,15 @@ export function registerAutoCompaction(
     finalizeOrdinaryContinuation(ctx, request.token);
   });
   pi.on("message_start", (event) => {
-    if (request?.phase === "continuation-dispatched"
-      && event.message.role === "custom"
-      && event.message.customType === AUTO_COMPACTION_MESSAGE_TYPE) request = undefined;
+    const isOrdinaryContinuation = event.message.role === "custom"
+      && event.message.customType === AUTO_COMPACTION_MESSAGE_TYPE;
+    if (request?.phase === "continuation-dispatched" && isOrdinaryContinuation) request = undefined;
+    const startsNewLogicalRequest = event.message.role === "user"
+      || (event.message.role === "custom" && event.message.customType === GOAL_CONTINUATION_TYPE);
+    if (rearmOnNextLogicalRequest && startsNewLogicalRequest) {
+      armed = true;
+      rearmOnNextLogicalRequest = false;
+    }
   });
 
   pi.on("session_start", resetForLifecycle);
