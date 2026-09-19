@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, watch } from "node:fs";
-import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv } from "./passive-git-status.ts";
+import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, type PassiveWorktreeFile as DirtyFile } from "./passive-git-status.ts";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
 import { createInflate } from "node:zlib";
@@ -156,17 +156,6 @@ async function repository(cwd: string): Promise<Repository> {
   };
 }
 
-type DirtyFile = {
-  path: string;
-  headMode?: string;
-  headObjectId?: string;
-  indexMode?: string;
-  indexObjectId?: string;
-  mode?: string;
-  content?: Buffer;
-  contentObjectId?: string;
-};
-
 async function readBoundedFile(filePath: string, limit: number): Promise<Buffer> {
   const handle = await open(filePath, "r");
   try {
@@ -185,47 +174,6 @@ async function readBoundedFile(filePath: string, limit: number): Promise<Buffer>
   } finally {
     await handle.close();
   }
-}
-
-async function readSnapshotFiles(repo: Repository, files: Map<string, DirtyFile>): Promise<void> {
-  const pending = [...files.values()].filter((file) => file.mode && !file.content && !file.contentObjectId);
-  let totalBytes = 0;
-  let nextIndex = 0;
-  const readNext = async (): Promise<void> => {
-    while (nextIndex < pending.length) {
-      const file = pending[nextIndex];
-      nextIndex += 1;
-      if (!file?.mode) continue;
-      const absolutePath = path.join(repo.root, ...file.path.split("/"));
-      if (file.mode === "120000") {
-        const content = Buffer.from(await readlink(absolutePath));
-        totalBytes += content.length;
-        if (totalBytes > SNAPSHOT_CONTENT_LIMIT) throw new GitFailure("too-large");
-        file.content = content;
-        continue;
-      }
-      const handle = await open(absolutePath, "r");
-      try {
-        const stats = await handle.stat();
-        if (!stats.isFile()) throw new GitFailure("error");
-        totalBytes += stats.size;
-        if (totalBytes > SNAPSHOT_CONTENT_LIMIT) throw new GitFailure("too-large");
-        const content = Buffer.alloc(stats.size + 1);
-        let length = 0;
-        while (length < content.length) {
-          const { bytesRead } = await handle.read(content, length, content.length - length, length);
-          if (bytesRead === 0) break;
-          length += bytesRead;
-        }
-        if (length > stats.size) throw new GitFailure("error");
-        totalBytes -= stats.size - length;
-        file.content = content.subarray(0, length);
-      } finally {
-        await handle.close();
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(8, pending.length) }, readNext));
 }
 
 type Snapshot = { head: string; files: Map<string, DirtyFile> };
@@ -254,10 +202,7 @@ function sameRepository(left: Repository, right: Repository): boolean {
 
 async function snapshot(repo: Repository): Promise<Snapshot> {
   try {
-    const inspected = await inspectWorktreeWithoutFilters(repo.root, (args) => runGit(repo.root, args));
-    const files = new Map<string, DirtyFile>(inspected.files);
-    await readSnapshotFiles(repo, files);
-    return { head: inspected.head, files };
+    return await inspectWorktreeWithoutFilters(repo.root, (args) => runGit(repo.root, args));
   } catch (error) {
     if (error instanceof Error && error.message === "worktree content limit exceeded") throw new GitFailure("too-large");
     throw error;

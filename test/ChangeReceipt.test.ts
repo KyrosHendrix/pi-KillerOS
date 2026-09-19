@@ -737,9 +737,52 @@ test("receipts neither fetch promised blobs nor report verified changes", async 
   ));
 });
 
+test("passive scans keep normalized CRLF checkouts clean and still detect content changes", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  git(root, "config", "core.autocrlf", "true");
+  const file = path.join(root, "clean.txt");
+  await writeFile(file, "clean\r\n");
+  git(root, "add", "clean.txt");
+  assert.equal(git(root, "status", "--porcelain").toString(), "");
+  // Invalidate the index stat cache without changing the checkout contents.
+  await utimes(file, new Date(0), new Date(0));
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 0, added: 0, deleted: 0 });
+  const collection = await beginChangeReceipt(root);
+  await writeFile(file, "changed\r\n");
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 1, added: 0, deleted: 0 });
+  assert.deepEqual(await collection.finish(), {
+    state: "available", totalFiles: 1, additions: 1, deletions: 1,
+    files: [{ kind: "modified", path: "clean.txt", additions: 1, deletions: 1 }], omittedFiles: 0,
+  });
+});
+
+test("passive normalization respects attributes, binary detection, and skip-worktree entries", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  git(root, "config", "core.autocrlf", "false");
+  await writeFile(path.join(root, ".gitattributes"), [
+    "normalized.txt text eol=crlf", "automatic.txt text=auto", "binary.txt -text",
+    "controls.txt text=auto", "forced.txt text",
+  ].join("\n") + "\n");
+  const contents = new Map([
+    ["normalized.txt", "text\n"], ["automatic.txt", "text\n"], ["binary.txt", "\0text\n"],
+    ["controls.txt", "\x01text\n"], ["forced.txt", "\0text\n"], ["raw.txt", "text\n"],
+  ]);
+  for (const [file, content] of contents) await writeFile(path.join(root, file), content);
+  git(root, "add", ".");
+  git(root, "commit", "--quiet", "-m", "line ending attributes");
+  for (const [file, content] of contents) await writeFile(path.join(root, file), content.replaceAll("\n", "\r\n"));
+  git(root, "update-index", "--skip-worktree", "clean.txt");
+  await rm(path.join(root, "clean.txt"));
+
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 3, added: 0, deleted: 0 });
+});
+
 test("line-ending-only edits remain visible with normalized line counts", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));
+  git(root, "config", "core.autocrlf", "false");
   const collection = await beginChangeReceipt(root);
 
   await writeFile(path.join(root, "clean.txt"), "clean\r\n");

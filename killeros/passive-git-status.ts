@@ -27,6 +27,7 @@ export type PassiveWorktreeSnapshot = {
 type IndexEntry = {
   mode: string;
   objectId: string;
+  eolAttributes: string;
   ctimeNanoseconds: bigint;
   mtimeNanoseconds: bigint;
   size: bigint;
@@ -177,23 +178,24 @@ function decode(buffer: Buffer): string {
 
 function parseIndex(output: Buffer): Map<string, IndexEntry> {
   const text = decode(output);
-  const pattern = /([HS]) ([0-7]{6}) ([0-9a-f]{40}(?:[0-9a-f]{24})?) ([0-3])\t([^\0]*)\0  ctime: (\d+):(\d+)\n  mtime: (\d+):(\d+)\n  dev: \d+\tino: \d+\n  uid: \d+\tgid: \d+\n  size: (\d+)\tflags: [0-9a-f]+\n/gu;
+  const pattern = /([0-7]{6}) ([0-9a-f]{40}(?:[0-9a-f]{24})?) ([0-3])\t([^\t]*)\t([^\0]*)\0  ctime: (\d+):(\d+)\n  mtime: (\d+):(\d+)\n  dev: \d+\tino: \d+\n  uid: \d+\tgid: \d+\n  size: (\d+)\tflags: ([0-9a-f]+)\n/gu;
   const entries = new Map<string, IndexEntry>();
   let end = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index !== end) throw new Error("invalid index metadata");
     end = match.index + match[0].length;
-    const [, tag, mode, objectId, stage, filePath, ctimeSeconds, ctimeNanoseconds, mtimeSeconds, mtimeNanoseconds, size] = match;
-    if (!tag || !mode || !objectId || !stage || filePath === undefined || !ctimeSeconds || !ctimeNanoseconds || !mtimeSeconds || !mtimeNanoseconds || !size || stage !== "0") {
+    const [, mode, objectId, stage, eolAttributes, filePath, ctimeSeconds, ctimeNanoseconds, mtimeSeconds, mtimeNanoseconds, size, flags] = match;
+    if (!mode || !objectId || !stage || eolAttributes === undefined || filePath === undefined || !ctimeSeconds || !ctimeNanoseconds || !mtimeSeconds || !mtimeNanoseconds || !size || !flags || stage !== "0") {
       throw new Error("unsupported index entry");
     }
     entries.set(filePath, {
       mode,
       objectId,
+      eolAttributes: eolAttributes.trim(),
       ctimeNanoseconds: BigInt(ctimeSeconds) * 1_000_000_000n + BigInt(ctimeNanoseconds),
       mtimeNanoseconds: BigInt(mtimeSeconds) * 1_000_000_000n + BigInt(mtimeNanoseconds),
       size: BigInt(size),
-      skipWorktree: tag === "S",
+      skipWorktree: (Number.parseInt(flags, 16) & 0x40000000) !== 0,
     });
   }
   if (end !== text.length) throw new Error("incomplete index metadata");
@@ -257,16 +259,43 @@ function blobObjectId(content: Buffer, length: number): string {
   return createHash(algorithm).update(`blob ${content.length}\0`).update(content).digest("hex");
 }
 
+function matchesIndex(content: Buffer, entry: IndexEntry, autoCrlf: string): boolean {
+  if (blobObjectId(content, entry.objectId.length) === entry.objectId) return true;
+  if (entry.mode === "120000" || !content.includes(Buffer.from("\r\n"))) return false;
+  const attributes = entry.eolAttributes;
+  if (attributes === "-text") return false;
+  const automatic = attributes.startsWith("text=auto") || !attributes;
+  if (!attributes && !["true", "input"].includes(autoCrlf)) return false;
+  if (automatic) {
+    // Match Git's convert_is_binary heuristic, including its terminal EOF exception.
+    let printable = 0;
+    let nonprintable = 0;
+    for (let index = 0; index < content.length; index += 1) {
+      const byte = content[index];
+      if (byte === 0 || byte === 13 && content[index + 1] !== 10) return false;
+      if (byte === 13 || byte === 10 || byte === 26 && index === content.length - 1) continue;
+      if (byte === 127 || byte < 32 && ![8, 9, 12, 27].includes(byte)) nonprintable += 1;
+      else printable += 1;
+    }
+    if (Math.floor(printable / 128) < nonprintable) return false;
+  }
+  const normalized = Buffer.from(content.toString("latin1").replaceAll("\r\n", "\n"), "latin1");
+  return blobObjectId(normalized, entry.objectId.length) === entry.objectId;
+}
+
 /**
  * Reads index and tree metadata with Git, then inspects worktree files with Node.
  * No Git command in this path asks Git to convert worktree content, so clean and process filters cannot start.
  */
 export async function inspectWorktreeWithoutFilters(root: string, runGit: PassiveGitRunner): Promise<PassiveWorktreeSnapshot> {
-  const [indexOutput, untrackedOutput, resolvedHead] = await Promise.all([
-    runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--cached", "--stage", "--debug", "-t", "-z", "--full-name"]),
+  const [indexOutput, untrackedOutput, resolvedHead, autoCrlfOutput] = await Promise.all([
+    runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--cached", "--debug", "-z", "--full-name",
+      "--format=%(objectmode) %(objectname) %(stage)%x09%(eolattr)%x09%(path)"]),
     runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--others", "--exclude-standard", "-z", "--full-name"]),
     runGit(["rev-parse", "--verify", "HEAD"]).then(decode, () => ""),
+    runGit(["config", "--type=bool-or-str", "--default", "false", "--get", "core.autocrlf"]),
   ]);
+  const autoCrlf = decode(autoCrlfOutput).trim().toLowerCase();
   const head = resolvedHead.trim();
   if (head && !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(head)) throw new Error("invalid HEAD");
   const index = parseIndex(indexOutput);
@@ -288,7 +317,7 @@ export async function inspectWorktreeWithoutFilters(root: string, runGit: Passiv
         mode = process.platform === "win32" && indexEntry.mode !== "120000" ? indexEntry.mode : state.mode;
         content = state.content;
         if (content) contentBytes += content.length;
-        worktreeChanged = !state.statsMatch && (mode !== indexEntry.mode || !content || blobObjectId(content, indexEntry.objectId.length) !== indexEntry.objectId);
+        worktreeChanged = !state.statsMatch && (mode !== indexEntry.mode || !content || !matchesIndex(content, indexEntry, autoCrlf));
       } catch (error) {
         if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") worktreeChanged = true;
         else throw error;

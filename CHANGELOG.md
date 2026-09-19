@@ -10,6 +10,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Kept normalized CRLF checkouts clean in passive Git scans while respecting text attributes and binary files without running filters.
 - Detected same-size tracked-file rewrites even when tools restore the indexed modification time.
 - Resolved change-receipt repository ownership at the start of every response so nested or replaced repositories cannot reuse a stale monitor.
 - Kept the 100% automatic-compaction threshold active for later user requests and goal turns without compacting the generated ordinary continuation.
