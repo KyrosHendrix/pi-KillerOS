@@ -259,11 +259,11 @@ export function contextPercentRemaining(ctx: ExtensionContext): number | null {
 export function formatContextProgress(tokensUsed: number | null, contextWindow: number, theme: Theme): string {
   if (tokensUsed === null || !Number.isFinite(tokensUsed)) return theme.fg("dim", "ctx —%");
   const windowSize = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 128_000;
-  const used = Math.max(0, Math.min(windowSize, Math.max(0, tokensUsed)));
-  const percentUsed = Math.max(0, Math.min(100, Math.round((used / windowSize) * 100)));
-  const color: ThemeColor = percentUsed > 80 ? "error" : percentUsed >= 50 ? "warning" : "success";
-  const action = percentUsed >= 85 ? " · /compact" : "";
-  return theme.fg(color, `ctx ${percentUsed}%${action}`);
+  const used = Math.max(0, tokensUsed);
+  const percentRemaining = Math.max(0, Math.min(100, Math.round(((windowSize - used) / windowSize) * 100)));
+  const color: ThemeColor = percentRemaining > 50 ? "success" : percentRemaining >= 20 ? "warning" : "error";
+  const action = percentRemaining <= 15 ? " · /compact" : "";
+  return theme.fg(color, `ctx ${percentRemaining}%${action}`);
 }
 
 function sumSessionCost(ctx: ExtensionContext): number {

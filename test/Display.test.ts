@@ -3,6 +3,7 @@ import test from "node:test";
 import { formatContextProgress } from "../Killeros.ts";
 import { formatCwd, formatTime, formatTokens } from "../killeros/display.ts";
 import { theme } from "./ExtensionTestHarness.ts";
+import { themeTestAdapter } from "./PiTestAdapters.ts";
 
 test("time formatting preserves seconds across every unit boundary", () => {
   const cases: ReadonlyArray<readonly [milliseconds: number, expected: string]> = [
@@ -56,10 +57,32 @@ test("token unit thresholds follow rounding", () => {
   assert.equal(formatTokens(999999), "1M");
 });
 
-test("context telemetry uses plain language without a progress bar", () => {
-  assert.equal(formatContextProgress(50_000, 1_050_000, theme), "ctx 5%");
-  assert.equal(formatContextProgress(860_000, 1_000_000, theme), "ctx 86% · /compact");
-  assert.equal(formatContextProgress(null, 1_000_000, theme), "ctx —%");
-  assert.equal(formatContextProgress(Number.NaN, 1_000_000, theme), "ctx —%");
+test("context telemetry shows the remaining percentage with urgency colors", () => {
+  const semanticTheme = themeTestAdapter({
+    ...theme,
+    fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+  });
+  const cases: ReadonlyArray<readonly [tokens: number | null, window: number, expected: string]> = [
+    [0, 1_000_000, "<success>ctx 100%</success>"],
+    [300_000, 1_000_000, "<success>ctx 70%</success>"],
+    [50_000, 1_050_000, "<success>ctx 95%</success>"],
+    [500_000, 1_000_000, "<warning>ctx 50%</warning>"],
+    [700_000, 1_000_000, "<warning>ctx 30%</warning>"],
+    [800_000, 1_000_000, "<warning>ctx 20%</warning>"],
+    [810_000, 1_000_000, "<error>ctx 19%</error>"],
+    [850_000, 1_000_000, "<error>ctx 15% · /compact</error>"],
+    [860_000, 1_000_000, "<error>ctx 14% · /compact</error>"],
+    [1_000_000, 1_000_000, "<error>ctx 0% · /compact</error>"],
+    [1_100_000, 1_000_000, "<error>ctx 0% · /compact</error>"],
+    [-1, 1_000_000, "<success>ctx 100%</success>"],
+    [64_000, Number.NaN, "<warning>ctx 50%</warning>"],
+    [null, 1_000_000, "<dim>ctx —%</dim>"],
+    [Number.NaN, 1_000_000, "<dim>ctx —%</dim>"],
+    [Number.POSITIVE_INFINITY, 1_000_000, "<dim>ctx —%</dim>"],
+  ];
+
+  for (const [tokens, window, expected] of cases) {
+    assert.equal(formatContextProgress(tokens, window, semanticTheme), expected);
+  }
   assert.doesNotMatch(formatContextProgress(50_000, 1_050_000, theme), /[█░]/u);
 });

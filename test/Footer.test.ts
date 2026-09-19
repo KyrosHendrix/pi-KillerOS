@@ -571,7 +571,7 @@ test("footer cuts down by priority while preserving model and context", () => {
   assert.equal(wideRender[0], `<borderMuted>${"─".repeat(160)}</borderMuted>`);
   const widePrimary = wideRender[1] ?? "";
   const wideSecondary = wideRender[2] ?? "";
-  assert.match(widePrimary, /gpt-5\.6-sol openai · high · ctx 5%/u);
+  assert.match(widePrimary, /gpt-5\.6-sol openai · high · ctx 95%/u);
   assert.match(widePrimary, /\d+s · \$10\.00/u);
   assert.match(wideSecondary, /main/u);
   const normalizedHome = (process.env.HOME || process.env.USERPROFILE || os.homedir()).replace(/[\\/]+$/u, "");
@@ -585,12 +585,12 @@ test("footer cuts down by priority while preserving model and context", () => {
   assert.ok(wideSecondary.includes(`\x1B[38;2;240;248;154m${displayedCwd}\x1B[39m`));
 
   const focused = footer.render(44);
-  assert.match(focused[1] ?? "", /gpt-5\.6-sol openai · high · ctx 5%/u);
+  assert.match(focused[1] ?? "", /gpt-5\.6-sol openai · high · ctx 95%/u);
   assert.match(focused[2] ?? "", /…\/pi-KillerOS/u);
   assert.doesNotMatch(focused[1] ?? "", /\d+s|\$10\.00/u);
 
   const compact = footer.render(32);
-  assert.match(compact[1] ?? "", /gpt-5\.6-sol openai · ctx 5%/u);
+  assert.match(compact[1] ?? "", /gpt-5\.6-sol openai · ctx 95%/u);
   assert.match(compact[2] ?? "", /main/u);
   assert.match(compact[2] ?? "", /…\/pi-KillerOS/u);
 
@@ -599,7 +599,7 @@ test("footer cuts down by priority while preserving model and context", () => {
 
   const emergency = footer.render(26)[1] ?? "";
   assert.match(emergency, /gpt-5\.6-sol/u);
-  assert.match(emergency, /ctx 5%/u);
+  assert.match(emergency, /ctx 95%/u);
   assert.doesNotMatch(emergency, /openai/u);
 
   for (let width = 1; width <= 180; width += 1) {

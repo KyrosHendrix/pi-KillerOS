@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Changed the footer's `ctx` percentage to show context remaining, matching `/auto-compact` threshold direction while preserving urgency colors and the `/compact` hint.
+
 ## [2.1.29] - 2026-09-19
 
 ### Added
