@@ -140,31 +140,20 @@ type Repository = {
   blobCache: Map<string, Buffer>;
   blobCacheBytes: number;
 };
-const repositoryCache = new Map<string, Promise<Repository>>();
-
 async function repository(cwd: string): Promise<Repository> {
-  const cached = repositoryCache.get(cwd);
-  if (cached) return cached;
-  const pending = (async () => {
-    const result = decode(await runGit(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"])).trimEnd().split(/\r?\n/u);
-    const [root, gitDirectory, commonDirectory] = result;
-    if (!root || !gitDirectory || !commonDirectory) throw new GitFailure("error");
-    return {
-      root,
-      gitDirectory,
-      commonDirectory,
-      objectDirectory: path.join(commonDirectory, "objects"),
-      blobCache: new Map(),
-      blobCacheBytes: 0,
-    };
-  })();
-  repositoryCache.set(cwd, pending);
-  try {
-    return await pending;
-  } catch (error) {
-    repositoryCache.delete(cwd);
-    throw error;
-  }
+  const result = decode(await runGit(cwd, [
+    "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir", "--git-path", "objects",
+  ])).trimEnd().split(/\r?\n/u);
+  const [root, gitDirectory, commonDirectory, objectDirectory] = result;
+  if (!root || !gitDirectory || !commonDirectory || !objectDirectory) throw new GitFailure("error");
+  return {
+    root,
+    gitDirectory,
+    commonDirectory,
+    objectDirectory,
+    blobCache: new Map(),
+    blobCacheBytes: 0,
+  };
 }
 
 type DirtyFile = {
@@ -253,7 +242,14 @@ const repositoryMonitors = new Map<string, RepositoryMonitor>();
 
 function discardMonitor(monitor: RepositoryMonitor): void {
   for (const watcher of monitor.watchers) watcher.close();
-  repositoryMonitors.delete(monitor.repo.root);
+  if (repositoryMonitors.get(monitor.repo.root) === monitor) repositoryMonitors.delete(monitor.repo.root);
+}
+
+function sameRepository(left: Repository, right: Repository): boolean {
+  return left.root === right.root
+    && left.gitDirectory === right.gitDirectory
+    && left.commonDirectory === right.commonDirectory
+    && left.objectDirectory === right.objectDirectory;
 }
 
 async function snapshot(repo: Repository): Promise<Snapshot> {
@@ -675,11 +671,17 @@ export async function beginChangeReceipt(cwd: string, trusted = true): Promise<C
     };
   }
   try {
-    const repo = await repository(cwd);
+    let repo = await repository(cwd);
     let monitor = repositoryMonitors.get(repo.root);
+    if (monitor && !sameRepository(monitor.repo, repo)) {
+      discardMonitor(monitor);
+      monitor = undefined;
+    }
     if (!monitor) {
       monitor = createMonitor(repo, await snapshot(repo));
       repositoryMonitors.set(repo.root, monitor);
+    } else {
+      repo = monitor.repo;
     }
     if (monitor.inUse) throw new Error("change collection already active");
     const idleChanges = [...monitor.changedPaths];
@@ -732,5 +734,4 @@ export async function beginChangeReceipt(cwd: string, trusted = true): Promise<C
 export function disposeChangeReceipts(): void {
   for (const monitor of repositoryMonitors.values()) discardMonitor(monitor);
   repositoryMonitors.clear();
-  repositoryCache.clear();
 }

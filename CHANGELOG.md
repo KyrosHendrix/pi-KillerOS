@@ -10,6 +10,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Resolved change-receipt repository ownership at the start of every response so nested or replaced repositories cannot reuse a stale monitor.
 - Kept the 100% automatic-compaction threshold active for later user requests and goal turns without compacting the generated ordinary continuation.
 - Prevented automatic footer and change-receipt scans from starting clean or process filters, including filters added and removed while a scan is running.
 

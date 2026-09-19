@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { chmod, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
@@ -147,6 +147,74 @@ test("Git collection reports only the response delta and cleans its temporary di
   assert.match(status, /preexisting\.txt/u);
   const tempAfter = new Set((await readdir(os.tmpdir())).filter((name) => name.startsWith("killeros-change-receipt-")));
   assert.deepEqual(tempAfter, tempBefore);
+});
+
+test("each receipt discovers the repository that currently owns the working directory", async (t) => {
+  const outer = await fixture();
+  const child = path.join(outer, "child");
+  await mkdir(child);
+  await writeFile(path.join(child, "outer.txt"), "outer\n");
+  git(outer, "add", "child/outer.txt");
+  git(outer, "commit", "--quiet", "-m", "outer child");
+  t.after(async () => {
+    disposeChangeReceipts();
+    await rm(outer, { recursive: true, force: true });
+  });
+
+  assert.deepEqual(await (await beginChangeReceipt(child)).finish(), {
+    state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0,
+  });
+
+  git(child, "init", "--quiet");
+  git(child, "config", "user.email", "killeros@example.invalid");
+  git(child, "config", "user.name", "KillerOS test");
+  await writeFile(path.join(child, "inner.txt"), "before\n");
+  git(child, "add", "inner.txt");
+  git(child, "commit", "--quiet", "-m", "nested fixture");
+
+  const collection = await beginChangeReceipt(child);
+  await writeFile(path.join(child, "inner.txt"), "after\n");
+
+  assert.deepEqual(await collection.finish(), {
+    state: "available",
+    totalFiles: 1,
+    additions: 1,
+    deletions: 1,
+    files: [{ kind: "modified", path: "inner.txt", additions: 1, deletions: 1 }],
+    omittedFiles: 0,
+  });
+});
+
+test("monitor reuse requires the same repository metadata", async (t) => {
+  const root = await fixture();
+  const metadata = await mkdtemp(path.join(os.tmpdir(), "killeros-repository-metadata-"));
+  t.after(async () => {
+    disposeChangeReceipts();
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(metadata, { recursive: true, force: true }),
+    ]);
+  });
+
+  assert.equal((await (await beginChangeReceipt(root)).finish()).state, "available");
+  await rename(path.join(root, ".git"), path.join(metadata, "original.git"));
+  git(metadata, "init", "--quiet", "--separate-git-dir", path.join(metadata, "replacement.git"), root);
+  git(root, "config", "user.email", "killeros@example.invalid");
+  git(root, "config", "user.name", "KillerOS test");
+  git(root, "add", "clean.txt");
+  git(root, "commit", "--quiet", "-m", "replacement fixture");
+
+  const collection = await beginChangeReceipt(root);
+  await writeFile(path.join(root, "clean.txt"), "replacement\n");
+
+  assert.deepEqual(await collection.finish(), {
+    state: "available",
+    totalFiles: 1,
+    additions: 1,
+    deletions: 1,
+    files: [{ kind: "modified", path: "clean.txt", additions: 1, deletions: 1 }],
+    omittedFiles: 0,
+  });
 });
 
 test("untracked and tracked symlinks compare destinations without following targets", async (t) => {
