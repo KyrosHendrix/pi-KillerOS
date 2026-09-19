@@ -1,4 +1,5 @@
 import { validateGoalObjective } from "./goal-state.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 export type GoalCommand =
   | { kind: "status" }
@@ -17,7 +18,9 @@ export function parseGoalCommand(args: string): GoalCommand {
   if (lowered === "resume") return { kind: "resume" };
   if (lowered === "clear") return { kind: "clear" };
   const objective = validateGoalObjective(input);
-  return objective
-    ? { kind: "objective", objective }
-    : { kind: "invalid", message: "A goal objective may not exceed 4,000 characters" };
+  if (objective) return { kind: "objective", objective };
+  if (safeTerminalText(input) !== input) {
+    return { kind: "invalid", message: "A goal objective contains unsupported content" };
+  }
+  return { kind: "invalid", message: "A goal objective may not exceed 4,000 characters" };
 }

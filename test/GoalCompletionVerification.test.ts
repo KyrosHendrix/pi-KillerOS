@@ -321,7 +321,7 @@ test("file goals fail closed when their current content baseline is unavailable"
   await assert.rejects(complete(restoredHarness, restoredContext), /content cannot be verified/u);
 });
 
-test("file goals reject baseline paths the filesystem cannot inspect", async () => {
+test("file goal objectives report unsupported terminal content", async () => {
   const requested = path.join(path.parse(process.cwd()).root, "killeros-invalid\0report.md");
   const harness = createHarness();
   const ctx = createContext();
@@ -333,7 +333,7 @@ test("file goals reject baseline paths the filesystem cannot inspect", async () 
   assert.equal(harness.appendedEntries.length, 0);
   assert.equal(harness.sentMessages.length, 0);
   assert.equal(notifications.length, 1);
-  assert.match(last(notifications).message, /objective may not exceed 4,000 characters/u);
+  assert.equal(last(notifications).message, "A goal objective contains unsupported content");
   assert.equal(last(notifications).message.includes("\0"), false);
   assert.equal(last(notifications).level, "error");
 });
