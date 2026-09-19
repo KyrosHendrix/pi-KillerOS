@@ -27,6 +27,7 @@ export type PassiveWorktreeSnapshot = {
 type IndexEntry = {
   mode: string;
   objectId: string;
+  ctimeNanoseconds: bigint;
   mtimeNanoseconds: bigint;
   size: bigint;
   skipWorktree: boolean;
@@ -176,20 +177,21 @@ function decode(buffer: Buffer): string {
 
 function parseIndex(output: Buffer): Map<string, IndexEntry> {
   const text = decode(output);
-  const pattern = /([HS]) ([0-7]{6}) ([0-9a-f]{40}(?:[0-9a-f]{24})?) ([0-3])\t([^\0]*)\0  ctime: \d+:\d+\n  mtime: (\d+):(\d+)\n  dev: \d+\tino: \d+\n  uid: \d+\tgid: \d+\n  size: (\d+)\tflags: [0-9a-f]+\n/gu;
+  const pattern = /([HS]) ([0-7]{6}) ([0-9a-f]{40}(?:[0-9a-f]{24})?) ([0-3])\t([^\0]*)\0  ctime: (\d+):(\d+)\n  mtime: (\d+):(\d+)\n  dev: \d+\tino: \d+\n  uid: \d+\tgid: \d+\n  size: (\d+)\tflags: [0-9a-f]+\n/gu;
   const entries = new Map<string, IndexEntry>();
   let end = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index !== end) throw new Error("invalid index metadata");
     end = match.index + match[0].length;
-    const [, tag, mode, objectId, stage, filePath, seconds, nanoseconds, size] = match;
-    if (!tag || !mode || !objectId || !stage || filePath === undefined || !seconds || !nanoseconds || !size || stage !== "0") {
+    const [, tag, mode, objectId, stage, filePath, ctimeSeconds, ctimeNanoseconds, mtimeSeconds, mtimeNanoseconds, size] = match;
+    if (!tag || !mode || !objectId || !stage || filePath === undefined || !ctimeSeconds || !ctimeNanoseconds || !mtimeSeconds || !mtimeNanoseconds || !size || stage !== "0") {
       throw new Error("unsupported index entry");
     }
     entries.set(filePath, {
       mode,
       objectId,
-      mtimeNanoseconds: BigInt(seconds) * 1_000_000_000n + BigInt(nanoseconds),
+      ctimeNanoseconds: BigInt(ctimeSeconds) * 1_000_000_000n + BigInt(ctimeNanoseconds),
+      mtimeNanoseconds: BigInt(mtimeSeconds) * 1_000_000_000n + BigInt(mtimeNanoseconds),
       size: BigInt(size),
       skipWorktree: tag === "S",
     });
@@ -223,6 +225,7 @@ async function readFileState(root: string, entry: IndexEntry | undefined, filePa
   const statsMatch = entry !== undefined
     && entry.mode === mode
     && entry.size === stats.size
+    && entry.ctimeNanoseconds === stats.ctimeNs
     && entry.mtimeNanoseconds === stats.mtimeNs;
   if (statsMatch) return { mode, statsMatch };
   if (!stats.isSymbolicLink() && stats.size > BigInt(remaining)) throw new Error("worktree content limit exceeded");

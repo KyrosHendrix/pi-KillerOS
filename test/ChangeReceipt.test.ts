@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
@@ -13,6 +13,7 @@ import {
   recognizedCheck,
   CHECK_LABELS,
 } from "../killeros/change-receipt.ts";
+import { resolveGitFileChanges } from "../killeros/footer.ts";
 
 after(disposeChangeReceipts);
 
@@ -264,6 +265,41 @@ test("finish detects an immediate write without waiting for watcher delivery", a
 
   writeFileSync(path.join(root, "clean.txt"), "immediate\n");
 
+  assert.deepEqual(await collection.finish(), {
+    state: "available",
+    totalFiles: 1,
+    additions: 1,
+    deletions: 1,
+    files: [{ kind: "modified", path: "clean.txt", additions: 1, deletions: 1 }],
+    omittedFiles: 0,
+  });
+});
+
+test("same-size rewrites with restored modification times remain visible", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "clean.txt");
+  const fixedTime = new Date(Date.now() - 60_000);
+  fixedTime.setMilliseconds(0);
+  await writeFile(file, "AAAA\n");
+  await utimes(file, fixedTime, fixedTime);
+  git(root, "add", "clean.txt");
+  git(root, "commit", "--quiet", "-m", "controlled timestamp");
+  const indexedStats = await stat(file, { bigint: true });
+
+  await writeFile(file, "AAAA\n");
+  await utimes(file, fixedTime, fixedTime);
+  const restoredStats = await stat(file, { bigint: true });
+  if (restoredStats.mtimeNs !== indexedStats.mtimeNs || restoredStats.ctimeNs === indexedStats.ctimeNs) {
+    t.skip("Filesystem cannot preserve the required timestamp metadata");
+    return;
+  }
+
+  const collection = await beginChangeReceipt(root);
+  await writeFile(file, "BBBB\n");
+  await utimes(file, fixedTime, fixedTime);
+
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 1, added: 0, deleted: 0 });
   assert.deepEqual(await collection.finish(), {
     state: "available",
     totalFiles: 1,
