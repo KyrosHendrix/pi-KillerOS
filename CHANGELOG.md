@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Accepted `/handoff` summaries with `## ` lines inside fenced code blocks instead of rejecting the complete summary for an extra section.
 - Changed the footer's `ctx` percentage to show context remaining, matching `/auto-compact` threshold direction while preserving urgency colors and the `/compact` hint.
 - Reported `/goal` objectives with unsupported terminal content separately from the 4,000-character limit.
 

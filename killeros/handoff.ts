@@ -91,10 +91,46 @@ export function resolveHandoffMaxTokens(settings: Readonly<KillerosSettings>, ov
   return positiveIntOr(override, positiveIntOr(settings.handoffMaxTokens, DEFAULT_HANDOFF_MAX_TOKENS));
 }
 
+/** Finds fenced code spans so `## ` lines inside them are not treated as headings. */
+function fencedCodeRanges(document: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  let fenceStart: number | null = null;
+  let fenceChar = "";
+  let fenceLength = 0;
+  for (const line of document.matchAll(/[^\r\n]*(?:\r\n|\n|$)/g)) {
+    if (line[0].length === 0) break;
+    const lineStart = line.index ?? 0;
+    const lineEnd = lineStart + line[0].length;
+    const text = line[0].replace(/\r?\n$/, "");
+    const fence = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(text);
+    if (!fence) continue;
+    const marker: string = fence[1];
+    const rest = text.slice(fence[0].length);
+    if (fenceStart === null) {
+      if (marker.startsWith("`") && rest.includes("`")) continue;
+      fenceStart = lineStart;
+      fenceChar = marker[0];
+      fenceLength = marker.length;
+    } else if (marker[0] === fenceChar && marker.length >= fenceLength && /^[ \t]*$/.test(rest)) {
+      ranges.push({ start: fenceStart, end: lineEnd });
+      fenceStart = null;
+      fenceChar = "";
+      fenceLength = 0;
+    }
+  }
+  if (fenceStart !== null) ranges.push({ start: fenceStart, end: document.length });
+  return ranges;
+}
+
 /** Checks that the model returned every section needed to continue safely. */
 function hasRequiredHandoffContent(document: string, focus: string): boolean {
   if (focus && !document.includes(focus)) return false;
-  const headings = [...document.matchAll(/^## ([^\r\n]+?)[ \t]*\r?$/gmu)];
+  const ranges = fencedCodeRanges(document);
+  const headings = [...document.matchAll(/^## ([^\r\n]+?)[ \t]*\r?$/gmu)]
+    .filter((heading) => {
+      const index = heading.index ?? 0;
+      return !ranges.some((range) => index >= range.start && index < range.end);
+    });
   if (headings.length !== HANDOFF_SECTIONS.length) return false;
   return headings.every((heading, index) => {
     if (heading[1] !== HANDOFF_SECTIONS[index]) return false;

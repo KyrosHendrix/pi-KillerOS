@@ -1068,3 +1068,93 @@ test("/handoff leaves the source selected when summary or replacement fails", as
   });
   assert.deepEqual(notifications, []);
 });
+
+test("/handoff ignores ## lines inside fenced code blocks", async () => {
+  const summaries = [
+    createCompleteHandoffSummary("Finish the release checks.").replace(
+      "No new verification has run.",
+      "No new verification has run.\n\n```markdown\n## not a heading, inside code fence\n```",
+    ),
+    createCompleteHandoffSummary("Finish the release checks.").replace(
+      "No new verification has run.",
+      "No new verification has run.\n\n~~~\n## also not a heading\n~~~",
+    ),
+  ];
+
+  for (const summary of summaries) {
+    const { commands } = createHarness();
+    const destinationNotifications: TestNotification[] = [];
+    const sourceNotifications: TestNotification[] = [];
+    let newSessions = 0;
+    await getCommand(commands, "handoff").handler("", {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: { id: "test-model", provider: "test" },
+      modelRegistry: {
+        complete: async () => ({ content: [{ type: "text", text: summary }], stopReason: "stop" }),
+      },
+      sessionManager: {
+        getSessionFile: () => "source.jsonl",
+        getSessionName: () => undefined,
+        buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+      },
+      newSession: async (options: {
+        setup?: (sessionManager: {
+          appendCustomMessageEntry(customType: string, content: string, display: boolean): void;
+          appendSessionInfo(name: string): void;
+        }) => Promise<void>;
+        withSession?: (destination: { ui: { notify(message: string, level?: string): void } }) => Promise<void>;
+      }) => {
+        newSessions += 1;
+        await options.setup?.({ appendCustomMessageEntry() {}, appendSessionInfo() {} });
+        await options.withSession?.({
+          ui: { notify: (message, level) => destinationNotifications.push({ message, level }) },
+        });
+        return { cancelled: false };
+      },
+      ui: { notify: (message: string, level?: string) => sourceNotifications.push({ message, level }) },
+      getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+    });
+    assert.equal(newSessions, 1, summary);
+    assert.deepEqual(sourceNotifications, [], summary);
+    assert.deepEqual(destinationNotifications, [{ message: "Handoff ready in a new session", level: "info" }], summary);
+  }
+});
+
+test("/handoff still rejects extra real headings and out-of-order sections", async () => {
+  const ordered = createCompleteHandoffSummary("Finish the release checks.");
+  const blocks = ordered.split("\n\n");
+  const reordered = [...blocks];
+  [reordered[2], reordered[3]] = [reordered[3], reordered[2]];
+  const cases = [
+    { label: "extra real heading", summary: `${ordered}\n\n## Appendix\nExtra content.` },
+    { label: "out of order", summary: reordered.join("\n\n") },
+  ];
+
+  for (const testCase of cases) {
+    const { commands } = createHarness();
+    const notifications: TestNotification[] = [];
+    let newSessions = 0;
+    await getCommand(commands, "handoff").handler("", {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: { id: "test-model", provider: "test" },
+      modelRegistry: {
+        complete: async () => ({ content: [{ type: "text", text: testCase.summary }], stopReason: "stop" }),
+      },
+      sessionManager: {
+        getSessionFile: () => "source.jsonl",
+        getSessionName: () => undefined,
+        buildContextEntries: () => [{ type: "message", message: { role: "user", content: "source", timestamp: 0 } }],
+      },
+      newSession: async () => { newSessions += 1; return { cancelled: false }; },
+      ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+      getSystemPromptOptions: () => ({ cwd: process.cwd() }),
+    });
+    assert.deepEqual(notifications, [{
+      message: "Handoff failed: The handoff summary did not contain every required section",
+      level: "error",
+    }], testCase.label);
+    assert.equal(newSessions, 0, testCase.label);
+  }
+});
