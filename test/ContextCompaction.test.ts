@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -356,18 +358,27 @@ function compactEvent(reason: string, willRetry = false): TestEvent {
 }
 
 test("auto-compaction stays idle while context remains above its threshold", async () => {
-  const harness = createHarness();
-  const { compactCalls, ctx, notifications } = createContext({
-    usage: { tokens: 100_000, contextWindow: 128_000 },
-  });
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-context-compaction-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    const harness = createHarness();
+    const { compactCalls, ctx, notifications } = createContext({
+      usage: { tokens: 100_000, contextWindow: 128_000 },
+    });
 
-  assert.equal(harness.handlers.has("turn_end"), true);
-  await emitSequentially(harness.handlers.get("turn_end"), {
-    type: "turn_end", turnIndex: 0, message: {}, toolResults: [],
-  }, ctx);
-  await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
-  assert.equal(compactCalls.length, 0);
-  assert.equal(notifications.length, 0);
+    assert.equal(harness.handlers.has("turn_end"), true);
+    await emitSequentially(harness.handlers.get("turn_end"), {
+      type: "turn_end", turnIndex: 0, message: {}, toolResults: [],
+    }, ctx);
+    await emitSequentially(harness.handlers.get("agent_settled"), { type: "agent_settled" }, ctx);
+    assert.equal(compactCalls.length, 0);
+    assert.equal(notifications.length, 0);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("contextPercentRemaining remains a public display helper", async () => {
