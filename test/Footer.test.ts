@@ -10,9 +10,9 @@ import {
   scheduleGitStatusWatch,
   type GitFileChanges,
 } from "../killeros/footer.ts";
-import { passiveGitCommand, passiveGitEnv, passiveStatusSafetyArgs, samePassiveFilters } from "../killeros/passive-git-status.ts";
+import { passiveGitCommand, passiveGitEnv } from "../killeros/passive-git-status.ts";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { themeTestAdapter } from "./PiTestAdapters.ts";
 
@@ -144,15 +144,6 @@ test("untrusted projects never start footer Git status", async () => {
   assert.equal(calls, 0);
 });
 
-test("passive Git status rejects incomplete or unsafe filter discovery", () => {
-  assert.equal(passiveStatusSafetyArgs("filter.tripwire.clean"), undefined);
-  assert.equal(passiveStatusSafetyArgs("filter.bad/name.clean\0"), undefined);
-  assert.deepEqual(passiveStatusSafetyArgs("filter.tripwire.process\0filter.tripwire.clean\0"), [
-    "-c", "core.fsmonitor=false",
-    "-c", "filter.tripwire.clean=", "-c", "filter.tripwire.process=", "-c", "filter.tripwire.required=false",
-  ]);
-});
-
 test("passive Git children run without PATH resolution or lazy fetching", () => {
   const env = passiveGitEnv();
   assert.equal(env.GIT_OPTIONAL_LOCKS, "0");
@@ -161,46 +152,6 @@ test("passive Git children run without PATH resolution or lazy fetching", () => 
     if (key.toLowerCase() === "path") assert.equal(value, "");
   }
   assert.ok(Object.keys(env).some((key) => key.toLowerCase() === "path"));
-});
-
-test("passive filter comparison detects mid-scan configuration changes", () => {
-  assert.equal(samePassiveFilters("filter.a.clean\0", "filter.a.clean\0"), true);
-  assert.equal(samePassiveFilters("filter.a.clean\0", "filter.a.clean\0filter.b.process\0"), false);
-  assert.equal(samePassiveFilters("filter.a.clean", "filter.a.clean\0"), false);
-  assert.equal(samePassiveFilters("filter.bad/name.clean\0", "filter.bad/name.clean\0"), false);
-});
-
-test("footer Git status skips results when filters change mid-scan", async () => {
-  const discovered = "filter.early.clean\0";
-  const changed = "filter.early.clean\0filter.late.clean\0";
-  let calls = 0;
-  let statusEnv: NodeJS.ProcessEnv | undefined;
-  const result = await resolveGitFileChanges("repo", (_file, args, options, callback) => {
-    calls += 1;
-    if (args.includes("config")) {
-      callback(null, calls === 1 ? discovered : changed);
-      return;
-    }
-    statusEnv = options.env;
-    callback(null, " M changed.txt\0");
-  });
-
-  assert.equal(result, undefined);
-  assert.equal(calls, 3);
-  assert.equal(statusEnv?.GIT_NO_LAZY_FETCH, "1");
-});
-
-test("footer Git status accepts results when filters are stable mid-scan", async () => {
-  const discovered = "filter.early.clean\0";
-  const result = await resolveGitFileChanges("repo", (_file, args, _options, callback) => {
-    if (args.includes("config")) {
-      callback(null, discovered);
-      return;
-    }
-    callback(null, " M changed.txt\0");
-  });
-
-  assert.deepEqual(result, { modified: 1, added: 0, deleted: 0 });
 });
 
 test("footer Git status does not execute a configured filesystem monitor", async () => {
@@ -246,6 +197,62 @@ test("footer Git status does not execute configured clean filters", async () => 
   }
 });
 
+test("footer Git status ignores submodule contents", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-submodule-"));
+  try {
+    const child = path.join(directory, "child");
+    const parent = path.join(directory, "parent");
+    execFileSync("git", ["init", "-q", child]);
+    writeFileSync(path.join(child, "tracked.txt"), "initial\n");
+    execFileSync("git", ["-C", child, "add", "."]);
+    execFileSync("git", ["-C", child, "-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"]);
+    execFileSync("git", ["init", "-q", parent]);
+    execFileSync("git", ["-C", parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", child, "submodule"]);
+    execFileSync("git", ["-C", parent, "-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qam", "initial"]);
+    writeFileSync(path.join(parent, "submodule", "tracked.txt"), "changed\n");
+
+    assert.deepEqual(await resolveGitFileChanges(parent), { modified: 0, added: 0, deleted: 0 });
+  } finally {
+    await removeDirectoryEventually(directory);
+  }
+});
+
+test("footer scan never starts a filter added and removed during inspection", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-filter-race-"));
+  try {
+    const sentinel = path.join(directory, "filter-executed");
+    const filter = path.join(directory, "clean-filter.cjs");
+    execFileSync("git", ["init", "-q"], { cwd: directory });
+    writeFileSync(filter, "require('node:fs').writeFileSync(process.argv[2], 'executed'); process.stdin.pipe(process.stdout);\n");
+    writeFileSync(path.join(directory, ".gitattributes"), "*.txt filter=tripwire\n");
+    writeFileSync(path.join(directory, "tracked.txt"), "initial\n");
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: directory });
+    writeFileSync(path.join(directory, "tracked.txt"), "changed\n");
+    let configured = false;
+    let removed = false;
+
+    const result = await resolveGitFileChanges(directory, (file, args, options, callback) => {
+      if (!configured && args.includes("ls-files")) {
+        configured = true;
+        execFileSync("git", ["config", "filter.tripwire.clean", `\"${process.execPath.replaceAll("\\", "/")}\" \"${filter.replaceAll("\\", "/")}\" \"${sentinel.replaceAll("\\", "/")}\"`], { cwd: directory });
+      }
+      execFile(file, args, options, (error, stdout) => {
+        if (configured && !removed) {
+          removed = true;
+          execFileSync("git", ["config", "--unset-all", "filter.tripwire.clean"], { cwd: directory });
+        }
+        callback(error, stdout);
+      });
+    });
+
+    assert.deepEqual(result, { modified: 1, added: 0, deleted: 0 });
+    assert.equal(existsSync(sentinel), false);
+  } finally {
+    await removeDirectoryEventually(directory);
+  }
+});
+
 test("footer Git status keeps the last successful result through failure and accepts clean recovery", async () => {
   const dirty: GitFileChanges = { modified: 2, added: 1, deleted: 1 };
   const clean: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
@@ -272,15 +279,15 @@ test("footer Git status keeps the last successful result through failure and acc
   refresh.dispose();
 });
 
-test("footer Git status reports no result when filter discovery fails", async () => {
+test("footer Git status reports no result when repository discovery fails", async () => {
   const calls: string[][] = [];
   const result = await resolveGitFileChanges("repo", (_file, args, _options, callback) => {
     calls.push(args);
-    callback(new Error("config unavailable"), "");
+    callback(new Error("repository unavailable"), "");
   });
 
   assert.equal(result, undefined);
-  assert.deepEqual(calls, [["-C", "repo", "config", "--includes", "--null", "--name-only", "--list"]]);
+  assert.deepEqual(calls, [["-C", "repo", "rev-parse", "--path-format=absolute", "--show-toplevel"]]);
 });
 
 test("footer Git status recovers after an unavailable initial refresh without recreation", async () => {

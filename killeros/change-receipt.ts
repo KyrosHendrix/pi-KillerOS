@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, watch } from "node:fs";
-import { PASSIVE_GIT_CONFIG_ARGS, passiveGitCommand, passiveGitEnv, passiveStatusSafetyArgs, samePassiveFilters } from "./passive-git-status.ts";
+import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv } from "./passive-git-status.ts";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
 import { createInflate } from "node:zlib";
@@ -199,7 +199,7 @@ async function readBoundedFile(filePath: string, limit: number): Promise<Buffer>
 }
 
 async function readSnapshotFiles(repo: Repository, files: Map<string, DirtyFile>): Promise<void> {
-  const pending = [...files.values()].filter((file) => file.mode && !file.contentObjectId);
+  const pending = [...files.values()].filter((file) => file.mode && !file.content && !file.contentObjectId);
   let totalBytes = 0;
   let nextIndex = 0;
   const readNext = async (): Promise<void> => {
@@ -256,56 +256,16 @@ function discardMonitor(monitor: RepositoryMonitor): void {
   repositoryMonitors.delete(monitor.repo.root);
 }
 
-async function snapshot(repo: Repository, paths?: readonly string[]): Promise<Snapshot> {
-  const config = decode(await runGit(repo.root, PASSIVE_GIT_CONFIG_ARGS));
-  const safetyArgs = passiveStatusSafetyArgs(config);
-  if (!safetyArgs) throw new GitFailure("error");
-  const output = decode(await runGit(repo.root, [
-    ...safetyArgs,
-    "status", "--porcelain=v2", "--branch", "--no-ahead-behind", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all",
-    ...(paths ? ["--", ...paths] : []),
-  ]));
-  if (!samePassiveFilters(config, decode(await runGit(repo.root, PASSIVE_GIT_CONFIG_ARGS)))) throw new GitFailure("error");
-  const records = output.split("\0").filter(Boolean);
-  const headRecord = records.find((record) => record.startsWith("# branch.oid "));
-  if (!headRecord) throw new Error("missing HEAD state");
-  const files = new Map<string, DirtyFile>();
-  for (const record of records) {
-    if (record.startsWith("# ")) continue;
-    if (record.startsWith("u ")) throw new Error("unmerged index");
-    if (record.startsWith("? ")) {
-      const filePath = record.slice(2);
-      if (!filePath || filePath.endsWith("/")) continue;
-      const stats = await lstat(path.join(repo.root, ...filePath.split("/")));
-      files.set(filePath, {
-        ...files.get(filePath),
-        path: filePath,
-        indexMode: undefined,
-        indexObjectId: undefined,
-        mode: stats.isSymbolicLink() ? "120000" : stats.mode & 0o111 ? "100755" : "100644",
-        contentObjectId: undefined,
-      });
-      continue;
-    }
-    const match = /^1 (\S{2}) \S+ ([0-7]{6}) ([0-7]{6}) ([0-7]{6}) ([0-9a-f]+) ([0-9a-f]+) (.*)$/su.exec(record);
-    if (!match) throw new Error("invalid status record");
-    const [, status, headMode, indexMode, worktreeMode, headObjectId, indexObjectId, filePath] = match;
-    if (!status || !headMode || !indexMode || !worktreeMode || !headObjectId || !indexObjectId || !filePath) throw new Error("incomplete status record");
-    const worktreeChanged = status[1] !== ".";
-    const selectedMode = worktreeChanged ? worktreeMode : indexMode;
-    files.set(filePath, {
-      ...files.get(filePath),
-      path: filePath,
-      headMode: headMode === "000000" ? undefined : headMode,
-      headObjectId: /^0+$/u.test(headObjectId) ? undefined : headObjectId,
-      indexMode: indexMode === "000000" ? undefined : indexMode,
-      indexObjectId: /^0+$/u.test(indexObjectId) ? undefined : indexObjectId,
-      mode: selectedMode === "000000" ? undefined : selectedMode,
-      contentObjectId: worktreeChanged || /^0+$/u.test(indexObjectId) ? undefined : indexObjectId,
-    });
+async function snapshot(repo: Repository): Promise<Snapshot> {
+  try {
+    const inspected = await inspectWorktreeWithoutFilters(repo.root, (args) => runGit(repo.root, args));
+    const files = new Map<string, DirtyFile>(inspected.files);
+    await readSnapshotFiles(repo, files);
+    return { head: inspected.head, files };
+  } catch (error) {
+    if (error instanceof Error && error.message === "worktree content limit exceeded") throw new GitFailure("too-large");
+    throw error;
   }
-  await readSnapshotFiles(repo, files);
-  return { head: headRecord.slice("# branch.oid ".length), files };
 }
 
 async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: readonly string[]): Promise<Snapshot | undefined> {
@@ -360,7 +320,8 @@ function observes(filePath: string, observedPaths: readonly string[]): boolean {
 async function refreshSnapshot(monitor: RepositoryMonitor, observedPaths: readonly string[], current = monitor.snapshot): Promise<Snapshot> {
   if (monitor.watchFailed || observedPaths.length > 200) return snapshot(monitor.repo);
   if (observedPaths.length === 0) return current;
-  const scoped = await snapshotKnownPaths(monitor.repo, current, observedPaths) ?? await snapshot(monitor.repo, observedPaths);
+  const scoped = await snapshotKnownPaths(monitor.repo, current, observedPaths);
+  if (!scoped) return snapshot(monitor.repo);
   const files = new Map(current.files);
   for (const filePath of files.keys()) {
     if (observes(filePath, observedPaths)) files.delete(filePath);

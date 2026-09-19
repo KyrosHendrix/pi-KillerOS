@@ -444,6 +444,36 @@ test("collection leaves Git state untouched and does not invoke configured exten
   assert.deepEqual(git(root, "stash", "list"), beforeStash);
 });
 
+test("baseline and settlement never start a filter added and removed during inspection", async (t) => {
+  const root = await fixture();
+  const sentinelDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-filter-race-"));
+  const sentinel = path.join(sentinelDirectory, "sentinel");
+  const tripwire = path.join(sentinelDirectory, "tripwire.cjs");
+  t.after(async () => Promise.all([
+    rm(root, { recursive: true, force: true }),
+    rm(sentinelDirectory, { recursive: true, force: true }),
+  ]));
+  await writeFile(tripwire, "require('node:fs').writeFileSync(process.argv[2], 'invoked');process.stdin.pipe(process.stdout);\n");
+  await writeFile(path.join(root, ".gitattributes"), "*.txt filter=race\n");
+  git(root, "add", ".gitattributes");
+  git(root, "commit", "--quiet", "-m", "attributes");
+  const command = `\"${process.execPath.replaceAll("\\", "/")}\" \"${tripwire.replaceAll("\\", "/")}\" \"${sentinel.replaceAll("\\", "/")}\"`;
+
+  const baselinePending = beginChangeReceipt(root);
+  git(root, "config", "filter.race.clean", command);
+  const collection = await baselinePending;
+  git(root, "config", "--unset-all", "filter.race.clean");
+  await writeFile(path.join(root, "clean.txt"), "changed\n");
+
+  const settlementPending = collection.finish();
+  git(root, "config", "filter.race.clean", command);
+  const summary = await settlementPending;
+  git(root, "config", "--unset-all", "filter.race.clean");
+
+  assert.equal(summary.state, "available");
+  await assert.rejects(readFile(sentinel), { code: "ENOENT" });
+});
+
 test("settlement disables filters configured after collection starts", async (t) => {
   const root = await fixture();
   const sentinelDirectory = await mkdtemp(path.join(os.tmpdir(), "killeros-filter-test-"));

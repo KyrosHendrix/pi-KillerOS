@@ -8,6 +8,10 @@ All notable changes to KillerOS are documented here.
 
 - Added `/auto-compact [status|on|off|<percent>]` to inspect and update the global automatic compaction preference without restarting Pi.
 
+### Fixed
+
+- Prevented automatic footer and change-receipt scans from starting clean or process filters, including filters added and removed while a scan is running.
+
 ## [2.1.28] - 2026-09-15
 
 ### Changed

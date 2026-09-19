@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import { watch } from "node:fs";
+import path from "node:path";
 import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, modelDisplayName, padRight } from "./display.ts";
-import { PASSIVE_GIT_CONFIG_ARGS, passiveGitCommand, passiveGitEnv, passiveStatusSafetyArgs, samePassiveFilters } from "./passive-git-status.ts";
+import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, type PassiveGitRunner } from "./passive-git-status.ts";
 import { goalElapsedMilliseconds } from "./goal-state.ts";
 import type { GoalRuntime, GoalState } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -36,26 +37,16 @@ type GitStatusExecutor = (
   callback: (error: Error | null, stdout: string) => void,
 ) => unknown;
 
-/** Resolves changed-file counts with a bounded asynchronous Git status process in a trusted project. */
-export function resolveGitFileChanges(
+/** Resolves changed-file counts without asking Git to inspect worktree content. */
+export async function resolveGitFileChanges(
   cwd: string,
   execute: GitStatusExecutor = execFile,
   trusted = true,
 ): Promise<GitFileChanges | undefined> {
-  if (!trusted) return Promise.resolve(undefined);
-  return new Promise((resolve) => {
-    let gitCommand: string;
-    try {
-      const found = passiveGitCommand(cwd);
-      if (!found) {
-        resolve(undefined);
-        return;
-      }
-      gitCommand = found;
-    } catch {
-      resolve(undefined);
-      return;
-    }
+  if (!trusted) return undefined;
+  try {
+    const gitCommand = passiveGitCommand(cwd);
+    if (!gitCommand) return undefined;
     const options = {
       encoding: "utf8" as const,
       env: passiveGitEnv(),
@@ -63,64 +54,42 @@ export function resolveGitFileChanges(
       timeout: GIT_STATUS_TIMEOUT_MS,
       windowsHide: true as const,
     };
-    const verifyFiltersUnchanged = (before: string, done: (unchanged: boolean) => void): void => {
-      try {
-        execute(gitCommand, ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, after) => {
-          done(!error && samePassiveFilters(before, after));
-        });
-      } catch {
-        done(false);
-      }
-    };
-    const runStatus = (config: string, args: string[]): void => {
-      try {
-        execute(gitCommand, args, options, (error, stdout) => {
-          if (error) {
-            resolve(undefined);
-            return;
-          }
-          verifyFiltersUnchanged(config, (unchanged) => {
-            if (!unchanged) {
-              resolve(undefined);
-              return;
-            }
-
-          const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
-          const entries = stdout.split("\0");
-          for (let index = 0; index < entries.length; index += 1) {
-            const entry = entries[index];
-            if (!entry) continue;
-            const status = entry.slice(0, 2);
-            if (status.includes("D")) changes.deleted += 1;
-            else if (status === "??" || status.includes("A")) changes.added += 1;
-            else changes.modified += 1;
-            if (status.includes("R") || status.includes("C")) index += 1;
-          }
-          resolve(changes);
-          });
-        });
-      } catch {
-        resolve(undefined);
-      }
-    };
-
-    try {
-      execute(gitCommand, ["-C", cwd, ...PASSIVE_GIT_CONFIG_ARGS], options, (error, config) => {
-        if (error) {
-          resolve(undefined);
-          return;
-        }
-        const safetyArgs = passiveStatusSafetyArgs(config);
-        if (!safetyArgs) {
-          resolve(undefined);
-          return;
-        }
-        runStatus(config, ["-C", cwd, ...safetyArgs, "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+    const runAt = (directory: string): PassiveGitRunner => (args) => new Promise((resolve, reject) => {
+      execute(gitCommand, ["-C", directory, ...args], options, (error, stdout) => {
+        if (error) reject(error);
+        else resolve(Buffer.from(stdout));
       });
-    } catch {
-      resolve(undefined);
+    });
+    const initialRunner = runAt(cwd);
+    const root = new TextDecoder("utf-8", { fatal: true }).decode(
+      await initialRunner(["rev-parse", "--path-format=absolute", "--show-toplevel"]),
+    ).trim();
+    if (!path.isAbsolute(root)) return undefined;
+    const snapshot = await inspectWorktreeWithoutFilters(root, runAt(root));
+    const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
+    const deletedObjectIds: string[] = [];
+    const addedObjectIds: string[] = [];
+    for (const file of snapshot.files.values()) {
+      if (!file.mode) {
+        changes.deleted += 1;
+        if (!file.indexMode && file.headObjectId) deletedObjectIds.push(file.headObjectId);
+      } else if (!file.headMode) {
+        changes.added += 1;
+        if (file.indexObjectId) addedObjectIds.push(file.indexObjectId);
+      } else changes.modified += 1;
     }
-  });
+    for (const objectId of deletedObjectIds) {
+      const match = addedObjectIds.indexOf(objectId);
+      if (match < 0) continue;
+      addedObjectIds.splice(match, 1);
+      changes.deleted -= 1;
+      changes.added -= 1;
+      changes.modified += 1;
+    }
+    return changes;
+  } catch {
+    return undefined;
+  }
 }
 
 async function resolveUncommittedFileCount(cwd: string): Promise<number | undefined> {
