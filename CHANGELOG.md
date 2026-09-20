@@ -6,6 +6,8 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Recorded change receipts in repositories using Git's reftable reference backend while still rejecting receipts when `HEAD` moves during a response.
+- Serialized global `killeros.json` updates across Pi processes so concurrent automatic-compaction and notification changes no longer discard successful writes or fail during Windows file replacement.
 - Accepted `/handoff` summaries with `## ` lines inside fenced code blocks instead of rejecting the complete summary for an extra section.
 - Changed the footer's `ctx` percentage to show context remaining, matching `/auto-compact` threshold direction while preserving urgency colors and the `/compact` hint.
 - Reported `/goal` objectives with unsupported terminal content separately from the 4,000-character limit.

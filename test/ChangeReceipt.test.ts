@@ -21,9 +21,9 @@ function git(cwd: string, ...args: string[]): Buffer {
   return execFileSync("git", args, { cwd, encoding: "buffer", stdio: ["ignore", "pipe", "pipe"] });
 }
 
-async function fixture(): Promise<string> {
+async function fixture(refFormat?: "reftable"): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "killeros-change-test-"));
-  git(root, "init", "--quiet");
+  git(root, "init", "--quiet", ...(refFormat ? [`--ref-format=${refFormat}`] : []));
   git(root, "config", "user.email", "killeros@example.invalid");
   git(root, "config", "user.name", "KillerOS test");
   await writeFile(path.join(root, "clean.txt"), "clean\n");
@@ -377,6 +377,24 @@ test("modified binary renames remain one changed file", async (t) => {
   });
 });
 
+test("unborn repositories produce receipts", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "killeros-change-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  git(root, "init", "--quiet");
+
+  const collection = await beginChangeReceipt(root);
+  await writeFile(path.join(root, "new.txt"), "new\n");
+
+  assert.deepEqual(await collection.finish(), {
+    state: "available",
+    totalFiles: 1,
+    additions: 1,
+    deletions: 0,
+    files: [{ kind: "added", path: "new.txt", additions: 1, deletions: 0 }],
+    omittedFiles: 0,
+  });
+});
+
 test("a HEAD update without worktree events invalidates the response receipt", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -390,6 +408,44 @@ test("a HEAD update without worktree events invalidates the response receipt", a
   const collection = await beginChangeReceipt(root);
   git(root, "update-ref", "HEAD", nextHead);
   assert.deepEqual(await collection.finish(), { state: "unavailable", reason: "error" });
+});
+
+test("reftable repositories produce receipts and reject HEAD changes", async (t) => {
+  const receiptRoot = await fixture("reftable");
+  const movedHeadRoot = await fixture("reftable");
+  t.after(async () => {
+    disposeChangeReceipts();
+    await Promise.all([receiptRoot, movedHeadRoot].map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  const changedCollection = await beginChangeReceipt(receiptRoot);
+  await writeFile(path.join(receiptRoot, "clean.txt"), "changed\n");
+  const changed = await changedCollection.finish();
+
+  const unchanged = await (await beginChangeReceipt(receiptRoot)).finish();
+
+  const firstHead = git(movedHeadRoot, "rev-parse", "HEAD").toString("ascii").trim();
+  await writeFile(path.join(movedHeadRoot, "clean.txt"), "next\n");
+  git(movedHeadRoot, "add", "clean.txt");
+  git(movedHeadRoot, "commit", "--quiet", "-m", "next");
+  const nextHead = git(movedHeadRoot, "rev-parse", "HEAD").toString("ascii").trim();
+  git(movedHeadRoot, "reset", "--hard", "--quiet", firstHead);
+  const movedHeadCollection = await beginChangeReceipt(movedHeadRoot);
+  git(movedHeadRoot, "update-ref", "HEAD", nextHead);
+  const movedHead = await movedHeadCollection.finish();
+
+  assert.deepEqual({ changed, unchanged, movedHead }, {
+    changed: {
+      state: "available",
+      totalFiles: 1,
+      additions: 1,
+      deletions: 1,
+      files: [{ kind: "modified", path: "clean.txt", additions: 1, deletions: 1 }],
+      omittedFiles: 0,
+    },
+    unchanged: { state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0 },
+    movedHead: { state: "unavailable", reason: "error" },
+  });
 });
 
 test("large divergent text changes stop at the diff work limit", async (t) => {

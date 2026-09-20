@@ -234,24 +234,18 @@ async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: r
 }
 
 async function currentHead(repo: Repository): Promise<string> {
-  const head = (await readBoundedFile(path.join(repo.gitDirectory, "HEAD"), 4_096)).toString("ascii").trim();
-  if (/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(head)) return head;
-  const match = /^ref: (refs\/[^\0\r\n]+)$/u.exec(head);
-  const reference = match?.[1];
-  if (!reference || reference.includes("\\") || reference.split("/").some((part) => part === "." || part === "..")) throw new GitFailure("error");
+  let resolved: Buffer;
   try {
-    return (await readBoundedFile(path.join(repo.commonDirectory, ...reference.split("/")), 4_096)).toString("ascii").trim();
+    resolved = await runGit(repo.root, ["rev-parse", "--verify", "HEAD"], undefined, 4_096);
   } catch (error) {
-    if (!missingFile(error)) throw error;
+    if (!(error instanceof GitFailure) || error.reason !== "error") throw error;
+    const reference = decode(await runGit(repo.root, ["symbolic-ref", "--quiet", "HEAD"], undefined, 4_096)).trim();
+    if (!/^refs\/[^\0\r\n]+$/u.test(reference)) throw new GitFailure("error");
+    return "(initial)";
   }
-  try {
-    const packed = (await readBoundedFile(path.join(repo.commonDirectory, "packed-refs"), GIT_OUTPUT_LIMIT)).toString("ascii");
-    const packedMatch = new RegExp(`^([0-9a-f]{40}(?:[0-9a-f]{24})?) ${reference.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}$`, "mu").exec(packed);
-    return packedMatch?.[1] ?? "(initial)";
-  } catch (error) {
-    if (missingFile(error)) return "(initial)";
-    throw error;
-  }
+  const head = decode(resolved).trim();
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(head)) throw new GitFailure("error");
+  return head;
 }
 
 function observes(filePath: string, observedPaths: readonly string[]): boolean {
