@@ -70,10 +70,11 @@ test("an exited settings writer does not leave the settings lock stuck", async (
     env: { ...process.env, SETTINGS_PATH: settingsPath },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  t.after(() => child.kill());
+  // SIGTERM waits for Node's event loop, which this fixture deliberately blocks in Atomics.wait.
+  t.after(() => child.kill("SIGKILL"));
   await new Promise<void>((resolve) => child.stdout.once("data", () => resolve()));
   assert.equal(existsSync(lockPath), true);
-  child.kill();
+  child.kill("SIGKILL");
   await new Promise<void>((resolve) => child.once("exit", () => resolve()));
 
   createKillerosSettingsStore(settingsPath).update({ completionSound: true });
@@ -121,7 +122,7 @@ test("a delayed stale-lock observer cannot remove a new writer's lock", async (t
     env: { ...process.env, SETTINGS_PATH: settingsPath, RESUME_PATH: resumePath, COMPLETED_PATH: completedPath },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  t.after(() => child.kill());
+  t.after(() => child.kill("SIGKILL"));
   const completed = new Promise<void>((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`writer exited with ${code}`)));
