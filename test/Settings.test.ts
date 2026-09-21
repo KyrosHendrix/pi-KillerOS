@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -90,8 +90,8 @@ test("a delayed stale-lock observer cannot remove a new writer's lock", async (t
   const settingsPath = path.join(directory, "killeros.json");
   const resumePath = path.join(directory, "resume");
   const completedPath = path.join(directory, "completed");
-  const exited = spawn(process.execPath, ["--eval", ""], { stdio: "ignore" });
-  await new Promise<void>((resolve) => exited.once("exit", () => resolve()));
+  const exited = spawnSync(process.execPath, ["--eval", ""], { stdio: "ignore" });
+  assert.equal(exited.status, 0);
   assert.ok(exited.pid);
   writeFileSync(`${settingsPath}.lock`, JSON.stringify({ pid: exited.pid }));
 
