@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.1.30] - 2026-09-21
+
 ### Added
 
 - Added measured assistant output-token throughput to settled worked-for receipts, excluding first-token latency, tool execution, and gaps between model calls.
