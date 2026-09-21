@@ -48,6 +48,8 @@ export interface WorkedForEntryDataV4 {
   checks: CheckAttempt[];
   omittedChecks: { passed: number; failed: number };
   model?: string;
+  outputTokens?: number;
+  decodeMilliseconds?: number;
 }
 
 type WorkedForEntryData = WorkedForEntryDataV1 | WorkedForEntryDataV2 | WorkedForEntryDataV3 | WorkedForEntryDataV4;
@@ -64,6 +66,10 @@ function isWorkedForOutcome(value: unknown): value is WorkedForOutcome {
 
 function integer(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+}
+
+function positiveInteger(value: unknown): value is number {
+  return integer(value) && value > 0;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -148,6 +154,9 @@ function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefine
     checks.push({ label, outcome: check.outcome });
   }
   const model = parseModelName(data.model);
+  const throughput = positiveInteger(data.outputTokens) && positiveInteger(data.decodeMilliseconds)
+    ? { outputTokens: data.outputTokens, decodeMilliseconds: data.decodeMilliseconds }
+    : {};
   return {
     version: 4,
     milliseconds: data.milliseconds,
@@ -157,6 +166,7 @@ function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefine
     checks,
     omittedChecks: { passed: data.omittedChecks.passed, failed: data.omittedChecks.failed },
     ...(model ? { model } : {}),
+    ...throughput,
   };
 }
 
@@ -221,9 +231,15 @@ class WorkedForV4Component implements Component {
     const { data, theme } = this;
     const outcome = OUTCOMES[data.outcome];
     const headline = theme.fg(outcome.color, outcome.label);
+    const tokensPerSecond = data.outputTokens !== undefined && data.decodeMilliseconds !== undefined
+      ? data.outputTokens / (data.decodeMilliseconds / 1_000)
+      : undefined;
+    const speedSuffix = tokensPerSecond !== undefined && Number.isFinite(tokensPerSecond) && tokensPerSecond > 0
+      ? ` · ${tokensPerSecond.toFixed(1)} tok/s`
+      : "";
     const modelSuffix = data.model ? ` · ${data.model}` : "";
     const lines = [
-      `${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)} · ↑ ${formatTokens(data.tokens)} tokens${modelSuffix}`)}`,
+      `${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)} · ↑ ${formatTokens(data.tokens)} tokens${speedSuffix}${modelSuffix}`)}`,
     ];
     if (data.changes.state === "unavailable") lines.push(theme.fg("dim", "Changes unavailable"));
     else if (data.changes.totalFiles === 0) lines.push(theme.fg("dim", "No files changed"));
@@ -287,7 +303,33 @@ type ActiveReceipt = {
   modelProvider: string | undefined;
   modelId: string | undefined;
   modelMismatch: boolean;
+  outputTokens: number;
+  decodeMilliseconds: number;
+  decodeStartedAt: number | undefined;
+  throughputInvalid: boolean;
 };
+
+function finishAssistantStream(
+  receipt: ActiveReceipt,
+  outputTokens: number,
+  endedAt: number,
+  failed: boolean,
+): void {
+  if (failed) {
+    if (receipt.decodeStartedAt !== undefined) receipt.throughputInvalid = true;
+  } else if (receipt.decodeStartedAt !== undefined) {
+    const decodeMilliseconds = endedAt - receipt.decodeStartedAt;
+    if (positiveInteger(outputTokens) && positiveInteger(decodeMilliseconds)) {
+      receipt.outputTokens += outputTokens;
+      receipt.decodeMilliseconds += decodeMilliseconds;
+    } else {
+      receipt.throughputInvalid = true;
+    }
+  } else if (outputTokens !== 0) {
+    receipt.throughputInvalid = true;
+  }
+  receipt.decodeStartedAt = undefined;
+}
 
 function receiptModelName(
   settled: ActiveReceipt,
@@ -349,10 +391,21 @@ export function registerWorkedFor(
       modelProvider: undefined,
       modelId: undefined,
       modelMismatch: false,
+      outputTokens: 0,
+      decodeMilliseconds: 0,
+      decodeStartedAt: undefined,
+      throughputInvalid: false,
     };
     active = state;
     const collection = await state.collection;
     if (active !== state) await collection.dispose();
+  });
+
+  pi.on("message_update", (event, ctx) => {
+    if (ctx.mode !== "tui" || !active) return;
+    const update = event.assistantMessageEvent;
+    if ((update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta")
+      && update.delta.length > 0) active.decodeStartedAt ??= now();
   });
 
   pi.on("message_end", (event, ctx) => {
@@ -360,19 +413,24 @@ export function registerWorkedFor(
     if (event.message.role !== "assistant") return;
     const provider: unknown = event.message.provider;
     const modelId: unknown = event.message.model;
-    if (typeof provider !== "string" || typeof modelId !== "string") {
-      active.modelMismatch = true;
-      return;
+    if (typeof provider !== "string" || typeof modelId !== "string") active.modelMismatch = true;
+    else {
+      if (active.modelProvider === undefined || active.modelId === undefined) {
+        active.modelProvider = provider;
+        active.modelId = modelId;
+      } else if (active.modelProvider !== provider || active.modelId !== modelId) {
+        active.modelMismatch = true;
+      }
+      if (event.message.responseModel !== undefined && event.message.responseModel !== modelId) {
+        active.modelMismatch = true;
+      }
     }
-    if (active.modelProvider === undefined || active.modelId === undefined) {
-      active.modelProvider = provider;
-      active.modelId = modelId;
-    } else if (active.modelProvider !== provider || active.modelId !== modelId) {
-      active.modelMismatch = true;
-    }
-    if (event.message.responseModel !== undefined && event.message.responseModel !== modelId) {
-      active.modelMismatch = true;
-    }
+    finishAssistantStream(
+      active,
+      event.message.usage.output,
+      now(),
+      event.message.stopReason === "error" || event.message.stopReason === "aborted",
+    );
   });
 
   pi.on("tool_result", (event: ToolResultEvent, ctx) => {
@@ -404,6 +462,10 @@ export function registerWorkedFor(
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");
     }
     const settledTokens = sessionTokenTotal(ctx);
+    const throughput = !settled.throughputInvalid && settled.decodeStartedAt === undefined && !settled.modelMismatch
+      && positiveInteger(settled.outputTokens) && positiveInteger(settled.decodeMilliseconds)
+      ? { outputTokens: settled.outputTokens, decodeMilliseconds: settled.decodeMilliseconds }
+      : {};
     const data = fitPayload({
       version: 4,
       milliseconds: Math.max(0, now() - settled.startedAt),
@@ -413,6 +475,7 @@ export function registerWorkedFor(
       checks: settled.checks,
       omittedChecks: settled.omittedChecks,
       ...(model ? { model } : {}),
+      ...throughput,
     });
     try {
       pi.appendEntry<WorkedForEntryDataV4>(WORKED_FOR_ENTRY_TYPE, data);

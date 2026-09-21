@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added measured assistant output-token throughput to settled worked-for receipts, excluding first-token latency, tool execution, and gaps between model calls.
+
 ### Fixed
 
 - Recorded change receipts in repositories using Git's reftable reference backend while still rejecting receipts when `HEAD` moves during a response.

@@ -14,7 +14,8 @@ import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 type WorkedForEvent = {
   type: string;
   messages?: Array<{ role?: string; stopReason?: StopReason }>;
-  message?: { role: string; provider?: string; model?: string; responseModel?: string };
+  message?: { role: string; provider?: string; model?: string; responseModel?: string; usage?: { output: number }; stopReason?: StopReason };
+  assistantMessageEvent?: { type: "text_delta" | "thinking_delta" | "toolcall_delta"; delta: string };
   toolName?: string;
   input?: Record<string, unknown>;
   isError?: boolean;
@@ -150,6 +151,16 @@ function usageEntry(type: "assistant" | "toolResult" | "compaction" | "branch_su
   };
 }
 
+async function emitStreamDelta(harness: WorkedForHarness, type: "text_delta" | "thinking_delta" | "toolcall_delta", delta = "x"): Promise<void> {
+  await harness.emit("message_update", { assistantMessageEvent: { type, delta } });
+}
+
+async function emitStreamDone(harness: WorkedForHarness, output: number, stopReason: StopReason = "stop"): Promise<void> {
+  await harness.emit("message_end", {
+    message: { role: "assistant", provider: "openai", model: "model-id", usage: { output }, stopReason },
+  });
+}
+
 test("worked-for durations use compact mixed units with a one-second minimum", () => {
   assert.equal(formatWorkedForDuration(0), "1s");
   assert.equal(formatWorkedForDuration(999), "1s");
@@ -181,12 +192,121 @@ test("a settled TUI run appends one durable timing entry measured from its first
   }]);
 });
 
+test("worked-for throughput excludes first-token latency and renders after task tokens", async () => {
+  const harness = createWorkedForHarness();
+  harness.setModel({ provider: "openai", id: "model-id", name: "Model Name" });
+  await harness.emit("agent_start");
+  harness.setTime(5_000);
+  await emitStreamDelta(harness, "thinking_delta", "reasoning");
+  harness.setTime(10_000);
+  await harness.emit("message_end", {
+    message: { role: "assistant", provider: "openai", model: "model-id", usage: { output: 367 }, stopReason: "stop" },
+  });
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  harness.setSessionEntries([usageEntry("assistant", 20_900)]);
+  harness.setTime(13_000);
+  await harness.emit("agent_settled");
+
+  assert.deepEqual(harness.appendedEntries[0]?.data, {
+    version: 4,
+    milliseconds: 13_000,
+    outcome: "done",
+    tokens: 20_900,
+    outputTokens: 367,
+    decodeMilliseconds: 5_000,
+    model: "model-id",
+    ...EMPTY_V4,
+  });
+  const renderer = harness.renderers.get("killeros-worked-for");
+  assert.ok(renderer);
+  const component = renderer({ data: harness.appendedEntries[0]?.data }, { expanded: false }, theme);
+  assert.ok(component);
+  assert.equal(component.render(100)[0], " ✓ Done · 13s · ↑ 20.9k tokens · 73.4 tok/s · model-id");
+});
+
+test("worked-for throughput uses raw weighted totals and excludes time between calls", async () => {
+  const harness = createWorkedForHarness();
+  await harness.emit("agent_start");
+  harness.setTime(1_000);
+  await emitStreamDelta(harness, "text_delta");
+  harness.setTime(2_000);
+  await emitStreamDone(harness, 100);
+  await harness.emit("agent_start");
+  harness.setTime(12_000);
+  await emitStreamDelta(harness, "toolcall_delta");
+  harness.setTime(15_000);
+  await emitStreamDone(harness, 200);
+  await harness.emit("agent_settled");
+
+  assert.equal(harness.appendedEntries[0]?.data.outputTokens, 300);
+  assert.equal(harness.appendedEntries[0]?.data.decodeMilliseconds, 4_000);
+});
+
+test("worked-for throughput fails closed for incomplete stream telemetry", async () => {
+  const cases: ReadonlyArray<{
+    name: string;
+    run(harness: WorkedForHarness): Promise<void>;
+  }> = [
+    { name: "no generated delta", run: async (harness) => { await emitStreamDone(harness, 10); } },
+    { name: "zero output", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); harness.setTime(1_000); await emitStreamDone(harness, 0); } },
+    { name: "fractional output", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); harness.setTime(1_000); await emitStreamDone(harness, 1.5); } },
+    { name: "negative output", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); harness.setTime(1_000); await emitStreamDone(harness, -1); } },
+    { name: "non-finite output", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); harness.setTime(1_000); await emitStreamDone(harness, Number.POSITIVE_INFINITY); } },
+    { name: "zero decode time", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); await emitStreamDone(harness, 10); } },
+    { name: "stream error", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); await emitStreamDone(harness, 0, "error"); } },
+    { name: "stream aborted before delta", run: async (harness) => { await emitStreamDone(harness, 0, "aborted"); } },
+    { name: "missing terminal update", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); } },
+  ];
+  for (const receipt of cases) {
+    const harness = createWorkedForHarness();
+    await harness.emit("agent_start");
+    await receipt.run(harness);
+    await harness.emit("agent_settled");
+    assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "outputTokens"), false, receipt.name);
+    assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "decodeMilliseconds"), false, receipt.name);
+  }
+
+  const laterInvalid = createWorkedForHarness();
+  await laterInvalid.emit("agent_start");
+  await emitStreamDelta(laterInvalid, "text_delta");
+  laterInvalid.setTime(1_000);
+  await emitStreamDone(laterInvalid, 10);
+  laterInvalid.setTime(2_000);
+  await emitStreamDelta(laterInvalid, "text_delta");
+  laterInvalid.setTime(3_000);
+  await emitStreamDone(laterInvalid, 0);
+  await laterInvalid.emit("agent_settled");
+  assert.equal(Object.hasOwn(laterInvalid.appendedEntries[0]?.data ?? {}, "outputTokens"), false);
+});
+
+test("calls without generated deltas are harmless only when they report zero output", async () => {
+  const harness = createWorkedForHarness();
+  await harness.emit("agent_start");
+  await emitStreamDone(harness, 0);
+  harness.setTime(1_000);
+  await emitStreamDelta(harness, "text_delta");
+  harness.setTime(3_000);
+  await emitStreamDone(harness, 50);
+  await harness.emit("agent_settled");
+  assert.equal(harness.appendedEntries[0]?.data.outputTokens, 50);
+  assert.equal(harness.appendedEntries[0]?.data.decodeMilliseconds, 2_000);
+
+  const incomplete = createWorkedForHarness();
+  await incomplete.emit("agent_start");
+  await emitStreamDelta(incomplete, "text_delta");
+  incomplete.setTime(1_000);
+  await emitStreamDone(incomplete, 10);
+  await emitStreamDone(incomplete, 1);
+  await incomplete.emit("agent_settled");
+  assert.equal(Object.hasOwn(incomplete.appendedEntries[0]?.data ?? {}, "outputTokens"), false);
+});
+
 test("single-model receipts persist a safe display name and render it after reload", async () => {
   const harness = createWorkedForHarness();
   harness.setModel({ provider: "openai", id: "model-id", name: " \x1b[31mModel\x1b[0m\n Name\0 " });
   await harness.emit("agent_start");
   await harness.emit("message_end", { message: { role: "user" } });
-  await harness.emit("message_end", { message: { role: "assistant", provider: "openai", model: "model-id" } });
+  await harness.emit("message_end", { message: { role: "assistant", provider: "openai", model: "model-id", usage: { output: 0 }, stopReason: "stop" } });
   await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
   await harness.emit("agent_settled");
   const data = harness.appendedEntries[0]?.data;
@@ -202,15 +322,19 @@ test("single-model receipts persist a safe display name and render it after relo
 
 test("mixed-model continuations omit attribution and the next run resets it", async () => {
   const harness = createWorkedForHarness();
-  const message = { role: "assistant", provider: "openai", model: "model-id" };
+  const message = { role: "assistant", provider: "openai", model: "model-id", usage: { output: 0 }, stopReason: "stop" as const };
   harness.setModel({ provider: "openai", id: "model-id", name: "" });
   await harness.emit("agent_start");
+  await emitStreamDelta(harness, "text_delta");
+  harness.setTime(1_000);
+  await emitStreamDone(harness, 100);
   await harness.emit("message_end", { message: { ...message, model: "other-model" } });
   await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error" }] });
   await harness.emit("agent_start");
   await harness.emit("message_end", { message });
   await harness.emit("agent_settled");
   assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "model"), false);
+  assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "outputTokens"), false);
 
   await harness.emit("agent_start");
   await harness.emit("message_end", { message });
@@ -220,7 +344,7 @@ test("mixed-model continuations omit attribution and the next run resets it", as
 
 test("a differing provider response model prevents attribution for the whole run", async () => {
   const harness = createWorkedForHarness();
-  const message = { role: "assistant", provider: "openai", model: "model-id" };
+  const message = { role: "assistant", provider: "openai", model: "model-id", usage: { output: 0 }, stopReason: "stop" as const };
   harness.setModel({ provider: "openai", id: "model-id", name: "Model Name" });
   await harness.emit("agent_start");
   await harness.emit("message_end", { message: { ...message, responseModel: "routed-model" } });
@@ -365,6 +489,8 @@ test("version 4 receipts render compact and expanded change details within every
     milliseconds: 84_000,
     outcome: "done",
     tokens: 18_200,
+    outputTokens: 367,
+    decodeMilliseconds: 5_000,
     model: "Model Name",
     changes: {
       state: "available",
@@ -387,10 +513,12 @@ test("version 4 receipts render compact and expanded change details within every
   const compact = renderer({ data }, { expanded: false }, theme);
   assert.ok(compact);
   assert.deepEqual(compact.render(80), [
-    " ✓ Done · 1m 24s · ↑ 18.2k tokens · Model Name",
+    " ✓ Done · 1m 24s · ↑ 18.2k tokens · 73.4 tok/s · Model Name",
     " Changed 3 files · +84 −21",
     " Checks: 2 passed",
   ]);
+  assert.match(compact.render(52)[0], /73\.4 tok\/s/u);
+  assert.doesNotMatch(compact.render(52)[0], /Model Name/u);
   const expanded = renderer({ data }, { expanded: true }, theme);
   assert.ok(expanded);
   assert.match(expanded.render(120).join("\n"), /R test\/Old\.test\.ts → test\/Receipt\.test\.ts \+35 −9/u);
@@ -450,6 +578,8 @@ test("version 4 validation rejects malformed and oversized durable data", () => 
     outcome: "done",
     tokens: 1,
     model: "\x1b[31mModel\x1b[0m\n Name\0",
+    outputTokens: 367,
+    decodeMilliseconds: 5_000,
     changes: { state: "available", totalFiles: 1, additions: 1, deletions: 0, files: [{ kind: "added", path: "safe\npath.ts", additions: 1, deletions: 0 }], omittedFiles: 0 },
     checks: [{ label: "npm test", outcome: "passed" }],
     omittedChecks: { passed: 0, failed: 0 },
@@ -457,11 +587,23 @@ test("version 4 validation rejects malformed and oversized durable data", () => 
   const component = renderer({ data: valid }, { expanded: true }, theme);
   assert.ok(component);
   assert.match(component.render(100).join("\n"), /safe⏎path\.ts/u);
-  assert.equal(component.render(100)[0], " ✓ Done · 1s · ↑ 1 tokens · Model Name");
+  assert.equal(component.render(100)[0], " ✓ Done · 1s · ↑ 1 tokens · 73.4 tok/s · Model Name");
+  for (const telemetry of [
+    { outputTokens: 0, decodeMilliseconds: 5_000 },
+    { outputTokens: 367, decodeMilliseconds: 0 },
+    { outputTokens: 1.5, decodeMilliseconds: 5_000 },
+    { outputTokens: 367, decodeMilliseconds: Number.POSITIVE_INFINITY },
+    { outputTokens: 367, decodeMilliseconds: undefined },
+    { outputTokens: undefined, decodeMilliseconds: 5_000 },
+  ]) {
+    const withoutThroughput = renderer({ data: { ...valid, ...telemetry } }, { expanded: false }, theme);
+    assert.ok(withoutThroughput);
+    assert.equal(withoutThroughput.render(100)[0], " ✓ Done · 1s · ↑ 1 tokens · Model Name");
+  }
   for (const model of [42, "x".repeat(201)]) {
     const withoutModel = renderer({ data: { ...valid, model } }, { expanded: false }, theme);
     assert.ok(withoutModel);
-    assert.equal(withoutModel.render(100)[0], " ✓ Done · 1s · ↑ 1 tokens");
+    assert.equal(withoutModel.render(100)[0], " ✓ Done · 1s · ↑ 1 tokens · 73.4 tok/s");
   }
   for (const data of [
     { ...valid, milliseconds: 1.5 },
