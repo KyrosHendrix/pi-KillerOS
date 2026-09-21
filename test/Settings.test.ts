@@ -85,6 +85,66 @@ test("an exited settings writer does not leave the settings lock stuck", async (
   assert.deepEqual(readdirSync(directory), ["killeros.json"]);
 });
 
+test("a delayed stale-lock observer cannot remove a new writer's lock", async (t) => {
+  const directory = createTemporaryDirectory(t);
+  const settingsPath = path.join(directory, "killeros.json");
+  const resumePath = path.join(directory, "resume");
+  const completedPath = path.join(directory, "completed");
+  const exited = spawn(process.execPath, ["--eval", ""], { stdio: "ignore" });
+  await new Promise<void>((resolve) => exited.once("exit", () => resolve()));
+  assert.ok(exited.pid);
+  writeFileSync(`${settingsPath}.lock`, JSON.stringify({ pid: exited.pid }));
+
+  const moduleUrl = new URL("../killeros/settings.ts", import.meta.url).href;
+  const script = `
+    import { existsSync, writeFileSync } from "node:fs";
+    import { createKillerosSettingsStore } from ${JSON.stringify(moduleUrl)};
+    const kill = process.kill;
+    let paused = false;
+    process.kill = (...args) => {
+      try { return kill(...args); }
+      catch (error) {
+        if (error.code === "ESRCH" && !paused) {
+          paused = true;
+          process.stdout.write("observed\\n");
+          while (!existsSync(process.env.RESUME_PATH)) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+          }
+        }
+        throw error;
+      }
+    };
+    createKillerosSettingsStore(process.env.SETTINGS_PATH).update({ concurrent: true });
+    writeFileSync(process.env.COMPLETED_PATH, "done");
+  `;
+  const child = spawn(process.execPath, ["--experimental-strip-types", "--input-type=module", "--eval", script], {
+    env: { ...process.env, SETTINGS_PATH: settingsPath, RESUME_PATH: resumePath, COMPLETED_PATH: completedPath },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => child.kill());
+  const completed = new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`writer exited with ${code}`)));
+  });
+  await Promise.race([
+    new Promise<void>((resolve) => child.stdout.once("data", () => resolve())),
+    completed.then(() => { throw new Error("writer did not observe the stale lock"); }),
+  ]);
+
+  createKillerosSettingsStore(settingsPath).update({
+    get first() {
+      writeFileSync(resumePath, "go");
+      const deadline = Date.now() + 500;
+      while (!existsSync(completedPath) && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+      return true;
+    },
+  });
+  await completed;
+  assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), { first: true, concurrent: true });
+});
+
 test("concurrent settings updates preserve every successful write", async (t) => {
   const directory = createTemporaryDirectory(t);
   const settingsPath = path.join(directory, "killeros.json");

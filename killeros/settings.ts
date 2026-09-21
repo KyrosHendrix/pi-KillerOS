@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { hasErrorCode } from "./errors.ts";
@@ -68,6 +68,23 @@ function moveLockAside(lockPath: string): boolean {
   return true;
 }
 
+function recoverSettingsLock(lockPath: string, expectedPid: number): boolean {
+  const recoveryPath = `${lockPath}.recovery`;
+  try {
+    mkdirSync(recoveryPath);
+  } catch (error) {
+    if (hasErrorCode(error, "EEXIST")) return false;
+    throw error;
+  }
+  try {
+    // Recheck under exclusive recovery ownership; another waiter may have replaced the lock.
+    return readLockOwnerPid(lockPath) === expectedPid && !isProcessRunning(expectedPid) && moveLockAside(lockPath);
+  } finally {
+    // ponytail: a crash during recovery leaves .recovery for manual removal; never steal it and risk lost writes.
+    rmdirSync(recoveryPath);
+  }
+}
+
 function acquireSettingsLock(settingsPath: string): () => void {
   const lockPath = `${settingsPath}.lock`;
   const ownerPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
@@ -81,7 +98,7 @@ function acquireSettingsLock(settingsPath: string): () => void {
       } catch (error) {
         if (!hasErrorCode(error, "EEXIST")) throw error;
         const currentOwnerPid = readLockOwnerPid(lockPath);
-        if (currentOwnerPid && !isProcessRunning(currentOwnerPid) && moveLockAside(lockPath)) continue;
+        if (currentOwnerPid && !isProcessRunning(currentOwnerPid) && recoverSettingsLock(lockPath, currentOwnerPid)) continue;
         if (Date.now() >= deadline) throw new Error(`Timed out waiting for KillerOS settings lock: ${lockPath}`);
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_MILLISECONDS);
       }
