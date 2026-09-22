@@ -240,7 +240,13 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
       try {
         const entries = ctx.sessionManager.buildContextEntries();
         const sourceLeaf = entries.at(-1)?.id;
-        const conversation = serializeConversation(convertToLlm(entries.flatMap(sessionEntryToContextMessages)));
+        const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
+          buildSessionProjection?: () => { messages: ReturnType<typeof sessionEntryToContextMessages> };
+        };
+        const messages = typeof sessionManager.buildSessionProjection === "function"
+          ? sessionManager.buildSessionProjection().messages
+          : entries.flatMap(sessionEntryToContextMessages);
+        const conversation = serializeConversation(convertToLlm(messages));
         if (!conversation.trim()) throw new Error("No usable session context is available");
         focus = safeTerminalText(args).trim();
         let maxTokens = handoffMaxTokens;

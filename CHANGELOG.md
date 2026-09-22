@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Made `/handoff` honor Pi context edits by using the canonical session projection when available while retaining compatibility with Pi 0.85 and 0.86.
 - Omitted worked-for throughput unless the provider explicitly reports zero reasoning tokens.
 
 ## [2.1.30] - 2026-09-21

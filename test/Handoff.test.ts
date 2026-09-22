@@ -250,6 +250,108 @@ function createGoalState(status: GoalStatus): GoalState {
   }
 }
 
+type ProjectionCommandResult = {
+  sourceConversation?: string;
+  notifications: TestNotification[];
+  completions: number;
+  newSessions: number;
+};
+
+async function runProjectionCommand(options: {
+  entryContent: string;
+  buildSessionProjection?: () => { messages: unknown[] };
+}): Promise<ProjectionCommandResult> {
+  const { commands } = createHarness();
+  const notifications: TestNotification[] = [];
+  const result: ProjectionCommandResult = { notifications, completions: 0, newSessions: 0 };
+  const sessionManager = {
+    getSessionFile: () => "source.jsonl",
+    getSessionName: () => undefined,
+    buildContextEntries: () => [{
+      id: "source-leaf",
+      type: "message",
+      message: { role: "user", content: options.entryContent, timestamp: 0 },
+    }],
+    ...(options.buildSessionProjection ? { buildSessionProjection: options.buildSessionProjection } : {}),
+  };
+
+  await getCommand(commands, "handoff").handler("", {
+    mode: "rpc",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    model: { id: "test-model", provider: "test" },
+    modelRegistry: {
+      complete: async (_model: unknown, context: { messages: unknown[] }) => {
+        result.completions += 1;
+        const message = context.messages[0];
+        assert.ok(isUnknownRecord(message) && typeof message.content === "string");
+        const request: unknown = JSON.parse(message.content);
+        assert.ok(isUnknownRecord(request) && typeof request.sourceConversation === "string");
+        result.sourceConversation = request.sourceConversation;
+        return { content: [{ type: "text", text: createCompleteHandoffSummary("Continue") }], stopReason: "stop" };
+      },
+    },
+    sessionManager,
+    newSession: async () => {
+      result.newSessions += 1;
+      return { cancelled: false };
+    },
+    ui: { notify: (message: string, level?: string) => notifications.push({ message, level }) },
+    getSystemPromptOptions: () => ({ skills: [] }),
+  });
+
+  return result;
+}
+
+test("/handoff uses only the canonical session projection", async () => {
+  const result = await runProjectionCommand({
+    entryContent: "OMITTED ORIGINAL CONTENT",
+    buildSessionProjection: () => ({
+      messages: [{ role: "user", content: "REPLACEMENT PROJECTED CONTENT", timestamp: 0 }],
+    }),
+  });
+
+  assert.match(result.sourceConversation ?? "", /REPLACEMENT PROJECTED CONTENT/u);
+  assert.doesNotMatch(result.sourceConversation ?? "", /OMITTED ORIGINAL CONTENT/u);
+  assert.equal(result.completions, 1);
+  assert.equal(result.newSessions, 1);
+});
+
+test("/handoff falls back to context entries when canonical projection is unavailable", async () => {
+  const result = await runProjectionCommand({ entryContent: "LEGACY CONTEXT CONTENT" });
+
+  assert.match(result.sourceConversation ?? "", /LEGACY CONTEXT CONTENT/u);
+  assert.equal(result.completions, 1);
+  assert.equal(result.newSessions, 1);
+});
+
+test("/handoff fails closed when canonical projection throws", async () => {
+  const result = await runProjectionCommand({
+    entryContent: "UNSAFE FALLBACK CONTENT",
+    buildSessionProjection: () => { throw new Error("Projection failed"); },
+  });
+
+  assert.equal(result.sourceConversation, undefined);
+  assert.equal(result.completions, 0);
+  assert.equal(result.newSessions, 0);
+  assert.deepEqual(result.notifications, [{ message: "Handoff failed: Projection failed", level: "error" }]);
+});
+
+test("/handoff does not fall back when canonical projection is empty", async () => {
+  const result = await runProjectionCommand({
+    entryContent: "UNSAFE FALLBACK CONTENT",
+    buildSessionProjection: () => ({ messages: [] }),
+  });
+
+  assert.equal(result.sourceConversation, undefined);
+  assert.equal(result.completions, 0);
+  assert.equal(result.newSessions, 0);
+  assert.deepEqual(result.notifications, [{
+    message: "Handoff failed: No usable session context is available",
+    level: "error",
+  }]);
+});
+
 test("/handoff refuses unavailable work without side effects", async () => {
   const unavailable = [
     { label: "running agent", isIdle: () => false, hasPendingMessages: () => false, goalStatus: "paused" },
