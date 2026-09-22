@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+## [2.1.31] - 2026-09-22
+
 ### Fixed
 
 - Made `/handoff` honor Pi context edits by using the canonical session projection when available while retaining compatibility with Pi 0.85 and 0.86.
