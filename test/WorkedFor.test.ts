@@ -14,7 +14,7 @@ import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 type WorkedForEvent = {
   type: string;
   messages?: Array<{ role?: string; stopReason?: StopReason }>;
-  message?: { role: string; provider?: string; model?: string; responseModel?: string; usage?: { output: number }; stopReason?: StopReason };
+  message?: { role: string; provider?: string; model?: string; responseModel?: string; usage?: { output: number; reasoning?: unknown }; stopReason?: StopReason };
   assistantMessageEvent?: { type: "text_delta" | "thinking_delta" | "toolcall_delta"; delta: string };
   toolName?: string;
   input?: Record<string, unknown>;
@@ -155,9 +155,14 @@ async function emitStreamDelta(harness: WorkedForHarness, type: "text_delta" | "
   await harness.emit("message_update", { assistantMessageEvent: { type, delta } });
 }
 
-async function emitStreamDone(harness: WorkedForHarness, output: number, stopReason: StopReason = "stop"): Promise<void> {
+async function emitStreamDone(
+  harness: WorkedForHarness,
+  output: number,
+  stopReason: StopReason = "stop",
+  reasoning: unknown = 0,
+): Promise<void> {
   await harness.emit("message_end", {
-    message: { role: "assistant", provider: "openai", model: "model-id", usage: { output }, stopReason },
+    message: { role: "assistant", provider: "openai", model: "model-id", usage: { output, reasoning }, stopReason },
   });
 }
 
@@ -200,7 +205,7 @@ test("worked-for throughput excludes first-token latency and renders after task 
   await emitStreamDelta(harness, "thinking_delta", "reasoning");
   harness.setTime(10_000);
   await harness.emit("message_end", {
-    message: { role: "assistant", provider: "openai", model: "model-id", usage: { output: 367 }, stopReason: "stop" },
+    message: { role: "assistant", provider: "openai", model: "model-id", usage: { output: 367, reasoning: 0 }, stopReason: "stop" },
   });
   await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
   harness.setSessionEntries([usageEntry("assistant", 20_900)]);
@@ -222,6 +227,69 @@ test("worked-for throughput excludes first-token latency and renders after task 
   const component = renderer({ data: harness.appendedEntries[0]?.data }, { expanded: false }, theme);
   assert.ok(component);
   assert.equal(component.render(100)[0], " ✓ Done · 13s · ↑ 20.9k tokens · 73.4 tok/s · model-id");
+});
+
+test("worked-for throughput requires an explicit zero reasoning count", async () => {
+  const incompatibleReasoning: unknown[] = [
+    undefined,
+    null,
+    "0",
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    1,
+    101,
+  ];
+  for (const reasoning of incompatibleReasoning) {
+    const harness = createWorkedForHarness();
+    await harness.emit("agent_start");
+    await emitStreamDelta(harness, reasoning === 1 ? "thinking_delta" : "text_delta");
+    harness.setTime(1_000);
+    if (reasoning === undefined) {
+      await harness.emit("message_end", {
+        message: { role: "assistant", provider: "openai", model: "model-id", usage: { output: 100 }, stopReason: "stop" },
+      });
+    } else {
+      await emitStreamDone(harness, 100, "stop", reasoning);
+    }
+    await harness.emit("agent_settled");
+    assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "outputTokens"), false, String(reasoning));
+    assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "decodeMilliseconds"), false, String(reasoning));
+  }
+
+  const explicitZero = createWorkedForHarness();
+  await explicitZero.emit("agent_start");
+  await emitStreamDelta(explicitZero, "text_delta");
+  explicitZero.setTime(1_000);
+  await emitStreamDone(explicitZero, 100, "stop", 0);
+  await explicitZero.emit("agent_settled");
+  assert.equal(explicitZero.appendedEntries[0]?.data.outputTokens, 100);
+  assert.equal(explicitZero.appendedEntries[0]?.data.decodeMilliseconds, 1_000);
+});
+
+test("reasoning telemetry invalidates earlier throughput and failed streams", async () => {
+  for (const stopReason of ["stop", "error", "aborted"] as const) {
+    const harness = createWorkedForHarness();
+    await harness.emit("agent_start");
+    await emitStreamDelta(harness, "text_delta");
+    harness.setTime(1_000);
+    await emitStreamDone(harness, 50);
+    await emitStreamDone(harness, 90, stopReason, 80);
+    await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason }] });
+    await harness.emit("agent_settled");
+    const data = harness.appendedEntries[0]?.data ?? {};
+    assert.equal(Object.hasOwn(data, "outputTokens"), false, stopReason);
+    assert.equal(Object.hasOwn(data, "decodeMilliseconds"), false, stopReason);
+    if (stopReason === "stop") {
+      const renderer = harness.renderers.get("killeros-worked-for");
+      assert.ok(renderer);
+      const component = renderer({ data }, { expanded: false }, theme);
+      assert.ok(component);
+      assert.equal(component.render(100)[0], " ✓ Done · 1s · ↑ 0 tokens");
+    }
+  }
 });
 
 test("worked-for throughput uses raw weighted totals and excludes time between calls", async () => {

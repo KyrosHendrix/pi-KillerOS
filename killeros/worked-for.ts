@@ -312,9 +312,11 @@ type ActiveReceipt = {
 function finishAssistantStream(
   receipt: ActiveReceipt,
   outputTokens: number,
+  reasoningTokens: unknown,
   endedAt: number,
   failed: boolean,
 ): void {
+  if (reasoningTokens !== 0) receipt.throughputInvalid = true;
   if (failed) {
     if (receipt.decodeStartedAt !== undefined) receipt.throughputInvalid = true;
   } else if (receipt.decodeStartedAt !== undefined) {
@@ -428,6 +430,7 @@ export function registerWorkedFor(
     finishAssistantStream(
       active,
       event.message.usage.output,
+      event.message.usage.reasoning,
       now(),
       event.message.stopReason === "error" || event.message.stopReason === "aborted",
     );

@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Omitted worked-for throughput unless the provider explicitly reports zero reasoning tokens.
+
 ## [2.1.30] - 2026-09-21
 
 ### Added
