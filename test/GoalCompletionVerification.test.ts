@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -424,6 +424,37 @@ test("goals naming several files do not bind single-file proof", async (t) => {
     const ctx = createContext();
     const active = await startGoal(harness, ctx, objective);
     assert.equal(active.verification, undefined, objective);
+  }
+});
+
+test("unquoted additional files cannot gain single-file proof", async (t) => {
+  for (const additional of ["plus b.ts", "along with b.ts", "and b.ts", "plus ./b.ts", "plus ../b.ts"]) {
+    await t.test(additional, async (subtest) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-unquoted-multi-"));
+      subtest.after(() => rmSync(directory, { recursive: true, force: true }));
+      const harness = createHarness();
+      const ctx = createContext();
+      ctx.cwd = directory;
+      const active = await startGoal(harness, ctx, `Fix \`a.ts\` ${additional}`);
+      assert.equal(active.verification, undefined);
+      writeFileSync(path.join(directory, "a.ts"), "only a.ts changed");
+      assert.equal(existsSync(path.join(directory, "b.ts")), false);
+      const result = await complete(harness, ctx);
+      assert.equal(result.details.status, "complete");
+      assert.equal(result.details.verification, "model-reported");
+      assert.equal(requiredState(last(harness.appendedEntries)).verification, undefined);
+      subtest.diagnostic(`Fix \`a.ts\` ${additional}: ${result.details.verification}`);
+    });
+  }
+
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-unquoted-repeat-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const ctx = createContext();
+  ctx.cwd = directory;
+  for (const objective of ["Fix `a.ts`", "Fix `a.ts` plus a.ts"]) {
+    const active = await startGoal(createHarness(), ctx, objective);
+    assert.ok(isUnknownRecord(active.verification), objective);
+    assert.equal(active.verification.path, path.join(directory, "a.ts"), objective);
   }
 });
 

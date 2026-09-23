@@ -349,6 +349,7 @@ const GOAL_URL_PATTERN = /(?:https?|file):\/\/[^\s"'`]+/giu;
 const GOAL_QUOTED_PATTERN = /`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'/gu;
 const GOAL_ABSOLUTE_PATTERN = /(?:^|[\s"'`(\[{,;])([A-Za-z]:[\\/][^\s,;'"`]+|\/[^\s,;'"`]+)/gu;
 const GOAL_LIST_FILE_PATTERN = /(?:\band\b|\bor\b|[,;&+])\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b)/giu;
+const GOAL_RELATIVE_FILE_PATTERN = /(?:^|[\s"'`(\[{,;])((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b/gu;
 
 function isQuotedGoalFileMention(raw: string): boolean {
   const value = raw.trim();
@@ -381,6 +382,9 @@ function countGoalTargetFiles(objective: string, cwd: string, target: string): n
     if (match[1]) add(stripUnquotedPathPunctuation(match[1].trim()));
   }
   for (const match of prose.matchAll(GOAL_LIST_FILE_PATTERN)) add(match[1] ?? match[2] ?? match[3] ?? match[4] ?? "");
+  for (const match of prose.replace(GOAL_QUOTED_PATTERN, " ").matchAll(GOAL_RELATIVE_FILE_PATTERN)) {
+    if (match[1]) add(match[1]);
+  }
   return mentions.size;
 }
 

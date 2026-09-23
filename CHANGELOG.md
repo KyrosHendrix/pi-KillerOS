@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Prevented file-verified goal completion when an objective names another unquoted relative file, such as ``Fix `a.ts` plus b.ts``.
 - Added release-metadata checks for ordinary npm publication and the GitHub release workflow, including the README's pinned version example.
 
 ## [2.1.31] - 2026-09-22
