@@ -33,6 +33,7 @@
     "benchmark:change-receipt": "node --test --experimental-strip-types test/ChangeReceipt.bench.ts",
     "check": "tsc --noEmit && eslint .",
     "lint": "eslint .",
+    "prepublishOnly": "node --experimental-strip-types scripts/verify-release.ts",
     "test": "node --test --test-force-exit --experimental-strip-types test/*.test.*"
   },
   "pi": {

@@ -101,7 +101,7 @@ Strict TypeScript throughout. Tests run on Node's built-in test runner:
 npm ci && npm run check && npm test
 ```
 
-Releases go through CI on `main`; do not push version tags manually.
+Releases go through CI on `main`; do not push version tags manually. The prepublish check rejects ordinary direct `npm publish`, but `--ignore-scripts` can bypass it. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
 
 ## Security
 

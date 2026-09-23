@@ -126,7 +126,11 @@ jobs:
 
       - name: Publish package to npm
         if: steps.metadata.outputs.publish_npm == 'true'
-        run: npm publish
+        env:
+          KILLEROS_RELEASE: 'true'
+        run: |
+          node --experimental-strip-types scripts/verify-release.ts
+          npm publish
 
       - name: Create release
         if: steps.metadata.outputs.publish == 'true'

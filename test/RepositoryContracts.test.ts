@@ -7,6 +7,7 @@ import test from "node:test";
 
 type PackageJson = {
   version: string;
+  scripts: Record<string, string>;
   dependencies?: Record<string, unknown>;
   peerDependencies: Record<string, string>;
   devDependencies: Record<string, string>;
@@ -28,6 +29,7 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 function isPackageJson(value: unknown): value is PackageJson {
   return isUnknownRecord(value)
     && typeof value.version === "string"
+    && isStringRecord(value.scripts)
     && (value.dependencies === undefined || isUnknownRecord(value.dependencies))
     && isStringRecord(value.peerDependencies)
     && isStringRecord(value.devDependencies);
@@ -198,6 +200,9 @@ test("GitHub releases require green current main and consistent package provenan
   assert.match(release, /npm view "killeros@\$\{VERSION\}" gitHead/u);
   assert.match(release, /npm package.*verified commit/u);
   assert.match(release, /publish_npm/u);
+  assert.equal(packageJson.scripts.prepublishOnly, "node --experimental-strip-types scripts/verify-release.ts");
+  assert.match(release, /KILLEROS_RELEASE: 'true'/u);
+  assert.match(release, /node --experimental-strip-types scripts\/verify-release\.ts\s+npm publish/u);
   assert.ok(release.indexOf("Existing tag") < release.indexOf("- name: Publish package to npm"));
   assert.match(release, /sync-dev:\s+name: Sync main back into dev\s+needs: release/su);
   assert.match(release, /publish:\s+\$\{\{ steps\.metadata\.outputs\.publish \}\}/u);

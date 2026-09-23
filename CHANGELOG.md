@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Added release-metadata checks for ordinary npm publication and the GitHub release workflow, including the README's pinned version example.
+
 ## [2.1.31] - 2026-09-22
 
 ### Fixed
