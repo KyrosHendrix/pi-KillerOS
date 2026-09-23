@@ -1,8 +1,10 @@
 # Changelog
 
-All notable changes to KillerOS are documented here.
+All notable changes to KillerOS are documented here. Releases use New Features for new capabilities, Added for smaller additions, Changed for updates and removals, and Fixed for corrections. Empty sections are omitted.
 
 ## [Unreleased]
+
+## [2.1.32] - 2026-09-24
 
 ### Fixed
 
@@ -34,7 +36,7 @@ All notable changes to KillerOS are documented here.
 
 ## [2.1.29] - 2026-09-19
 
-### Added
+### New Features
 
 - Added `/auto-compact [status|on|off|<percent>]` to inspect and update the global automatic compaction preference without restarting Pi.
 
@@ -48,14 +50,14 @@ All notable changes to KillerOS are documented here.
 
 ## [2.1.28] - 2026-09-15
 
+### Added
+
+- Appended the selected model ID as a gray `· <model-id>` suffix to every TUI activity working message, retained for the full request cycle and falling back to `unknown model` when no usable ID exists.
+
 ### Changed
 
 - Simplified goal presentation without changing goal behavior: transcript history shows one iconless event row per lifecycle change (`Goal started`, `Goal replaced`, `Goal paused`, `Goal resumed`, `Goal cleared`), progress and blocker outcomes render once through the goal tool result, the footer shows compact `/goal active · 1/20 · 10s` status, the `/goal` panel leads with status then objective then `Pause goal` / `Resume goal` / `Clear goal` actions, and duplicate TUI success notifications are suppressed while RPC confirmations remain. Active-goal labels use muted teal `#6FAEB2` through the packaged theme's extension-label role.
 - Removed the legacy `✻` marker from version-1 `Worked for …` transcript rows; stored entries are unchanged and remain readable.
-
-### Added
-
-- Appended the selected model ID as a gray `· <model-id>` suffix to every TUI activity working message, retained for the full request cycle and falling back to `unknown model` when no usable ID exists.
 
 ### Fixed
 
@@ -70,6 +72,10 @@ All notable changes to KillerOS are documented here.
 
 - Added `/codex-fast status` to report whether Codex fast mode is enabled without changing it.
 
+### Changed
+
+- Removed `/init` and its `killeros_init_*` tools, prompts, workflow APIs, runtime state, and lifecycle handlers. Upgrading leaves existing `AGENTS.md` and recovery files untouched, and commands from other providers named `/init` pass through KillerOS unhandled.
+
 ### Fixed
 
 - Restricted automatic startup, footer, and change-receipt Git scans to trusted projects, preventing repository executables and configuration races from launching commands before trust is granted.
@@ -79,10 +85,6 @@ All notable changes to KillerOS are documented here.
 - Shared one passive Git status policy between footer telemetry and change receipts. Both scans now disable filesystem monitors and clean/process filters, and skip status when filter discovery is unavailable or unsafe.
 - Recorded focused Node test runs in response receipts without persisting their test paths.
 - Kept passive footer Git status from running configured filters, bounded loose and packed receipt blobs, and stopped stale `/handoff` summaries from replacing sessions with new work.
-
-### Removed
-
-- Removed `/init` and its `killeros_init_*` tools, prompts, workflow APIs, runtime state, and lifecycle handlers. Upgrading leaves existing `AGENTS.md` and recovery files untouched, and commands from other providers named `/init` pass through KillerOS unhandled.
 
 ## [2.1.26] - 2026-09-08
 
@@ -94,10 +96,6 @@ All notable changes to KillerOS are documented here.
 
 ## [2.1.25] - 2026-09-06
 
-### Fixed
-
-- Left-aligned settled `✓ Done` receipt lines so every row shares the assistant text edge.
-
 ### Changed
 
 - Replaced the boxed startup card with a three-row masthead: coral fade mark, versions, model and reasoning level, directory and branch, and an italic tip.
@@ -105,10 +103,11 @@ All notable changes to KillerOS are documented here.
 - Restored the leading `❯` prompt marker in white in the chat editor.
 - Rendered footer model names and the `fast` badge in non-bold white.
 - Showed the current Pi version beside the KillerOS version in the startup header.
-
-### Removed
-
 - Removed the `/variants` reasoning-level command in favor of Pi's native `/thinking` selector.
+
+### Fixed
+
+- Left-aligned settled `✓ Done` receipt lines so every row shares the assistant text edge.
 
 ## [2.1.24] - 2026-09-05
 
@@ -273,7 +272,7 @@ All notable changes to KillerOS are documented here.
 
 ## [2.0.15] - 2026-08-23
 
-### Added
+### New Features
 
 - Added `/handoff [focus]` for fresh linked sessions with visible continuation context.
 
@@ -312,18 +311,18 @@ All notable changes to KillerOS are documented here.
 
 ## [2.0.11] - 2026-08-17
 
+### Changed
+
+- Removed the decision-gated workflow subsystem, its skill-specific policy, public extension interface, and YAML dependency. Skills now remain instruction-only.
+
 ### Fixed
 
 - Made automated npm publication and GitHub release recovery idempotent, aligned the documented and tested Pi floor, and made machine-identifier casing locale-independent.
 - Extended strict type checking to release scripts and typed test suites, while correctly identifying JavaScript-only suites as `.js`.
 
-### Removed
-
-- Removed the decision-gated workflow subsystem, its skill-specific policy, public extension interface, and YAML dependency. Skills now remain instruction-only.
-
 ## [2.0.10] - 2026-08-16
 
-### Added
+### New Features
 
 - Added proactive turn-boundary compaction with Pi-owned settings and safe continuation for ordinary prompts and active goals.
 - Added reusable multi-activation decision-gated workflow registrations while preserving exact-match behavior.
@@ -341,12 +340,9 @@ All notable changes to KillerOS are documented here.
 - Added a reusable, opt-in pre-turn gate for explicitly activated decision-gated workflows. It opens the shared structured question UI before skill expansion, keeps the selected policy active, blocks unknown and disallowed tools, and clears safely across lifecycle boundaries.
 - Added a disposable decision-gated workflow fixture and focused coverage for activation ordering, pending safety, policy allowlists, lifecycle cleanup, adapter reuse, and Pi 0.84.2 compatibility.
 
-### Removed
-
-- Removed KillerOS's always-on concise response policy and provider-specific concise defaults; Pi now owns response-style guidance.
-
 ### Changed
 
+- Removed KillerOS's always-on concise response policy and provider-specific concise defaults; Pi now owns response-style guidance.
 - Raised the locked direct Pi development packages to 0.84.2 while keeping the peer dependency floor at 0.84.1.
 
 ## [2.0.7] - 2026-08-13
@@ -533,11 +529,14 @@ All notable changes to KillerOS are documented here.
 
 ## [1.3.0] - 2026-07-31
 
-### Added
+### New Features
 
 - Claude Code-style `/init` that builds a bounded repository snapshot and generates a concise root `AGENTS.md` with one controlled write.
 - Codex-style `/goal` with durable branch-scoped state, automatic one-turn continuation, pause/resume/edit/clear controls, and explicit model-reported completion or blocking.
 - Trusted `AGENTS.local.md` personal guidance and project lifecycle hooks for tool-call, tool-result, and settled-agent events.
+
+### Added
+
 - Focused coverage for goal transitions, recovery paths, branch restoration, mode gating, footer cutdowns, and repository initialization safeguards.
 
 ### Changed
@@ -547,12 +546,15 @@ All notable changes to KillerOS are documented here.
 
 ## [1.2.0] - 2026-07-30
 
-### Added
+### New Features
 
 - A 52-column Compact startup card with inline version, polished model/provider identity, reasoning level, `/model`, working directory, and conditional Git branch.
-- A shuffled startup-tip deck that keeps one tip stable per session and exhausts the bank before repeating.
 - A responsive footer that preserves model and context while progressively removing lower-priority telemetry.
 - Packaged KillerOS theme with coral accents and one neutral tool-call surface across pending, success, and error states.
+
+### Added
+
+- A shuffled startup-tip deck that keeps one tip stable per session and exhausts the bank before repeating.
 - Single-glyph Spark activity indicator with a restrained color pulse.
 - Claude-adjacent activity word bank that advances between agent runs.
 - Static `└ Thinking…` label for hidden reasoning blocks.
