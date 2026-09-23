@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here.
 
 ### Fixed
 
+- Restored tok/s on completed worked-for receipts using reported output tokens over observed model-response intervals, including reasoning and mixed-model tasks; incomplete or failed calls omit the rate.
 - Prevented file-verified goal completion when an objective names another unquoted relative file, such as ``Fix `a.ts` plus b.ts``.
 - Added release-metadata checks for ordinary npm publication and the GitHub release workflow, including the README's pinned version example.
 

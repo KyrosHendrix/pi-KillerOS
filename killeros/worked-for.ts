@@ -50,6 +50,7 @@ export interface WorkedForEntryDataV4 {
   model?: string;
   outputTokens?: number;
   decodeMilliseconds?: number;
+  responseMilliseconds?: number;
 }
 
 type WorkedForEntryData = WorkedForEntryDataV1 | WorkedForEntryDataV2 | WorkedForEntryDataV3 | WorkedForEntryDataV4;
@@ -70,6 +71,10 @@ function integer(value: unknown): value is number {
 
 function positiveInteger(value: unknown): value is number {
   return integer(value) && value > 0;
+}
+
+function positiveDuration(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -154,9 +159,11 @@ function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefine
     checks.push({ label, outcome: check.outcome });
   }
   const model = parseModelName(data.model);
-  const throughput = positiveInteger(data.outputTokens) && positiveInteger(data.decodeMilliseconds)
-    ? { outputTokens: data.outputTokens, decodeMilliseconds: data.decodeMilliseconds }
-    : {};
+  const throughput = positiveInteger(data.outputTokens) && data.decodeMilliseconds === undefined && positiveDuration(data.responseMilliseconds)
+    ? { outputTokens: data.outputTokens, responseMilliseconds: data.responseMilliseconds }
+    : positiveInteger(data.outputTokens) && data.responseMilliseconds === undefined && positiveInteger(data.decodeMilliseconds)
+      ? { outputTokens: data.outputTokens, decodeMilliseconds: data.decodeMilliseconds }
+      : {};
   return {
     version: 4,
     milliseconds: data.milliseconds,
@@ -231,11 +238,12 @@ class WorkedForV4Component implements Component {
     const { data, theme } = this;
     const outcome = OUTCOMES[data.outcome];
     const headline = theme.fg(outcome.color, outcome.label);
-    const tokensPerSecond = data.outputTokens !== undefined && data.decodeMilliseconds !== undefined
-      ? data.outputTokens / (data.decodeMilliseconds / 1_000)
+    const duration = data.responseMilliseconds ?? data.decodeMilliseconds;
+    const tokensPerSecond = data.outputTokens !== undefined && duration !== undefined && (data.responseMilliseconds === undefined || data.outcome === "done")
+      ? data.outputTokens / (duration / 1_000)
       : undefined;
     const speedSuffix = tokensPerSecond !== undefined && Number.isFinite(tokensPerSecond) && tokensPerSecond > 0
-      ? ` · ${tokensPerSecond.toFixed(1)} tok/s`
+      ? ` · ${data.responseMilliseconds !== undefined && tokensPerSecond < 0.05 ? "<0.1" : tokensPerSecond.toFixed(1)} tok/s`
       : "";
     const modelSuffix = data.model ? ` · ${data.model}` : "";
     const lines = [
@@ -304,33 +312,19 @@ type ActiveReceipt = {
   modelId: string | undefined;
   modelMismatch: boolean;
   outputTokens: number;
-  decodeMilliseconds: number;
-  decodeStartedAt: number | undefined;
+  responseMilliseconds: number;
+  responseStartedAt: number | undefined;
   throughputInvalid: boolean;
 };
 
-function finishAssistantStream(
-  receipt: ActiveReceipt,
-  outputTokens: number,
-  reasoningTokens: unknown,
-  endedAt: number,
-  failed: boolean,
-): void {
-  if (reasoningTokens !== 0) receipt.throughputInvalid = true;
-  if (failed) {
-    if (receipt.decodeStartedAt !== undefined) receipt.throughputInvalid = true;
-  } else if (receipt.decodeStartedAt !== undefined) {
-    const decodeMilliseconds = endedAt - receipt.decodeStartedAt;
-    if (positiveInteger(outputTokens) && positiveInteger(decodeMilliseconds)) {
-      receipt.outputTokens += outputTokens;
-      receipt.decodeMilliseconds += decodeMilliseconds;
-    } else {
-      receipt.throughputInvalid = true;
-    }
-  } else if (outputTokens !== 0) {
-    receipt.throughputInvalid = true;
+function finishAssistantStream(receipt: ActiveReceipt, outputTokens: unknown, endedAt: number, failed: boolean): void {
+  const duration = receipt.responseStartedAt === undefined ? undefined : endedAt - receipt.responseStartedAt;
+  if (failed || !integer(outputTokens) || !positiveDuration(duration)) receipt.throughputInvalid = true;
+  else {
+    receipt.outputTokens += outputTokens;
+    receipt.responseMilliseconds += duration;
   }
-  receipt.decodeStartedAt = undefined;
+  receipt.responseStartedAt = undefined;
 }
 
 function receiptModelName(
@@ -394,8 +388,8 @@ export function registerWorkedFor(
       modelId: undefined,
       modelMismatch: false,
       outputTokens: 0,
-      decodeMilliseconds: 0,
-      decodeStartedAt: undefined,
+      responseMilliseconds: 0,
+      responseStartedAt: undefined,
       throughputInvalid: false,
     };
     active = state;
@@ -403,11 +397,10 @@ export function registerWorkedFor(
     if (active !== state) await collection.dispose();
   });
 
-  pi.on("message_update", (event, ctx) => {
-    if (ctx.mode !== "tui" || !active) return;
-    const update = event.assistantMessageEvent;
-    if ((update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta")
-      && update.delta.length > 0) active.decodeStartedAt ??= now();
+  pi.on("message_start", (event, ctx) => {
+    if (ctx.mode !== "tui" || !active || event.message.role !== "assistant") return;
+    if (active.responseStartedAt !== undefined) active.throughputInvalid = true;
+    active.responseStartedAt = now();
   });
 
   pi.on("message_end", (event, ctx) => {
@@ -429,8 +422,7 @@ export function registerWorkedFor(
     }
     finishAssistantStream(
       active,
-      event.message.usage.output,
-      event.message.usage.reasoning,
+      event.message.usage?.output,
       now(),
       event.message.stopReason === "error" || event.message.stopReason === "aborted",
     );
@@ -465,14 +457,15 @@ export function registerWorkedFor(
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");
     }
     const settledTokens = sessionTokenTotal(ctx);
-    const throughput = !settled.throughputInvalid && settled.decodeStartedAt === undefined && !settled.modelMismatch
-      && positiveInteger(settled.outputTokens) && positiveInteger(settled.decodeMilliseconds)
-      ? { outputTokens: settled.outputTokens, decodeMilliseconds: settled.decodeMilliseconds }
+    const outcome = workedForOutcome(settled.stopReason);
+    const throughput = outcome === "done" && !settled.throughputInvalid && settled.responseStartedAt === undefined
+      && positiveInteger(settled.outputTokens) && positiveDuration(settled.responseMilliseconds)
+      ? { outputTokens: settled.outputTokens, responseMilliseconds: settled.responseMilliseconds }
       : {};
     const data = fitPayload({
       version: 4,
       milliseconds: Math.max(0, now() - settled.startedAt),
-      outcome: workedForOutcome(settled.stopReason),
+      outcome,
       tokens: settled.startedTokens === undefined || settledTokens === undefined ? 0 : Math.max(0, settledTokens - settled.startedTokens),
       changes,
       checks: settled.checks,

@@ -14,8 +14,7 @@ import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 type WorkedForEvent = {
   type: string;
   messages?: Array<{ role?: string; stopReason?: StopReason }>;
-  message?: { role: string; provider?: string; model?: string; responseModel?: string; usage?: { output: number; reasoning?: unknown }; stopReason?: StopReason };
-  assistantMessageEvent?: { type: "text_delta" | "thinking_delta" | "toolcall_delta"; delta: string };
+  message?: { role: string; provider?: string; model?: string; responseModel?: string; usage?: { output?: number; reasoning?: unknown }; stopReason?: StopReason };
   toolName?: string;
   input?: Record<string, unknown>;
   isError?: boolean;
@@ -151,8 +150,8 @@ function usageEntry(type: "assistant" | "toolResult" | "compaction" | "branch_su
   };
 }
 
-async function emitStreamDelta(harness: WorkedForHarness, type: "text_delta" | "thinking_delta" | "toolcall_delta", delta = "x"): Promise<void> {
-  await harness.emit("message_update", { assistantMessageEvent: { type, delta } });
+async function startAssistant(harness: WorkedForHarness): Promise<void> {
+  await harness.emit("message_start", { message: { role: "assistant" } });
 }
 
 async function emitStreamDone(
@@ -197,12 +196,12 @@ test("a settled TUI run appends one durable timing entry measured from its first
   }]);
 });
 
-test("worked-for throughput excludes first-token latency and renders after task tokens", async () => {
+test("worked-for throughput measures assistant start to end and renders after task tokens", async () => {
   const harness = createWorkedForHarness();
   harness.setModel({ provider: "openai", id: "model-id", name: "Model Name" });
   await harness.emit("agent_start");
   harness.setTime(5_000);
-  await emitStreamDelta(harness, "thinking_delta", "reasoning");
+  await startAssistant(harness);
   harness.setTime(10_000);
   await harness.emit("message_end", {
     message: { role: "assistant", provider: "openai", model: "model-id", usage: { output: 367, reasoning: 0 }, stopReason: "stop" },
@@ -218,7 +217,7 @@ test("worked-for throughput excludes first-token latency and renders after task 
     outcome: "done",
     tokens: 20_900,
     outputTokens: 367,
-    decodeMilliseconds: 5_000,
+    responseMilliseconds: 5_000,
     model: "model-id",
     ...EMPTY_V4,
   });
@@ -229,144 +228,124 @@ test("worked-for throughput excludes first-token latency and renders after task 
   assert.equal(component.render(100)[0], " ✓ Done · 13s · ↑ 20.9k tokens · 73.4 tok/s · model-id");
 });
 
-test("worked-for throughput requires an explicit zero reasoning count", async () => {
-  const incompatibleReasoning: unknown[] = [
-    undefined,
-    null,
-    "0",
-    -1,
-    0.5,
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-    Number.NEGATIVE_INFINITY,
-    1,
-    101,
-  ];
-  for (const reasoning of incompatibleReasoning) {
+test("reasoning output and absent breakdown are counted without a text delta", async () => {
+  for (const reasoning of [90, undefined]) {
     const harness = createWorkedForHarness();
     await harness.emit("agent_start");
-    await emitStreamDelta(harness, reasoning === 1 ? "thinking_delta" : "text_delta");
-    harness.setTime(1_000);
-    if (reasoning === undefined) {
-      await harness.emit("message_end", {
-        message: { role: "assistant", provider: "openai", model: "model-id", usage: { output: 100 }, stopReason: "stop" },
-      });
-    } else {
-      await emitStreamDone(harness, 100, "stop", reasoning);
-    }
+    await startAssistant(harness);
+    harness.setTime(2_000);
+    await harness.emit("message_end", { message: { role: "assistant", provider: "openai", model: "model-id", usage: { output: 100, reasoning }, stopReason: "stop" } });
+    await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
     await harness.emit("agent_settled");
-    assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "outputTokens"), false, String(reasoning));
-    assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "decodeMilliseconds"), false, String(reasoning));
+    assert.equal(harness.appendedEntries[0]?.data.outputTokens, 100);
+    assert.equal(harness.appendedEntries[0]?.data.responseMilliseconds, 2_000);
+    const renderer = createWorkedForHarness().renderers.get("killeros-worked-for");
+    assert.ok(renderer);
+    assert.match(renderer({ data: JSON.parse(JSON.stringify(harness.appendedEntries[0]?.data)) }, { expanded: false }, theme)?.render(100)[0] ?? "", /50\.0 tok\/s/u);
   }
-
-  const explicitZero = createWorkedForHarness();
-  await explicitZero.emit("agent_start");
-  await emitStreamDelta(explicitZero, "text_delta");
-  explicitZero.setTime(1_000);
-  await emitStreamDone(explicitZero, 100, "stop", 0);
-  await explicitZero.emit("agent_settled");
-  assert.equal(explicitZero.appendedEntries[0]?.data.outputTokens, 100);
-  assert.equal(explicitZero.appendedEntries[0]?.data.decodeMilliseconds, 1_000);
 });
 
-test("reasoning telemetry invalidates earlier throughput and failed streams", async () => {
-  for (const stopReason of ["stop", "error", "aborted"] as const) {
+test("stopped and failed outcomes never display newly calculated throughput", async () => {
+  for (const reason of ["aborted", "error"] as const) {
     const harness = createWorkedForHarness();
     await harness.emit("agent_start");
-    await emitStreamDelta(harness, "text_delta");
+    await startAssistant(harness);
+    harness.setTime(1_000);
+    await emitStreamDone(harness, 100);
+    await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: reason }] });
+    await harness.emit("agent_settled");
+    assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "outputTokens"), false);
+  }
+});
+
+test("user and tool-result starts do not enter the assistant interval", async () => {
+  const harness = createWorkedForHarness();
+  await harness.emit("agent_start");
+  await harness.emit("message_start", { message: { role: "user" } });
+  await harness.emit("message_end", { message: { role: "user" } });
+  await harness.emit("message_start", { message: { role: "toolResult" } });
+  harness.setTime(8_000);
+  await harness.emit("message_end", { message: { role: "toolResult" } });
+  await startAssistant(harness);
+  harness.setTime(10_000);
+  await emitStreamDone(harness, 100);
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await harness.emit("agent_settled");
+  assert.equal(harness.appendedEntries[0]?.data.responseMilliseconds, 2_000);
+});
+
+test("weighted throughput excludes tool time and repeated agent starts, including mixed models", async () => {
+  const harness = createWorkedForHarness();
+  harness.setModel({ provider: "openai", id: "model-id", name: "Model" });
+  await harness.emit("agent_start");
+  await startAssistant(harness);
+  harness.setTime(2_000);
+  await emitStreamDone(harness, 120);
+  harness.setTime(10_000);
+  await harness.emit("agent_start");
+  await startAssistant(harness);
+  harness.setTime(12_000);
+  await harness.emit("message_end", { message: { role: "assistant", provider: "anthropic", model: "other", usage: { output: 80 }, stopReason: "stop" } });
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await harness.emit("agent_settled");
+  assert.equal(harness.appendedEntries[0]?.data.outputTokens, 200);
+  assert.equal(harness.appendedEntries[0]?.data.responseMilliseconds, 4_000);
+  assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "model"), false);
+  const renderer = harness.renderers.get("killeros-worked-for");
+  assert.ok(renderer);
+  assert.match(renderer({ data: harness.appendedEntries[0]?.data }, { expanded: false }, theme)?.render(100)[0] ?? "", /tokens · 50\.0 tok\/s$/u);
+});
+
+test("zero-output calls contribute time, but an all-zero task has no rate", async () => {
+  for (const secondOutput of [0, 100]) {
+    const harness = createWorkedForHarness();
+    await harness.emit("agent_start");
+    await startAssistant(harness);
+    harness.setTime(2_000);
+    await emitStreamDone(harness, 0);
+    await startAssistant(harness);
+    harness.setTime(4_000);
+    await emitStreamDone(harness, secondOutput);
+    await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+    await harness.emit("agent_settled");
+    assert.equal(harness.appendedEntries[0]?.data.outputTokens, secondOutput || undefined);
+    assert.equal(harness.appendedEntries[0]?.data.responseMilliseconds, secondOutput ? 4_000 : undefined);
+  }
+});
+
+test("incomplete or invalid assistant calls invalidate the whole task rate", async () => {
+  const invalid: ReadonlyArray<readonly [string, (harness: WorkedForHarness) => Promise<void>]> = [
+    ["missing start", async (h) => { await emitStreamDone(h, 10); }],
+    ["missing end", async (h) => { await startAssistant(h); }],
+    ["duplicate start", async (h) => { await startAssistant(h); await startAssistant(h); h.setTime(3_000); await emitStreamDone(h, 10); }],
+    ["zero interval", async (h) => { await startAssistant(h); await emitStreamDone(h, 10); }],
+    ["reversed clock", async (h) => { h.setTime(3_000); await startAssistant(h); h.setTime(2_000); await emitStreamDone(h, 10); }],
+    ["missing usage", async (h) => { await startAssistant(h); h.setTime(3_000); await h.emit("message_end", { message: { role: "assistant", provider: "openai", model: "model-id", stopReason: "stop" } }); }],
+    ...[undefined, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY].map((output) => [String(output), async (h: WorkedForHarness) => {
+      await startAssistant(h); h.setTime(3_000);
+      await h.emit("message_end", { message: { role: "assistant", provider: "openai", model: "model-id", usage: { output }, stopReason: "stop" } });
+    }] as const),
+    ["failed retry", async (h) => { await startAssistant(h); h.setTime(3_000); await emitStreamDone(h, 10, "error"); }],
+    ["aborted retry", async (h) => { await startAssistant(h); h.setTime(3_000); await emitStreamDone(h, 10, "aborted"); }],
+  ];
+  for (const [name, invalidate] of invalid) {
+    const harness = createWorkedForHarness();
+    await harness.emit("agent_start");
+    await startAssistant(harness);
     harness.setTime(1_000);
     await emitStreamDone(harness, 50);
-    await emitStreamDone(harness, 90, stopReason, 80);
-    await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason }] });
+    harness.setTime(2_000);
+    await invalidate(harness);
+    harness.setTime(5_000);
+    await startAssistant(harness);
+    harness.setTime(6_000);
+    await emitStreamDone(harness, 100);
+    await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
     await harness.emit("agent_settled");
     const data = harness.appendedEntries[0]?.data ?? {};
-    assert.equal(Object.hasOwn(data, "outputTokens"), false, stopReason);
-    assert.equal(Object.hasOwn(data, "decodeMilliseconds"), false, stopReason);
-    if (stopReason === "stop") {
-      const renderer = harness.renderers.get("killeros-worked-for");
-      assert.ok(renderer);
-      const component = renderer({ data }, { expanded: false }, theme);
-      assert.ok(component);
-      assert.equal(component.render(100)[0], " ✓ Done · 1s · ↑ 0 tokens");
-    }
+    assert.equal(Object.hasOwn(data, "outputTokens"), false, name);
+    assert.equal(Object.hasOwn(data, "responseMilliseconds"), false, name);
   }
-});
-
-test("worked-for throughput uses raw weighted totals and excludes time between calls", async () => {
-  const harness = createWorkedForHarness();
-  await harness.emit("agent_start");
-  harness.setTime(1_000);
-  await emitStreamDelta(harness, "text_delta");
-  harness.setTime(2_000);
-  await emitStreamDone(harness, 100);
-  await harness.emit("agent_start");
-  harness.setTime(12_000);
-  await emitStreamDelta(harness, "toolcall_delta");
-  harness.setTime(15_000);
-  await emitStreamDone(harness, 200);
-  await harness.emit("agent_settled");
-
-  assert.equal(harness.appendedEntries[0]?.data.outputTokens, 300);
-  assert.equal(harness.appendedEntries[0]?.data.decodeMilliseconds, 4_000);
-});
-
-test("worked-for throughput fails closed for incomplete stream telemetry", async () => {
-  const cases: ReadonlyArray<{
-    name: string;
-    run(harness: WorkedForHarness): Promise<void>;
-  }> = [
-    { name: "no generated delta", run: async (harness) => { await emitStreamDone(harness, 10); } },
-    { name: "zero output", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); harness.setTime(1_000); await emitStreamDone(harness, 0); } },
-    { name: "fractional output", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); harness.setTime(1_000); await emitStreamDone(harness, 1.5); } },
-    { name: "negative output", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); harness.setTime(1_000); await emitStreamDone(harness, -1); } },
-    { name: "non-finite output", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); harness.setTime(1_000); await emitStreamDone(harness, Number.POSITIVE_INFINITY); } },
-    { name: "zero decode time", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); await emitStreamDone(harness, 10); } },
-    { name: "stream error", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); await emitStreamDone(harness, 0, "error"); } },
-    { name: "stream aborted before delta", run: async (harness) => { await emitStreamDone(harness, 0, "aborted"); } },
-    { name: "missing terminal update", run: async (harness) => { await emitStreamDelta(harness, "text_delta"); } },
-  ];
-  for (const receipt of cases) {
-    const harness = createWorkedForHarness();
-    await harness.emit("agent_start");
-    await receipt.run(harness);
-    await harness.emit("agent_settled");
-    assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "outputTokens"), false, receipt.name);
-    assert.equal(Object.hasOwn(harness.appendedEntries[0]?.data ?? {}, "decodeMilliseconds"), false, receipt.name);
-  }
-
-  const laterInvalid = createWorkedForHarness();
-  await laterInvalid.emit("agent_start");
-  await emitStreamDelta(laterInvalid, "text_delta");
-  laterInvalid.setTime(1_000);
-  await emitStreamDone(laterInvalid, 10);
-  laterInvalid.setTime(2_000);
-  await emitStreamDelta(laterInvalid, "text_delta");
-  laterInvalid.setTime(3_000);
-  await emitStreamDone(laterInvalid, 0);
-  await laterInvalid.emit("agent_settled");
-  assert.equal(Object.hasOwn(laterInvalid.appendedEntries[0]?.data ?? {}, "outputTokens"), false);
-});
-
-test("calls without generated deltas are harmless only when they report zero output", async () => {
-  const harness = createWorkedForHarness();
-  await harness.emit("agent_start");
-  await emitStreamDone(harness, 0);
-  harness.setTime(1_000);
-  await emitStreamDelta(harness, "text_delta");
-  harness.setTime(3_000);
-  await emitStreamDone(harness, 50);
-  await harness.emit("agent_settled");
-  assert.equal(harness.appendedEntries[0]?.data.outputTokens, 50);
-  assert.equal(harness.appendedEntries[0]?.data.decodeMilliseconds, 2_000);
-
-  const incomplete = createWorkedForHarness();
-  await incomplete.emit("agent_start");
-  await emitStreamDelta(incomplete, "text_delta");
-  incomplete.setTime(1_000);
-  await emitStreamDone(incomplete, 10);
-  await emitStreamDone(incomplete, 1);
-  await incomplete.emit("agent_settled");
-  assert.equal(Object.hasOwn(incomplete.appendedEntries[0]?.data ?? {}, "outputTokens"), false);
 });
 
 test("single-model receipts persist a safe display name and render it after reload", async () => {
@@ -393,7 +372,7 @@ test("mixed-model continuations omit attribution and the next run resets it", as
   const message = { role: "assistant", provider: "openai", model: "model-id", usage: { output: 0 }, stopReason: "stop" as const };
   harness.setModel({ provider: "openai", id: "model-id", name: "" });
   await harness.emit("agent_start");
-  await emitStreamDelta(harness, "text_delta");
+  await startAssistant(harness);
   harness.setTime(1_000);
   await emitStreamDone(harness, 100);
   await harness.emit("message_end", { message: { ...message, model: "other-model" } });
@@ -607,7 +586,10 @@ test("version 4 receipts render compact and expanded change details within every
   assert.ok(narrowExpanded);
   assert.match(narrowExpanded.render(40)[3] ?? "", /\+10 −2/u);
 
+  const observed = renderer({ data: { ...data, decodeMilliseconds: undefined, responseMilliseconds: 5_000 } }, { expanded: true }, theme);
+  assert.ok(observed);
   for (let width = 1; width <= 200; width += 1) {
+    assert.ok(observed.render(width).every((line) => visibleWidth(line) <= width), `observed width ${width}`);
     const compactLines = compact.render(width);
     const expandedLines = expanded.render(width);
     assert.ok(compactLines.length <= 3);
@@ -668,6 +650,35 @@ test("version 4 validation rejects malformed and oversized durable data", () => 
     assert.ok(withoutThroughput);
     assert.equal(withoutThroughput.render(100)[0], " ✓ Done · 1s · ↑ 1 tokens · Model Name");
   }
+  const newTelemetry = { ...valid, decodeMilliseconds: undefined, responseMilliseconds: 5_000 };
+  for (const telemetry of [
+    { outputTokens: undefined },
+    { outputTokens: 0 },
+    { outputTokens: 1.5 },
+    { responseMilliseconds: undefined },
+    { responseMilliseconds: 0 },
+    { responseMilliseconds: -1 },
+    { responseMilliseconds: Number.NaN },
+    { responseMilliseconds: Number.POSITIVE_INFINITY },
+    { responseMilliseconds: "5000" },
+    { decodeMilliseconds: 5_000 },
+  ]) {
+    const component = renderer({ data: { ...newTelemetry, ...telemetry } }, { expanded: false }, theme);
+    assert.ok(component);
+    assert.equal(component.render(100)[0], " ✓ Done · 1s · ↑ 1 tokens · Model Name");
+  }
+  const slow = renderer({ data: { ...newTelemetry, outputTokens: 1, responseMilliseconds: 100_000 } }, { expanded: false }, theme);
+  assert.ok(slow);
+  assert.match(slow.render(100)[0] ?? "", /<0\.1 tok\/s/u);
+  const historical = renderer({ data: { ...valid, outcome: "failed" } }, { expanded: false }, theme);
+  assert.ok(historical);
+  assert.match(historical.render(100)[0] ?? "", /73\.4 tok\/s/u);
+  const historicalSlow = renderer({ data: { ...valid, outputTokens: 1, decodeMilliseconds: 100_000 } }, { expanded: false }, theme);
+  assert.ok(historicalSlow);
+  assert.match(historicalSlow.render(100)[0] ?? "", /0\.0 tok\/s/u);
+  const failedNew = renderer({ data: { ...newTelemetry, outcome: "failed" } }, { expanded: false }, theme);
+  assert.ok(failedNew);
+  assert.doesNotMatch(failedNew.render(100)[0] ?? "", /tok\/s/u);
   for (const model of [42, "x".repeat(201)]) {
     const withoutModel = renderer({ data: { ...valid, model } }, { expanded: false }, theme);
     assert.ok(withoutModel);
@@ -871,6 +882,7 @@ test("session boundaries discard unfinished timing and save failures stay contai
   const harness = createWorkedForHarness();
   harness.setTime(1_000);
   await harness.emit("agent_start");
+  await startAssistant(harness);
   await harness.emit("session_shutdown");
   harness.setTime(9_000);
   await harness.emit("agent_settled");
@@ -888,4 +900,15 @@ test("session boundaries discard unfinished timing and save failures stay contai
   harness.setAppendError(undefined);
   await harness.emit("agent_settled");
   assert.deepEqual(harness.appendedEntries, []);
+
+  const restarted = createWorkedForHarness();
+  await restarted.emit("agent_start");
+  await startAssistant(restarted);
+  await restarted.emit("session_start");
+  await restarted.emit("agent_start");
+  restarted.setTime(12_000);
+  await emitStreamDone(restarted, 100);
+  await restarted.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await restarted.emit("agent_settled");
+  assert.equal(Object.hasOwn(restarted.appendedEntries[0]?.data ?? {}, "outputTokens"), false);
 });
