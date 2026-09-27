@@ -376,13 +376,20 @@ function isPathShapedGoalCandidate(raw: string): boolean {
     || /\.[A-Za-z0-9]{1,12}$/u.test(value);
 }
 
+function goalPathIdentity(filePath: string): string {
+  const nativePath = process.platform === "win32" ? filePath.replaceAll("/", "\\") : filePath;
+  // Parent segments may traverse symlinks; keep them distinct without filesystem proof.
+  const normalized = nativePath.split(path.sep).includes("..") ? nativePath : path.normalize(nativePath);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 function normalizeGoalFileMention(raw: string, cwd: string, quoted = false): string | undefined {
   const trimmed = raw.trim();
   const value = quoted ? trimmed : stripUnquotedPathPunctuation(trimmed);
   if (!value || /\p{Cc}/u.test(value) || !quoted && /\s/u.test(value)) return undefined;
   const absolute = path.isAbsolute(value) || path.win32.isAbsolute(value) ? value : path.resolve(cwd, value);
   if (!isAbsoluteFilePath(absolute)) return undefined;
-  return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+  return goalPathIdentity(absolute);
 }
 
 /** Counts distinct path-shaped mentions so several files cannot bind proof to one. */
@@ -435,22 +442,24 @@ export async function inferGoalVerification(objective: string, cwd: string): Pro
     const quoted = match[2] ?? match[3] ?? match[4];
     if (quoted !== undefined) candidates.push({ raw: quoted, quoted: true });
   }
+  const operands = new Set<string>();
   const resolved = new Map<string, { filePath: string; quoted: boolean }>();
   for (const candidate of candidates) {
-    if (!isPathShapedGoalCandidate(candidate.raw)) continue;
     const value = candidate.raw.trim();
-    const absolute = path.isAbsolute(value) || path.win32.isAbsolute(value)
-      ? value
-      : path.resolve(cwd, value);
-    if (!isAbsoluteFilePath(absolute)) continue;
-    const identity = process.platform === "win32" ? absolute.toLowerCase() : absolute;
+    if (!value || /\p{Cc}/u.test(value)) continue;
+    const alreadyAbsolute = path.isAbsolute(value) || path.win32.isAbsolute(value);
+    if (!alreadyAbsolute && URL.canParse(value)) continue;
+    const absolute = alreadyAbsolute ? value : path.resolve(cwd, value);
+    const identity = goalPathIdentity(absolute);
+    operands.add(identity);
+    if (!isPathShapedGoalCandidate(candidate.raw) || !isAbsoluteFilePath(absolute)) continue;
     const existing = resolved.get(identity);
     resolved.set(identity, {
       filePath: existing?.filePath ?? absolute,
       quoted: candidate.quoted || existing?.quoted === true,
     });
   }
-  if (resolved.size !== 1) return undefined;
+  if (operands.size !== 1 || resolved.size !== 1) return undefined;
   // A goal that names several files must not verify from one file alone.
   // Repeated references to the same file count as one target.
   const target = resolved.values().next().value;

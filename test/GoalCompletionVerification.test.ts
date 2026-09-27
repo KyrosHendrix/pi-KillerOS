@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -456,6 +456,87 @@ test("direct verb targets bind only when a quoted path immediately follows", asy
   assert.equal(await inferGoalVerification("Fix `docs/output/`", directory), undefined);
 });
 
+test("recognized extensionless operands prevent single-file proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-extensionless-multi-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  for (const verb of ["update", "edit", "fix", "refactor", "migrate"]) {
+    const objective = `Fix \`a.ts\` and ${verb} \`Makefile\``;
+    assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
+  }
+  for (const objective of [
+    "Fix `a.ts` and update `README`",
+    "Fix `a.ts` and refactor `Dockerfile`",
+    "Update `README` and fix `a.ts`",
+    "Write a report to \"report.md\" and write a file to \"summary\"",
+  ]) assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
+
+  for (const objective of [
+    "Fix `Makefile`",
+    "Update `README`",
+    "Write a file to \"summary\"",
+    "Write a report to \"the answer\"",
+  ]) assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
+
+  assert.equal(
+    (await inferGoalVerification("Fix `./Makefile` and update `Makefile`", directory))?.path,
+    path.join(directory, "Makefile"),
+  );
+  assert.equal(
+    (await inferGoalVerification("Fix `a.ts` and update `./a.ts`", directory))?.path,
+    path.join(directory, "a.ts"),
+  );
+});
+
+test("equivalent absolute and relative operands retain exact-path file proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-equivalent-operands-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const requested = path.join(directory, "Makefile");
+  writeFileSync(requested, "existing\n");
+  const baseline = await captureGoalFileBaseline(requested);
+
+  for (const absolute of [`${directory}/./Makefile`, requested.split(path.sep).join("/")]) {
+    for (const relative of ["Makefile", "./Makefile"]) {
+      for (const objective of [
+        `Fix "${absolute}" and update "${relative}"`,
+        `Update "${relative}" and fix "${absolute}"`,
+        `Write a file to "${absolute}" and write a file to "${relative}"`,
+      ]) {
+        const verification = await inferGoalVerification(objective, directory);
+        const expectedPath = relative === "./Makefile" && objective.startsWith("Update") ? requested : absolute;
+        assert.deepEqual(verification, { kind: "file", path: expectedPath, baseline }, objective);
+      }
+    }
+  }
+});
+
+test("absolute parent traversal remains distinct without filesystem proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-parent-operands-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const direct = path.join(directory, "a.ts");
+  const throughParent = `${directory}/link/../a.ts`;
+  for (const objective of [
+    `Fix "${throughParent}" and update "${direct}"`,
+    `Fix "${direct}" and "${throughParent}"`,
+  ]) assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
+});
+
+test("recognized operand scope is independent of clause order and file existence", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-extensionless-order-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  for (const filesExist of [false, true]) {
+    if (filesExist) {
+      writeFileSync(path.join(directory, "a.ts"), "existing\n");
+      writeFileSync(path.join(directory, "Makefile"), "existing\n");
+    }
+    for (const objective of [
+      "Fix `a.ts` and update `Makefile`",
+      "Update `Makefile` and fix `a.ts`",
+    ]) assert.equal(await inferGoalVerification(objective, directory), undefined, `${filesExist}: ${objective}`);
+  }
+});
+
 test("goals naming several files do not bind single-file proof", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-multi-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -603,6 +684,35 @@ test("changing only a.ts in an a.ts and Makefile goal remains model-reported", a
   const completed = requiredState(last(harness.appendedEntries));
   assert.ok(isUnknownRecord(completed.lastDecision));
   assert.equal(completed.lastDecision.verification, "model-reported");
+});
+
+test("extensionless action targets keep TUI and RPC completion model-reported", async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    await t.test(mode, async (subtest) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), `killeros-goal-extensionless-${mode}-`));
+      subtest.after(() => rmSync(directory, { recursive: true, force: true }));
+      const target = path.join(directory, "a.ts");
+      const makefile = path.join(directory, "Makefile");
+      writeFileSync(target, "before\n");
+      writeFileSync(makefile, "unchanged\n");
+      const harness = createHarness();
+      const ctx = createContext();
+      ctx.cwd = directory;
+      ctx.mode = mode;
+
+      const active = await startGoal(harness, ctx, "Fix `a.ts` and update `Makefile`");
+      assert.equal(active.verification, undefined);
+      writeFileSync(target, "after\n");
+      const result = await complete(harness, ctx);
+      assert.equal(result.details.status, "complete");
+      assert.equal(result.details.verification, "model-reported");
+      const completed = requiredState(last(harness.appendedEntries));
+      assert.equal(completed.verification, undefined);
+      assert.ok(isUnknownRecord(completed.lastDecision));
+      assert.equal(completed.lastDecision.verification, "model-reported");
+      assert.equal(readFileSync(makefile, "utf8"), "unchanged\n");
+    });
+  }
 });
 
 test("changing one file of a two-file goal completes without file proof", async (t) => {

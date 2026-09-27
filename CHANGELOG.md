@@ -15,6 +15,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 - Isolated passive footer, change-receipt, and startup branch Git scans from inherited repository-selection environment variables.
 - Rejected passive Git executables reached through repository-owned directory links while continuing to safe later `PATH` entries.
 - Prevented single-file goal proof from masking unquoted `Makefile`, `Dockerfile`, or `.gitignore` list items.
+- Prevented single-file goal proof from overlooking additional extensionless targets extracted by goal action and destination clauses. Equivalent path spellings still share one exact-path verification contract.
 - Prevented single-file goal proof from masking additional filenames that extend version or Node.js prose. Goal parsing now keeps spaces and trailing punctuation in quoted paths and matches exact Node.js prose case-insensitively.
 
 ## [2.1.32] - 2026-09-24
