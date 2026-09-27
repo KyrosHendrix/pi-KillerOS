@@ -164,6 +164,17 @@ test("CI blocks moderate dependency advisories without running lifecycle scripts
   assert.doesNotMatch(ci, /uses: [^\s]+@(?![a-f0-9]{40}(?:\s|$))/u);
 });
 
+test("CI runs the full quality suite on Windows at the Node.js floor", () => {
+  const jobsStart = ci.search(/^jobs:\s*$/mu);
+  assert.notEqual(jobsStart, -1);
+  const windowsJob = /^  windows:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
+  assert.ok(windowsJob);
+  assert.match(windowsJob, /^    runs-on: windows-latest$/mu);
+  assert.match(windowsJob, /^          node-version: '22\.19\.0'$/mu);
+  assert.match(windowsJob, /^        run: npm run check$/mu);
+  assert.match(windowsJob, /^        run: npm test$/mu);
+});
+
 test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.match(ci, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- dev/u);
   assert.match(ci, /Pi latest compatibility/u);
