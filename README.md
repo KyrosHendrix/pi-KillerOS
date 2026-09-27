@@ -2,6 +2,8 @@
 
 A TypeScript extension for the [Pi coding agent](https://github.com/earendil-works/pi) that replaces the stock TUI and adds long-running goals, reasoning controls, and workflow commands.
 
+![KillerOS TUI showing the startup masthead, an active goal, a settled task receipt, and the goal footer](.github/assets/killeros-preview.png)
+
 ## What you get
 
 - A custom TUI: startup masthead with versions, model, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.

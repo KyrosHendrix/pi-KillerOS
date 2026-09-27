@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Added
+
+- Added a Windows CI job on Node.js 22.19.0 that runs the full quality suite, with a repository contract protecting the job's required checks.
+
 ### Fixed
 
 - Prevented single-file goal proof from masking additional filenames that extend version or Node.js prose. Goal parsing now keeps spaces and trailing punctuation in quoted paths and matches exact Node.js prose case-insensitively.
