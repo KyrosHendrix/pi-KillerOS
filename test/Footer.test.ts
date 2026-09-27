@@ -13,7 +13,7 @@ import {
 import { passiveGitCommand, passiveGitEnv } from "../killeros/passive-git-status.ts";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { execFile, execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { themeTestAdapter } from "./PiTestAdapters.ts";
 
 type TestStyle = {
@@ -144,14 +144,64 @@ test("untrusted projects never start footer Git status", async () => {
   assert.equal(calls, 0);
 });
 
-test("passive Git children run without PATH resolution or lazy fetching", () => {
-  const env = passiveGitEnv();
+test("passive Git children remove repository selectors without mutating their base environment", () => {
+  const selectors = [
+    "GIT_DIR",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+  ] as const;
+  const base: NodeJS.ProcessEnv = Object.freeze({
+    PATH: "original-path",
+    UNRELATED: "preserved",
+    GIT_OPTIONAL_LOCKS: "1",
+    GIT_NO_LAZY_FETCH: "0",
+    git_dir: "inherited-lowercase-GIT_DIR",
+    ...Object.fromEntries(selectors.map((selector) => [selector, `inherited-${selector}`])),
+  });
+  const before = { ...base };
+
+  const env = passiveGitEnv(base);
+
+  assert.deepEqual(base, before);
+  assert.equal(env.UNRELATED, "preserved");
+  assert.equal(env.PATH, "");
   assert.equal(env.GIT_OPTIONAL_LOCKS, "0");
   assert.equal(env.GIT_NO_LAZY_FETCH, "1");
-  for (const [key, value] of Object.entries(env)) {
-    if (key.toLowerCase() === "path") assert.equal(value, "");
+  for (const selector of selectors) {
+    assert.equal(Object.keys(env).some((key) => key.toUpperCase() === selector), false, selector);
   }
-  assert.ok(Object.keys(env).some((key) => key.toLowerCase() === "path"));
+});
+
+test("footer passive scans ignore an inherited repository and stay unavailable outside Git", async () => {
+  const parent = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-env-"));
+  const requested = path.join(parent, "requested");
+  const inherited = path.join(parent, "inherited");
+  const outside = path.join(parent, "outside");
+  const previousGitDirectory = process.env.GIT_DIR;
+  try {
+    for (const [repository, filename] of [[requested, "requested.txt"], [inherited, "inherited.txt"]]) {
+      mkdirSync(repository);
+      execFileSync("git", ["init", "-q"], { cwd: repository });
+      writeFileSync(path.join(repository, filename), `${filename}\n`);
+      execFileSync("git", ["add", "."], { cwd: repository });
+      execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: repository });
+    }
+    mkdirSync(outside);
+    process.env.GIT_DIR = path.join(inherited, ".git");
+
+    assert.deepEqual(await resolveGitFileChanges(requested), { modified: 0, added: 0, deleted: 0 });
+    assert.equal(await resolveGitFileChanges(outside), undefined);
+  } finally {
+    if (previousGitDirectory === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = previousGitDirectory;
+    rmSync(parent, { recursive: true, force: true });
+  }
 });
 
 test("footer Git status does not execute a configured filesystem monitor", async () => {
@@ -711,6 +761,47 @@ test("footer passive scan never runs repository-local locator or Git shims", asy
     else process.env.PATH = previousPath;
     rmSync(repository, { recursive: true, force: true });
     rmSync(probe, { recursive: true, force: true });
+  }
+});
+
+test("footer passive scan rejects Git through a repository-local directory link", async (t) => {
+  const repository = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-link-"));
+  const external = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-git-link-target-"));
+  const sentinel = path.join(external, "sentinel");
+  const linkedDirectory = path.join(repository, "bin");
+  const repositoryAlias = `${repository}-alias`;
+  const previousPath = process.env.PATH;
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: repository });
+    writeRepositoryShims(external, sentinel);
+    try {
+      symlinkSync(external, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(repository, repositoryAlias, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      t.skip(`directory links unavailable: ${String(error)}`);
+      return;
+    }
+    const safeGit = passiveGitCommand(repository);
+    assert.ok(safeGit, "expected a safe system Git");
+
+    process.env.PATH = linkedDirectory;
+    assert.equal(passiveGitCommand(repository), undefined);
+    assert.equal(await resolveGitFileChanges(repository), undefined);
+    assert.equal(existsSync(sentinel), false);
+
+    process.env.PATH = path.join(repositoryAlias, "bin");
+    assert.equal(passiveGitCommand(repositoryAlias), undefined);
+
+    process.env.PATH = [linkedDirectory, path.dirname(safeGit)].join(path.delimiter);
+    assert.equal(passiveGitCommand(repository), safeGit);
+    assert.ok((await resolveGitFileChanges(repository)) !== undefined);
+    assert.equal(existsSync(sentinel), false);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(repositoryAlias, { recursive: true, force: true });
+    rmSync(repository, { recursive: true, force: true });
+    rmSync(external, { recursive: true, force: true });
   }
 });
 

@@ -85,13 +85,13 @@ State proof in the objective so the agent can verify it with its normal tools:
 /goal Reduce p95 checkout latency below 120 ms, verified by the checkout benchmark, while keeping the correctness suite green
 ```
 
-A direct quoted file target binds silent file proof:
+A direct quoted path-shaped file target binds silent file proof. For an extensionless relative file, use an explicit path such as `./summary` or `.\summary`:
 
 ```text
 /goal Fix `killeros/footer.ts`, verified by npm test
 ```
 
-KillerOS captures the file baseline at goal start and only completes when the file is created or changed. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Restored goals keep their persisted limit.
+Bare quoted prose remains model-reported. KillerOS captures the file baseline at goal start and only completes when the file is created or changed. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Restored goals keep their persisted limit.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 

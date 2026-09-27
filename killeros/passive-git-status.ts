@@ -120,6 +120,20 @@ function insideInspected(candidate: string, root: string): boolean {
   return normalizedCandidate.startsWith(`${trimmed}${path.sep}`);
 }
 
+function traversesInspected(candidate: string, root: string): boolean {
+  let current = path.dirname(candidate);
+  for (;;) {
+    try {
+      if (insideInspected(realpathSync(current), root)) return true;
+    } catch {
+      return true;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
 /** Returns an absolute Git binary outside the inspected repository without starting a locator process. */
 export function passiveGitCommand(cwd: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const root = inspectedRoot(cwd);
@@ -134,6 +148,7 @@ export function passiveGitCommand(cwd: string, env: NodeJS.ProcessEnv = process.
     if (directory === "" || directory.trim() === "" || !path.isAbsolute(directory)) continue;
     for (const base of baseNames) {
       const candidate = path.join(directory, base);
+      if (insideInspected(candidate, root)) continue;
       try {
         if (!statSync(candidate).isFile()) continue;
       } catch {
@@ -152,23 +167,41 @@ export function passiveGitCommand(cwd: string, env: NodeJS.ProcessEnv = process.
       } catch {
         continue;
       }
-      if (path.isAbsolute(resolved) && !insideInspected(resolved, root)) return resolved;
+      if (path.isAbsolute(resolved) && !insideInspected(resolved, root) && !traversesInspected(candidate, root)) return resolved;
     }
   }
   return undefined;
 }
 
-/** Environment for automatic Git children, with locks, lazy fetches, and PATH command resolution disabled. */
+/** Environment for automatic Git children, without inherited repository selection or PATH command resolution. */
 export function passiveGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base, GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" };
+  const env: NodeJS.ProcessEnv = { ...base };
+  const selectors = [
+    "GIT_DIR",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+  ];
   let hasPath = false;
   for (const key of Object.keys(env)) {
-    if (key.toLowerCase() === "path") {
+    const normalized = key.toUpperCase();
+    if (selectors.includes(normalized)
+      || normalized === "GIT_OPTIONAL_LOCKS"
+      || normalized === "GIT_NO_LAZY_FETCH") {
+      delete env[key];
+    } else if (normalized === "PATH") {
       env[key] = "";
       hasPath = true;
     }
   }
   if (!hasPath) env.PATH = "";
+  env.GIT_OPTIONAL_LOCKS = "0";
+  env.GIT_NO_LAZY_FETCH = "1";
   return env;
 }
 
@@ -263,7 +296,7 @@ function matchesIndex(content: Buffer, entry: IndexEntry, autoCrlf: string): boo
   if (blobObjectId(content, entry.objectId.length) === entry.objectId) return true;
   if (entry.mode === "120000" || !content.includes(Buffer.from("\r\n"))) return false;
   const attributes = entry.eolAttributes;
-  if (attributes === "-text") return false;
+  if (attributes.endsWith("eol=lf") || attributes === "-text") return false;
   const automatic = attributes.startsWith("text=auto") || !attributes;
   if (!attributes && !["true", "input"].includes(autoCrlf)) return false;
   if (automatic) {

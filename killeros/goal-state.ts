@@ -356,13 +356,24 @@ export async function captureGoalFileBaseline(
 const GOAL_URL_PATTERN = /(?:https?|file):\/\/[^\s"'`]+/giu;
 const GOAL_QUOTED_PATTERN = /`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'/gu;
 const GOAL_ABSOLUTE_PATTERN = /(?:^|[\s"'`(\[{,;])([A-Za-z]:[\\/][^\s,;'"`]+|\/[^\s,;'"`]+)/gu;
-const GOAL_LIST_FILE_PATTERN = /(?:\band\b|\bor\b|\bplus\b|\balong\s+with\b|[,;&+])\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b)/giu;
+const GOAL_LIST_FILE_PATTERN = /(?:\band\b|\bor\b|\bplus\b|\balong\s+with\b|[,;&+])\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b|(Makefile|Dockerfile|\.gitignore)\b)/giu;
 const GOAL_RELATIVE_FILE_PATTERN = /(?:^|[\s"'`(\[{,;])((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b/gu;
 
 function isQuotedGoalFileMention(raw: string): boolean {
   const value = raw.trim();
   if (!value || /\p{Cc}/u.test(value) || /^(?:https?|file):\/\//iu.test(value) || /[\\/]$/u.test(value)) return false;
   return /[\/\\.:]/u.test(value);
+}
+
+function isPathShapedGoalCandidate(raw: string): boolean {
+  if (/\p{Cc}/u.test(raw)) return false;
+  const value = raw.trim();
+  if (!value || /[\\\/]$/u.test(value)) return false;
+  if (path.isAbsolute(value) || path.win32.isAbsolute(value)) return true;
+  if (URL.canParse(value)) return false;
+  return /[\\\/]/u.test(value)
+    || value.startsWith(".") && value !== "." && value !== ".."
+    || /\.[A-Za-z0-9]{1,12}$/u.test(value);
 }
 
 function normalizeGoalFileMention(raw: string, cwd: string, quoted = false): string | undefined {
@@ -400,6 +411,7 @@ function countGoalTargetFiles(objective: string, cwd: string, target: string, ta
   }
   for (const match of prose.matchAll(GOAL_LIST_FILE_PATTERN)) {
     if (match[4]) add(match[4]);
+    if (match[5]) add(match[5]);
   }
   for (const match of prose.matchAll(GOAL_RELATIVE_FILE_PATTERN)) {
     if (match[1]) add(match[1]);
@@ -414,21 +426,22 @@ export async function inferGoalVerification(objective: string, cwd: string): Pro
   for (const match of objective.matchAll(destination)) {
     const quoted = match[1] ?? match[2] ?? match[3];
     candidates.push({
-      raw: quoted !== undefined ? quoted.trim() : stripUnquotedPathPunctuation((match[4] ?? "").trim()),
+      raw: quoted !== undefined ? quoted : stripUnquotedPathPunctuation((match[4] ?? "").trim()),
       quoted: quoted !== undefined,
     });
   }
   const direct = /\b(?:update|edit|fix|refactor|migrate)\s+(`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)')/giu;
   for (const match of objective.matchAll(direct)) {
     const quoted = match[2] ?? match[3] ?? match[4];
-    if (quoted !== undefined) candidates.push({ raw: quoted.trim(), quoted: true });
+    if (quoted !== undefined) candidates.push({ raw: quoted, quoted: true });
   }
   const resolved = new Map<string, { filePath: string; quoted: boolean }>();
   for (const candidate of candidates) {
-    if (!candidate.raw || /^(?:https?|file):\/\//iu.test(candidate.raw) || /[\\\/]$/u.test(candidate.raw)) continue;
-    const absolute = path.isAbsolute(candidate.raw) || path.win32.isAbsolute(candidate.raw)
-      ? candidate.raw
-      : path.resolve(cwd, candidate.raw);
+    if (!isPathShapedGoalCandidate(candidate.raw)) continue;
+    const value = candidate.raw.trim();
+    const absolute = path.isAbsolute(value) || path.win32.isAbsolute(value)
+      ? value
+      : path.resolve(cwd, value);
     if (!isAbsoluteFilePath(absolute)) continue;
     const identity = process.platform === "win32" ? absolute.toLowerCase() : absolute;
     const existing = resolved.get(identity);

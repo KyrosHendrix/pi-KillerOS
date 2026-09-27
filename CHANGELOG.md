@@ -10,6 +10,11 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Reported CRLF worktree content as modified when indexed attributes require `eol=lf`, matching Git in footer counts and change receipts.
+- Kept quoted prose goal destinations on model-reported completion; inferred file proof now requires a path-shaped destination.
+- Isolated passive footer, change-receipt, and startup branch Git scans from inherited repository-selection environment variables.
+- Rejected passive Git executables reached through repository-owned directory links while continuing to safe later `PATH` entries.
+- Prevented single-file goal proof from masking unquoted `Makefile`, `Dockerfile`, or `.gitignore` list items.
 - Prevented single-file goal proof from masking additional filenames that extend version or Node.js prose. Goal parsing now keeps spaces and trailing punctuation in quoted paths and matches exact Node.js prose case-insensitively.
 
 ## [2.1.32] - 2026-09-24

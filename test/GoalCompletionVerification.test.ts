@@ -348,6 +348,19 @@ test("general natural-language goals retain model-reported completion", async ()
   assert.equal(result.details.verification, "model-reported");
 });
 
+test("quoted prose destinations retain model-reported completion", async () => {
+  const objective = 'Write a report to "the answer"';
+  assert.equal(await inferGoalVerification(objective, process.cwd()), undefined);
+
+  const harness = createHarness();
+  const ctx = createContext();
+  const active = await startGoal(harness, ctx, objective);
+  assert.equal(active.verification, undefined);
+  const result = await complete(harness, ctx);
+  assert.equal(result.details.status, "complete");
+  assert.equal(result.details.verification, "model-reported");
+});
+
 test("reference paths are not inferred as goal deliverables", async () => {
   for (const objective of [
     "Write a report explaining how to use `C:\\data\\reference.md`",
@@ -388,6 +401,43 @@ test("unquoted goal paths shed sentence punctuation while quoted paths stay exac
   assert.equal((await inferGoalVerification("create file report to /tmp/out.md) Thanks", cwd))?.path, "/tmp/out.md");
   assert.equal((await inferGoalVerification("create file report to /tmp/out(1)", cwd))?.path, "/tmp/out(1)");
   assert.equal((await inferGoalVerification('Create the file at "/tmp/out.md."', cwd))?.path, "/tmp/out.md.");
+});
+
+test("only path-shaped quoted candidates bind file proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-path-shaped-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const accepted = new Map([
+    ["docs/report.md", path.resolve(directory, "docs/report.md")],
+    ["report.md", path.resolve(directory, "report.md")],
+    ["./summary", path.resolve(directory, "./summary")],
+    ["../summary", path.resolve(directory, "../summary")],
+    [".\\summary", path.resolve(directory, ".\\summary")],
+    ["..\\summary", path.resolve(directory, "..\\summary")],
+    ["docs/summary", path.resolve(directory, "docs/summary")],
+    ["docs\\summary", path.resolve(directory, "docs\\summary")],
+    [".gitignore", path.resolve(directory, ".gitignore")],
+    ["/tmp/killeros-goal-absolute-out", "/tmp/killeros-goal-absolute-out"],
+    ["C:\\killeros-goal-absolute-out", "C:\\killeros-goal-absolute-out"],
+  ]);
+  for (const [candidate, expected] of accepted) {
+    assert.equal((await inferGoalVerification(`Write a report to "${candidate}"`, directory))?.path, expected, candidate);
+  }
+  assert.equal((await inferGoalVerification('Fix "report.md"', directory))?.path, path.join(directory, "report.md"));
+
+  for (const candidate of [
+    "the answer",
+    "summary",
+    "Makefile",
+    "docs/",
+    "docs\\",
+    "https://example.com/out.md",
+    "ftp://example.com/out.md",
+    "bad\0name.md",
+    "",
+  ]) assert.equal(await inferGoalVerification(`Write a report to "${candidate}"`, directory), undefined, candidate);
+  assert.equal(await inferGoalVerification('Fix "the answer"', directory), undefined);
+  assert.equal(await inferGoalVerification('Fix "README"', directory), undefined);
 });
 
 test("direct verb targets bind only when a quoted path immediately follows", async (t) => {
@@ -514,6 +564,45 @@ test("unquoted additional files cannot gain single-file proof", async (t) => {
     assert.ok(isUnknownRecord(active.verification), objective);
     assert.equal(active.verification.path, path.join(directory, "a.ts"), objective);
   }
+});
+
+test("conventional extensionless list items prevent single-file proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-conventional-files-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const a = path.join(directory, "a.ts");
+
+  for (const objective of [
+    "Fix `a.ts` and Makefile",
+    "Fix `a.ts` and makefile",
+    "Fix `a.ts` plus Dockerfile",
+    "Fix `a.ts`, .gitignore",
+    "Fix `a.ts` and `docs/my file.md`",
+  ]) assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
+
+  for (const objective of [
+    "Fix `a.ts` in version 1.2",
+    "Fix `a.ts` and improve compatibility",
+    "Fix `a.ts` for Makefile compatibility",
+  ]) assert.equal((await inferGoalVerification(objective, directory))?.path, a, objective);
+
+  assert.equal((await inferGoalVerification("Fix `./Makefile` and Makefile", directory))?.path, path.join(directory, "Makefile"));
+});
+
+test("changing only a.ts in an a.ts and Makefile goal remains model-reported", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-conventional-partial-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const harness = createHarness();
+  const ctx = createContext();
+  ctx.cwd = directory;
+  const active = await startGoal(harness, ctx, "Fix `a.ts` and Makefile");
+  assert.equal(active.verification, undefined);
+
+  writeFileSync(path.join(directory, "a.ts"), "only a.ts changed");
+  const result = await complete(harness, ctx);
+  assert.equal(result.details.verification, "model-reported");
+  const completed = requiredState(last(harness.appendedEntries));
+  assert.ok(isUnknownRecord(completed.lastDecision));
+  assert.equal(completed.lastDecision.verification, "model-reported");
 });
 
 test("changing one file of a two-file goal completes without file proof", async (t) => {

@@ -14,6 +14,7 @@ import {
   CHECK_LABELS,
 } from "../killeros/change-receipt.ts";
 import { resolveGitFileChanges } from "../killeros/footer.ts";
+import { passiveGitCommand } from "../killeros/passive-git-status.ts";
 
 after(disposeChangeReceipts);
 
@@ -148,6 +149,32 @@ test("Git collection reports only the response delta and cleans its temporary di
   assert.match(status, /preexisting\.txt/u);
   const tempAfter = new Set((await readdir(os.tmpdir())).filter((name) => name.startsWith("killeros-change-receipt-")));
   assert.deepEqual(tempAfter, tempBefore);
+});
+
+test("change receipts ignore inherited repository selectors", async (t) => {
+  const requested = await fixture();
+  const inherited = await fixture();
+  t.after(async () => {
+    disposeChangeReceipts();
+    await Promise.all([requested, inherited].map((root) => rm(root, { recursive: true, force: true })));
+  });
+  const previousGitDirectory = process.env.GIT_DIR;
+  const previousWorkTree = process.env.GIT_WORK_TREE;
+  try {
+    process.env.GIT_DIR = path.join(inherited, ".git");
+    process.env.GIT_WORK_TREE = inherited;
+    const collection = await beginChangeReceipt(requested);
+    await writeFile(path.join(inherited, "clean.txt"), "changed in inherited repository\n");
+
+    assert.deepEqual(await collection.finish(), {
+      state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0,
+    });
+  } finally {
+    if (previousGitDirectory === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = previousGitDirectory;
+    if (previousWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+    else process.env.GIT_WORK_TREE = previousWorkTree;
+  }
 });
 
 test("each receipt discovers the repository that currently owns the working directory", async (t) => {
@@ -793,6 +820,42 @@ test("receipts neither fetch promised blobs nor report verified changes", async 
   ));
 });
 
+test("forced LF worktree changes match Git in footer counts and receipts", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  git(root, "config", "core.autocrlf", "false");
+  const file = path.join(root, "forced.txt");
+  await writeFile(path.join(root, ".gitattributes"), "forced.txt text eol=lf\n");
+  await writeFile(file, "line\n");
+  git(root, "add", ".gitattributes", "forced.txt");
+  git(root, "commit", "--quiet", "-m", "forced LF fixture");
+
+  // Exact bytes stay clean even when Git's index stat cache cannot be used.
+  await utimes(file, new Date(0), new Date(0));
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 0, added: 0, deleted: 0 });
+  const collection = await beginChangeReceipt(root);
+
+  await writeFile(file, "line\r\n");
+
+  assert.equal(git(root, "status", "--porcelain=v1").toString(), " M forced.txt\n");
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 1, added: 0, deleted: 0 });
+  assert.deepEqual(await collection.finish(), {
+    state: "available", totalFiles: 1, additions: 0, deletions: 0,
+    files: [{ kind: "modified", path: "forced.txt", additions: 0, deletions: 0 }], omittedFiles: 0,
+  });
+});
+
+test("passive scans fail closed on incomplete index metadata", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const indexPath = path.join(root, ".git", "index");
+  const index = await readFile(indexPath);
+  await writeFile(indexPath, index.subarray(0, Math.floor(index.length / 2)));
+
+  assert.equal(await resolveGitFileChanges(root), undefined);
+  assert.deepEqual(await (await beginChangeReceipt(root)).finish(), { state: "unavailable", reason: "error" });
+});
+
 test("passive scans keep normalized CRLF checkouts clean and still detect content changes", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -818,12 +881,13 @@ test("passive normalization respects attributes, binary detection, and skip-work
   t.after(() => rm(root, { recursive: true, force: true }));
   git(root, "config", "core.autocrlf", "false");
   await writeFile(path.join(root, ".gitattributes"), [
-    "normalized.txt text eol=crlf", "automatic.txt text=auto", "binary.txt -text",
-    "controls.txt text=auto", "forced.txt text",
+    "normalized.txt text eol=crlf", "automatic.txt text=auto", "automatic-lf.txt text=auto eol=lf",
+    "binary.txt -text", "controls.txt text=auto", "forced.txt text",
   ].join("\n") + "\n");
   const contents = new Map([
-    ["normalized.txt", "text\n"], ["automatic.txt", "text\n"], ["binary.txt", "\0text\n"],
-    ["controls.txt", "\x01text\n"], ["forced.txt", "\0text\n"], ["raw.txt", "text\n"],
+    ["normalized.txt", "text\n"], ["automatic.txt", "text\n"], ["automatic-lf.txt", "text\n"],
+    ["binary.txt", "\0text\n"], ["controls.txt", "\x01text\n"], ["forced.txt", "\0text\n"],
+    ["raw.txt", "text\n"],
   ]);
   for (const [file, content] of contents) await writeFile(path.join(root, file), content);
   git(root, "add", ".");
@@ -832,7 +896,7 @@ test("passive normalization respects attributes, binary detection, and skip-work
   git(root, "update-index", "--skip-worktree", "clean.txt");
   await rm(path.join(root, "clean.txt"));
 
-  assert.deepEqual(await resolveGitFileChanges(root), { modified: 3, added: 0, deleted: 0 });
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 4, added: 0, deleted: 0 });
 });
 
 test("line-ending-only edits remain visible with normalized line counts", async (t) => {
@@ -909,6 +973,32 @@ test("change receipt never runs repository-local locator or Git shims", async (t
     await sentinelAbsent(sentinel);
   } finally {
     process.chdir(previousCwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+});
+
+test("change receipt rejects Git through a repository-local directory link", async (t) => {
+  const root = await fixture();
+  const external = await mkdtemp(path.join(os.tmpdir(), "killeros-receipt-link-target-"));
+  const sentinel = path.join(external, "sentinel");
+  const linkedDirectory = path.join(root, "bin");
+  t.after(() => rm(external, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeReceiptShims(external, sentinel);
+  try {
+    await symlink(external, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
+  } catch (error) {
+    t.skip(`directory links unavailable: ${String(error)}`);
+    return;
+  }
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = linkedDirectory;
+    assert.equal(passiveGitCommand(root), undefined);
+    assert.equal((await (await beginChangeReceipt(root)).finish()).state, "unavailable");
+    await sentinelAbsent(sentinel);
+  } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
   }

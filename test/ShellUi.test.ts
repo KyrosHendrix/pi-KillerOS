@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, last, requireEditor, requiredFactory, theme } from "./ExtensionTestHarness.ts";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { getKeybindings } from "@earendil-works/pi-tui";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolveGitBranch } from "../killeros/shell-ui.ts";
 import { themeTestAdapter } from "./PiTestAdapters.ts";
 
@@ -41,6 +43,33 @@ test("Git branch resolution is asynchronous and bounded", async () => {
   assert.ok(pending instanceof Promise);
   const branch = await pending;
   assert.ok(branch === undefined || branch === "detached" || branch.length > 0);
+});
+
+test("Git branch resolution ignores inherited repository selectors", async () => {
+  const parent = mkdtempSync(path.join(os.tmpdir(), "killeros-shell-git-env-"));
+  const requested = path.join(parent, "requested");
+  const inherited = path.join(parent, "inherited");
+  const outside = path.join(parent, "outside");
+  const previousGitDirectory = process.env.GIT_DIR;
+  try {
+    for (const [repository, branch] of [[requested, "branch-a"], [inherited, "branch-b"]]) {
+      mkdirSync(repository);
+      execFileSync("git", ["init", "-q"], { cwd: repository });
+      writeFileSync(path.join(repository, "tracked.txt"), `${branch}\n`);
+      execFileSync("git", ["add", "."], { cwd: repository });
+      execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: repository });
+      execFileSync("git", ["branch", "-m", branch], { cwd: repository });
+    }
+    mkdirSync(outside);
+    process.env.GIT_DIR = path.join(inherited, ".git");
+
+    assert.equal(await resolveGitBranch(requested), "branch-a");
+    assert.equal(await resolveGitBranch(outside), undefined);
+  } finally {
+    if (previousGitDirectory === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = previousGitDirectory;
+    rmSync(parent, { recursive: true, force: true });
+  }
 });
 
 test("untrusted projects do not resolve a Git branch", async () => {
