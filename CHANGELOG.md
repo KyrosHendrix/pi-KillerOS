@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevented single-file goal proof from masking additional filenames that extend version or Node.js prose. Goal parsing now keeps spaces and trailing punctuation in quoted paths and matches exact Node.js prose case-insensitively.
+
 ## [2.1.32] - 2026-09-24
 
 ### Fixed

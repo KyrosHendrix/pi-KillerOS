@@ -415,6 +415,7 @@ test("goals naming several files do not bind single-file proof", async (t) => {
     `Fix \`${first}\` and \`${second}\``,
     `Fix \`${first}\`, \`${second}\``,
     `Fix \`${first}\` and "${second}"`,
+    `Fix \`${first}\` and ${second}`,
     `Update \`${first}\` and update \`${second}\``,
     "Fix `a.ts` and src/b.ts",
     "Fix `README` and `LICENSE`",
@@ -427,8 +428,65 @@ test("goals naming several files do not bind single-file proof", async (t) => {
   }
 });
 
+test("only exact dotted prose exceptions retain single-file goal proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-dotted-prose-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const objective of [
+    "Fix `a.ts` for Node.js",
+    "Fix `a.ts` for node.js",
+    "Fix `a.ts` in version 2.1.32",
+    "Fix `a.ts` and Node.js compatibility",
+    "Fix `a.ts` and node.js compatibility",
+  ]) {
+    assert.equal((await inferGoalVerification(objective, directory))?.path, path.join(directory, "a.ts"), objective);
+  }
+  for (const objective of [
+    "Fix `a.ts` and version 2.1.32.ts",
+    "Fix `a.ts` for Node.js.ts",
+    "Fix `a.ts` for node.js.ts",
+    "Fix `a.ts` and Node.js compatibility.ts",
+    "Fix `a.ts` and node.js compatibility.ts",
+    "Fix `a.ts` in src/b.ts",
+    "Fix `a.ts` for Node.js and b.ts",
+    "Fix `a.ts` and Node.js",
+    "Fix `a.ts` and node.js",
+    "Fix `a.ts` and `Node.js` compatibility",
+    "Fix `a.ts` and `node.js` compatibility",
+    "Fix `a.ts` and src/Node.js compatibility",
+    "Fix `a.ts` and src/node.js compatibility",
+  ]) {
+    assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
+  }
+});
+
+test("quoted file mentions preserve trailing punctuation for path identity", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-quoted-identity-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  assert.equal(await inferGoalVerification("Fix `a.ts` and `a.ts.`", directory), undefined);
+  assert.equal(await inferGoalVerification("Fix `a.ts` and `my file.ts`", directory), undefined);
+  assert.equal(await inferGoalVerification('Fix `a.ts` and "my file"', directory), undefined);
+  assert.equal(await inferGoalVerification("Fix `my file.ts` and `my file.ts.`", directory), undefined);
+  for (const objective of [
+    "Fix `a.ts` and `a.ts`",
+    "Fix `a.ts` and `./a.ts`",
+    "Fix `a.ts` and update `./a.ts`",
+    "Fix `my file.ts` and `./my file.ts`",
+  ]) {
+    const expected = objective.includes("my file") ? "my file.ts" : "a.ts";
+    assert.equal((await inferGoalVerification(objective, directory))?.path, path.join(directory, expected), objective);
+  }
+
+  const requested = path.join(directory, "requested.ts");
+  assert.equal((await inferGoalVerification(`Fix \`${requested}\` and ${requested}]`, directory))?.path, requested);
+  assert.equal(await inferGoalVerification(`Fix \`${requested}]\` and ${requested}]`, directory), undefined);
+
+  const parenthesized = path.join(directory, "requested(1)");
+  assert.equal((await inferGoalVerification(`Fix \`${parenthesized}\` and ${parenthesized}`, directory))?.path, parenthesized);
+});
+
 test("unquoted additional files cannot gain single-file proof", async (t) => {
-  for (const additional of ["plus b.ts", "along with b.ts", "and b.ts", "plus ./b.ts", "plus ../b.ts"]) {
+  for (const additional of ["plus b.ts", "along with b.ts", "and b.ts", "and b.ts.", "in b.ts", "using b.ts", "plus ./b.ts", "plus ../b.ts"]) {
     await t.test(additional, async (subtest) => {
       const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-unquoted-multi-"));
       subtest.after(() => rmSync(directory, { recursive: true, force: true }));

@@ -144,11 +144,19 @@ function isAbsoluteFilePath(value: string): boolean {
 }
 
 function stripUnquotedPathPunctuation(value: string): string {
-  const pathWithoutMarks = value.replace(/[.!?]+$/u, "");
-  const trailingClosers = pathWithoutMarks.match(/\)+$/u)?.[0].length ?? 0;
-  const unmatchedClosers = Math.max(0, pathWithoutMarks.split(")").length - pathWithoutMarks.split("(").length);
-  const punctuationLength = Math.min(trailingClosers, unmatchedClosers);
-  return pathWithoutMarks.slice(0, punctuationLength ? -punctuationLength : undefined);
+  let stripped = value;
+  while (true) {
+    const withoutMarks = stripped.replace(/[.,;:!?]+$/u, "");
+    if (withoutMarks !== stripped) {
+      stripped = withoutMarks;
+      continue;
+    }
+    const closer = stripped.at(-1);
+    const opener = closer === ")" ? "(" : closer === "]" ? "[" : closer === "}" ? "{" : undefined;
+    if (closer === undefined || opener === undefined
+      || stripped.split(closer).length <= stripped.split(opener).length) return stripped;
+    stripped = stripped.slice(0, -1);
+  }
 }
 
 function isGoalFileVerification(value: unknown): value is GoalFileVerification {
@@ -348,41 +356,52 @@ export async function captureGoalFileBaseline(
 const GOAL_URL_PATTERN = /(?:https?|file):\/\/[^\s"'`]+/giu;
 const GOAL_QUOTED_PATTERN = /`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'/gu;
 const GOAL_ABSOLUTE_PATTERN = /(?:^|[\s"'`(\[{,;])([A-Za-z]:[\\/][^\s,;'"`]+|\/[^\s,;'"`]+)/gu;
-const GOAL_LIST_FILE_PATTERN = /(?:\band\b|\bor\b|[,;&+])\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b)/giu;
+const GOAL_LIST_FILE_PATTERN = /(?:\band\b|\bor\b|\bplus\b|\balong\s+with\b|[,;&+])\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b)/giu;
 const GOAL_RELATIVE_FILE_PATTERN = /(?:^|[\s"'`(\[{,;])((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b/gu;
 
 function isQuotedGoalFileMention(raw: string): boolean {
   const value = raw.trim();
-  if (!value || /[\s\p{Cc}]/u.test(value) || /^(?:https?|file):\/\//iu.test(value) || /[\\/]$/u.test(value)) return false;
+  if (!value || /\p{Cc}/u.test(value) || /^(?:https?|file):\/\//iu.test(value) || /[\\/]$/u.test(value)) return false;
   return /[\/\\.:]/u.test(value);
 }
 
-function normalizeGoalFileMention(raw: string, cwd: string): string | undefined {
-  const value = raw.trim().replace(/[.,;:!?)\]}]+$/u, "");
-  if (!value || /[\s\p{Cc}]/u.test(value)) return undefined;
+function normalizeGoalFileMention(raw: string, cwd: string, quoted = false): string | undefined {
+  const trimmed = raw.trim();
+  const value = quoted ? trimmed : stripUnquotedPathPunctuation(trimmed);
+  if (!value || /\p{Cc}/u.test(value) || !quoted && /\s/u.test(value)) return undefined;
   const absolute = path.isAbsolute(value) || path.win32.isAbsolute(value) ? value : path.resolve(cwd, value);
   if (!isAbsoluteFilePath(absolute)) return undefined;
   return process.platform === "win32" ? absolute.toLowerCase() : absolute;
 }
 
 /** Counts distinct path-shaped mentions so several files cannot bind proof to one. */
-function countGoalTargetFiles(objective: string, cwd: string, target: string): number {
-  const prose = objective.replace(GOAL_URL_PATTERN, " ");
+function countGoalTargetFiles(objective: string, cwd: string, target: string, targetQuoted: boolean): number {
+  const source = objective.replace(GOAL_URL_PATTERN, " ");
+  // ponytail: Only these exact prose forms are excluded; quote ambiguous bare filenames for exact proof.
+  const prose = source.replace(GOAL_QUOTED_PATTERN, " ")
+    .replace(/(?<![A-Za-z0-9_.\\/-])version\s+\d+(?:\.\d+)+(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu, " ")
+    .replace(/(?<![A-Za-z0-9_.\\/-])for\s+Node\.js(?!\s+compatibility\.[A-Za-z0-9])(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))|(?<![A-Za-z0-9_.\\/-])Node\.js\s+compatibility(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu, " ");
   const mentions = new Set<string>();
-  const add = (raw: string): void => {
-    const normalized = normalizeGoalFileMention(raw, cwd);
+  const add = (raw: string, quoted = false): void => {
+    const normalized = normalizeGoalFileMention(raw, cwd, quoted);
     if (normalized) mentions.add(normalized);
   };
-  add(target);
-  for (const match of prose.matchAll(GOAL_QUOTED_PATTERN)) {
+  add(target, targetQuoted);
+  for (const match of source.matchAll(GOAL_QUOTED_PATTERN)) {
     const raw = match[1] ?? match[2] ?? match[3] ?? "";
-    if (isQuotedGoalFileMention(raw)) add(raw);
+    if (isQuotedGoalFileMention(raw)) add(raw, true);
+  }
+  for (const match of source.matchAll(GOAL_LIST_FILE_PATTERN)) {
+    const quoted = match[1] ?? match[2] ?? match[3];
+    if (quoted !== undefined) add(quoted, true);
   }
   for (const match of prose.matchAll(GOAL_ABSOLUTE_PATTERN)) {
     if (match[1]) add(stripUnquotedPathPunctuation(match[1].trim()));
   }
-  for (const match of prose.matchAll(GOAL_LIST_FILE_PATTERN)) add(match[1] ?? match[2] ?? match[3] ?? match[4] ?? "");
-  for (const match of prose.replace(GOAL_QUOTED_PATTERN, " ").matchAll(GOAL_RELATIVE_FILE_PATTERN)) {
+  for (const match of prose.matchAll(GOAL_LIST_FILE_PATTERN)) {
+    if (match[4]) add(match[4]);
+  }
+  for (const match of prose.matchAll(GOAL_RELATIVE_FILE_PATTERN)) {
     if (match[1]) add(match[1]);
   }
   return mentions.size;
@@ -390,30 +409,40 @@ function countGoalTargetFiles(objective: string, cwd: string, target: string): n
 
 /** Captures one explicit output path so goal completion can verify its creation or modification. */
 export async function inferGoalVerification(objective: string, cwd: string): Promise<GoalFileVerification | undefined> {
-  const candidates: string[] = [];
+  const candidates: Array<{ raw: string; quoted: boolean }> = [];
   const destination = /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b\s+(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
   for (const match of objective.matchAll(destination)) {
     const quoted = match[1] ?? match[2] ?? match[3];
-    candidates.push(quoted !== undefined ? quoted.trim() : stripUnquotedPathPunctuation((match[4] ?? "").trim()));
+    candidates.push({
+      raw: quoted !== undefined ? quoted.trim() : stripUnquotedPathPunctuation((match[4] ?? "").trim()),
+      quoted: quoted !== undefined,
+    });
   }
   const direct = /\b(?:update|edit|fix|refactor|migrate)\s+(`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)')/giu;
   for (const match of objective.matchAll(direct)) {
     const quoted = match[2] ?? match[3] ?? match[4];
-    if (quoted !== undefined) candidates.push(quoted.trim());
+    if (quoted !== undefined) candidates.push({ raw: quoted.trim(), quoted: true });
   }
-  const resolved: string[] = [];
-  for (const raw of candidates) {
-    if (!raw || /^(?:https?|file):\/\//iu.test(raw) || /[\\\/]$/u.test(raw)) continue;
-    const absolute = path.isAbsolute(raw) || path.win32.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
-    if (isAbsoluteFilePath(absolute)) resolved.push(absolute);
+  const resolved = new Map<string, { filePath: string; quoted: boolean }>();
+  for (const candidate of candidates) {
+    if (!candidate.raw || /^(?:https?|file):\/\//iu.test(candidate.raw) || /[\\\/]$/u.test(candidate.raw)) continue;
+    const absolute = path.isAbsolute(candidate.raw) || path.win32.isAbsolute(candidate.raw)
+      ? candidate.raw
+      : path.resolve(cwd, candidate.raw);
+    if (!isAbsoluteFilePath(absolute)) continue;
+    const identity = process.platform === "win32" ? absolute.toLowerCase() : absolute;
+    const existing = resolved.get(identity);
+    resolved.set(identity, {
+      filePath: existing?.filePath ?? absolute,
+      quoted: candidate.quoted || existing?.quoted === true,
+    });
   }
-  const unique = [...new Set(resolved)];
-  if (unique.length !== 1) return undefined;
+  if (resolved.size !== 1) return undefined;
   // A goal that names several files must not verify from one file alone.
   // Repeated references to the same file count as one target.
-  const filePath = unique[0];
-  if (countGoalTargetFiles(objective, cwd, filePath) > 1) return undefined;
-  return { kind: "file", path: filePath, baseline: await captureGoalFileBaseline(filePath) };
+  const target = resolved.values().next().value;
+  if (target === undefined || countGoalTargetFiles(objective, cwd, target.filePath, target.quoted) > 1) return undefined;
+  return { kind: "file", path: target.filePath, baseline: await captureGoalFileBaseline(target.filePath) };
 }
 
 export async function verifyGoalDeliverable(verification: GoalFileVerification): Promise<void> {
