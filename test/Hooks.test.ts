@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { HookSpawnProcess } from "../killeros/hooks.ts";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { PassThrough } from "node:stream";
 import { createHarness, createTuiContext, emitSequentially, getHandlers, last, removeDirectoryEventually, resultReason, waitFor } from "./ExtensionTestHarness.ts";
 import { execFileSync, spawn } from "node:child_process";
@@ -700,44 +700,50 @@ test("Windows hook cleanup survives the shell exiting before tree termination", 
   }
 });
 
-test("Windows hook cleanup does not depend on taskkill being in PATH", { skip: process.platform !== "win32" }, async () => {
+test("Windows hook cleanup kills the shell and its child without taskkill in PATH", { skip: process.platform !== "win32" }, async () => {
   const originalPath = process.env.PATH;
-  let shell: ReturnType<HookSpawnProcess> | undefined;
+  const command = `"${process.execPath}" -e "console.log(process.pid);setInterval(() => {}, 1000)"`;
+  const shell = spawn(command, { shell: true, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  let hookPid: number | undefined;
   try {
-    const resultPromise = executeHook({
-      command: `"${process.execPath}" -e "setTimeout(() => {}, 10000)"`,
+    // Start the timeout only after the child exists, rather than racing Node startup.
+    const output: unknown = (await once(shell.stdout, "data", { signal: AbortSignal.timeout(10_000) }))[0];
+    hookPid = Number(Buffer.isBuffer(output) ? output.toString("utf8").trim() : "");
+    assert.ok(Number.isSafeInteger(hookPid) && hookPid > 0);
+    assert.ok(shell.pid);
+    process.env.PATH = "";
+
+    const result = await executeHook({
+      command,
       cwd: process.cwd(),
       environment: {},
       timeoutMs: 100,
-      spawnProcess: (command, options) => {
-        const spawned = spawn(command, options);
-        shell = spawned;
-        return spawned;
-      },
+      spawnProcess: () => shell,
     });
-    process.env.PATH = "";
-
-    const result = await resultPromise;
     assert.equal(result.timedOut, true);
-    assert.equal(result.exitUnconfirmed, false);
-    const pid = shell?.pid;
-    assert.ok(pid);
-    await waitFor(() => {
-      try {
-        process.kill(pid, 0);
-        return false;
-      } catch {
-        return true;
-      }
-    });
+    assert.equal(result.code, 124);
+    // taskkill may report uncertainty when the shell exits during tree cleanup.
+    // Check both processes: killing only the shell would leave the hook running.
+    for (const pid of [shell.pid, hookPid]) {
+      await waitFor(() => {
+        try {
+          process.kill(pid, 0);
+          return false;
+        } catch (error) {
+          assert.ok(error instanceof Error && "code" in error && error.code === "ESRCH");
+          return true;
+        }
+      });
+    }
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
-    if (shell?.pid) {
+    for (const pid of [shell.pid, hookPid]) {
+      if (!pid) continue;
       try {
-        execFileSync("taskkill", ["/pid", String(shell.pid), "/T", "/F"], { stdio: "ignore" });
+        execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
       } catch {
-        // The expected fallback already terminated the process.
+        // The regression passes when cleanup already terminated both processes.
       }
     }
   }

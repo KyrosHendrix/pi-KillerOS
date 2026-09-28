@@ -4,12 +4,17 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the minimum supported Pi version and locked Pi development packages from 0.85.0 to 0.87.1, with matching CI compatibility checks.
+
 ### Added
 
 - Added a Windows CI job on Node.js 22.19.0 that runs the full quality suite, with a repository contract protecting the job's required checks.
 
 ### Fixed
 
+- Made the Windows hook cleanup test wait for its child to start and verify that both processes terminate, avoiding false failures when `taskkill` cannot confirm an already-finished cleanup.
 - Showed stable provider-reported model IDs on settled receipts when they differ from the selected alias, including GitHub Copilot Claude models.
 - Reported CRLF worktree content as modified when indexed attributes require `eol=lf`, matching Git in footer counts and change receipts.
 - Kept quoted prose goal destinations on model-reported completion; inferred file proof now requires a path-shaped destination.

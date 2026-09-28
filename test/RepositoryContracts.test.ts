@@ -121,12 +121,12 @@ test("skill-specific workflow gating is no longer part of KillerOS", () => {
 
 test("peer ranges enforce the tested Pi floor", () => {
   assert.deepEqual(packageJson.peerDependencies, {
-    "@earendil-works/pi-ai": ">=0.85.0 <1",
-    "@earendil-works/pi-coding-agent": ">=0.85.0 <1",
-    "@earendil-works/pi-tui": ">=0.85.0 <1",
+    "@earendil-works/pi-ai": ">=0.87.1 <1",
+    "@earendil-works/pi-coding-agent": ">=0.87.1 <1",
+    "@earendil-works/pi-tui": ">=0.87.1 <1",
     typebox: ">=1.1.38 <2",
   });
-  assert.match(readme, /Pi\s+`?0\.85\.0`? or later within the 0\.x release line/u);
+  assert.match(readme, /Pi\s+`?0\.87\.1`? or later within the 0\.x release line/u);
 });
 
 test("goal state and question UI stay separate from host wiring", () => {
@@ -178,7 +178,7 @@ test("CI runs the full quality suite on Windows at the Node.js floor", () => {
 test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.match(ci, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- dev/u);
   assert.match(ci, /Pi latest compatibility/u);
-  assert.match(ci, /npm view "@earendil-works\/pi-coding-agent@>=0\.85\.0 <1" version/u);
+  assert.match(ci, /npm view "@earendil-works\/pi-coding-agent@>=0\.87\.1 <1" version/u);
   assert.match(ci, /dependencies\.@earendil-works\/pi-ai/u);
   assert.match(ci, /dependencies\.@earendil-works\/pi-tui/u);
   assert.match(ci, /@earendil-works\/pi-ai@\$PI_AI_RANGE/u);
@@ -186,10 +186,10 @@ test("CI checks the locked Pi floor and latest matched Pi packages", () => {
   assert.match(ci, /@earendil-works\/pi-server@\$PI_VERSION/u);
   assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
   assert.match(ci, /--package-lock=false/u);
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "0.85.0");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.85.0");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-server"], "0.85.0");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "0.85.0");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "0.87.1");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "0.87.1");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-server"], "0.87.1");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "0.87.1");
 });
 
 test("GitHub releases require green current main and consistent package provenance", () => {
