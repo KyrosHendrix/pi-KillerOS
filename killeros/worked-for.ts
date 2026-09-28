@@ -332,8 +332,8 @@ function receiptModelName(
   model: ExtensionContext["model"],
 ): string | undefined {
   if (settled.modelMismatch || settled.modelProvider === undefined || settled.modelId === undefined) return undefined;
-  if (!model || model.provider !== settled.modelProvider || model.id !== settled.modelId) return undefined;
-  const resolved = modelDisplayName(model);
+  if (!model || model.provider !== settled.modelProvider) return undefined;
+  const resolved = modelDisplayName({ id: settled.modelId });
   if (!resolved || resolved.length > 200) return undefined;
   return resolved;
 }
@@ -407,16 +407,16 @@ export function registerWorkedFor(
     if (ctx.mode !== "tui" || !active) return;
     if (event.message.role !== "assistant") return;
     const provider: unknown = event.message.provider;
-    const modelId: unknown = event.message.model;
-    if (typeof provider !== "string" || typeof modelId !== "string") active.modelMismatch = true;
+    const requestedModelId: unknown = event.message.model;
+    const responseModelId: unknown = event.message.responseModel;
+    if (typeof provider !== "string" || typeof requestedModelId !== "string"
+      || responseModelId !== undefined && typeof responseModelId !== "string") active.modelMismatch = true;
     else {
+      const modelId = responseModelId ?? requestedModelId;
       if (active.modelProvider === undefined || active.modelId === undefined) {
         active.modelProvider = provider;
         active.modelId = modelId;
       } else if (active.modelProvider !== provider || active.modelId !== modelId) {
-        active.modelMismatch = true;
-      }
-      if (event.message.responseModel !== undefined && event.message.responseModel !== modelId) {
         active.modelMismatch = true;
       }
     }

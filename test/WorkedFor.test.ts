@@ -389,7 +389,26 @@ test("mixed-model continuations omit attribution and the next run resets it", as
   assert.equal(harness.appendedEntries[1]?.data.model, "model-id");
 });
 
-test("a differing provider response model prevents attribution for the whole run", async () => {
+test("a stable provider response model is attributed by its concrete id", async () => {
+  const harness = createWorkedForHarness();
+  const message = {
+    role: "assistant",
+    provider: "github-copilot",
+    model: "claude-opus-5.5",
+    responseModel: "claude-opus-5-5",
+    usage: { output: 0 },
+    stopReason: "stop" as const,
+  };
+  harness.setModel({ provider: "github-copilot", id: "claude-opus-5.5", name: "Claude Opus 5.5" });
+  await harness.emit("agent_start");
+  await harness.emit("message_end", { message });
+  await harness.emit("message_end", { message });
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await harness.emit("agent_settled");
+  assert.equal(harness.appendedEntries[0]?.data.model, "claude-opus-5-5");
+});
+
+test("mixed concrete response models prevent attribution for the whole run", async () => {
   const harness = createWorkedForHarness();
   const message = { role: "assistant", provider: "openai", model: "model-id", usage: { output: 0 }, stopReason: "stop" as const };
   harness.setModel({ provider: "openai", id: "model-id", name: "Model Name" });

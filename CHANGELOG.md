@@ -10,6 +10,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Showed stable provider-reported model IDs on settled receipts when they differ from the selected alias, including GitHub Copilot Claude models.
 - Reported CRLF worktree content as modified when indexed attributes require `eol=lf`, matching Git in footer counts and change receipts.
 - Kept quoted prose goal destinations on model-reported completion; inferred file proof now requires a path-shaped destination.
 - Isolated passive footer, change-receipt, and startup branch Git scans from inherited repository-selection environment variables.
