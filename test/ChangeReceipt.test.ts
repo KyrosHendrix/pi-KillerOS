@@ -422,6 +422,82 @@ test("unborn repositories produce receipts", async (t) => {
   });
 });
 
+test("receipts refresh a cached baseline after HEAD changes between responses", async (t) => {
+  const root = await fixture();
+  t.after(async () => {
+    disposeChangeReceipts();
+    await rm(root, { recursive: true, force: true });
+  });
+  assert.equal((await (await beginChangeReceipt(root)).finish()).state, "available");
+  git(root, "commit", "--quiet", "--allow-empty", "-m", "between responses");
+
+  const collection = await beginChangeReceipt(root);
+  await writeFile(path.join(root, "clean.txt"), "clean\nchanged\n");
+  assert.deepEqual(await collection.finish(), {
+    state: "available", totalFiles: 1, additions: 1, deletions: 0,
+    files: [{ kind: "modified", path: "clean.txt", additions: 1, deletions: 0 }], omittedFiles: 0,
+  });
+});
+
+test("passive scans respect symlink placeholders when core.symlinks is false", async (t) => {
+  const root = await fixture();
+  t.after(async () => {
+    disposeChangeReceipts();
+    await rm(root, { recursive: true, force: true });
+  });
+  git(root, "config", "core.symlinks", "false");
+  const link = path.join(root, "link");
+  await writeFile(link, "clean.txt");
+  const id = git(root, "hash-object", "-w", "link").toString().trim();
+  git(root, "update-index", "--add", "--cacheinfo", `120000,${id},link`);
+  git(root, "commit", "--quiet", "-m", "symlink placeholder");
+  assert.equal(git(root, "status", "--porcelain").toString(), "");
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 0, added: 0, deleted: 0 });
+
+  const collection = await beginChangeReceipt(root);
+  await writeFile(link, "dirty.txt");
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 1, added: 0, deleted: 0 });
+  assert.deepEqual(await collection.finish(), {
+    state: "available", totalFiles: 1, additions: 1, deletions: 1,
+    files: [{ kind: "modified", path: "link", additions: 1, deletions: 1 }], omittedFiles: 0,
+  });
+});
+
+test("receipts refresh cached Git settings between responses", async (t) => {
+  const root = await fixture();
+  t.after(async () => {
+    disposeChangeReceipts();
+    await rm(root, { recursive: true, force: true });
+  });
+  git(root, "config", "core.symlinks", "true");
+  await writeFile(path.join(root, "link"), "clean.txt");
+  const id = git(root, "hash-object", "-w", "link").toString().trim();
+  git(root, "update-index", "--add", "--cacheinfo", `120000,${id},link`);
+  git(root, "commit", "--quiet", "-m", "symlink placeholder");
+  assert.equal((await (await beginChangeReceipt(root)).finish()).state, "available");
+
+  git(root, "config", "core.symlinks", "false");
+  assert.deepEqual(await (await beginChangeReceipt(root)).finish(), {
+    state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0,
+  });
+});
+
+test("passive scans respect core.filemode=false", { skip: process.platform === "win32" }, async (t) => {
+  const root = await fixture();
+  t.after(async () => {
+    disposeChangeReceipts();
+    await rm(root, { recursive: true, force: true });
+  });
+  git(root, "config", "core.filemode", "false");
+  const collection = await beginChangeReceipt(root);
+  await chmod(path.join(root, "clean.txt"), 0o755);
+  assert.equal(git(root, "status", "--porcelain").toString(), "");
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 0, added: 0, deleted: 0 });
+  assert.deepEqual(await collection.finish(), {
+    state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0,
+  });
+});
+
 test("a HEAD update without worktree events invalidates the response receipt", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));

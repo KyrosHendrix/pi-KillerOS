@@ -22,7 +22,29 @@ export type PassiveWorktreeFile = {
 export type PassiveWorktreeSnapshot = {
   head: string;
   files: Map<string, PassiveWorktreeFile>;
+  fileMode: boolean;
+  symlinks: boolean;
 };
+
+export async function passiveWorktreeSettings(runGit: PassiveGitRunner): Promise<Pick<PassiveWorktreeSnapshot, "fileMode" | "symlinks">> {
+  const [fileMode, symlinks] = await Promise.all([
+    runGit(["config", "--type=bool", "--default", "true", "--get", "core.filemode"]),
+    runGit(["config", "--type=bool", "--default", "true", "--get", "core.symlinks"]),
+  ]);
+  return { fileMode: decode(fileMode).trim() === "true", symlinks: decode(symlinks).trim() === "true" };
+}
+
+export function passiveWorktreeMode(
+  actual: string,
+  indexed: string | undefined,
+  settings: Pick<PassiveWorktreeSnapshot, "fileMode" | "symlinks">,
+): string {
+  if (actual === "100644" || actual === "100755") {
+    if (indexed === "120000" && !settings.symlinks) return indexed;
+    if ((indexed === "100644" || indexed === "100755") && !settings.fileMode) return indexed;
+  }
+  return actual;
+}
 
 type IndexEntry = {
   mode: string;
@@ -321,12 +343,13 @@ function matchesIndex(content: Buffer, entry: IndexEntry, autoCrlf: string): boo
  * No Git command in this path asks Git to convert worktree content, so clean and process filters cannot start.
  */
 export async function inspectWorktreeWithoutFilters(root: string, runGit: PassiveGitRunner): Promise<PassiveWorktreeSnapshot> {
-  const [indexOutput, untrackedOutput, resolvedHead, autoCrlfOutput] = await Promise.all([
+  const [indexOutput, untrackedOutput, resolvedHead, autoCrlfOutput, settings] = await Promise.all([
     runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--cached", "--debug", "-z", "--full-name",
       "--format=%(objectmode) %(objectname) %(stage)%x09%(eolattr)%x09%(path)"]),
     runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--others", "--exclude-standard", "-z", "--full-name"]),
     runGit(["rev-parse", "--verify", "HEAD"]).then(decode, () => ""),
     runGit(["config", "--type=bool-or-str", "--default", "false", "--get", "core.autocrlf"]),
+    passiveWorktreeSettings(runGit),
   ]);
   const autoCrlf = decode(autoCrlfOutput).trim().toLowerCase();
   const head = resolvedHead.trim();
@@ -347,7 +370,7 @@ export async function inspectWorktreeWithoutFilters(root: string, runGit: Passiv
     if (indexEntry && !indexEntry.skipWorktree) {
       try {
         const state = await readFileState(root, indexEntry, filePath, WORKTREE_CONTENT_LIMIT - contentBytes);
-        mode = process.platform === "win32" && indexEntry.mode !== "120000" ? indexEntry.mode : state.mode;
+        mode = passiveWorktreeMode(state.mode, indexEntry.mode, settings);
         content = state.content;
         if (content) contentBytes += content.length;
         worktreeChanged = !state.statsMatch && (mode !== indexEntry.mode || !content || !matchesIndex(content, indexEntry, autoCrlf));
@@ -375,5 +398,5 @@ export async function inspectWorktreeWithoutFilters(root: string, runGit: Passiv
     const previous = files.get(filePath);
     files.set(filePath, { ...previous, path: filePath, mode: state.mode, content: state.content, contentObjectId: undefined });
   }
-  return { head: head || "(initial)", files };
+  return { head: head || "(initial)", files, ...settings };
 }

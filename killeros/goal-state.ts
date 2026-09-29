@@ -383,11 +383,20 @@ function goalPathIdentity(filePath: string): string {
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
+function absoluteGoalFilePath(value: string, cwd: string): string {
+  if (path.isAbsolute(value) || path.win32.isAbsolute(value)) return value;
+  const nativePath = process.platform === "win32" ? value.replaceAll("/", "\\") : value;
+  // Resolving parent segments lexically can select a different file across a directory symlink.
+  return nativePath.split(path.sep).includes("..")
+    ? `${path.resolve(cwd)}${path.sep}${nativePath}`
+    : path.resolve(cwd, value);
+}
+
 function normalizeGoalFileMention(raw: string, cwd: string, quoted = false): string | undefined {
   const trimmed = raw.trim();
   const value = quoted ? trimmed : stripUnquotedPathPunctuation(trimmed);
   if (!value || /\p{Cc}/u.test(value) || !quoted && /\s/u.test(value)) return undefined;
-  const absolute = path.isAbsolute(value) || path.win32.isAbsolute(value) ? value : path.resolve(cwd, value);
+  const absolute = absoluteGoalFilePath(value, cwd);
   if (!isAbsoluteFilePath(absolute)) return undefined;
   return goalPathIdentity(absolute);
 }
@@ -449,7 +458,7 @@ export async function inferGoalVerification(objective: string, cwd: string): Pro
     if (!value || /\p{Cc}/u.test(value)) continue;
     const alreadyAbsolute = path.isAbsolute(value) || path.win32.isAbsolute(value);
     if (!alreadyAbsolute && URL.canParse(value)) continue;
-    const absolute = alreadyAbsolute ? value : path.resolve(cwd, value);
+    const absolute = absoluteGoalFilePath(value, cwd);
     const identity = goalPathIdentity(absolute);
     operands.add(identity);
     if (!isPathShapedGoalCandidate(candidate.raw) || !isAbsoluteFilePath(absolute)) continue;

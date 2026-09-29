@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, watch } from "node:fs";
-import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, type PassiveWorktreeFile as DirtyFile } from "./passive-git-status.ts";
+import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, passiveWorktreeMode, passiveWorktreeSettings, type PassiveWorktreeFile as DirtyFile, type PassiveWorktreeSnapshot } from "./passive-git-status.ts";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
 import { createInflate } from "node:zlib";
@@ -176,7 +176,7 @@ async function readBoundedFile(filePath: string, limit: number): Promise<Buffer>
   }
 }
 
-type Snapshot = { head: string; files: Map<string, DirtyFile> };
+type Snapshot = PassiveWorktreeSnapshot;
 type RepositoryMonitor = {
   changedPaths: Set<string>;
   inUse: boolean;
@@ -218,7 +218,11 @@ async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: r
     try {
       const absolutePath = path.join(repo.root, ...filePath.split("/"));
       const stats = await lstat(absolutePath);
-      const mode = stats.isSymbolicLink() ? "120000" : stats.mode & 0o111 ? "100755" : "100644";
+      const mode = passiveWorktreeMode(
+        stats.isSymbolicLink() ? "120000" : stats.mode & 0o111 ? "100755" : "100644",
+        previous.indexMode,
+        baseline,
+      );
       const content = stats.isSymbolicLink()
         ? Buffer.from(await readlink(absolutePath))
         : await readBoundedFile(absolutePath, SNAPSHOT_CONTENT_LIMIT - totalBytes);
@@ -230,7 +234,7 @@ async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: r
       files.set(filePath, { ...previous, mode: undefined, content: undefined });
     }
   }
-  return { head: baseline.head, files };
+  return { ...baseline, files };
 }
 
 async function currentHead(repo: Repository): Promise<string> {
@@ -262,7 +266,7 @@ async function refreshSnapshot(monitor: RepositoryMonitor, observedPaths: readon
     if (observes(filePath, observedPaths)) files.delete(filePath);
   }
   for (const [filePath, file] of scoped.files) files.set(filePath, file);
-  return { head: scoped.head, files };
+  return { ...scoped, files };
 }
 
 function createMonitor(repo: Repository, initialSnapshot: Snapshot): RepositoryMonitor {
@@ -626,7 +630,14 @@ export async function beginChangeReceipt(cwd: string, trusted = true): Promise<C
     const idleChanges = [...monitor.changedPaths];
     monitor.changedPaths.clear();
     try {
-      monitor.snapshot = await refreshSnapshot(monitor, idleChanges);
+      const [head, settings] = await Promise.all([
+        currentHead(repo),
+        passiveWorktreeSettings((args) => runGit(repo.root, args)),
+      ]);
+      monitor.snapshot = head !== monitor.snapshot.head
+        || settings.fileMode !== monitor.snapshot.fileMode || settings.symlinks !== monitor.snapshot.symlinks
+        ? await snapshot(repo)
+        : await refreshSnapshot(monitor, idleChanges);
     } catch (error) {
       discardMonitor(monitor);
       throw error;

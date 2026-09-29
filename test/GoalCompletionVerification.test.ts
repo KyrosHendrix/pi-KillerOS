@@ -411,9 +411,9 @@ test("only path-shaped quoted candidates bind file proof", async (t) => {
     ["docs/report.md", path.resolve(directory, "docs/report.md")],
     ["report.md", path.resolve(directory, "report.md")],
     ["./summary", path.resolve(directory, "./summary")],
-    ["../summary", path.resolve(directory, "../summary")],
+    ["../summary", `${directory}${path.sep}..${path.sep}summary`],
     [".\\summary", path.resolve(directory, ".\\summary")],
-    ["..\\summary", path.resolve(directory, "..\\summary")],
+    ["..\\summary", `${directory}${path.sep}..\\summary`],
     ["docs/summary", path.resolve(directory, "docs/summary")],
     ["docs\\summary", path.resolve(directory, "docs\\summary")],
     [".gitignore", path.resolve(directory, ".gitignore")],
@@ -519,6 +519,29 @@ test("absolute parent traversal remains distinct without filesystem proof", asyn
     `Fix "${throughParent}" and update "${direct}"`,
     `Fix "${direct}" and "${throughParent}"`,
   ]) assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
+});
+
+test("relative parent traversal cannot collapse distinct goal targets", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-relative-parent-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const objective of [
+    'Fix "link/../a.ts" and update "a.ts"',
+    'Fix "a.ts" and "link/../a.ts"',
+    'Fix "a.ts" and link/../a.ts',
+  ]) assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
+});
+
+test("relative goal proof preserves parent traversal through directory links", { skip: process.platform === "win32" }, async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-relative-link-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(path.join(directory, "target", "child"), { recursive: true });
+  symlinkSync(path.join(directory, "target", "child"), path.join(directory, "link"), "dir");
+  writeFileSync(path.join(directory, "target", "a.ts"), "actual target");
+  writeFileSync(path.join(directory, "a.ts"), "different file");
+  const verification = await inferGoalVerification('Fix "link/../a.ts"', directory);
+  assert.ok(verification);
+  assert.deepEqual(verification.baseline, await captureGoalFileBaseline(path.join(directory, "target", "a.ts")));
+  assert.equal(readFileSync(verification.path, "utf8"), "actual target");
 });
 
 test("recognized operand scope is independent of clause order and file existence", async (t) => {

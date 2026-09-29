@@ -14,6 +14,10 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Removed the stale `undici` override so development and CI installs use Pi's patched 8.10.2 dependency, resolving GHSA-3wwx-pv8p-q78v.
+- Refreshed cached change-receipt baselines when `HEAD`, `core.filemode`, or `core.symlinks` changes between responses, while still rejecting `HEAD` changes made during a response.
+- Made passive footer scans and change receipts honor `core.symlinks=false` placeholders and `core.filemode=false` without masking file-type changes.
+- Preserved parent traversal in relative goal paths so directory links cannot redirect file proof to a lexically normalized target or collapse distinct targets.
 - Made the Windows hook cleanup test wait for its child to start and verify that both processes terminate, avoiding false failures when `taskkill` cannot confirm an already-finished cleanup.
 - Showed stable provider-reported model IDs on settled receipts when they differ from the selected alias, including GitHub Copilot Claude models.
 - Reported CRLF worktree content as modified when indexed attributes require `eol=lf`, matching Git in footer counts and change receipts.
