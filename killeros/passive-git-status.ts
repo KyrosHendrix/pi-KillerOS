@@ -99,7 +99,7 @@ function inspectedRoot(cwd: string): string | undefined {
   }
   let base: string;
   try {
-    base = realpathSync(start);
+    base = realpathSync.native(start);
   } catch {
     base = start;
   }
@@ -108,7 +108,7 @@ function inspectedRoot(cwd: string): string | undefined {
     try {
       if (existsSync(path.join(current, ".git"))) {
         try {
-          return realpathSync(current);
+          return realpathSync.native(current);
         } catch {
           return current;
         }
@@ -146,7 +146,7 @@ function traversesInspected(candidate: string, root: string): boolean {
   let current = path.dirname(candidate);
   for (;;) {
     try {
-      if (insideInspected(realpathSync(current), root)) return true;
+      if (insideInspected(realpathSync.native(current), root)) return true;
     } catch {
       return true;
     }
@@ -185,7 +185,7 @@ export function passiveGitCommand(cwd: string, env: NodeJS.ProcessEnv = process.
       }
       let resolved: string;
       try {
-        resolved = realpathSync(candidate);
+        resolved = realpathSync.native(candidate);
       } catch {
         continue;
       }

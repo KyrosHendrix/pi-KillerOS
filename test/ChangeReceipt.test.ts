@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { realpathSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1030,6 +1030,44 @@ async function sentinelAbsent(filePath: string): Promise<void> {
   await assert.rejects(readFile(filePath), { code: "ENOENT" });
 }
 
+test("passive Git rejects repository-local shims through Windows short-path aliases", { skip: process.platform !== "win32" }, async (t) => {
+  const root = await fixture();
+  const probe = await mkdtemp(path.join(os.tmpdir(), "killeros-short-path-probe-"));
+  const sentinel = path.join(probe, "sentinel");
+  t.after(() => rm(probe, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const canonicalRoot = realpathSync.native(root);
+  const shortRoot = execFileSync("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-Command",
+    "(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:KILLEROS_SHORT_PATH).ShortPath",
+  ], { env: { ...process.env, KILLEROS_SHORT_PATH: root }, encoding: "utf8", windowsHide: true }).trim();
+  if (shortRoot.toLowerCase() === canonicalRoot.toLowerCase()) {
+    t.skip("filesystem does not provide an 8.3 alias");
+    return;
+  }
+  await writeReceiptShims(root, sentinel);
+  const safeGit = passiveGitCommand(canonicalRoot);
+  assert.ok(safeGit, "expected a safe system Git");
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = shortRoot;
+    assert.equal(passiveGitCommand(canonicalRoot), undefined);
+    assert.equal(passiveGitCommand(shortRoot), undefined);
+    process.env.PATH = [shortRoot, path.dirname(safeGit)].join(path.delimiter);
+    assert.equal(passiveGitCommand(canonicalRoot), safeGit);
+    assert.equal(passiveGitCommand(shortRoot), safeGit);
+    const collection = await beginChangeReceipt(shortRoot);
+    await writeFile(path.join(root, "clean.txt"), "changed\n");
+    const summary = await collection.finish();
+    assert.equal(summary.state, "available");
+    assert.deepEqual(await resolveGitFileChanges(shortRoot), { modified: 1, added: 9, deleted: 0 });
+    await sentinelAbsent(sentinel);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+});
+
 test("change receipt never runs repository-local locator or Git shims", async (t) => {
   const root = await fixture();
   const probe = await mkdtemp(path.join(os.tmpdir(), "killeros-receipt-probe-"));
@@ -1042,20 +1080,9 @@ test("change receipt never runs repository-local locator or Git shims", async (t
   try {
     process.env.PATH = ["", ".", root, ...(previousPath ?? "").split(path.delimiter)].join(path.delimiter);
     process.chdir(root);
-    const { passiveGitCommand: debugPassiveGitCommand, passiveGitEnv: debugPassiveGitEnv } = await import("../killeros/passive-git-status.ts");
-    const { spawnSync } = await import("node:child_process");
-    const foundGit = debugPassiveGitCommand(root);
-    console.log(`DEBUG shim test root=${root} tmpdir=${os.tmpdir()} pathKeys=${Object.keys(process.env).filter((k) => k.toLowerCase() === "path").join(",")} found=${foundGit ?? "<none>"}`);
-    if (foundGit) {
-      for (const args of [["rev-parse", "--show-toplevel"], ["config", "--type=bool", "--default", "true", "--get", "core.filemode"], ["ls-files", "--cached", "--debug", "-z"]]) {
-        const result = spawnSync(foundGit, args, { cwd: root, env: debugPassiveGitEnv(), encoding: "utf8", windowsHide: true });
-        console.log(`DEBUG git ${args.join(" ")} status=${result.status} error=${result.error?.message ?? "<none>"} stdoutLen=${result.stdout?.length ?? 0} stderr=${String(result.stderr ?? "").slice(0, 300)}`);
-      }
-    }
     const collection = await beginChangeReceipt(root);
     await writeFile(path.join(root, "clean.txt"), "changed\n");
     const summary = await collection.finish();
-    console.log(`DEBUG shim test summary=${JSON.stringify(summary)}`);
     assert.equal(summary.state, "available");
     await sentinelAbsent(sentinel);
   } finally {
