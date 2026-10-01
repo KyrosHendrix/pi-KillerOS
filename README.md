@@ -8,7 +8,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 
 - A custom TUI: startup masthead with versions, model, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.
 - `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Each turn must record `continue` with evidence and one next action, `complete`, or the existing blocker decision; otherwise the goal pauses. New goals pause after 20 turns; `/goal resume` grants another 20.
-- `/codex-fast`: toggles the `priority` service tier on Codex requests or reports its status.
+- `/codex-fast`: toggles the `priority` service tier on legacy Codex and eligible native OpenAI Responses requests or reports its status.
 - `/handoff`: starts a fresh linked session carrying visible continuation context.
 - `/auto-compact`: reports, enables, disables, or tunes automatic context compaction.
 - A `question` tool with single-select and multi-select modes.
@@ -52,6 +52,12 @@ Pin a release by appending its tag, for example `@v2.1.32`. Add `-l` to install 
 /clear                    New session after confirmation
 /exit                     Quit Pi gracefully
 ```
+
+Fast mode is off by default. `/codex-fast` toggles it, and `/codex-fast status` reports the preference without changing it. The preference stays in the current Pi process across model switches and extension reloads, but is not saved between processes. The command name and notification strings retain their legacy Codex wording.
+
+Fast mode applies to legacy `openai-codex` requests and selected native models with provider `openai`, API `openai-responses`, and base URL `https://api.openai.com/v1`, with an optional trailing slash. Native request payloads must also name the selected model's exact ID. Both API-key and ChatGPT subscription authentication use this rule. Custom endpoints, Azure, other APIs, and ambiguous native requests pass through unchanged. When enabled, fast mode overrides an eligible request's existing service tier with `priority`; when disabled, it leaves the request unchanged.
+
+The TUI footer's `fast` label means the enabled preference applies to the selected model, not that OpenAI accepted priority service. OpenAI controls account and model eligibility, the actual service tier, and charges. Priority can affect billing; subscription login does not guarantee accepted or free priority service. KillerOS leaves provider errors to Pi and does not silently retry with a different tier.
 
 ## Behavior by mode
 

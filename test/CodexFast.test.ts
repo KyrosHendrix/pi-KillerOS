@@ -49,6 +49,84 @@ test("/codex-fast is registered once and toggles Codex priority requests", async
   assert.deepEqual(last(notifications), { message: "Fast enabled", level: "info" });
 });
 
+test("/codex-fast adds priority to native Responses without mutating other request fields", async () => {
+  resetCodexFastState();
+  const harness = createHarness();
+  const { ctx } = createTuiContext();
+  const requestHandler = last(getHandlers(harness, "before_provider_request"));
+  await getCommand(harness, "codex-fast").handler("", ctx);
+
+  for (const baseUrl of ["https://api.openai.com/v1", "https://api.openai.com/v1/"]) {
+    const model = { ...ctx.model, id: "gpt-6.1-sol", provider: "openai", api: "openai-responses", baseUrl };
+    for (const service_tier of [undefined, "flex", "default", "priority"]) {
+      const payload = Object.freeze({ model: model.id, input: [], stream: true, metadata: { task: "test" },
+        ...(service_tier === undefined ? {} : { service_tier }) });
+      const result = await requestHandler({ type: "before_provider_request", payload }, { ...ctx, model });
+      assert.notStrictEqual(result, payload);
+      assert.deepEqual(result, { ...payload, service_tier: "priority" });
+      assert.strictEqual(result?.input, payload.input);
+      assert.strictEqual(result?.metadata, payload.metadata);
+      assert.equal(payload.service_tier, service_tier);
+    }
+  }
+  resetCodexFastState();
+});
+
+test("disabled fast mode preserves payload identity and existing tiers on both supported paths", async () => {
+  resetCodexFastState();
+  const harness = createHarness();
+  const { ctx } = createTuiContext();
+  const requestHandler = last(getHandlers(harness, "before_provider_request"));
+  for (const provider of ["openai-codex", "openai"]) {
+    const model = { ...ctx.model, provider, api: "openai-responses", baseUrl: "https://api.openai.com/v1" };
+    for (const payload of [{ model: model.id, input: [] }, { model: model.id, input: [], service_tier: "flex" }]) {
+      assert.strictEqual(await requestHandler({ type: "before_provider_request", payload }, { ...ctx, model }), payload);
+    }
+  }
+});
+
+test("enabled fast mode passes unsupported, ambiguous, and invalid requests through by identity", async () => {
+  resetCodexFastState();
+  const harness = createHarness();
+  const { ctx } = createTuiContext();
+  const requestHandler = last(getHandlers(harness, "before_provider_request"));
+  await getCommand(harness, "codex-fast").handler("", ctx);
+  const nativeModel = { ...ctx.model, provider: "openai", api: "openai-responses", baseUrl: "https://api.openai.com/v1" };
+  const payload = { model: nativeModel.id, input: [], service_tier: "flex" };
+  for (const model of [
+    undefined,
+    { ...nativeModel, provider: "anthropic" },
+    { ...nativeModel, provider: "azure-openai-responses" },
+    { ...nativeModel, provider: "OpenAI" },
+    { ...nativeModel, api: "openai-completions" },
+    { ...nativeModel, api: "virtual" },
+    { ...nativeModel, api: undefined },
+    { ...nativeModel, baseUrl: undefined },
+    ...["https://example.invalid/v1", "http://api.openai.com/v1", "https://api.openai.com/v1//",
+      "https://api.openai.com/v1/responses", "https://api.openai.com/v1?test=1"].map((baseUrl) => ({ ...nativeModel, baseUrl })),
+  ]) {
+    assert.strictEqual(await requestHandler({ type: "before_provider_request", payload }, { ...ctx, model }), payload);
+  }
+  for (const ambiguous of [{ input: [] }, { ...payload, model: "another-model" }, { ...payload, model: null }]) {
+    assert.strictEqual(await requestHandler({ type: "before_provider_request", payload: ambiguous }, {
+      ...ctx, model: nativeModel,
+    }), ambiguous);
+  }
+  for (const provider of ["openai", "openai-codex"]) {
+    for (const invalid of [null, undefined, [], "request", 42]) {
+      assert.strictEqual(await requestHandler({ type: "before_provider_request", payload: invalid }, {
+        ...ctx, model: { ...nativeModel, provider },
+      }), invalid);
+    }
+  }
+  // Legacy Codex never required a matching request model, API, or endpoint.
+  const legacyPayload = Object.freeze({ input: [], service_tier: "flex" });
+  assert.deepEqual(await requestHandler({ type: "before_provider_request", payload: legacyPayload }, {
+    ...ctx, model: { ...ctx.model, provider: "openai-codex" },
+  }), { input: [], service_tier: "priority" });
+  resetCodexFastState();
+});
+
 test("/codex-fast status reports mode without changing state", async () => {
   resetCodexFastState();
   const harness = createHarness();
@@ -97,7 +175,7 @@ test("/codex-fast rejects arguments without changing its state", async () => {
   );
 });
 
-test("/codex-fast state survives extension reloads and renders inline for Codex", async () => {
+test("/codex-fast state survives extension reloads and switches between Codex and native OpenAI", async () => {
   resetCodexFastState();
   const first = createHarness();
   const firstContext = createTuiContext().ctx;
@@ -137,10 +215,27 @@ test("/codex-fast state survives extension reloads and renders inline for Codex"
   assert.match(enabledRender, /<text>fast<\/text>/u);
   assert.equal(footer.render(120).length, 3);
 
+  const nativeModel = { ...ctx.model, provider: "openai", api: "openai-responses", baseUrl: "https://api.openai.com/v1" };
+  for (const handler of getHandlers(second, "model_select") ?? []) handler({ model: nativeModel });
+  assert.match(footer.render(120).join("\n"), /test-model.*fast.*openai/u);
+  const nativeContext = { ...ctx, model: nativeModel };
+  const nativePayload = { model: nativeModel.id, input: [] };
+  assert.deepEqual(await requestHandler({ type: "before_provider_request", payload: nativePayload }, nativeContext), {
+    ...nativePayload, service_tier: "priority",
+  });
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await getCommand(second, "codex-fast").handler("status", nativeContext);
+  assert.deepEqual(last(notifications), { message: "Codex fast mode: enabled", level: "info" });
+  await getCommand(second, "codex-fast").handler("on", nativeContext);
+  assert.deepEqual(last(notifications), { message: "Usage: /codex-fast [status]", level: "error" });
+  assert.equal(isCodexFastEnabled(), true);
+
   for (const handler of getHandlers(second, "model_select") ?? []) {
-    handler({ model: { ...ctx.model, provider: "openai" } });
+    handler({ model: { ...nativeModel, baseUrl: "https://example.invalid/v1" } });
   }
   assert.doesNotMatch(footer.render(120).join("\n"), /fast/u);
+  assert.equal(isCodexFastEnabled(), true);
 
   for (const handler of getHandlers(second, "model_select") ?? []) {
     handler({ model: { ...ctx.model, provider: "openai-codex" } });

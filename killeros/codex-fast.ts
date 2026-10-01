@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isCodexFastEnabled, toggleCodexFast } from "./codex-fast-state.ts";
+import { isCodexFastEnabled, isCodexFastModel, toggleCodexFast } from "./codex-fast-state.ts";
 
-const CODEX_PROVIDER = "openai-codex";
 type RequestPayload = Record<string, unknown>;
 
 function isRequestPayload(value: unknown): value is RequestPayload {
@@ -28,9 +27,11 @@ export function registerCodexFastMode(pi: ExtensionAPI): void {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
-    if (!isCodexFastEnabled() || ctx.model?.provider !== CODEX_PROVIDER || !isRequestPayload(event.payload)) {
+    if (!isCodexFastEnabled() || !isCodexFastModel(ctx.model) || !isRequestPayload(event.payload)) {
       return event.payload;
     }
+    // The hook exposes no dispatched provider/API. Native requests must match the selected model.
+    if (ctx.model?.provider === "openai" && event.payload.model !== ctx.model.id) return event.payload;
     return { ...event.payload, service_tier: "priority" };
   });
 }

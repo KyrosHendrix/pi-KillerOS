@@ -3,7 +3,7 @@ import { watch } from "node:fs";
 import path from "node:path";
 import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import { isCodexFastEnabled, subscribeCodexFast } from "./codex-fast-state.ts";
+import { isCodexFastEnabled, isCodexFastModel, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, modelDisplayName, padRight } from "./display.ts";
 import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, type PassiveGitRunner } from "./passive-git-status.ts";
 import { goalElapsedMilliseconds } from "./goal-state.ts";
@@ -15,7 +15,6 @@ const GIT_STATUS_REFRESH_INTERVAL_MS = 30_000;
 const GIT_STATUS_TIMEOUT_MS = 5_000;
 const GIT_STATUS_WATCH_DEBOUNCE_MS = 250;
 const GIT_STATUS_WATCH_INTERVAL_MS = 5_000;
-const CODEX_PROVIDER = "openai-codex";
 export const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
 export interface GitFileChanges {
@@ -309,7 +308,7 @@ export function formatModel(
   if (!model) return theme.fg("dim", "no model");
   const displayName = modelDisplayName(model) || "unknown model";
   const name = theme.fg("text", displayName);
-  const fast = showCodexFast && model.provider === CODEX_PROVIDER ? theme.fg("text", "fast") : "";
+  const fast = showCodexFast && isCodexFastModel(model) ? theme.fg("text", "fast") : "";
   const provider = includeProvider ? theme.fg("dim", formatProviderName(model.provider)) : "";
   return [name, fast, provider].filter(Boolean).join(" ");
 }

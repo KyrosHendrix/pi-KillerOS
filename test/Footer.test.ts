@@ -11,7 +11,8 @@ import {
   type GitFileChanges,
 } from "../killeros/footer.ts";
 import { passiveGitCommand, passiveGitEnv } from "../killeros/passive-git-status.ts";
-import { createHarness, createTuiContext, disposeTestComponent, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
+import { createHarness, createTuiContext, disposeTestComponent, getCommand, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
+import { isCodexFastEnabled, resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { themeTestAdapter } from "./PiTestAdapters.ts";
@@ -48,6 +49,58 @@ async function waitForGitWatch(predicate: () => boolean): Promise<void> {
   }
   assert.fail("timed out waiting for watched Git status");
 }
+
+test("footer shows fast only for enabled eligible models at full and narrow widths", async () => {
+  resetCodexFastState();
+  const harness = createHarness();
+  const { captured, ctx, tui } = createTuiContext();
+  const nativeModel = { ...ctx.model, id: "gpt-6.1-sol", provider: "openai", api: "openai-responses",
+    baseUrl: "https://api.openai.com/v1" };
+  ctx.model = nativeModel;
+  ctx.isProjectTrusted = () => false;
+  let renders = 0;
+  tui.requestRender = () => { renders += 1; };
+  for (const handler of getHandlers(harness, "session_start")) await handler({}, ctx);
+  const footer = captured.footerFactory(tui, theme, {
+    getGitBranch: () => undefined,
+    onBranchChange: () => () => {},
+  });
+  try {
+    for (const width of [120, 26]) assert.doesNotMatch(footer.render(width)[1] ?? "", /\bfast\b/u);
+    const command = getCommand(harness, "codex-fast");
+    await command.handler("", ctx);
+    for (const [model, eligible] of [
+      [nativeModel, true],
+      [{ ...nativeModel, baseUrl: "https://api.openai.com/v1/" }, true],
+      [{ ...nativeModel, provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" }, true],
+      [{ ...nativeModel, provider: "anthropic" }, false],
+      [{ ...nativeModel, provider: "azure-openai-responses" }, false],
+      [{ ...nativeModel, api: "openai-completions" }, false],
+      [{ ...nativeModel, api: "virtual" }, false],
+      [{ ...nativeModel, baseUrl: "https://example.invalid/v1" }, false],
+      [{ ...nativeModel, baseUrl: undefined }, false],
+    ] as const) {
+      const beforeSelection = renders;
+      for (const handler of getHandlers(harness, "model_select")) handler({ model });
+      assert.ok(renders > beforeSelection, "model changes request a footer render");
+      assert.equal(isCodexFastEnabled(), true, "model changes preserve the preference");
+      for (const width of [120, 26]) {
+        const primary = footer.render(width)[1] ?? "";
+        assert.equal(/\bfast\b/u.test(primary), eligible, `${model.provider}/${model.api}/${model.baseUrl} at ${width}`);
+        if (eligible) assert.match(primary, width === 120 ? /gpt-6\.1-sol fast openai/u : /gpt-6\.1-sol fast/u);
+        if (width === 26) assert.doesNotMatch(primary, /openai/u);
+      }
+      const beforeToggle = renders;
+      await command.handler("", ctx);
+      assert.ok(renders > beforeToggle, "toggling fast mode requests a footer render");
+      for (const width of [120, 26]) assert.doesNotMatch(footer.render(width)[1] ?? "", /\bfast\b/u);
+      await command.handler("", ctx);
+    }
+  } finally {
+    disposeTestComponent(footer);
+    resetCodexFastState();
+  }
+});
 
 test("footer survives unavailable context telemetry", () => {
   const { handlers } = createHarness();

@@ -14,6 +14,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Applied `/codex-fast` priority requests and the footer's `fast` label to eligible native OpenAI Responses models at the official endpoint, for both API-key and ChatGPT subscription authentication. Legacy Codex behavior, command strings, and the process-local opt-in preference are unchanged; priority acceptance and billing remain OpenAI-controlled.
 - Kept `question` and active `killeros_goal_update` directly declared in codemode-only sessions using Pi's native `model-only` exposure, which also prevents scripts and other tools from executing them. Goal activation and TUI-only question behavior are unchanged.
 - Discarded pending change receipts after session replacement or reload and kept late activity and completion-sound handlers from using the old context, preventing stale-context extension errors during receipt finalization.
 - Updated the `brace-expansion` override to patched 5.0.12, fixing recursion and quadratic-time denial of service in development and CI installs.

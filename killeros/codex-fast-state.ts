@@ -1,3 +1,5 @@
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+
 type CodexFastStateListener = () => void;
 
 interface CodexFastState {
@@ -24,6 +26,12 @@ const state: CodexFastState = isCodexFastState(savedState) ? savedState : {
   listeners: new Set<CodexFastStateListener>(),
 };
 globalThis.__killerosCodexFastState = state;
+
+export function isCodexFastModel(model: ExtensionContext["model"]): boolean {
+  return model?.provider === "openai-codex"
+    || (model?.provider === "openai" && model.api === "openai-responses"
+      && (model.baseUrl === "https://api.openai.com/v1" || model.baseUrl === "https://api.openai.com/v1/"));
+}
 
 export function isCodexFastEnabled(): boolean {
   return state.enabled;

@@ -4,8 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentTools, type AssistantMessage, type Provider } from "@earendil-works/pi-ai";
 import { getKeybindings } from "@earendil-works/pi-tui";
+import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { Type } from "typebox";
 import {
   createAgentSession,
@@ -17,6 +18,8 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { registerRequestActivity } from "../killeros/activity.ts";
+import { registerCodexFastMode } from "../killeros/codex-fast.ts";
+import { isCodexFastEnabled, resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { registerCompletionNotifications } from "../killeros/notifications.ts";
 import { registerWorkedFor } from "../killeros/worked-for.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
@@ -140,6 +143,104 @@ test("the packed KillerOS package activates and reloads through Pi's public life
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("real native OpenAI transport sends priority and reports rejection without a tier-changing retry", { timeout: 30_000 }, async (t) => {
+  for (const [label, apiKey, status, expectedRequests] of [
+    ["API-key rejection", "sk-local-test-key", 400, 1],
+    ["ChatGPT subscription rejection", "local-test-chatgpt-token", 400, 1],
+    ["Pi provider retry", "sk-local-test-key", 429, 2],
+  ] as const) {
+    await t.test(label, async () => {
+      resetCodexFastState();
+      const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-openai-fast-"));
+      try {
+        const cwd = path.join(directory, "project");
+        const agentDir = path.join(directory, "agent");
+        mkdirSync(cwd);
+        mkdirSync(agentDir);
+        const bodies: Record<string, unknown>[] = [];
+        const fakeFetch: typeof fetch = async (input, init) => {
+          const request = new Request(input, init);
+          assert.equal(request.url, "https://api.openai.com/v1/responses");
+          assert.equal(request.method, "POST");
+          assert.equal(request.headers.get("authorization"), `Bearer ${apiKey}`);
+          const body: unknown = await request.json();
+          assert.ok(isUnknownRecord(body));
+          bodies.push(body);
+          return new Response(JSON.stringify({ error: {
+            message: "Priority is not available for this test account", type: "invalid_request_error", code: "priority_rejected",
+          } }), { status, headers: { "content-type": "application/json", "retry-after-ms": "1" } });
+        };
+        const native: Provider = openaiProvider();
+        const model = native.getModels().find((model) => model.id === "gpt-6.1-sol");
+        assert.ok(model);
+        assert.equal(model.provider, "openai");
+        assert.equal(model.api, "openai-responses");
+        assert.equal(model.baseUrl, "https://api.openai.com/v1");
+        if (!apiKey.startsWith("sk-")) {
+          writeFileSync(path.join(agentDir, "auth.json"), JSON.stringify({ openai: {
+            type: "oauth", access: apiKey, refresh: "local-test-refresh-token", expires: Date.now() + 3_600_000,
+            clientId: "local-test-client", scopes: ["chatgpt.tokens.use.direct"],
+          } }));
+        }
+        const modelRuntime = await ModelRuntime.create({
+          authPath: path.join(agentDir, "auth.json"), modelsPath: null,
+          modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
+        });
+        modelRuntime.registerNativeProvider({
+          ...native,
+          // Keep Pi's native Responses implementation and replace only its HTTP transport.
+          streamSimple: (model, context, options) => native.streamSimple(model, context, {
+            ...options, fetch: fakeFetch, maxRetries: 1,
+          }),
+        });
+        if (apiKey.startsWith("sk-")) await modelRuntime.setRuntimeApiKey("openai", apiKey);
+        assert.equal(modelRuntime.isUsingSubscription("openai"), !apiKey.startsWith("sk-"));
+        const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+        const loader = new DefaultResourceLoader({
+          cwd, agentDir, settingsManager, noExtensions: true, noSkills: true,
+          noPromptTemplates: true, noThemes: true, noContextFiles: true,
+          extensionFactories: [registerCodexFastMode],
+        });
+        await loader.reload();
+        assert.deepEqual(loader.getExtensions().errors, []);
+        const { session } = await createAgentSession({
+          cwd, agentDir, model, modelRuntime, settingsManager, resourceLoader: loader,
+          sessionManager: SessionManager.inMemory(cwd), noTools: "all",
+        });
+        const errors: string[] = [];
+        try {
+          await session.bindExtensions({ mode: "json", onError(error) { errors.push(`${error.event}: ${error.error}`); } });
+          await session.prompt("/codex-fast");
+          assert.equal(isCodexFastEnabled(), true);
+          await session.reload();
+          assert.equal(isCodexFastEnabled(), true);
+          assert.equal(modelRuntime.isUsingSubscription("openai"), !apiKey.startsWith("sk-"));
+          await session.prompt("Test priority rejection locally");
+          await session.waitForIdle();
+
+          // HTTP 400 is not retryable. HTTP 429 gets exactly one configured Pi provider retry.
+          assert.equal(bodies.length, expectedRequests);
+          for (const body of bodies) {
+            assert.equal(body.model, model.id);
+            assert.equal(body.service_tier, "priority");
+            assert.ok(Array.isArray(body.input));
+          }
+          const response = session.messages.filter((message) => message.role === "assistant").at(-1);
+          assert.ok(response?.role === "assistant");
+          assert.equal(response.stopReason, "error");
+          assert.match(response.errorMessage ?? "", /Priority is not available for this test account/u);
+          assert.deepEqual(errors, []);
+        } finally {
+          session.dispose();
+        }
+      } finally {
+        resetCodexFastState();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
   }
 });
 
