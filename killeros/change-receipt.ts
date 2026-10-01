@@ -675,6 +675,7 @@ export async function beginChangeReceipt(cwd: string, trusted = true): Promise<C
       },
     };
   } catch (error) {
+    console.log(`DEBUG receipt begin failed: ${error instanceof Error ? `${error.name}: ${error.message} | ${error.stack?.split("\n").slice(0, 5).join(" << ")}` : String(error)}`);
     const reason = error instanceof GitFailure && decode(error.stderr).includes("not a git repository")
       ? "not-git" as const
       : error instanceof GitFailure ? error.reason : "error";
