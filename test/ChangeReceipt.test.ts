@@ -1042,9 +1042,12 @@ test("change receipt never runs repository-local locator or Git shims", async (t
   try {
     process.env.PATH = ["", ".", root, ...(previousPath ?? "").split(path.delimiter)].join(path.delimiter);
     process.chdir(root);
+    const { passiveGitCommand: debugPassiveGitCommand } = await import("../killeros/passive-git-status.ts");
+    console.log(`DEBUG shim test root=${root} tmpdir=${os.tmpdir()} pathKeys=${Object.keys(process.env).filter((k) => k.toLowerCase() === "path").join(",")} found=${debugPassiveGitCommand(root) ?? "<none>"}`);
     const collection = await beginChangeReceipt(root);
     await writeFile(path.join(root, "clean.txt"), "changed\n");
     const summary = await collection.finish();
+    console.log(`DEBUG shim test summary=${JSON.stringify(summary)}`);
     assert.equal(summary.state, "available");
     await sentinelAbsent(sentinel);
   } finally {
