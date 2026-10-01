@@ -3,7 +3,7 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { StopReason } from "@earendil-works/pi-ai";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import test from "node:test";
-import type { ChangeReceiptCollection } from "../killeros/change-receipt.ts";
+import type { ChangeReceiptCollection, ChangeSummary } from "../killeros/change-receipt.ts";
 import {
   formatWorkedForDuration,
   registerWorkedFor,
@@ -895,6 +895,35 @@ test("non-TUI modes and settlements without a started run append nothing", async
   const tui = createWorkedForHarness();
   await tui.emit("agent_settled");
   assert.deepEqual(tui.appendedEntries, []);
+});
+
+test("session boundaries discard receipts already waiting for their final scan", async () => {
+  for (const boundary of ["session_shutdown", "session_start"]) {
+    for (const changes of [{ ...EMPTY_V4.changes, files: [] }, { state: "unavailable", reason: "error" }] satisfies ChangeSummary[]) {
+      let releaseScan: ((changes: ChangeSummary) => void) | undefined;
+      let scanStarted: (() => void) | undefined;
+      const scanning = new Promise<void>((resolve) => { scanStarted = resolve; });
+      const scan = new Promise<ChangeSummary>((resolve) => { releaseScan = resolve; });
+      const harness = createWorkedForHarness("tui", async () => ({
+        finish: async () => { scanStarted?.(); return scan; },
+        dispose: async () => undefined,
+      }));
+      await harness.emit("agent_start");
+      const settlement = harness.emit("agent_settled");
+      await scanning;
+      await harness.emit(boundary);
+      harness.setAppendError(new Error("stale source context"));
+      releaseScan?.(changes);
+      await settlement;
+
+      assert.deepEqual(harness.appendedEntries, [], boundary);
+      assert.deepEqual(harness.notices, [], boundary);
+      harness.setAppendError(undefined);
+      await harness.emit("agent_start");
+      await harness.emit("agent_settled");
+      assert.equal(harness.appendedEntries.length, 1, boundary);
+    }
+  }
 });
 
 test("session boundaries discard unfinished timing and save failures stay contained", async () => {

@@ -13,7 +13,11 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { createHarness } from "./ExtensionTestHarness.ts";
+import { registerRequestActivity } from "../killeros/activity.ts";
+import { registerCompletionNotifications } from "../killeros/notifications.ts";
+import { registerWorkedFor } from "../killeros/worked-for.ts";
+import { createHarness, createTuiContext } from "./ExtensionTestHarness.ts";
+import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
@@ -378,6 +382,121 @@ test("cancelled real session replacements preserve automatic compaction recovery
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       rmSync(directory, { recursive: true, force: true });
     }
+  }
+});
+
+test("real Pi session replacement and reload discard pending receipts without stale settlement handlers", { timeout: 30_000 }, async (t) => {
+  for (const operation of ["none", "newSession", "cancelledNewSession", "reload"] as const) {
+    await t.test(operation, async () => {
+      const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-receipt-lifecycle-"));
+      const cwd = path.join(directory, "project");
+      const agentDir = path.join(directory, "agent");
+      mkdirSync(cwd);
+      mkdirSync(agentDir);
+      const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      let runtimeHost: Awaited<ReturnType<typeof createAgentSessionRuntime>> | undefined;
+      let releaseScan: (() => void) | undefined;
+      let scanStarted: (() => void) | undefined;
+      const scanning = new Promise<void>((resolve) => { scanStarted = resolve; });
+      const scan = new Promise<void>((resolve) => { releaseScan = resolve; });
+      const errors: string[] = [];
+      const notices: string[] = [];
+      let bells = 0;
+      try {
+        const provider = `killeros-receipt-${operation}`;
+        const faux = fauxProvider({ provider, models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+        faux.setResponses([fauxAssistantMessage("first turn finished"), fauxAssistantMessage("next turn finished")]);
+        const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+        modelRuntime.registerNativeProvider(faux.provider);
+        await modelRuntime.setRuntimeApiKey(provider, "local-test-key");
+        const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
+        settingsManager.setProjectTrusted(true);
+        runtimeHost = await createAgentSessionRuntime(async (options) => {
+          const loader = new DefaultResourceLoader({
+            cwd,
+            agentDir,
+            settingsManager,
+            noExtensions: true,
+            noSkills: true,
+            noPromptTemplates: true,
+            noThemes: true,
+            noContextFiles: true,
+            extensionFactories: [(pi) => {
+              if (operation === "cancelledNewSession") pi.on("session_before_switch", () => ({ cancel: true }));
+              registerWorkedFor(pi, Date.now, async () => ({
+                finish: async () => {
+                  scanStarted?.();
+                  await scan;
+                  return { state: "unavailable", reason: "error" };
+                },
+                dispose: async () => undefined,
+              }));
+              registerRequestActivity(pi);
+              registerCompletionNotifications(pi, {
+                store: { load: () => true, save() {} },
+                ring: () => { bells += 1; },
+              });
+            }],
+          });
+          await loader.reload();
+          const created = await createAgentSession({
+            cwd,
+            agentDir,
+            sessionManager: options.sessionManager,
+            sessionStartEvent: options.sessionStartEvent,
+            model: faux.getModel(),
+            modelRuntime,
+            settingsManager,
+            resourceLoader: loader,
+            noTools: "all",
+          });
+          const { ctx } = createTuiContext();
+          ctx.ui.notify = (message) => { notices.push(message); };
+          await created.session.bindExtensions({ mode: "tui", uiContext: extensionContextTestAdapter(ctx).ui });
+          return {
+            ...created,
+            services: { cwd, agentDir, modelRuntime, settingsManager, resourceLoader: loader, diagnostics: [] },
+            diagnostics: [],
+          };
+        }, { cwd, agentDir, sessionManager: SessionManager.inMemory(cwd) });
+
+        const recordError = (error: { event: string; error: string }): void => { errors.push(`${error.event}: ${error.error}`); };
+        const source = runtimeHost.session;
+        source.extensionRunner.onError(recordError);
+        const oldContext = source.extensionRunner.createContext();
+        const prompt = source.prompt("Finish one turn");
+        await scanning;
+        assert.equal(source.isIdle, true, "Pi reports idle before receipt finalization returns");
+        if (operation === "reload") await source.reload();
+        else if (operation !== "none") {
+          assert.deepEqual(await runtimeHost.newSession(), { cancelled: operation === "cancelledNewSession" });
+        }
+        const replaced = operation === "newSession" || operation === "reload";
+        if (replaced) assert.throws(() => oldContext.mode, /stale/u);
+        releaseScan?.();
+        await prompt;
+
+        const receipts = source.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "killeros-worked-for");
+        assert.equal(receipts.length, replaced ? 0 : 1);
+        assert.equal(notices.length, replaced ? 0 : 1);
+        assert.equal(bells, replaced ? 0 : 1);
+        assert.deepEqual(errors, []);
+
+        runtimeHost.session.extensionRunner.onError(recordError);
+        await runtimeHost.session.prompt("Finish the next turn");
+        assert.equal(runtimeHost.session.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "killeros-worked-for").length,
+          replaced ? 1 : 2);
+        assert.equal(bells, replaced ? 1 : 2);
+        assert.deepEqual(errors, []);
+      } finally {
+        releaseScan?.();
+        await runtimeHost?.dispose();
+        if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
   }
 });
 

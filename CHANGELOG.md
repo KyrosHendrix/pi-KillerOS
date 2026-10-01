@@ -6,7 +6,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Changed
 
-- Raised the minimum supported Pi version and locked Pi development packages from 0.85.0 to 0.87.1, with matching CI compatibility checks.
+- Raised the minimum supported Pi version and locked Pi development packages to 0.99.2, with matching CI and lockfile contracts. Users on older Pi versions must upgrade.
 
 ### Added
 
@@ -14,6 +14,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Discarded pending change receipts after session replacement or reload and kept late activity and completion-sound handlers from using the old context, preventing stale-context extension errors during receipt finalization.
+- Updated the `brace-expansion` override to patched 5.0.12, fixing recursion and quadratic-time denial of service in development and CI installs.
 - Removed the stale `undici` override so development and CI installs use Pi's patched 8.10.2 dependency, resolving GHSA-3wwx-pv8p-q78v.
 - Refreshed cached change-receipt baselines when `HEAD`, `core.filemode`, or `core.symlinks` changes between responses, while still rejecting `HEAD` changes made during a response.
 - Made passive footer scans and change receipts honor `core.symlinks=false` placeholders and `core.filemode=false` without masking file-type changes.

@@ -117,7 +117,7 @@ export function registerCompletionNotifications(
   });
 
   pi.on("agent_settled", (_event, ctx) => {
-    if (ctx.mode !== "tui" || !requestPending) return;
+    if (!requestPending || ctx.mode !== "tui") return;
     if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
     requestPending = false;
     if (!enabled || lastStopReason === "aborted") return;

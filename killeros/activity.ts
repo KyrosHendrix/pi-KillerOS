@@ -102,7 +102,7 @@ export function registerRequestActivity(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_settled", (_event, ctx) => {
-    if (ctx.mode !== "tui" || !active || !ctx.isIdle?.() || ctx.hasPendingMessages?.()) return;
+    if (!active || ctx.mode !== "tui" || !ctx.isIdle?.() || ctx.hasPendingMessages?.()) return;
     clear(ctx);
   });
 

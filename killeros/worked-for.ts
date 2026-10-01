@@ -355,6 +355,7 @@ export function registerWorkedFor(
   collect: (cwd: string) => Promise<ChangeReceiptCollection> = beginChangeReceipt,
 ): void {
   let active: ActiveReceipt | undefined;
+  let lifecycleGeneration = 0;
   let collectionNoticeShown = false;
 
   pi.registerEntryRenderer<WorkedForEntryData>(WORKED_FOR_ENTRY_TYPE, (entry, options, theme) => {
@@ -369,6 +370,7 @@ export function registerWorkedFor(
   });
 
   pi.on("session_start", async () => {
+    lifecycleGeneration += 1;
     const stale = active;
     active = undefined;
     collectionNoticeShown = false;
@@ -447,11 +449,14 @@ export function registerWorkedFor(
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
-    if (ctx.mode !== "tui" || !active) return;
+    if (!active || ctx.mode !== "tui") return;
     const settled = active;
+    const generation = lifecycleGeneration;
     active = undefined;
     const model = receiptModelName(settled, ctx.model);
     const changes = await (await settled.collection).finish();
+    // Shutdown can invalidate ctx while the final Git scan is still running.
+    if (generation !== lifecycleGeneration) return;
     if (changes.state === "unavailable" && changes.reason !== "not-git" && changes.reason !== "timeout" && !collectionNoticeShown) {
       collectionNoticeShown = true;
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");
@@ -481,6 +486,7 @@ export function registerWorkedFor(
   });
 
   pi.on("session_shutdown", async () => {
+    lifecycleGeneration += 1;
     const stale = active;
     active = undefined;
     if (stale) await (await stale.collection).dispose();
