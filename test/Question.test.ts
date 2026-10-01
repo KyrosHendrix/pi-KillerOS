@@ -13,6 +13,27 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+test("question is model-only and sequential", () => {
+  const tool = getTool(createHarness(), "question");
+  assert.equal(tool.exposure, "model-only");
+  assert.equal(tool.executionMode, "sequential");
+});
+
+test("question rejects direct execution outside TUI without opening custom UI", async () => {
+  const tool = getTool(createHarness(), "question");
+  let opened = false;
+  for (const mode of ["rpc", "print", "json"]) {
+    await assert.rejects(tool.execute(
+      "non-tui-question",
+      { question: "Choose", options: [{ label: "Alpha" }] },
+      new AbortController().signal,
+      () => {},
+      { mode, ui: { custom: () => { opened = true; } } },
+    ), { message: "The question tool requires interactive TUI mode" });
+  }
+  assert.equal(opened, false);
+});
+
 test("question exposes a Google-compatible optional selection mode", () => {
   const tool = getTool(createHarness(), "question");
   const rawSchema: unknown = JSON.parse(JSON.stringify(tool.parameters));
@@ -196,6 +217,29 @@ test("question options render bounded markdown proposal previews before selectio
   assert.ok(renderedLines.length <= 14);
   question.finish({ kind: "cancelled" });
   await question.result;
+});
+
+test("direct single-select questions preserve selection and cancellation results", async () => {
+  const tool = getTool(createHarness(), "question");
+  const selected = await startQuestion(tool);
+  selected.component.handleInput("\r");
+  assert.deepEqual(await selected.result, {
+    content: [{ type: "text", text: "User selected: Alpha" }],
+    details: { question: "Choose", options: ["Alpha"], answer: "Alpha", selectedIndex: 1, wasCustom: false },
+  });
+  const cancelled = await startQuestion(tool);
+  cancelled.component.handleInput("\x1B");
+  assert.deepEqual(await cancelled.result, {
+    content: [{ type: "text", text: "User cancelled the question" }],
+    details: { question: "Choose", options: ["Alpha"], answer: null, cancelled: true },
+  });
+  await assert.rejects(tool.execute(
+    "aborted-question",
+    { question: "Choose", options: [{ label: "Alpha" }] },
+    AbortSignal.abort(),
+    () => {},
+    { mode: "tui", ui: { custom: () => assert.fail("aborted question must not open") } },
+  ), { message: "Question cancelled before it opened" });
 });
 
 test("question keeps single-select as the unchanged default", async () => {

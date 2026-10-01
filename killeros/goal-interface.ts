@@ -150,6 +150,7 @@ export function registerGoalInterface(
     label: "Goal update",
     description: "Record exactly one active-goal decision: complete after verification, continue with evidence and one next action, or audit the same blocker before blocking it.",
     parameters: GoalUpdateParams,
+    exposure: "model-only",
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       signal?.throwIfAborted();

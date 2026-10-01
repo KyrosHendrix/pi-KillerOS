@@ -24,6 +24,12 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+test("goal updates are model-only and sequential", () => {
+  const tool = getTool(createHarness(), "killeros_goal_update");
+  assert.equal(tool.exposure, "model-only");
+  assert.equal(tool.executionMode, "sequential");
+});
+
 test("goal updates use a Google-compatible status enum", () => {
   const tool = getTool(createHarness<GoalEntryData>(), "killeros_goal_update");
   const rawSchema: unknown = JSON.parse(JSON.stringify(tool.parameters));

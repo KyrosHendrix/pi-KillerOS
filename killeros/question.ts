@@ -123,6 +123,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
       "Use multiple mode only when the user may need to choose more than one answer; ordinary either/or decisions remain single-select.",
     ],
     parameters: QuestionParams,
+    exposure: "model-only",
     executionMode: "sequential",
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {

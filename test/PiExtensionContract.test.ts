@@ -4,10 +4,13 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
+import { getKeybindings } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import {
   createAgentSession,
   createAgentSessionRuntime,
+  createCodemodeExtension,
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
@@ -16,7 +19,8 @@ import {
 import { registerRequestActivity } from "../killeros/activity.ts";
 import { registerCompletionNotifications } from "../killeros/notifications.ts";
 import { registerWorkedFor } from "../killeros/worked-for.ts";
-import { createHarness, createTuiContext } from "./ExtensionTestHarness.ts";
+import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
+import { createHarness, createTuiContext, requireInteractive, theme } from "./ExtensionTestHarness.ts";
 import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -94,7 +98,7 @@ test("the packed KillerOS package activates and reloads through Pi's public life
       agentDir,
       resourceLoader: loader,
       sessionManager: SessionManager.inMemory(cwd),
-      noTools: "all",
+      noTools: "builtin",
     });
     const lifecycleErrors: string[] = [];
     try {
@@ -110,6 +114,11 @@ test("the packed KillerOS package activates and reloads through Pi's public life
       assert.equal(firstRunner.hasHandlers("session_shutdown"), true);
       assert.equal(firstCommands.includes("goal"), true);
       assert.equal(new Set(firstCommands).size, firstCommands.length);
+      for (const name of ["question", "killeros_goal_update"]) {
+        assert.equal(session.getToolDefinition(name)?.exposure, "model-only");
+        assert.equal(session.getToolDefinition(name)?.executionMode, "sequential");
+        assert.equal(session.getCallableToolNames().includes(name), false);
+      }
 
       await session.reload();
 
@@ -119,6 +128,11 @@ test("the packed KillerOS package activates and reloads through Pi's public life
       assert.throws(() => oldContext.mode, /stale/u);
       assert.deepEqual(secondCommands, firstCommands);
       assert.deepEqual(secondRunner.getCommandDiagnostics(), []);
+      for (const name of ["question", "killeros_goal_update"]) {
+        assert.equal(session.getToolDefinition(name)?.exposure, "model-only");
+        assert.equal(session.getToolDefinition(name)?.executionMode, "sequential");
+        assert.equal(session.getCallableToolNames().includes(name), false);
+      }
       assert.deepEqual(lifecycle, ["start:startup", "shutdown:reload", "start:reload"]);
       assert.deepEqual(lifecycleErrors, []);
     } finally {
@@ -126,6 +140,198 @@ test("the packed KillerOS package activates and reloads through Pi's public life
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("real Pi keeps KillerOS decisions declared and rejects nested calls with every codemode setting", { timeout: 60_000 }, async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    for (const codemode of ["disabled", "on", "only"] as const) {
+      await t.test(`${mode}/${codemode}`, async () => {
+        const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-exposure-"));
+        const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+        try {
+          const cwd = path.join(directory, "project");
+          const agentDir = path.join(directory, "agent");
+          mkdirSync(cwd);
+          mkdirSync(agentDir);
+          process.env.PI_CODING_AGENT_DIR = agentDir;
+          const provider = `killeros-exposure-${mode}-${codemode}`;
+          const faux = fauxProvider({ provider, models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+          const declarations: string[][] = [];
+          const setResponses = (messages: AssistantMessage[]): void => {
+            faux.setResponses(messages.map((message) => (context) => {
+              declarations.push(getCurrentTools(context.messages).map((tool) => tool.name));
+              return message;
+            }));
+          };
+          const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+          modelRuntime.registerNativeProvider(faux.provider);
+          await modelRuntime.setRuntimeApiKey(provider, "local-test-key");
+          const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
+          const sessionManager = SessionManager.create(cwd, path.join(directory, "sessions"));
+          const goalEntries = () => sessionManager.getEntries()
+            .filter((entry) => entry.type === "custom")
+            .filter((entry) => entry.customType === "killeros-goal");
+          let opened = 0;
+          let probes = 0;
+          const loader = new DefaultResourceLoader({
+            cwd,
+            agentDir,
+            settingsManager,
+            additionalExtensionPaths: [path.join(repositoryRoot, "Killeros.ts")],
+            noExtensions: true,
+            noSkills: true,
+            noPromptTemplates: true,
+            noThemes: true,
+            noContextFiles: true,
+            extensionFactories: [
+              ...(codemode === "disabled" ? [] : [createCodemodeExtension({ mode: codemode })]),
+              (pi) => {
+                pi.registerTool({
+                  name: "exposure_probe", label: "Exposure probe", description: "Check nested tool exclusion",
+                  parameters: Type.Object({}), exposure: "model-only", executionMode: "sequential",
+                  async execute(_id, _params, _signal, _update, ctx) {
+                    probes++;
+                    const before = structuredClone(goalEntries());
+                    const openedBefore = opened;
+                    for (const [name, args] of [
+                      ["question", { question: "Choose", options: [{ label: "Alpha" }] }],
+                      ["killeros_goal_update", { status: "continue", evidence: "Nested progress", nextAction: "Inspect result" }],
+                    ] as const) {
+                      assert.equal(ctx.tools.some((tool) => tool.name === name), false);
+                      const outcome = await ctx.executeTool(name, args);
+                      assert.equal(outcome.isError, true);
+                      assert.deepEqual(outcome.result.content, [{ type: "text", text: `Tool ${name} not found` }]);
+                    }
+                    assert.equal(opened, openedBefore, "nested questions must not open UI");
+                    assert.deepEqual(goalEntries(), before, "nested decisions must not persist goal entries");
+                    return { content: [{ type: "text", text: "Nested calls rejected" }], details: undefined };
+                  },
+                });
+                pi.registerTool({
+                  name: "unrelated", label: "Unrelated", description: "An ordinary direct tool",
+                  parameters: Type.Object({}),
+                  async execute() { return { content: [{ type: "text", text: "Unchanged" }], details: undefined }; },
+                });
+              },
+            ],
+          });
+          await loader.reload();
+          assert.deepEqual(loader.getExtensions().errors, []);
+          const { session } = await createAgentSession({
+            cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, sessionManager,
+            resourceLoader: loader, noTools: "builtin",
+          });
+          const errors: string[] = [];
+          const { ctx, tui } = createTuiContext();
+          const ui = extensionContextTestAdapter({ ui: {
+            ...ctx.ui,
+            custom(factory: (...args: unknown[]) => unknown) {
+              opened++;
+              return new Promise<unknown>((resolve) => {
+                requireInteractive(factory(tui, theme, getKeybindings(), resolve)).handleInput("\r");
+              });
+            },
+          } }).ui;
+          const assertDeclarations = (start: number, activeGoal: boolean, end = declarations.length): void => {
+            const requests = declarations.slice(start, end);
+            assert.ok(requests.length > 0, "the provider must receive a request");
+            for (const names of requests) {
+              assert.equal(names.includes("question"), true, `question missing from ${names.join(", ")}`);
+              assert.equal(names.includes("killeros_goal_update"), activeGoal);
+              assert.equal(names.includes("exposure_probe"), true);
+              assert.equal(names.includes("codemode"), codemode !== "disabled");
+              assert.equal(names.includes("unrelated"), codemode !== "only", "codemode-only must actually hide direct tools");
+            }
+          };
+          const runGoal = async (start: () => Promise<unknown>): Promise<void> => {
+            const firstRequest = declarations.length;
+            const firstMessage = session.messages.length;
+            const openedBefore = opened;
+            const probesBefore = probes;
+            setResponses([
+              fauxAssistantMessage(fauxToolCall("exposure_probe", {}, { id: `probe-${probes}` })),
+              fauxAssistantMessage(fauxToolCall("question", { question: "Choose", options: [{ label: "Alpha" }] })),
+              fauxAssistantMessage(fauxToolCall("killeros_goal_update", { status: "complete", evidence: "Direct completion verified" })),
+              fauxAssistantMessage("exposure turn finished"),
+            ]);
+            let finish: (() => void) | undefined;
+            const finished = new Promise<void>((resolve) => { finish = resolve; });
+            const unsubscribe = session.subscribe((event) => {
+              if (event.type === "message_end" && event.message.role === "assistant"
+                && event.message.content.some((part) => part.type === "text" && part.text === "exposure turn finished")) finish?.();
+            });
+            try {
+              await start();
+              await finished;
+              await session.waitForIdle();
+            } finally {
+              unsubscribe();
+            }
+            assert.equal(probes, probesBefore + 1);
+            assert.equal(declarations.length - firstRequest, 4);
+            assertDeclarations(firstRequest, true, firstRequest + 3);
+            assertDeclarations(firstRequest + 3, false);
+            const results = session.messages.slice(firstMessage).filter((message) => message.role === "toolResult");
+            const probe = results.find((result) => result.toolName === "exposure_probe");
+            assert.ok(probe);
+            assert.equal(probe.isError, false, JSON.stringify(probe.content));
+            const question = results.find((result) => result.toolName === "question");
+            assert.ok(question);
+            assert.equal(opened - openedBefore, mode === "tui" ? 1 : 0);
+            assert.equal(question.isError, mode !== "tui");
+            assert.deepEqual(question.content, [{ type: "text", text: mode === "tui"
+              ? "User selected: Alpha" : "The question tool requires interactive TUI mode" }]);
+            if (mode === "tui") assert.deepEqual(question.details, {
+              question: "Choose", options: ["Alpha"], answer: "Alpha", selectedIndex: 1, wasCustom: false,
+            });
+            const completion = results.find((result) => result.toolName === "killeros_goal_update");
+            assert.ok(completion);
+            assert.equal(completion.isError, false, JSON.stringify(completion.content));
+            const saved = goalEntries().at(-1)?.data;
+            assert.ok(isUnknownRecord(saved));
+            assert.equal(parseGoalState(saved.state)?.status, "complete");
+            assert.equal(session.getCallableToolNames().includes("question"), false);
+            assert.equal(session.getCallableToolNames().includes("killeros_goal_update"), false);
+          };
+          try {
+            await session.bindExtensions({ mode, uiContext: ui, onError(error) { errors.push(`${error.event}: ${error.error}`); } });
+            if (codemode !== "disabled") session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
+            const unrelatedActive = session.getActiveToolNames();
+            setResponses([fauxAssistantMessage("No goal")]);
+            await session.prompt("Inspect the declarations without a goal");
+            assertDeclarations(0, false);
+
+            await runGoal(() => session.prompt("/goal Verify native tool exposure"));
+            for (const status of ["paused", "blocked", "complete", "cleared"] as const) {
+              const state = createNewGoalState("Restore the saved goal", 0, undefined, Date.now());
+              sessionManager.appendCustomEntry("killeros-goal", {
+                version: 1, event: status === "cleared" ? "clear" : status === "paused" ? "pause" : status,
+                state: status === "cleared" ? null : transitionGoalState(state, status, "Saved result", {}, Date.now()),
+              });
+              await session.reload();
+              assert.deepEqual(session.getActiveToolNames(), unrelatedActive, `${status} must not change unrelated tools`);
+              const firstRequest = declarations.length;
+              setResponses([fauxAssistantMessage(`Goal ${status}`)]);
+              await session.prompt(`Inspect ${status} goal declarations`);
+              assertDeclarations(firstRequest, false);
+              if (status === "paused") await runGoal(() => session.prompt("/goal resume"));
+            }
+            sessionManager.appendCustomEntry("killeros-goal", {
+              version: 1, event: "set", state: createNewGoalState("Restore active work", 0, undefined, Date.now()),
+            });
+            await runGoal(() => session.reload());
+            assert.deepEqual(errors, []);
+          } finally {
+            session.dispose();
+          }
+        } finally {
+          if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+          else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+          rmSync(directory, { recursive: true, force: true });
+        }
+      });
+    }
   }
 });
 

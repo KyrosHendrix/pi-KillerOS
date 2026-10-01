@@ -61,6 +61,8 @@ Pin a release by appending its tag, for example `@v2.1.32`. Add `-l` to install 
 | RPC | Goals, proactive compaction; no TUI components, sounds, title indicator |
 | Print/JSON | No interactive questions, `/goal`, or proactive compaction |
 
+`question` and the active `killeros_goal_update` tool use Pi's `model-only` exposure. They stay directly declared to the model when codemode is disabled or enabled in `on` or `only` mode, but scripts and other tools cannot call them through `ctx.executeTool()`. The goal tool remains inactive without an active goal. Questions still require TUI mode; a direct RPC call fails with `The question tool requires interactive TUI mode`. KillerOS does not enable or configure codemode.
+
 ## Configuration
 
 The packaged `killeros` theme activates on TUI start. Compaction triggers by default at 15% tokens remaining, stored in global `killeros.json`:

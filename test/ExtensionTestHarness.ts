@@ -1,7 +1,7 @@
 import Killeros from "../Killeros.ts";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import { initTheme, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 import { rmSync } from "node:fs";
@@ -43,7 +43,7 @@ export type TestResult = {
   [key: string]: unknown;
 };
 
-export type TestTool = {
+export type TestTool = Pick<ToolDefinition, "exposure" | "executionMode"> & {
   name: string;
   description: string;
   parameters: ToolSchema;
