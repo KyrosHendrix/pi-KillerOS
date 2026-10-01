@@ -675,6 +675,70 @@ test("an active goal pauses for automatic compaction and resumes once after sett
   }
 });
 
+test("automatic compaction cannot revive a normally stopped goal without a decision", async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    for (const outcome of ["completed", "skipped"] as const) {
+      for (const callbackOrder of ["before settlement", "after settlement"] as const) {
+        await t.test(`${mode}/${outcome}/${callbackOrder}`, async () => {
+          const harness = createGoalHarness(mode, 100);
+          await harness.startGoal("Pause if the model does not choose a decision");
+          await harness.emit("turn_end");
+          const finishCompaction = (): void => {
+            if (outcome === "completed") harness.compactCalls[0]?.onComplete?.(compactResult());
+            else harness.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+          };
+          if (callbackOrder === "before settlement") finishCompaction();
+          await harness.emit("agent_end", {
+            type: "agent_end",
+            messages: [{ role: "assistant", stopReason: "stop" }],
+          });
+          await harness.emit("agent_settled");
+          if (callbackOrder === "after settlement") finishCompaction();
+          finishCompaction();
+          await harness.emit("agent_settled");
+          await new Promise((resolve) => setImmediate(resolve));
+
+          assert.equal(harness.state().state?.status, "paused");
+          assert.equal(harness.state().state?.result, "no turn decision");
+          assert.equal(harness.state().state?.turns, 1);
+          assert.equal(harness.state().state?.maxTurns, 20);
+          assert.equal(harness.state().automaticCompaction, undefined);
+          assert.equal(harness.state().goalTurnInFlight, false);
+          assert.equal(harness.sentMessages.length, 1);
+        });
+      }
+    }
+  }
+});
+
+test("normal goal decisions survive compaction without bypassing the turn limit", async () => {
+  for (const outcome of ["completed", "skipped"] as const) {
+    for (const maxTurns of [1, 20]) {
+      const harness = createGoalHarness("rpc", 100);
+      await harness.startGoal("Honor the accepted decision and its turn budget");
+      const runtime = harness.state();
+      assert.ok(runtime.state);
+      runtime.state = { ...runtime.state, maxTurns };
+      await harness.decide({ status: "continue", evidence: "First step checked", nextAction: "Check the next step" });
+      await harness.emit("turn_end");
+      await harness.emit("agent_end", {
+        type: "agent_end",
+        messages: [{ role: "assistant", stopReason: "stop" }],
+      });
+      await harness.emit("agent_settled");
+      if (outcome === "completed") harness.compactCalls[0]?.onComplete?.(compactResult());
+      else harness.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(runtime.state?.status, maxTurns === 1 ? "paused" : "active");
+      assert.equal(runtime.state?.turns, maxTurns === 1 ? 1 : 2);
+      assert.equal(runtime.state?.maxTurns, maxTurns);
+      assert.equal(harness.sentMessages.length, maxTurns === 1 ? 1 : 2);
+      if (maxTurns === 1) assert.equal(runtime.state?.result, "Turn limit reached (1/1).");
+    }
+  }
+});
+
 test("an accepted goal decision survives automatic compaction and starts exactly one next turn", async () => {
   const harness = createGoalHarness();
   await harness.startGoal("Continue this goal after compaction");

@@ -254,6 +254,10 @@ export function registerGoalSettlement(
         );
         return;
       }
+      if (!expectedInterruption && runtime.automaticCompaction.resumeSameTurn) {
+        stopAutomaticCompactionRecovery(pi, runtime, ctx, "no turn decision");
+        return;
+      }
       if (settledTurn !== undefined && runtime.automaticCompaction.turn === settledTurn) {
         runtime.automaticCompaction.turnSettled = true;
       } else {

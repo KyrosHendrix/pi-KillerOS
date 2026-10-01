@@ -300,7 +300,8 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
           parentSession: sourceSession,
           setup: async (sessionManager) => {
             try {
-              sessionManager.appendCustomMessageEntry("killeros-handoff", document, true);
+              // A regular user message makes Pi persist the otherwise setup-only child session.
+              sessionManager.appendMessage({ role: "user", content: document, timestamp: Date.now() });
               sessionManager.appendSessionInfo(sessionName(sourceName, focus, document));
             } catch (error) {
               setupFailure = { error };

@@ -4,6 +4,13 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Fixed
+
+- Treated failed Git HEAD lookups as unavailable instead of inventing added files, while retaining support for repositories without commits. Footer scans and task receipts share the same HEAD resolution.
+- Paused normally stopped goals without an accepted decision even when automatic compaction succeeds or skips a session-too-small request, preventing repeated same-turn requests from bypassing the turn limit. Interrupted-turn recovery and accepted next-turn decisions remain supported.
+- Saved `/handoff` context before reporting success so the linked session survives immediate exit and resume without another prompt or an automatic agent turn.
+- Discarded pending task receipts after committed tree navigation, preventing late scans from attaching the abandoned branch's receipt to the selected branch. Cancelled navigation still preserves receipts.
+
 ## [3.0.0] - 2026-10-01
 
 ### Changed

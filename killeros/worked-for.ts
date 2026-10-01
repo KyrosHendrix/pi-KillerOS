@@ -302,6 +302,7 @@ export function workedForOutcome(stopReason: StopReason | undefined): WorkedForO
 }
 
 type ActiveReceipt = {
+  leafId: string | null;
   startedAt: number;
   startedTokens: number | undefined;
   stopReason: StopReason | undefined;
@@ -369,17 +370,20 @@ export function registerWorkedFor(
     return new Text(`${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)}${tokens}`)}`, 1, 0);
   });
 
-  pi.on("session_start", async () => {
+  const resetForBranch = async (): Promise<void> => {
     lifecycleGeneration += 1;
     const stale = active;
     active = undefined;
     collectionNoticeShown = false;
     if (stale) await (await stale.collection).dispose();
-  });
+  };
+  pi.on("session_start", resetForBranch);
+  pi.on("session_tree", resetForBranch);
 
   pi.on("agent_start", async (_event, ctx) => {
     if (ctx.mode !== "tui" || active || !ctx.isProjectTrusted()) return;
     const state: ActiveReceipt = {
+      leafId: ctx.sessionManager.getLeafId(),
       startedAt: now(),
       startedTokens: sessionTokenTotal(ctx),
       stopReason: undefined,
@@ -440,6 +444,8 @@ export function registerWorkedFor(
 
   pi.on("agent_end", (event, ctx) => {
     if (ctx.mode !== "tui" || !active) return;
+    // Pi is not idle yet; later settlement handlers can overlap tree navigation.
+    active.leafId = ctx.sessionManager.getLeafId();
     for (let index = event.messages.length - 1; index >= 0; index -= 1) {
       const message = event.messages[index];
       if (message?.role !== "assistant") continue;
@@ -455,8 +461,9 @@ export function registerWorkedFor(
     active = undefined;
     const model = receiptModelName(settled, ctx.model);
     const changes = await (await settled.collection).finish();
-    // Shutdown can invalidate ctx while the final Git scan is still running.
-    if (generation !== lifecycleGeneration) return;
+    // Earlier async session_tree handlers can delay our reset after Pi switches branches.
+    if (generation !== lifecycleGeneration
+      || !ctx.sessionManager.getBranch().some((entry) => entry.id === settled.leafId)) return;
     if (changes.state === "unavailable" && changes.reason !== "not-git" && changes.reason !== "timeout" && !collectionNoticeShown) {
       collectionNoticeShown = true;
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");

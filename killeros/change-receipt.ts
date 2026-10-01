@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, watch } from "node:fs";
-import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, passiveWorktreeMode, passiveWorktreeSettings, type PassiveWorktreeFile as DirtyFile, type PassiveWorktreeSnapshot } from "./passive-git-status.ts";
+import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, passiveWorktreeMode, passiveWorktreeSettings, resolvePassiveHead, type PassiveWorktreeFile as DirtyFile, type PassiveWorktreeSnapshot } from "./passive-git-status.ts";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
 import { createInflate } from "node:zlib";
@@ -237,19 +237,8 @@ async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: r
   return { ...baseline, files };
 }
 
-async function currentHead(repo: Repository): Promise<string> {
-  let resolved: Buffer;
-  try {
-    resolved = await runGit(repo.root, ["rev-parse", "--verify", "HEAD"], undefined, 4_096);
-  } catch (error) {
-    if (!(error instanceof GitFailure) || error.reason !== "error") throw error;
-    const reference = decode(await runGit(repo.root, ["symbolic-ref", "--quiet", "HEAD"], undefined, 4_096)).trim();
-    if (!/^refs\/[^\0\r\n]+$/u.test(reference)) throw new GitFailure("error");
-    return "(initial)";
-  }
-  const head = decode(resolved).trim();
-  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(head)) throw new GitFailure("error");
-  return head;
+function currentHead(repo: Repository): Promise<string> {
+  return resolvePassiveHead((args) => runGit(repo.root, args, undefined, 4_096));
 }
 
 function observes(filePath: string, observedPaths: readonly string[]): boolean {

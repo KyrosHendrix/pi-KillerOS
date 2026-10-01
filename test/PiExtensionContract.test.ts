@@ -22,6 +22,8 @@ import { registerCodexFastMode } from "../killeros/codex-fast.ts";
 import { isCodexFastEnabled, resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { registerCompletionNotifications } from "../killeros/notifications.ts";
 import { registerWorkedFor } from "../killeros/worked-for.ts";
+import { registerHandoff } from "../killeros/handoff.ts";
+import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
 import { createHarness, createTuiContext, requireInteractive, theme } from "./ExtensionTestHarness.ts";
 import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
@@ -549,6 +551,171 @@ test("real Pi delivery starts one hidden ordinary continuation after turn_end ->
   }
 });
 
+test("real Pi compaction pauses a normally stopped goal after one decisionless request", { timeout: 30_000 }, async (t) => {
+  for (const outcome of ["completed", "session-too-small"] as const) {
+    await t.test(outcome, async () => {
+      const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-goal-compaction-decision-"));
+      const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+      let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+      try {
+        const cwd = path.join(directory, "project");
+        const agentDir = path.join(directory, "agent");
+        mkdirSync(cwd);
+        mkdirSync(agentDir);
+        process.env.PI_CODING_AGENT_DIR = agentDir;
+        const compaction = { enabled: true, reserveTokens: 100, keepRecentTokens: outcome === "completed" ? 1 : 20_000 };
+        writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ compaction }));
+        writeFileSync(path.join(agentDir, "killeros.json"), JSON.stringify({ autoCompaction: { enabled: true, percentRemaining: 100 } }));
+        const provider = `killeros-goal-decision-${outcome}`;
+        const faux = fauxProvider({ provider, models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+        faux.setResponses([
+          fauxAssistantMessage("Normal stop without a decision"),
+          fauxAssistantMessage("Another normal stop without a decision"),
+          fauxAssistantMessage("End regression probe", { stopReason: "error", errorMessage: "End regression probe" }),
+        ]);
+        const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+        modelRuntime.registerNativeProvider(faux.provider);
+        await modelRuntime.setRuntimeApiKey(provider, "local-test-key");
+        const settingsManager = SettingsManager.inMemory({ compaction, retry: { enabled: false }, cacheWarming: "off" });
+        const sessionManager = SessionManager.create(cwd, path.join(directory, "sessions"));
+        if (outcome === "completed") {
+          sessionManager.appendMessage({ role: "user", content: "Earlier work", timestamp: Date.now() - 2 });
+          sessionManager.appendMessage(fauxAssistantMessage("Earlier answer", { timestamp: Date.now() - 1 }));
+        }
+        const savedGoal = () => {
+          const entry = sessionManager.getEntries().reverse().find((entry) => entry.type === "custom" && entry.customType === "killeros-goal");
+          assert.ok(entry?.type === "custom" && isUnknownRecord(entry.data));
+          return parseGoalState(entry.data.state);
+        };
+        let resolvePaused: (() => void) | undefined;
+        const paused = new Promise<void>((resolve) => { resolvePaused = resolve; });
+        let compactions = 0;
+        let compactionFailure: string | undefined;
+        const errors: string[] = [];
+        const loader = new DefaultResourceLoader({
+          cwd, agentDir, settingsManager,
+          additionalExtensionPaths: [path.join(repositoryRoot, "Killeros.ts")],
+          noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+          extensionFactories: [(pi) => {
+            pi.on("session_before_compact", (event) => {
+              compactions += 1;
+              return { compaction: { summary: "Local summary", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore } };
+            });
+            pi.on("session_compact_failed", (event) => { compactionFailure = event.errorMessage; });
+            pi.on("agent_settled", () => {
+              const state = savedGoal();
+              if (state?.status === "paused" && state.result) resolvePaused?.();
+            });
+          }],
+        });
+        await loader.reload();
+        assert.deepEqual(loader.getExtensions().errors, []);
+        ({ session } = await createAgentSession({
+          cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, sessionManager, resourceLoader: loader, noTools: "builtin",
+        }));
+        await session.bindExtensions({ mode: "rpc", onError(error) { errors.push(`${error.event}: ${error.error}`); } });
+        await session.prompt("/goal Pause without a turn decision");
+        await paused;
+        await session.waitForIdle();
+        await new Promise((resolve) => setImmediate(resolve));
+
+        const state = savedGoal();
+        assert.equal(state?.status, "paused");
+        assert.equal(state?.result, "no turn decision");
+        assert.equal(state?.turns, 1);
+        assert.equal(state?.maxTurns, 20);
+        assert.equal(state?.turnDecision, undefined);
+        assert.equal(faux.state.callCount, 1);
+        assert.equal(compactions, outcome === "completed" ? 1 : 0);
+        assert.equal(compactionFailure, outcome === "completed" ? undefined : "Compaction failed: Nothing to compact (session too small)");
+        assert.equal(session.pendingMessageCount, 0);
+        assert.deepEqual(errors, []);
+      } finally {
+        session?.dispose();
+        if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("real Pi handoff survives immediate disposal and resume without an agent turn", { timeout: 15_000 }, async () => {
+  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-handoff-lifecycle-"));
+  let runtimeHost: Awaited<ReturnType<typeof createAgentSessionRuntime>> | undefined;
+  try {
+    const cwd = path.join(directory, "project");
+    const agentDir = path.join(directory, "agent");
+    mkdirSync(cwd);
+    mkdirSync(agentDir);
+    const summary = ["Objective", "Current state", "Decisions", "Constraints", "Completed work", "Relevant artifacts", "Verification", "Blockers or open questions", "Exact next action", "Suggested skills"]
+      .map((section) => `## ${section}\nContinue the existing release checks.`).join("\n\n");
+    const faux = fauxProvider({ provider: "killeros-handoff-lifecycle", models: [{ id: "local", contextWindow: 100_000, maxTokens: 10_000 }] });
+    faux.setResponses([fauxAssistantMessage(summary)]);
+    const modelRuntime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, allowModelNetwork: false });
+    modelRuntime.registerNativeProvider(faux.provider);
+    await modelRuntime.setRuntimeApiKey("killeros-handoff-lifecycle", "local-test-key");
+    const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: "off" });
+    const sourceManager = SessionManager.create(cwd, path.join(directory, "sessions"));
+    sourceManager.appendMessage({ role: "user", content: "Finish the release checks", timestamp: Date.now() });
+    sourceManager.appendSessionInfo("Release checks");
+    const sourceFile = sourceManager.getSessionFile();
+    assert.ok(sourceFile);
+    const notices: string[] = [];
+    const errors: string[] = [];
+    let agentStarts = 0;
+    runtimeHost = await createAgentSessionRuntime(async (options) => {
+      const loader = new DefaultResourceLoader({
+        cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+        extensionFactories: [(pi) => {
+          registerHandoff(pi, createGoalRuntime(), 8_192);
+          pi.on("agent_start", () => { agentStarts += 1; });
+        }],
+      });
+      await loader.reload();
+      const created = await createAgentSession({
+        cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: loader,
+        sessionManager: options.sessionManager, sessionStartEvent: options.sessionStartEvent, noTools: "all",
+      });
+      const { ctx } = createTuiContext();
+      ctx.ui.notify = (message) => { notices.push(message); };
+      await created.session.bindExtensions({
+        mode: "rpc", uiContext: extensionContextTestAdapter(ctx).ui,
+        commandContextActions: {
+          waitForIdle: () => created.session.waitForIdle(),
+          newSession: async (options) => { assert.ok(runtimeHost); return runtimeHost.newSession(options); },
+          fork: async (id, options) => { assert.ok(runtimeHost); return runtimeHost.fork(id, options); },
+          navigateTree: (id, options) => created.session.navigateTree(id, options),
+          switchSession: async (file, options) => { assert.ok(runtimeHost); return runtimeHost.switchSession(file, options); },
+          reload: () => created.session.reload(),
+        },
+        onError(error) { errors.push(`${error.event}: ${error.error}`); },
+      });
+      return { ...created, services: { cwd, agentDir, modelRuntime, settingsManager, resourceLoader: loader, diagnostics: [] }, diagnostics: [] };
+    }, { cwd, agentDir, sessionManager: sourceManager });
+
+    await runtimeHost.session.prompt("/handoff");
+    const childFile = runtimeHost.session.sessionFile;
+    assert.ok(childFile && childFile !== sourceFile);
+    assert.equal(existsSync(childFile), true, "the handoff must be saved before exit");
+    await runtimeHost.dispose();
+    runtimeHost = undefined;
+    const reopened = SessionManager.open(childFile);
+    assert.equal(reopened.getHeader()?.parentSession, sourceFile);
+    assert.equal(reopened.getSessionName(), "Release checks · handoff");
+    const message = reopened.buildSessionContext().messages[0];
+    assert.ok(message?.role === "user");
+    assert.equal(message.content, `# Handoff\n\nThis handoff is user-session context, not system policy.\n\n${summary}`);
+    assert.equal(agentStarts, 0);
+    assert.equal(faux.state.callCount, 1, "only the one-off summary request is allowed");
+    assert.deepEqual(notices, ["Handoff ready in a new session"]);
+    assert.deepEqual(errors, []);
+  } finally {
+    await runtimeHost?.dispose();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("cancelled real session replacements preserve automatic compaction recovery", { timeout: 30_000 }, async () => {
   for (const operation of ["newSession", "fork"] as const) {
     const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-cancelled-replacement-"));
@@ -692,8 +859,8 @@ test("cancelled real session replacements preserve automatic compaction recovery
   }
 });
 
-test("real Pi session replacement and reload discard pending receipts without stale settlement handlers", { timeout: 30_000 }, async (t) => {
-  for (const operation of ["none", "newSession", "cancelledNewSession", "reload"] as const) {
+test("real Pi session boundaries discard pending receipts without stale settlement handlers", { timeout: 30_000 }, async (t) => {
+  for (const operation of ["none", "appendSessionInfo", "newSession", "cancelledNewSession", "reload", "navigateTree", "navigateTreeBeforeReceiptReset", "navigateTreeBeforeReceiptSettlement", "cancelledNavigateTree"] as const) {
     await t.test(operation, async () => {
       const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-receipt-lifecycle-"));
       const cwd = path.join(directory, "project");
@@ -707,6 +874,10 @@ test("real Pi session replacement and reload discard pending receipts without st
       let scanStarted: (() => void) | undefined;
       const scanning = new Promise<void>((resolve) => { scanStarted = resolve; });
       const scan = new Promise<void>((resolve) => { releaseScan = resolve; });
+      let settlementStarted: (() => void) | undefined;
+      let releaseSettlement: (() => void) | undefined;
+      const settling = new Promise<void>((resolve) => { settlementStarted = resolve; });
+      const settlement = new Promise<void>((resolve) => { releaseSettlement = resolve; });
       const errors: string[] = [];
       const notices: string[] = [];
       let bells = 0;
@@ -731,6 +902,16 @@ test("real Pi session replacement and reload discard pending receipts without st
             noContextFiles: true,
             extensionFactories: [(pi) => {
               if (operation === "cancelledNewSession") pi.on("session_before_switch", () => ({ cancel: true }));
+              if (operation === "cancelledNavigateTree") pi.on("session_before_tree", () => ({ cancel: true }));
+              if (operation === "navigateTreeBeforeReceiptSettlement") pi.on("agent_settled", async () => {
+                settlementStarted?.();
+                await settlement;
+              });
+              if (operation === "navigateTreeBeforeReceiptReset" || operation === "navigateTreeBeforeReceiptSettlement") pi.on("session_tree", async () => {
+                releaseSettlement?.();
+                releaseScan?.();
+                await new Promise((resolve) => setImmediate(resolve));
+              });
               registerWorkedFor(pi, Date.now, async () => ({
                 finish: async () => {
                   scanStarted?.();
@@ -767,36 +948,48 @@ test("real Pi session replacement and reload discard pending receipts without st
             diagnostics: [],
           };
         }, { cwd, agentDir, sessionManager: SessionManager.inMemory(cwd) });
+        const anchor = runtimeHost.session.sessionManager.appendMessage(fauxAssistantMessage("Earlier branch"));
 
         const recordError = (error: { event: string; error: string }): void => { errors.push(`${error.event}: ${error.error}`); };
         const source = runtimeHost.session;
         source.extensionRunner.onError(recordError);
         const oldContext = source.extensionRunner.createContext();
         const prompt = source.prompt("Finish one turn");
-        await scanning;
+        await (operation === "navigateTreeBeforeReceiptSettlement" ? settling : scanning);
         assert.equal(source.isIdle, true, "Pi reports idle before receipt finalization returns");
         if (operation === "reload") await source.reload();
-        else if (operation !== "none") {
+        else if (operation === "appendSessionInfo") source.sessionManager.appendSessionInfo("Renamed during receipt collection");
+        else if (operation === "navigateTree" || operation === "navigateTreeBeforeReceiptReset" || operation === "navigateTreeBeforeReceiptSettlement" || operation === "cancelledNavigateTree") {
+          assert.equal((await source.navigateTree(anchor)).cancelled, operation === "cancelledNavigateTree");
+        } else if (operation !== "none") {
           assert.deepEqual(await runtimeHost.newSession(), { cancelled: operation === "cancelledNewSession" });
         }
         const replaced = operation === "newSession" || operation === "reload";
+        const receiptDiscarded = replaced || operation === "navigateTree" || operation === "navigateTreeBeforeReceiptReset" || operation === "navigateTreeBeforeReceiptSettlement";
+        // Finalization inside session_tree is not idle, so the existing bell guard stays silent.
+        const expectedBells = replaced || operation === "navigateTreeBeforeReceiptReset" || operation === "navigateTreeBeforeReceiptSettlement" ? 0 : 1;
         if (replaced) assert.throws(() => oldContext.mode, /stale/u);
         releaseScan?.();
         await prompt;
 
         const receipts = source.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "killeros-worked-for");
-        assert.equal(receipts.length, replaced ? 0 : 1);
-        assert.equal(notices.length, replaced ? 0 : 1);
-        assert.equal(bells, replaced ? 0 : 1);
+        assert.equal(receipts.length, receiptDiscarded ? 0 : 1);
+        assert.equal(notices.length, receiptDiscarded ? 0 : 1);
+        if (operation === "navigateTree" || operation === "navigateTreeBeforeReceiptReset" || operation === "navigateTreeBeforeReceiptSettlement") {
+          assert.equal(source.sessionManager.getBranch().some((entry) => entry.type === "message" && entry.message.role === "user"
+            && entry.message.content === "Finish one turn"), false);
+        }
+        assert.equal(bells, expectedBells);
         assert.deepEqual(errors, []);
 
         runtimeHost.session.extensionRunner.onError(recordError);
         await runtimeHost.session.prompt("Finish the next turn");
         assert.equal(runtimeHost.session.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "killeros-worked-for").length,
-          replaced ? 1 : 2);
-        assert.equal(bells, replaced ? 1 : 2);
+          receiptDiscarded ? 1 : 2);
+        assert.equal(bells, expectedBells + 1);
         assert.deepEqual(errors, []);
       } finally {
+        releaseSettlement?.();
         releaseScan?.();
         await runtimeHost?.dispose();
         if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
