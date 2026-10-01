@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-01
+
 ### Changed
 
 - Raised the minimum supported Pi version and locked Pi development packages to 0.99.2, with matching CI and lockfile contracts. Users on older Pi versions must upgrade.
