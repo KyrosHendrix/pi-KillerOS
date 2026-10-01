@@ -1042,8 +1042,16 @@ test("change receipt never runs repository-local locator or Git shims", async (t
   try {
     process.env.PATH = ["", ".", root, ...(previousPath ?? "").split(path.delimiter)].join(path.delimiter);
     process.chdir(root);
-    const { passiveGitCommand: debugPassiveGitCommand } = await import("../killeros/passive-git-status.ts");
-    console.log(`DEBUG shim test root=${root} tmpdir=${os.tmpdir()} pathKeys=${Object.keys(process.env).filter((k) => k.toLowerCase() === "path").join(",")} found=${debugPassiveGitCommand(root) ?? "<none>"}`);
+    const { passiveGitCommand: debugPassiveGitCommand, passiveGitEnv: debugPassiveGitEnv } = await import("../killeros/passive-git-status.ts");
+    const { spawnSync } = await import("node:child_process");
+    const foundGit = debugPassiveGitCommand(root);
+    console.log(`DEBUG shim test root=${root} tmpdir=${os.tmpdir()} pathKeys=${Object.keys(process.env).filter((k) => k.toLowerCase() === "path").join(",")} found=${foundGit ?? "<none>"}`);
+    if (foundGit) {
+      for (const args of [["rev-parse", "--show-toplevel"], ["config", "--type=bool", "--default", "true", "--get", "core.filemode"], ["ls-files", "--cached", "--debug", "-z"]]) {
+        const result = spawnSync(foundGit, args, { cwd: root, env: debugPassiveGitEnv(), encoding: "utf8", windowsHide: true });
+        console.log(`DEBUG git ${args.join(" ")} status=${result.status} error=${result.error?.message ?? "<none>"} stdoutLen=${result.stdout?.length ?? 0} stderr=${String(result.stderr ?? "").slice(0, 300)}`);
+      }
+    }
     const collection = await beginChangeReceipt(root);
     await writeFile(path.join(root, "clean.txt"), "changed\n");
     const summary = await collection.finish();
