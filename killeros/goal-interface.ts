@@ -311,6 +311,9 @@ export function registerGoalInterface(
         ctx.ui.notify("/goal requires a saved session", "error");
         return;
       }
+      const generation = runtime.lifecycleGeneration;
+      const initiatingState = runtime.state;
+      const ownsGoal = (): boolean => runtime.lifecycleGeneration === generation && runtime.state === initiatingState;
 
       if (command.kind === "status") {
         if (!runtime.state) {
@@ -323,9 +326,11 @@ export function registerGoalInterface(
         }
         const actions = goalPanelActions(runtime.state.status);
         const selected = await ctx.ui.select(goalStatusSummary(runtime.state, ctx), actions.map((action) => action.label));
+        if (!ownsGoal()) return;
         const action = actions.find((candidate) => candidate.label === selected);
         if (!action) return;
         if (action.control === "clear" && !await ctx.ui.confirm("Clear goal?", safeTerminalText(runtime.state.objective))) return;
+        if (!ownsGoal()) return;
         await handleGoalCommand(action.control, ctx);
         return;
       }
@@ -487,18 +492,20 @@ export function registerGoalInterface(
           return;
         }
         const replace = await ctx.ui.confirm("Replace active goal", "Replace the current unfinished goal and discard its continuation state?");
-        if (!replace) return;
+        if (!replace || !ownsGoal()) return;
       }
 
-      runtime.continuationHeld = true;
+      const hold = Symbol();
+      runtime.continuationHeld = hold;
       let waitError: unknown;
       try {
         await ctx.waitForIdle();
       } catch (error) {
         waitError = error;
       } finally {
-        runtime.continuationHeld = false;
+        if (runtime.continuationHeld === hold) runtime.continuationHeld = undefined;
       }
+      if (!ownsGoal()) return;
       if (waitError) {
         reportError(ctx, "Goal could not wait for the active turn", waitError);
         scheduleGoalContinuation(pi, runtime, ctx);
@@ -508,6 +515,7 @@ export function registerGoalInterface(
       try {
         verification = await inferGoalVerification(objective, ctx.cwd);
       } catch (error) {
+        if (!ownsGoal()) return;
         if (!unfinished) {
           reportError(ctx, "Goal could not be started", error);
         } else {
@@ -516,6 +524,7 @@ export function registerGoalInterface(
         }
         return;
       }
+      if (!ownsGoal()) return;
       try {
         const state = createNewGoalState(objective, sumGoalTokens(ctx), verification, Date.now(), {
           maxTurns: DEFAULT_GOAL_MAX_TURNS,

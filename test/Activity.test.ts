@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import test from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { type ActivityMessage, formatActivityMessage, registerRequestActivity } from "../killeros/activity.ts";
 import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 import { createHarness, createTuiContext, getHandlers, last } from "./ExtensionTestHarness.ts";
@@ -38,6 +39,17 @@ const plainTheme = themeTestAdapter({
 const styledTheme = themeTestAdapter({
   bold(text: string): string { return `<bold>${text}</bold>`; },
   fg(color: string, text: string): string { return `<${color}>${text}</${color}>`; },
+});
+
+test("custom activity tool names remove every C1 control and retain the 32-column limit", () => {
+  for (let code = 0x80; code <= 0x9f; code += 1) {
+    const message = formatActivityMessage({ kind: "tool", toolName: `custom${String.fromCharCode(code)}tool` }, plainTheme);
+    assert.doesNotMatch(message, /[\u0080-\u009f]/u);
+  }
+  const message = formatActivityMessage({ kind: "tool", toolName: "custom中".repeat(20) }, plainTheme);
+  const name = /using ([^)]+)/u.exec(message)?.[1];
+  assert.ok(name);
+  assert.ok(visibleWidth(name) <= 32);
 });
 
 test("working messages append the model suffix to every activity state", () => {

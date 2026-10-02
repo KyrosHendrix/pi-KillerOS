@@ -119,6 +119,10 @@ export function persistGoalState(
   const data: GoalEntryData = { version: GOAL_VERSION, event, state: state ?? null };
   pi.appendEntry(GOAL_ENTRY_TYPE, data);
   runtime.state = state;
+  if (event === "clear") {
+    runtime.lifecycleGeneration += 1;
+    runtime.continuationHeld = undefined;
+  }
   syncGoalUpdateTool(pi, runtime);
   runtime.persistenceRetryNeeded = false;
   runtime.requestRender?.();
@@ -404,7 +408,7 @@ export function registerGoalRuntime(
     runtime.state = isGoalModeSupported(ctx) ? restored.state : undefined;
     syncGoalUpdateTool(pi, runtime);
     runtime.continuationScheduled = false;
-    runtime.continuationHeld = false;
+    runtime.continuationHeld = undefined;
     runtime.goalTurnInFlight = false;
     runtime.goalTurn = undefined;
     runtime.agentEndObserved = false;
@@ -441,7 +445,7 @@ export function registerGoalRuntime(
     runtime.state = undefined;
     syncGoalUpdateTool(pi, runtime);
     clearGoalExecutionFlags(runtime);
-    runtime.continuationHeld = false;
+    runtime.continuationHeld = undefined;
     runtime.persistenceRetryNeeded = false;
   });
 

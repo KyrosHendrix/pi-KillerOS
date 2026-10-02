@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import os from "node:os";
+import path from "node:path";
 import { Check } from "typebox/value";
+import { registerGoalInterface } from "../killeros/goal-interface.ts";
+import { createGoalRuntime } from "../killeros/runtime.ts";
+import { extensionApiTestAdapter } from "./PiTestAdapters.ts";
 import { createHarness, createTuiContext, emitSequentially, getCommand, getHandlers, getTool, last, type TestHandler } from "./ExtensionTestHarness.ts";
 type GoalEntryState = {
   status: string;
@@ -623,4 +630,107 @@ test("/goal pause can save an in-memory fallback after persistence recovers", as
   }, ctx);
   await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
   assert.equal(sentMessages.length, 1);
+});
+
+test("a pending goal-start cannot revive a goal after a newer goal is set and cleared", async () => {
+  const harness = createHarness();
+  const { ctx } = createTuiContext();
+  ctx.hasPendingMessages = () => true;
+  let release = (): void => { throw new Error("idle gate was not initialized"); };
+  ctx.waitForIdle = () => new Promise<void>((resolve) => { release = resolve; });
+  const command = getCommand(harness, "goal");
+  const pending = command.handler("Older objective", ctx);
+  const immediate = { ...ctx, waitForIdle: async () => {} };
+  await command.handler("Newer objective", immediate);
+  await command.handler("clear", immediate);
+  const before = harness.appendedEntries.length;
+  release();
+  await pending;
+  assert.equal(harness.appendedEntries.length, before);
+  assert.equal(last(harness.appendedEntries).data.state, null);
+});
+
+test("finishing an older goal command keeps a newer command's continuation hold", async () => {
+  const harness = createHarness();
+  const runtime = createGoalRuntime();
+  registerGoalInterface(extensionApiTestAdapter(harness.api), runtime);
+  const { ctx } = createTuiContext();
+  ctx.hasPendingMessages = () => true;
+  ctx.ui.confirm = async () => true;
+  const command = getCommand(harness, "goal");
+  await command.handler("Original objective", ctx);
+  let rejectOlder = (_error: Error): void => { throw new Error("older gate was not initialized"); };
+  let releaseNewer = (): void => { throw new Error("newer gate was not initialized"); };
+  const olderGate = new Promise<void>((_resolve, reject) => { rejectOlder = reject; });
+  const newerGate = new Promise<void>((resolve) => { releaseNewer = resolve; });
+  const older = command.handler("Older replacement", { ...ctx, waitForIdle: () => olderGate });
+  const newer = command.handler("Newer replacement", { ...ctx, waitForIdle: () => newerGate });
+  rejectOlder(new Error("idle wait failed"));
+  await older;
+  try {
+    assert.ok(runtime.continuationHeld, "the newer command still owns its idle wait");
+  } finally {
+    releaseNewer();
+    await newer;
+  }
+  assert.equal(runtime.state?.objective, "Newer replacement");
+  assert.ok(!runtime.continuationHeld);
+});
+
+test("BUG-05b an older pending goal-start command cannot overwrite a newer objective", async () => {
+  const harness = createHarness();
+  const { ctx } = createTuiContext();
+  ctx.hasPendingMessages = () => true;
+  let release: (() => void) | undefined;
+  ctx.waitForIdle = () => new Promise<void>((resolve) => { release = resolve; });
+  const command = getCommand(harness, "goal");
+  const pending = command.handler("Older objective", ctx);
+  assert.ok(release);
+  await command.handler("Newer objective", { ...ctx, waitForIdle: async () => {} });
+  release(); await pending;
+  const state = harness.appendedEntries.at(-1)?.data.state;
+  assert.ok(typeof state === "object" && state !== null && "objective" in state);
+  assert.equal(state.objective, "Newer objective");
+});
+
+test("pending replacements retain goal ownership across confirmation, idle, and file inference", async (t) => {
+  for (const stage of ["confirmation", "idle", "baseline"] as const) {
+    await t.test(stage, async (t) => {
+      const harness = createHarness<GoalEntryData>();
+      const { ctx } = createTuiContext();
+      ctx.hasPendingMessages = () => true;
+      ctx.ui.confirm = async () => true;
+      const command = getCommand(harness, "goal");
+      await command.handler("Original objective", ctx);
+      let release = (): void => { throw new Error("gate was not initialized"); };
+      let signalEntered = (): void => { throw new Error("barrier was not initialized"); };
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { signalEntered = resolve; });
+      let objective = "Older replacement";
+      if (stage === "confirmation") ctx.ui.confirm = async () => { signalEntered(); await gate; return true; };
+      if (stage === "idle") ctx.waitForIdle = async () => { signalEntered(); await gate; };
+      if (stage === "baseline") {
+        const directory = await fsPromises.mkdtemp(path.join(os.tmpdir(), "killeros-goal-baseline-"));
+        t.after(() => fsPromises.rm(directory, { recursive: true, force: true }));
+        const target = path.join(directory, "proof.txt");
+        await fsPromises.writeFile(target, "original");
+        objective = `Fix \`${target}\``;
+        const original = fsPromises.lstat;
+        const intercepted = t.mock.method(fsPromises, "lstat", async (...args: Parameters<typeof original>) => {
+          if (args[0] === target) { signalEntered(); await gate; }
+          return original(...args);
+        });
+        syncBuiltinESMExports();
+        t.after(() => { intercepted.mock.restore(); syncBuiltinESMExports(); });
+      }
+      const pending = command.handler(objective, ctx);
+      await entered;
+      await command.handler("Newer objective", { ...ctx, ui: { ...ctx.ui, confirm: async () => true }, waitForIdle: async () => {} });
+      const before = harness.appendedEntries.length;
+      release();
+      await pending;
+      assert.equal(harness.appendedEntries.length, before);
+      assert.equal(last(harness.appendedEntries).data.state.objective, "Newer objective");
+    });
+  }
 });

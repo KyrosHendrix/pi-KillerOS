@@ -6,6 +6,11 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Rejected recognized credential assignments in Markdown handoffs, including list items, bold labels, and inline-code labels, before creating a destination session.
+- Discarded pending goal mutations after committed navigation or a competing goal mutation during confirmation, idle waiting, or file-baseline inference, including goals set and then cleared. Overlapping commands retain their own continuation holds. Cancelled navigation preserves valid pending commands.
+- Preserved concurrent changes to independent `/auto-compact` fields by merging the effective preference under the settings lock.
+- Removed C1 terminal controls from custom activity tool names.
+- Clipped collapsed and expanded transcript lines to the terminal width, including wide Unicode characters at one column.
 - Treated failed Git HEAD lookups as unavailable instead of inventing added files, while retaining support for repositories without commits. Footer scans and task receipts share the same HEAD resolution.
 - Paused normally stopped goals without an accepted decision even when automatic compaction succeeds or skips a session-too-small request, preventing repeated same-turn requests from bypassing the turn limit. Interrupted-turn recovery and accepted next-turn decisions remain supported.
 - Saved `/handoff` context before reporting success so the linked session survives immediate exit and resume without another prompt or an automatic agent turn.

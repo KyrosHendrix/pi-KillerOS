@@ -155,11 +155,15 @@ export function registerAutoCompaction(
       }
 
       try {
-        const preference = readAutoCompactionPreference(settingsStore.load());
-        const updated = percent === undefined
-          ? { ...preference, enabled: argument === "on" }
-          : { ...preference, percentRemaining: percent };
-        settingsStore.update({ autoCompaction: updated });
+        let updated: AutoCompactionPreference | undefined;
+        settingsStore.update((current) => {
+          const preference = readAutoCompactionPreference(current);
+          updated = percent === undefined
+            ? { ...preference, enabled: argument === "on" }
+            : { ...preference, percentRemaining: percent };
+          return { autoCompaction: updated };
+        });
+        if (!updated) throw new Error("Settings update did not apply the preference");
         ctx.ui.notify(percent === undefined
           ? updated.enabled
             ? `Automatic compaction: on at ${updated.percentRemaining}% remaining`

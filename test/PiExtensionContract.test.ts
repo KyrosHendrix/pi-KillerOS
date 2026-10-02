@@ -22,6 +22,8 @@ import { registerCodexFastMode } from "../killeros/codex-fast.ts";
 import { isCodexFastEnabled, resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { registerCompletionNotifications } from "../killeros/notifications.ts";
 import { registerWorkedFor } from "../killeros/worked-for.ts";
+import { registerGoalInterface } from "../killeros/goal-interface.ts";
+import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
 import { registerHandoff } from "../killeros/handoff.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
@@ -1015,5 +1017,42 @@ test("all KillerOS tools expose provider-compatible object schemas", () => {
     assert.equal(typeof schema.properties, "object", `${tool.name} must declare object properties`);
     assert.equal(schema.anyOf, undefined, `${tool.name} must not use a top-level anyOf`);
     assert.equal(schema.oneOf, undefined, `${tool.name} must not use a top-level oneOf`);
+  }
+});
+
+test("BUG-05 real Pi tree navigation invalidates a pending goal-start command", { timeout: 20000 }, async (t) => {
+  for (const cancelled of [false, true]) {
+    const root = mkdtempSync(path.join(process.cwd(), "node_modules", ".killeros-edge-goal-command-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const cwd = path.join(root, "project"), agentDir = path.join(root, "agent");
+    mkdirSync(cwd); mkdirSync(agentDir);
+    const state = createGoalRuntime();
+    const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
+    const faux = fauxProvider({ provider: "killeros-edge-goal", models: [{ id: "local", contextWindow: 100000, maxTokens: 1000 }] });
+    const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+    modelRuntime.registerNativeProvider(faux.provider);
+    await modelRuntime.setRuntimeApiKey("killeros-edge-goal", "fixture-only-key");
+    const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: [(pi) => {
+      registerGoalInterface(pi, state); registerGoalRuntime(pi, state);
+      if (cancelled) pi.on("session_before_tree", () => ({ cancel: true }));
+    }] });
+    await loader.reload();
+    const manager = SessionManager.create(cwd, path.join(root, "sessions"));
+    const anchor = manager.appendMessage(fauxAssistantMessage("Earlier branch"));
+    manager.appendMessage({ role: "user", content: "Source branch", timestamp: Date.now() });
+    const { session } = await createAgentSession({ cwd, agentDir, sessionManager: manager, settingsManager, modelRuntime, model: faux.getModel(), resourceLoader: loader, noTools: "all" });
+    t.after(() => session.dispose());
+    await session.bindExtensions({ mode: "rpc", shutdownHandler() {} });
+    const command = session.extensionRunner.getCommand("goal"); assert.ok(command);
+    const ctx = session.extensionRunner.createCommandContext();
+    let release: (() => void) | undefined;
+    ctx.waitForIdle = () => new Promise<void>((resolve) => { release = resolve; });
+    ctx.hasPendingMessages = () => true; // Keep the reproduction limited to persistence, without a model turn.
+    const pending = command.handler("Objective entered on the source branch", ctx);
+    assert.ok(release);
+    assert.equal((await session.navigateTree(anchor)).cancelled, cancelled);
+    release(); await pending;
+    const goals = session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "killeros-goal");
+    assert.equal(goals.length, cancelled ? 1 : 0, "only cancelled navigation preserves pending work");
   }
 });

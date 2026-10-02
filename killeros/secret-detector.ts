@@ -10,7 +10,7 @@ const SECRET_PATTERNS = [
   /\bsk_live_[A-Za-z0-9]{16,255}\b/u,
   /\bxox[baprs]-[A-Za-z0-9-]{10,255}\b/u,
   /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/iu,
-  /^[\t ]*["']?[\w.-]*(?:api_key|apikey|password|passwd|secret|token)[\w.-]*["']?[\t ]*(?:=|:)[\t ]*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s#][^\r\n]*)/imu,
+  /^[\t ]*(?:(?:[-*+]|\d+[.)])[\t ]+)?(?:\*\*|`)?["']?[\w.-]*(?:api_key|apikey|password|passwd|secret|token)[\w.-]*["']?(?:\*\*|`)?[\t ]*(?:=|:)[\t ]*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s#][^\r\n]*)/imu,
 ] as const;
 
 /** Detects high-confidence credential material without returning the matched value. */

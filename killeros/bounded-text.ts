@@ -11,7 +11,7 @@ export class BoundedText implements Component {
 
   render(width: number): string[] {
     if (width <= 0) return [];
-    const lines = new Text(this.text, 0, 0).render(width);
+    const lines = new Text(this.text, 0, 0).render(width).map((line) => truncateToWidth(line, width, ""));
     if (this.maxRows === undefined || lines.length <= this.maxRows) return lines;
     const rowLimit = Math.max(1, this.maxRows);
     const visible = lines.slice(0, rowLimit);
