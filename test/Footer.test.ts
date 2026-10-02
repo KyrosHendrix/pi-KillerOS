@@ -848,8 +848,8 @@ test("footer passive scan never runs repository-local locator or Git shims", asy
     process.chdir(previousCwd);
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
-    rmSync(repository, { recursive: true, force: true });
-    rmSync(probe, { recursive: true, force: true });
+    await removeDirectoryEventually(repository);
+    await removeDirectoryEventually(probe);
   }
 });
 
@@ -888,9 +888,9 @@ test("footer passive scan rejects Git through a repository-local directory link"
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
-    rmSync(repositoryAlias, { recursive: true, force: true });
-    rmSync(repository, { recursive: true, force: true });
-    rmSync(external, { recursive: true, force: true });
+    await removeDirectoryEventually(repositoryAlias);
+    await removeDirectoryEventually(repository);
+    await removeDirectoryEventually(external);
   }
 });
 
@@ -916,7 +916,7 @@ test("footer passive scan fails closed when only repository-local Git is discove
     process.chdir(previousCwd);
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
-    rmSync(repository, { recursive: true, force: true });
-    rmSync(probe, { recursive: true, force: true });
+    await removeDirectoryEventually(repository);
+    await removeDirectoryEventually(probe);
   }
 });

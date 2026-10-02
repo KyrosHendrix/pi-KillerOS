@@ -14,6 +14,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Reused bounded cleanup retries in passive Git footer tests so transient Windows directory locks do not fail CI after the security assertions pass.
 - Preserved an authorized goal continuation when a replacement becomes stale during its idle wait, instead of leaving the surviving goal active but idle. Navigation, clear, turn limits, and competing continuation holds remain respected.
 - Rejected recognized credential assignments in Markdown handoffs, including list items, bold labels, and inline-code labels, before creating a destination session.
 - Discarded pending goal mutations after committed navigation or a competing goal mutation during confirmation, idle waiting, or file-baseline inference, including goals set and then cleared. Overlapping commands retain their own continuation holds. Cancelled navigation preserves valid pending commands.
