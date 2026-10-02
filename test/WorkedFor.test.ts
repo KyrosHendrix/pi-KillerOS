@@ -30,7 +30,11 @@ type WorkedForContext = {
   hasPendingMessages(): boolean;
   isIdle(): boolean;
   isProjectTrusted(): boolean;
-  sessionManager: { getEntries(): WorkedForSessionEntry[] };
+  sessionManager: {
+    getEntries(): WorkedForSessionEntry[];
+    getLeafId(): string;
+    getBranch(): Array<{ id: string }>;
+  };
   ui: Pick<ExtensionContext["ui"], "notify">;
 };
 
@@ -107,10 +111,14 @@ function createWorkedForHarness(
     isIdle: () => idle,
     isProjectTrusted: () => projectTrusted,
     mode,
-    sessionManager: { getEntries: () => {
-      if (sessionError) throw sessionError;
-      return sessionEntries;
-    } },
+    sessionManager: {
+      getEntries: () => {
+        if (sessionError) throw sessionError;
+        return sessionEntries;
+      },
+      getLeafId: () => "response",
+      getBranch: () => [{ id: "response" }],
+    },
     ui: { notify: (message: string, level?: NotificationLevel) => notices.push({ message, level }) },
   };
   registerWorkedFor(extensionApiTestAdapter(api), () => currentTime, collect);
@@ -898,7 +906,7 @@ test("non-TUI modes and settlements without a started run append nothing", async
 });
 
 test("session boundaries discard receipts already waiting for their final scan", async () => {
-  for (const boundary of ["session_shutdown", "session_start"]) {
+  for (const boundary of ["session_shutdown", "session_start", "session_tree"]) {
     for (const changes of [{ ...EMPTY_V4.changes, files: [] }, { state: "unavailable", reason: "error" }] satisfies ChangeSummary[]) {
       let releaseScan: ((changes: ChangeSummary) => void) | undefined;
       let scanStarted: (() => void) | undefined;
@@ -924,6 +932,32 @@ test("session boundaries discard receipts already waiting for their final scan",
       assert.equal(harness.appendedEntries.length, 1, boundary);
     }
   }
+});
+
+test("tree navigation discards an unfinished receipt and resets the destination baseline", async () => {
+  let starts = 0;
+  let disposals = 0;
+  const harness = createWorkedForHarness("tui", async () => {
+    starts += 1;
+    return {
+      finish: async () => ({ ...EMPTY_V4.changes, files: [] }),
+      dispose: async () => { disposals += 1; },
+    };
+  });
+  await harness.emit("agent_start");
+  await harness.emit("session_before_tree");
+  assert.equal(disposals, 0, "an uncommitted navigation must not discard the receipt");
+  await harness.emit("session_tree");
+  await harness.emit("agent_settled");
+  assert.equal(disposals, 1);
+  assert.equal(harness.appendedEntries.length, 0);
+
+  await harness.emit("agent_start");
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await harness.emit("agent_settled");
+  assert.equal(starts, 2);
+  assert.equal(harness.appendedEntries.length, 1);
+  assert.equal(harness.appendedEntries[0]?.data.outcome, "done");
 });
 
 test("session boundaries discard unfinished timing and save failures stay contained", async () => {

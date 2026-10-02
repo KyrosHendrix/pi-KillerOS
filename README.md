@@ -19,7 +19,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## Requirements
 
 - Node.js 22.19.0+
-- Pi 0.99.2 or later within the 0.x release line
+- Pi 0.99.2 or later below 2.0.0
 - An interactive TUI session for the custom header, editor, footer, and `question`
 
 ## Install
@@ -34,7 +34,7 @@ Or from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin a release by appending its tag, for example `@v3.0.0`. Add `-l` to install only for the current project. Restart Pi after installing.
+Pin a release by appending its tag, for example `@v3.0.1`. Add `-l` to install only for the current project. Restart Pi after installing.
 
 ## Commands
 
@@ -61,6 +61,8 @@ The TUI footer's `fast` label means the enabled preference applies to the select
 
 ## Behavior by mode
 
+Pi 1.0 defaults to fullscreen. Use `--tui-mode regular` for one invocation or set `"tuiMode": "regular"` in Pi's [settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md#terminal-and-display) to restore terminal-owned scrollback. KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged.
+
 | Mode | What works |
 | --- | --- |
 | TUI | Everything |
@@ -85,7 +87,9 @@ The packaged `killeros` theme activates on TUI start. Compaction triggers by def
 
 Use `/auto-compact status` to inspect the effective KillerOS preference, `/auto-compact on` or `/auto-compact off` to toggle it, and `/auto-compact <percent>` to set an integer threshold from 0 through 100. A threshold of 0 does not disable Pi's own token reserve.
 
-`handoffMaxTokens` caps the `/handoff` summary output at 8192 tokens by default; raise it when long sessions truncate the summary.
+Concurrent `/auto-compact` commands preserve independent changes to the enabled flag and threshold, along with unrelated settings. Malformed settings and failed writes report an error without claiming success or replacing the original file.
+
+`handoffMaxTokens` caps the `/handoff` summary output at 8192 tokens by default; raise it when long sessions truncate the summary. The handoff is saved as a visible user-context message before success is reported, so the linked session survives immediate exit and resume without sending another prompt. Creating the handoff does not start an agent turn.
 
 State proof in the objective so the agent can verify it with its normal tools:
 
@@ -99,9 +103,13 @@ A direct quoted path-shaped file target binds silent file proof. For an extensio
 /goal Fix `killeros/footer.ts`, verified by npm test
 ```
 
-Bare quoted prose remains model-reported. KillerOS captures the file baseline at goal start and only completes when the file is created or changed. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Restored goals keep their persisted limit.
+Bare quoted prose remains model-reported. KillerOS captures the file baseline at goal start and only completes when the file is created or changed. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Same-turn recovery requires an actual interruption; successful or skipped compaction cannot restart a normally stopped goal without a decision. Restored goals keep their persisted limit.
 
-Session replacement and reload discard unfinished task receipts. Late receipt results do not write or notify through the old session context.
+Session replacement, reload, and committed tree navigation discard unfinished task receipts. Late receipt results do not write or notify through the old session context or attach to a different branch. Cancelled navigation preserves the pending receipt.
+
+Pending `/goal` commands discard their mutation if committed navigation changes the branch or another mutation changes the goal while confirmation, idle waiting, or file-baseline reading is in progress. Cancelled navigation preserves valid pending commands. Discarding a stale replacement after its idle wait preserves the surviving goal's authorized continuation.
+
+Failed Git metadata reads keep the footer's last successful file counts and mark task changes unavailable. They are not treated as an empty repository.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 
@@ -113,11 +121,23 @@ Strict TypeScript throughout. Tests run on Node's built-in test runner:
 npm ci && npm run check && npm test
 ```
 
-Releases go through CI on `main`; do not push version tags manually. The prepublish check rejects ordinary direct `npm publish`, but `--ignore-scripts` can bypass it. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
+### Release process
+
+1. Prepare the release on `dev`: update `package.json` and both root versions in `package-lock.json`, update the README's pinned tag, and move completed changelog entries into a dated version section under `[Unreleased]`.
+2. Run `npm run check` and `npm test`, commit and push to `dev`, then open a pull request into `main`. Push later fixes to the same PR so CI reruns.
+3. Wait for every required check to pass, including CodeQL and dependency review, and resolve review conversations. The PR must be up to date with `main`.
+4. Merge using **Create a merge commit**. Squash and rebase merging are disabled because the automated `main`-to-`dev` sync requires shared ancestry. Avoid advancing `dev` until that sync finishes.
+5. Check the `main` CI run and the following Release run. Successful CI on the current `main` commit triggers npm publication with provenance, creates the GitHub release, and fast-forwards `dev` to the released commit. A green PR alone never publishes.
+
+`main` requires pull requests and the CI workflow's required checks, including for administrators. Force pushes and branch deletion are blocked. If CI job names change, update GitHub's required status checks to match.
+
+Releases go through CI on `main`; do not push version tags manually. The package smoke job validates release metadata before packing, and the release workflow checks it again before publication. The prepublish check rejects ordinary direct `npm publish`, but `--ignore-scripts` can bypass it. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
 
 ## Security
 
 Pi extensions run with your user permissions. Review the source before installing globally. Hook commands run only for projects Pi marks as trusted; check `.pi/killeros-hooks.json` before enabling project trust. KillerOS accepts that configuration only as a regular, non-linked file no larger than 64 KiB in the project's real `.pi` directory.
+
+Handoff validation rejects recognized credential assignments in plain text, Markdown lists, bold labels, and inline-code labels before creating a destination session. This pattern check cannot detect every secret or personally identifying value. Rejected values are not included in the error notification.
 
 ## License
 

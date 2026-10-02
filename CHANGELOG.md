@@ -4,6 +4,28 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-02
+
+### Changed
+
+- Expanded Pi peer ranges to `>=0.99.2 <2` and pinned development packages to 1.0.0. Compatibility CI now runs the full quality suite against the exact 0.99.2 minimum and latest stable 1.x with matched host packages, without changing the tracked manifest or lockfile.
+- Documented Pi 1.0's fullscreen default and the regular-mode override for terminal-owned scrollback.
+- Documented the protected PR-based release process and merge-commit requirement for automatic `main`-to-`dev` synchronization. CI now validates release metadata before package smoke testing, so mismatched versions, missing release notes, and stale README tags fail before merge.
+
+### Fixed
+
+- Reused bounded cleanup retries in passive Git footer tests so transient Windows directory locks do not fail CI after the security assertions pass.
+- Preserved an authorized goal continuation when a replacement becomes stale during its idle wait, instead of leaving the surviving goal active but idle. Navigation, clear, turn limits, and competing continuation holds remain respected.
+- Rejected recognized credential assignments in Markdown handoffs, including list items, bold labels, and inline-code labels, before creating a destination session.
+- Discarded pending goal mutations after committed navigation or a competing goal mutation during confirmation, idle waiting, or file-baseline inference, including goals set and then cleared. Overlapping commands retain their own continuation holds. Cancelled navigation preserves valid pending commands.
+- Preserved concurrent changes to independent `/auto-compact` fields by merging the effective preference under the settings lock.
+- Removed C1 terminal controls from custom activity tool names.
+- Clipped collapsed and expanded transcript lines to the terminal width, including wide Unicode characters at one column.
+- Treated failed Git HEAD lookups as unavailable instead of inventing added files, while retaining support for repositories without commits. Footer scans and task receipts share the same HEAD resolution.
+- Paused normally stopped goals without an accepted decision even when automatic compaction succeeds or skips a session-too-small request, preventing repeated same-turn requests from bypassing the turn limit. Interrupted-turn recovery and accepted next-turn decisions remain supported.
+- Saved `/handoff` context before reporting success so the linked session survives immediate exit and resume without another prompt or an automatic agent turn.
+- Discarded pending task receipts after committed tree navigation, preventing late scans from attaching the abandoned branch's receipt to the selected branch. Cancelled navigation still preserves receipts.
+
 ## [3.0.0] - 2026-10-01
 
 ### Changed

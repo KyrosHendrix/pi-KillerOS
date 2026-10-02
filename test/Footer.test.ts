@@ -186,6 +186,39 @@ test("Git status uses a five-second deadline and settles timeouts as unavailable
   assert.equal(result, undefined);
 });
 
+test("footer Git status does not treat a failed HEAD lookup as an empty repository", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-footer-head-failure-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: directory });
+    writeFileSync(path.join(directory, "tracked.txt"), "initial\n");
+    execFileSync("git", ["add", "."], { cwd: directory });
+    assert.deepEqual(await resolveGitFileChanges(directory), { modified: 0, added: 1, deleted: 0 });
+
+    for (const committed of [false, true]) {
+      if (committed) {
+        execFileSync("git", ["-c", "user.name=KillerOS Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: directory });
+        writeFileSync(path.join(directory, "tracked.txt"), "changed\n");
+      }
+      for (const reason of ["timed out", "config temporarily unreadable"]) {
+        await t.test(`${committed ? "committed" : "unborn"}/${reason}`, async () => {
+          let failedHead = false;
+          const result = await resolveGitFileChanges(directory, (file, args, options, callback) => {
+            if (args.includes("rev-parse") && args.at(-1) === "HEAD") {
+              failedHead = true;
+              callback(new Error(reason), "");
+            } else execFile(file, args, options, callback);
+          });
+          assert.equal(failedHead, true);
+          assert.equal(result, undefined, "a failed lookup must not invent added files");
+        });
+      }
+    }
+    assert.deepEqual(await resolveGitFileChanges(directory), { modified: 1, added: 0, deleted: 0 });
+  } finally {
+    await removeDirectoryEventually(directory);
+  }
+});
+
 test("untrusted projects never start footer Git status", async () => {
   let calls = 0;
   const result = await resolveGitFileChanges("repo", (_file, _args, _options, callback) => {
@@ -334,6 +367,7 @@ test("footer scan never starts a filter added and removed during inspection", as
     writeFileSync(path.join(directory, "tracked.txt"), "changed\n");
     let configured = false;
     let removed = false;
+    const scanErrors: Error[] = [];
 
     const result = await resolveGitFileChanges(directory, (file, args, options, callback) => {
       if (!configured && args.includes("ls-files")) {
@@ -341,6 +375,7 @@ test("footer scan never starts a filter added and removed during inspection", as
         execFileSync("git", ["config", "filter.tripwire.clean", `\"${process.execPath.replaceAll("\\", "/")}\" \"${filter.replaceAll("\\", "/")}\" \"${sentinel.replaceAll("\\", "/")}\"`], { cwd: directory });
       }
       execFile(file, args, options, (error, stdout) => {
+        if (error) scanErrors.push(error);
         if (configured && !removed) {
           removed = true;
           execFileSync("git", ["config", "--unset-all", "filter.tripwire.clean"], { cwd: directory });
@@ -349,7 +384,8 @@ test("footer scan never starts a filter added and removed during inspection", as
       });
     });
 
-    assert.deepEqual(result, { modified: 1, added: 0, deleted: 0 });
+    // If a Git read fails during config replacement, do not report partial counts.
+    assert.deepEqual(result, scanErrors.length ? undefined : { modified: 1, added: 0, deleted: 0 });
     assert.equal(existsSync(sentinel), false);
   } finally {
     await removeDirectoryEventually(directory);
@@ -812,8 +848,8 @@ test("footer passive scan never runs repository-local locator or Git shims", asy
     process.chdir(previousCwd);
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
-    rmSync(repository, { recursive: true, force: true });
-    rmSync(probe, { recursive: true, force: true });
+    await removeDirectoryEventually(repository);
+    await removeDirectoryEventually(probe);
   }
 });
 
@@ -852,9 +888,9 @@ test("footer passive scan rejects Git through a repository-local directory link"
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
-    rmSync(repositoryAlias, { recursive: true, force: true });
-    rmSync(repository, { recursive: true, force: true });
-    rmSync(external, { recursive: true, force: true });
+    await removeDirectoryEventually(repositoryAlias);
+    await removeDirectoryEventually(repository);
+    await removeDirectoryEventually(external);
   }
 });
 
@@ -880,7 +916,7 @@ test("footer passive scan fails closed when only repository-local Git is discove
     process.chdir(previousCwd);
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
-    rmSync(repository, { recursive: true, force: true });
-    rmSync(probe, { recursive: true, force: true });
+    await removeDirectoryEventually(repository);
+    await removeDirectoryEventually(probe);
   }
 });

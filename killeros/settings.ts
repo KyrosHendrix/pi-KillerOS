@@ -5,10 +5,13 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { hasErrorCode } from "./errors.ts";
 
 export type KillerosSettings = Record<string, unknown>;
+export type KillerosSettingsUpdate = Readonly<Record<string, unknown>>
+  | ((current: Readonly<KillerosSettings>) => Readonly<Record<string, unknown>>);
 
 export interface KillerosSettingsStore {
   load(): KillerosSettings;
-  update(patch: Readonly<Record<string, unknown>>): void;
+  /** Derive a field update from the latest settings while holding the writer lock. */
+  update(patch: KillerosSettingsUpdate): void;
 }
 
 function isSettings(value: unknown): value is KillerosSettings {
@@ -123,9 +126,10 @@ export function createKillerosSettingsStore(
       const temporaryPath = `${settingsPath}.${process.pid}.${randomUUID()}.tmp`;
       try {
         const current = readStoredSettings(settingsPath);
+        const changes = typeof patch === "function" ? patch(current) : patch;
         writeFileSync(
           temporaryPath,
-          `${JSON.stringify({ ...current, ...patch }, null, 2)}\n`,
+          `${JSON.stringify({ ...current, ...changes }, null, 2)}\n`,
           { encoding: "utf8", mode: 0o600 },
         );
         renameSync(temporaryPath, settingsPath);

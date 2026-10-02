@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -429,7 +432,7 @@ test("/auto-compact normalizes invalid stored fields before saving", async () =>
   let saved: Readonly<Record<string, unknown>> | undefined;
   const harness = createCommandHarness({
     load: () => ({ autoCompaction: { enabled: "yes", percentRemaining: 900 } }),
-    update: (patch) => { saved = patch; },
+    update: (patch) => { saved = typeof patch === "function" ? patch({ autoCompaction: { enabled: "yes", percentRemaining: 900 } }) : patch; },
   });
 
   await harness.run("off");
@@ -467,7 +470,7 @@ test("/auto-compact changes the next eligibility check without compacting immedi
   };
   const harness = createCommandHarness({
     load: () => settings,
-    update: (patch) => { settings = { ...settings, ...patch }; },
+    update: (patch) => { settings = { ...settings, ...(typeof patch === "function" ? patch(settings) : patch) }; },
   });
 
   await harness.run("20");
@@ -672,6 +675,70 @@ test("an active goal pauses for automatic compaction and resumes once after sett
     const continuation = harness.sentMessages[1]?.message;
     assert.ok(isUnknownRecord(continuation));
     assert.equal(continuation.customType, "killeros-goal-continuation");
+  }
+});
+
+test("automatic compaction cannot revive a normally stopped goal without a decision", async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    for (const outcome of ["completed", "skipped"] as const) {
+      for (const callbackOrder of ["before settlement", "after settlement"] as const) {
+        await t.test(`${mode}/${outcome}/${callbackOrder}`, async () => {
+          const harness = createGoalHarness(mode, 100);
+          await harness.startGoal("Pause if the model does not choose a decision");
+          await harness.emit("turn_end");
+          const finishCompaction = (): void => {
+            if (outcome === "completed") harness.compactCalls[0]?.onComplete?.(compactResult());
+            else harness.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+          };
+          if (callbackOrder === "before settlement") finishCompaction();
+          await harness.emit("agent_end", {
+            type: "agent_end",
+            messages: [{ role: "assistant", stopReason: "stop" }],
+          });
+          await harness.emit("agent_settled");
+          if (callbackOrder === "after settlement") finishCompaction();
+          finishCompaction();
+          await harness.emit("agent_settled");
+          await new Promise((resolve) => setImmediate(resolve));
+
+          assert.equal(harness.state().state?.status, "paused");
+          assert.equal(harness.state().state?.result, "no turn decision");
+          assert.equal(harness.state().state?.turns, 1);
+          assert.equal(harness.state().state?.maxTurns, 20);
+          assert.equal(harness.state().automaticCompaction, undefined);
+          assert.equal(harness.state().goalTurnInFlight, false);
+          assert.equal(harness.sentMessages.length, 1);
+        });
+      }
+    }
+  }
+});
+
+test("normal goal decisions survive compaction without bypassing the turn limit", async () => {
+  for (const outcome of ["completed", "skipped"] as const) {
+    for (const maxTurns of [1, 20]) {
+      const harness = createGoalHarness("rpc", 100);
+      await harness.startGoal("Honor the accepted decision and its turn budget");
+      const runtime = harness.state();
+      assert.ok(runtime.state);
+      runtime.state = { ...runtime.state, maxTurns };
+      await harness.decide({ status: "continue", evidence: "First step checked", nextAction: "Check the next step" });
+      await harness.emit("turn_end");
+      await harness.emit("agent_end", {
+        type: "agent_end",
+        messages: [{ role: "assistant", stopReason: "stop" }],
+      });
+      await harness.emit("agent_settled");
+      if (outcome === "completed") harness.compactCalls[0]?.onComplete?.(compactResult());
+      else harness.compactCalls[0]?.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(runtime.state?.status, maxTurns === 1 ? "paused" : "active");
+      assert.equal(runtime.state?.turns, maxTurns === 1 ? 1 : 2);
+      assert.equal(runtime.state?.maxTurns, maxTurns);
+      assert.equal(harness.sentMessages.length, maxTurns === 1 ? 1 : 2);
+      if (maxTurns === 1) assert.equal(runtime.state?.result, "Turn limit reached (1/1).");
+    }
   }
 });
 
@@ -1150,4 +1217,82 @@ test("RPC mode skips identically while print mode never requests compaction", as
   registerAutoCompaction(printApi);
   for (const handler of printHandlers.get("turn_end") ?? []) await handler({ type: "turn_end" }, printCtx);
   assert.equal(printCalls.length, 0);
+});
+
+test("BUG-02 concurrent auto-compact commands preserve both independently changed fields", { timeout: 40000 }, async (t) => {
+  for (const order of [[0, 1], [1, 0]]) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "killeros-edge-nested-settings-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const settingsPath = path.join(root, "killeros.json"), gate = path.join(root, "gate");
+    writeFileSync(settingsPath, JSON.stringify({ futureSetting: "keep", autoCompaction: { enabled: true, percentRemaining: 15 } }));
+    const settingsUrl = new URL("../killeros/settings.ts", import.meta.url).href;
+    const autoUrl = new URL("../killeros/auto-compaction.ts", import.meta.url).href;
+    const adapterUrl = new URL("./PiTestAdapters.ts", import.meta.url).href;
+    const writers = ["off", "70"].map((argument, index) => {
+      const script = `
+        import {existsSync} from 'node:fs';
+        import {createKillerosSettingsStore} from ${JSON.stringify(settingsUrl)};
+        import {registerAutoCompaction} from ${JSON.stringify(autoUrl)};
+        import {extensionApiTestAdapter, extensionCommandContextTestAdapter} from ${JSON.stringify(adapterUrl)};
+        const store = createKillerosSettingsStore(${JSON.stringify(settingsPath)});
+        let command;
+        let succeeded = false;
+        registerAutoCompaction(extensionApiTestAdapter({on(){}, registerCommand(_name, definition){ command = definition; }}), {
+          settingsStore: { load(){ return store.load(); }, update(patch){
+            const snapshot = store.load();
+            if (snapshot.autoCompaction.enabled !== true || snapshot.autoCompaction.percentRemaining !== 15) throw new Error("writers did not share the initial preference");
+            process.stdout.write('read\\n');
+            while (!existsSync(${JSON.stringify(gate + index)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5);
+            store.update(patch);
+          } }
+        });
+        await command.handler(${JSON.stringify(argument)}, extensionCommandContextTestAdapter({ ui: {notify(message, level){
+          if(level === 'error') throw new Error(message);
+          if(level === 'info') succeeded = true;
+        }} }));
+        if (!succeeded) throw new Error("command did not report success");
+      `;
+      const child = spawn(process.execPath, ["--experimental-strip-types", "--input-type=module", "--eval", script], { stdio: ["ignore", "pipe", "pipe"] });
+      t.after(() => child.kill("SIGKILL"));
+      let stderr = ""; child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+      const completed = new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(stderr)));
+      });
+      const ready = Promise.race([new Promise<void>((resolve) => child.stdout.once("data", () => resolve())), completed.then(() => { throw new Error("writer exited before reading"); })]);
+      return { ready, completed };
+    });
+    await Promise.all(writers.map((writer) => writer.ready));
+    for (const index of order) {
+      writeFileSync(gate + index, "go");
+      await writers[index]?.completed;
+    }
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), { futureSetting: "keep", autoCompaction: { enabled: false, percentRemaining: 70 } });
+  }
+});
+
+test("/auto-compact preserves the original file on malformed settings and replacement failure", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-auto-failure-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const settingsPath = path.join(directory, "killeros.json");
+  for (const original of ["{malformed", JSON.stringify({ futureSetting: "keep", autoCompaction: { enabled: true, percentRemaining: 15 } })]) {
+    writeFileSync(settingsPath, original);
+    const rename = fs.renameSync;
+    const intercepted = t.mock.method(fs, "renameSync", (...args: Parameters<typeof rename>) => {
+      if (args[1] === settingsPath) throw new Error("disk full");
+      return rename(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      const harness = createCommandHarness(createKillerosSettingsStore(settingsPath));
+      await harness.run("off");
+      assert.equal(readFileSync(settingsPath, "utf8"), original);
+      assert.equal(harness.notifications.length, 1);
+      assert.equal(harness.notifications[0]?.type, "error");
+      assert.match(harness.notifications[0]?.message ?? "", /could not be saved/u);
+    } finally {
+      intercepted.mock.restore();
+      syncBuiltinESMExports();
+    }
+  }
 });

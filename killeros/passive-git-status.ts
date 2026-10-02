@@ -8,6 +8,13 @@ const PASSIVE_METADATA_ARGS = ["-c", "core.fsmonitor=false"] as const;
 
 export type PassiveGitRunner = (args: readonly string[]) => Promise<Buffer>;
 
+/** Revs-only returns empty output for an unborn HEAD; command failures still reject. */
+export async function resolvePassiveHead(runGit: PassiveGitRunner): Promise<string> {
+  const head = decode(await runGit(["rev-parse", "--revs-only", "--end-of-options", "HEAD"])).trim();
+  if (head && !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(head)) throw new Error("invalid HEAD");
+  return head || "(initial)";
+}
+
 export type PassiveWorktreeFile = {
   path: string;
   headMode?: string;
@@ -343,19 +350,17 @@ function matchesIndex(content: Buffer, entry: IndexEntry, autoCrlf: string): boo
  * No Git command in this path asks Git to convert worktree content, so clean and process filters cannot start.
  */
 export async function inspectWorktreeWithoutFilters(root: string, runGit: PassiveGitRunner): Promise<PassiveWorktreeSnapshot> {
-  const [indexOutput, untrackedOutput, resolvedHead, autoCrlfOutput, settings] = await Promise.all([
+  const [indexOutput, untrackedOutput, head, autoCrlfOutput, settings] = await Promise.all([
     runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--cached", "--debug", "-z", "--full-name",
       "--format=%(objectmode) %(objectname) %(stage)%x09%(eolattr)%x09%(path)"]),
     runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--others", "--exclude-standard", "-z", "--full-name"]),
-    runGit(["rev-parse", "--verify", "HEAD"]).then(decode, () => ""),
+    resolvePassiveHead(runGit),
     runGit(["config", "--type=bool-or-str", "--default", "false", "--get", "core.autocrlf"]),
     passiveWorktreeSettings(runGit),
   ]);
   const autoCrlf = decode(autoCrlfOutput).trim().toLowerCase();
-  const head = resolvedHead.trim();
-  if (head && !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(head)) throw new Error("invalid HEAD");
   const index = parseIndex(indexOutput);
-  const tree = head ? parseTree(await runGit(["ls-tree", "-r", "-z", "--full-tree", head])) : new Map<string, TreeEntry>();
+  const tree = head !== "(initial)" ? parseTree(await runGit(["ls-tree", "-r", "-z", "--full-tree", head])) : new Map<string, TreeEntry>();
   const files = new Map<string, PassiveWorktreeFile>();
   let contentBytes = 0;
 
@@ -398,5 +403,5 @@ export async function inspectWorktreeWithoutFilters(root: string, runGit: Passiv
     const previous = files.get(filePath);
     files.set(filePath, { ...previous, path: filePath, mode: state.mode, content: state.content, contentObjectId: undefined });
   }
-  return { head: head || "(initial)", files, ...settings };
+  return { head, files, ...settings };
 }

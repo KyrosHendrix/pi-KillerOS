@@ -12,6 +12,19 @@ function createTemporaryDirectory(t: TestContext): string {
   return directory;
 }
 
+test("settings transformations use the current file and leave it intact if derivation fails", (t) => {
+  const directory = createTemporaryDirectory(t);
+  const settingsPath = path.join(directory, "killeros.json");
+  const store = createKillerosSettingsStore(settingsPath);
+  store.update({ counter: 1, unrelated: { retained: true } });
+  store.update((current) => ({ counter: Number(current.counter) + 1 }));
+  assert.deepEqual(store.load(), { counter: 2, unrelated: { retained: true } });
+  const original = readFileSync(settingsPath, "utf8");
+  assert.throws(() => store.update(() => { throw new Error("invalid update"); }), /invalid update/u);
+  assert.equal(readFileSync(settingsPath, "utf8"), original);
+  assert.deepEqual(readdirSync(directory), ["killeros.json"]);
+});
+
 function startSettingsUpdate(settingsPath: string, startPath: string, patch: Readonly<Record<string, unknown>>) {
   const moduleUrl = new URL("../killeros/settings.ts", import.meta.url).href;
   const script = `

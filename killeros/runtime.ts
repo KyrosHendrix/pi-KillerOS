@@ -124,7 +124,7 @@ export interface GoalTurnExecution {
 export interface GoalRuntime {
   state?: GoalState;
   continuationScheduled: boolean;
-  continuationHeld: boolean;
+  continuationHeld?: symbol;
   goalTurnInFlight: boolean;
   agentEndObserved: boolean;
   goalTurn?: GoalTurnExecution;
@@ -139,7 +139,7 @@ export interface GoalRuntime {
 export function createGoalRuntime(): GoalRuntime {
   return {
     continuationScheduled: false,
-    continuationHeld: false,
+    continuationHeld: undefined,
     goalTurnInFlight: false,
     agentEndObserved: false,
     goalTurn: undefined,

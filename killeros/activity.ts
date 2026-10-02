@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { modelDisplayName } from "./display.ts";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 export type ActivityMessage =
   | { kind: "prompt" }
@@ -9,7 +10,7 @@ export type ActivityMessage =
   | { kind: "responding" };
 
 function safeToolName(toolName: string): string {
-  const normalized = toolName.replace(/[\u0000-\u001F\u007F]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const normalized = safeTerminalText(toolName.replace(/[\r\n\t]+/gu, " ")).replace(/\s+/gu, " ").trim();
   return truncateToWidth(normalized || "tool", 32, "…");
 }
 
