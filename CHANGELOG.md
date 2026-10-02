@@ -4,10 +4,13 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-02
+
 ### Changed
 
 - Expanded Pi peer ranges to `>=0.99.2 <2` and pinned development packages to 1.0.0. Compatibility CI now runs the full quality suite against the exact 0.99.2 minimum and latest stable 1.x with matched host packages, without changing the tracked manifest or lockfile.
 - Documented Pi 1.0's fullscreen default and the regular-mode override for terminal-owned scrollback.
+- Documented the protected PR-based release process and merge-commit requirement for automatic `main`-to-`dev` synchronization. CI now validates release metadata before package smoke testing, so mismatched versions, missing release notes, and stale README tags fail before merge.
 
 ### Fixed
 

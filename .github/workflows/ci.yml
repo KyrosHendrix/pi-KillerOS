@@ -156,6 +156,11 @@ jobs:
         with:
           node-version: '22.19.0'
 
+      - name: Validate release metadata
+        env:
+          KILLEROS_RELEASE: 'true'
+        run: node --experimental-strip-types scripts/verify-release.ts
+
       - name: Validate publish contents
         run: |
           npm pack --dry-run --ignore-scripts --json > pack.json

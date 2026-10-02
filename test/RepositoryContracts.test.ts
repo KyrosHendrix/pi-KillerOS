@@ -235,6 +235,15 @@ test("CI checks locked Pi 1.0 and the minimum and latest matched Pi packages", (
   assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "1.0.0");
 });
 
+test("CI validates release metadata before package smoke testing", () => {
+  const jobsStart = ci.search(/^jobs:\s*$/mu);
+  const packageJob = /^  package:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
+  assert.ok(packageJob);
+  assert.match(packageJob, /- name: Validate release metadata\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
+  assert.ok(packageJob.indexOf("scripts/verify-release.ts") < packageJob.indexOf("npm pack"));
+  assert.doesNotMatch(packageJob, /npm publish/u);
+});
+
 test("GitHub releases require green current main and consistent package provenance", () => {
   assert.match(release, /workflow_run:/u);
   assert.match(release, /workflows:\s*\n\s*- CI/u);

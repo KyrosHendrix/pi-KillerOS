@@ -34,7 +34,7 @@ Or from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin a release by appending its tag, for example `@v3.0.0`. Add `-l` to install only for the current project. Restart Pi after installing.
+Pin a release by appending its tag, for example `@v3.0.1`. Add `-l` to install only for the current project. Restart Pi after installing.
 
 ## Commands
 
@@ -121,7 +121,17 @@ Strict TypeScript throughout. Tests run on Node's built-in test runner:
 npm ci && npm run check && npm test
 ```
 
-Releases go through CI on `main`; do not push version tags manually. The prepublish check rejects ordinary direct `npm publish`, but `--ignore-scripts` can bypass it. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
+### Release process
+
+1. Prepare the release on `dev`: update `package.json` and both root versions in `package-lock.json`, update the README's pinned tag, and move completed changelog entries into a dated version section under `[Unreleased]`.
+2. Run `npm run check` and `npm test`, commit and push to `dev`, then open a pull request into `main`. Push later fixes to the same PR so CI reruns.
+3. Wait for every required check to pass, including CodeQL and dependency review, and resolve review conversations. The PR must be up to date with `main`.
+4. Merge using **Create a merge commit**. Squash and rebase merging are disabled because the automated `main`-to-`dev` sync requires shared ancestry. Avoid advancing `dev` until that sync finishes.
+5. Check the `main` CI run and the following Release run. Successful CI on the current `main` commit triggers npm publication with provenance, creates the GitHub release, and fast-forwards `dev` to the released commit. A green PR alone never publishes.
+
+`main` requires pull requests and the CI workflow's required checks, including for administrators. Force pushes and branch deletion are blocked. If CI job names change, update GitHub's required status checks to match.
+
+Releases go through CI on `main`; do not push version tags manually. The package smoke job validates release metadata before packing, and the release workflow checks it again before publication. The prepublish check rejects ordinary direct `npm publish`, but `--ignore-scripts` can bypass it. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
 
 ## Security
 
