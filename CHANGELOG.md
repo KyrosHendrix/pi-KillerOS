@@ -4,6 +4,11 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Changed
+
+- Expanded Pi peer ranges to `>=0.99.2 <2` and pinned development packages to 1.0.0. Compatibility CI now runs the full quality suite against the exact 0.99.2 minimum and latest stable 1.x with matched host packages, without changing the tracked manifest or lockfile.
+- Documented Pi 1.0's fullscreen default and the regular-mode override for terminal-owned scrollback.
+
 ### Fixed
 
 - Rejected recognized credential assignments in Markdown handoffs, including list items, bold labels, and inline-code labels, before creating a destination session.

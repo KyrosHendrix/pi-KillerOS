@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -147,6 +147,72 @@ test("the packed KillerOS package activates and reloads through Pi's public life
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("KillerOS initialization and reload preserve unset Pi display preferences", async (t) => {
+  for (const mode of ["tui", "rpc", "json", "print"] as const) {
+    await t.test(mode, async () => {
+      const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-display-preferences-"));
+      const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+      let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+      try {
+        const cwd = path.join(directory, "project");
+        const agentDir = path.join(directory, "agent");
+        mkdirSync(cwd);
+        mkdirSync(agentDir);
+        process.env.PI_CODING_AGENT_DIR = agentDir;
+        const settingsPath = path.join(agentDir, "settings.json");
+        writeFileSync(settingsPath, "{}\n");
+        const settingsManager = SettingsManager.create(cwd, agentDir);
+        const before = {
+          tuiMode: settingsManager.getTuiMode(),
+          quietStartup: settingsManager.getQuietStartup(),
+        };
+        const loader = new DefaultResourceLoader({
+          cwd, agentDir, settingsManager,
+          additionalExtensionPaths: [path.join(repositoryRoot, "Killeros.ts")],
+          noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+        });
+        await loader.reload();
+        assert.deepEqual(loader.getExtensions().errors, []);
+        ({ session } = await createAgentSession({
+          cwd, agentDir, settingsManager, resourceLoader: loader,
+          sessionManager: SessionManager.inMemory(cwd), noTools: "builtin",
+          modelRuntime: await ModelRuntime.create({
+            authPath: path.join(agentDir, "auth.json"), modelsPath: null,
+            modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
+          }),
+        }));
+        const errors: string[] = [];
+        const { ctx, captured } = createTuiContext();
+        await session.bindExtensions({
+          mode, uiContext: extensionContextTestAdapter(ctx).ui,
+          onError(error) { errors.push(`${error.event}: ${error.error}`); },
+        });
+        if (mode === "tui") {
+          assert.equal(typeof captured.headerFactory, "function");
+          assert.equal(typeof captured.editorFactory, "function");
+          assert.equal(typeof captured.footerFactory, "function");
+        }
+        for (const stage of ["startup", "reload"] as const) {
+          if (stage === "reload") await session.reload();
+          await settingsManager.flush();
+          assert.equal(settingsManager.getTuiMode(), before.tuiMode, stage);
+          assert.equal(settingsManager.getQuietStartup(), before.quietStartup, stage);
+          assert.equal(settingsManager.getGlobalSettings().tuiMode, undefined, stage);
+          assert.equal(settingsManager.getGlobalSettings().quietStartup, undefined, stage);
+          assert.equal(readFileSync(settingsPath, "utf8"), "{}\n", stage);
+        }
+        assert.deepEqual(errors, []);
+        assert.deepEqual(settingsManager.drainErrors(), []);
+      } finally {
+        session?.dispose();
+        if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
   }
 });
 

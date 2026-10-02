@@ -19,7 +19,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## Requirements
 
 - Node.js 22.19.0+
-- Pi 0.99.2 or later within the 0.x release line
+- Pi 0.99.2 or later below 2.0.0
 - An interactive TUI session for the custom header, editor, footer, and `question`
 
 ## Install
@@ -60,6 +60,8 @@ Fast mode applies to legacy `openai-codex` requests and selected native models w
 The TUI footer's `fast` label means the enabled preference applies to the selected model, not that OpenAI accepted priority service. OpenAI controls account and model eligibility, the actual service tier, and charges. Priority can affect billing; subscription login does not guarantee accepted or free priority service. KillerOS leaves provider errors to Pi and does not silently retry with a different tier.
 
 ## Behavior by mode
+
+Pi 1.0 defaults to fullscreen. Use `--tui-mode regular` for one invocation or set `"tuiMode": "regular"` in Pi's [settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md#terminal-and-display) to restore terminal-owned scrollback. KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged.
 
 | Mode | What works |
 | --- | --- |
