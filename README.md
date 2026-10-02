@@ -107,7 +107,7 @@ Bare quoted prose remains model-reported. KillerOS captures the file baseline at
 
 Session replacement, reload, and committed tree navigation discard unfinished task receipts. Late receipt results do not write or notify through the old session context or attach to a different branch. Cancelled navigation preserves the pending receipt.
 
-Pending `/goal` commands discard their mutation if committed navigation changes the branch or another mutation changes the goal while confirmation, idle waiting, or file-baseline reading is in progress. Cancelled navigation preserves valid pending commands.
+Pending `/goal` commands discard their mutation if committed navigation changes the branch or another mutation changes the goal while confirmation, idle waiting, or file-baseline reading is in progress. Cancelled navigation preserves valid pending commands. Discarding a stale replacement after its idle wait preserves the surviving goal's authorized continuation.
 
 Failed Git metadata reads keep the footer's last successful file counts and mark task changes unavailable. They are not treated as an empty repository.
 

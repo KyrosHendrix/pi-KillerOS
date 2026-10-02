@@ -505,7 +505,11 @@ export function registerGoalInterface(
       } finally {
         if (runtime.continuationHeld === hold) runtime.continuationHeld = undefined;
       }
-      if (!ownsGoal()) return;
+      if (!ownsGoal()) {
+        // Settlement may have authorized a turn while this command held continuation.
+        if (runtime.lifecycleGeneration === generation) scheduleGoalContinuation(pi, runtime, ctx);
+        return;
+      }
       if (waitError) {
         reportError(ctx, "Goal could not wait for the active turn", waitError);
         scheduleGoalContinuation(pi, runtime, ctx);

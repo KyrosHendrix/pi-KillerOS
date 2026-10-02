@@ -24,6 +24,7 @@ import { registerCompletionNotifications } from "../killeros/notifications.ts";
 import { registerWorkedFor } from "../killeros/worked-for.ts";
 import { registerGoalInterface } from "../killeros/goal-interface.ts";
 import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
+import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
 import { registerHandoff } from "../killeros/handoff.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
@@ -1083,6 +1084,112 @@ test("all KillerOS tools expose provider-compatible object schemas", () => {
     assert.equal(typeof schema.properties, "object", `${tool.name} must declare object properties`);
     assert.equal(schema.anyOf, undefined, `${tool.name} must not use a top-level anyOf`);
     assert.equal(schema.oneOf, undefined, `${tool.name} must not use a top-level oneOf`);
+  }
+});
+
+test("a stale replacement releases a running goal's held continuation in real Pi", { timeout: 15_000 }, async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    await t.test(mode, async () => {
+      const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-goal-held-continuation-"));
+      let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+      let releaseFirst = (): void => { throw new Error("first response gate was not initialized"); };
+      let signalFirst = (): void => { throw new Error("first response barrier was not initialized"); };
+      let releaseNext = (): void => { throw new Error("next response gate was not initialized"); };
+      let signalNext = (): void => { throw new Error("next response barrier was not initialized"); };
+      const firstStarted = new Promise<void>((resolve) => { signalFirst = resolve; });
+      const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      const nextStarted = new Promise<void>((resolve) => { signalNext = resolve; });
+      const nextGate = new Promise<void>((resolve) => { releaseNext = resolve; });
+      try {
+        const cwd = path.join(directory, "project");
+        const agentDir = path.join(directory, "agent");
+        mkdirSync(cwd);
+        mkdirSync(agentDir);
+        const runtime = createGoalRuntime();
+        const faux = fauxProvider({ provider: "killeros-held-goal", models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+        faux.setResponses([
+          async () => {
+            signalFirst();
+            await firstGate;
+            return fauxAssistantMessage(fauxToolCall("killeros_goal_update", {
+              status: "continue", evidence: "First check passed", nextAction: "Run the second check",
+            }), { stopReason: "toolUse" });
+          },
+          fauxAssistantMessage("First step finished"),
+          async () => {
+            signalNext();
+            await nextGate;
+            return fauxAssistantMessage(fauxToolCall("killeros_goal_update", {
+              status: "complete", evidence: "Both checks passed",
+            }), { stopReason: "toolUse" });
+          },
+          fauxAssistantMessage("Original objective finished"),
+        ]);
+        const modelRuntime = await ModelRuntime.create({
+          authPath: path.join(agentDir, "auth.json"), modelsPath: null,
+          modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
+        });
+        modelRuntime.registerNativeProvider(faux.provider);
+        await modelRuntime.setRuntimeApiKey("killeros-held-goal", "local-test-key");
+        const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off" });
+        const loader = new DefaultResourceLoader({
+          cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+          extensionFactories: [(pi) => {
+            registerGoalInterface(pi, runtime);
+            registerGoalRuntime(pi, runtime);
+            registerGoalSettlement(pi, runtime);
+          }],
+        });
+        await loader.reload();
+        assert.deepEqual(loader.getExtensions().errors, []);
+        ({ session } = await createAgentSession({
+          cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: loader,
+          sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")), noTools: "builtin",
+        }));
+        const host = session;
+        const errors: string[] = [];
+        const { ctx: uiContext } = createTuiContext();
+        uiContext.ui.confirm = async () => true;
+        await host.bindExtensions({
+          mode, uiContext: extensionContextTestAdapter(uiContext).ui,
+          onError(error) { errors.push(`${error.event}: ${error.error}`); },
+        });
+        const command = host.extensionRunner.getCommand("goal");
+        assert.ok(command);
+        const ctx = host.extensionRunner.createCommandContext();
+        ctx.waitForIdle = () => host.waitForIdle();
+        await command.handler("Original objective", ctx);
+        await firstStarted;
+        const replacement = command.handler("Replacement objective", ctx);
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.ok(runtime.continuationHeld);
+        releaseFirst();
+        await replacement;
+
+        assert.equal(runtime.state?.objective, "Original objective", "stale replacements must not overwrite an accepted decision");
+        assert.equal(runtime.state?.turns, 2, "releasing the hold must start the authorized next turn");
+        assert.equal(runtime.state?.maxTurns, 20);
+        assert.equal(runtime.goalTurnInFlight, true);
+        assert.equal(runtime.continuationHeld, undefined);
+        await nextStarted;
+        assert.equal(faux.state.callCount, 3, "exactly one next logical turn starts");
+        releaseNext();
+        await host.waitForIdle();
+        assert.equal(runtime.state?.status, "complete");
+        assert.equal(runtime.state?.turns, 2);
+        assert.equal(faux.state.callCount, 4);
+        assert.equal(host.pendingMessageCount, 0);
+        assert.deepEqual(errors, []);
+      } finally {
+        releaseFirst();
+        releaseNext();
+        if (session) {
+          await session.waitForIdle();
+          session.dispose();
+        }
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
   }
 });
 
