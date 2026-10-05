@@ -74,7 +74,7 @@ test("footer shows fast only for enabled eligible models at full and narrow widt
       [{ ...nativeModel, baseUrl: "https://api.openai.com/v1/" }, true],
       [{ ...nativeModel, provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" }, true],
       [{ ...nativeModel, provider: "anthropic" }, false],
-      [{ ...nativeModel, provider: "azure-openai-responses" }, false],
+      [{ ...nativeModel, provider: "azure" }, false],
       [{ ...nativeModel, api: "openai-completions" }, false],
       [{ ...nativeModel, api: "virtual" }, false],
       [{ ...nativeModel, baseUrl: "https://example.invalid/v1" }, false],

@@ -104,6 +104,36 @@ test("editor has a top border, is focus-aware and width-safe, and supports Shift
   assert.match(last(scrolledUp) ?? "", /^  ↓ \d+ more/u);
 });
 
+test("editor inherits Pi 1.0.3 line navigation without consuming transcript Home/End shortcuts", async () => {
+  const { handlers } = createHarness();
+  const { captured, ctx, tui } = createTuiContext();
+  for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
+  const keybindings = getKeybindings();
+  const editor = requireEditor(requiredFactory(captured.editorFactory, "editor")(tui, createEditorTheme(), keybindings));
+  for (const [home, end, ctrlHome, ctrlEnd] of [
+    ["\x1B[H", "\x1B[F", "\x1B[1;5H", "\x1B[1;5F"],
+    ["\x1B[7~", "\x1B[8~", "\x1B[7;5~", "\x1B[8;5~"],
+  ]) {
+    assert.equal(keybindings.matches(home, "tui.altScreen.top"), false);
+    assert.equal(keybindings.matches(end, "tui.altScreen.bottom"), false);
+    assert.equal(keybindings.matches(ctrlHome, "tui.altScreen.top"), true);
+    assert.equal(keybindings.matches(ctrlEnd, "tui.altScreen.bottom"), true);
+    editor.setText("first\nsecond");
+    editor.handleInput(home);
+    editor.handleInput("A");
+    assert.equal(editor.getText(), "first\nAsecond");
+    editor.handleInput(ctrlEnd);
+    editor.handleInput("B");
+    assert.equal(editor.getText(), "first\nABsecond", "transcript navigation must not move the editor cursor");
+    editor.handleInput(end);
+    editor.handleInput("C");
+    assert.equal(editor.getText(), "first\nABsecondC");
+    editor.handleInput(ctrlHome);
+    editor.handleInput("D");
+    assert.equal(editor.getText(), "first\nABsecondCD", "transcript navigation must not move the editor cursor");
+  }
+});
+
 test("editor arrow uses white text", async () => {
   const styledTheme: TestFullStyle = {
     bold: (text) => text,

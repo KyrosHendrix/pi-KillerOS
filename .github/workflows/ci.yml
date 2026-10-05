@@ -98,8 +98,8 @@ jobs:
       fail-fast: false
       matrix:
         pi-target:
-          - '1.0.2'
-          - '>=1.0.2 <2'
+          - '1.0.3'
+          - '>=1.0.3 <2'
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -4,6 +4,20 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the minimum supported Pi version and locked Pi development packages to 1.0.3. Compatibility CI now tests the exact 1.0.3 minimum and latest stable 1.x; users on older Pi versions must upgrade.
+- Updated Azure footer naming and fast-mode exclusion tests for Pi's renamed `azure` provider. Documented the required Azure configuration migration, the unchanged Responses API identifier, native editor/transcript navigation, and saved codemode images.
+
+### Added
+
+- Added real Pi contract coverage for Azure Responses and Foundry Chat Completions across reload, preserving sampling settings and deployment names without applying OpenAI priority service.
+- Added custom-editor coverage for Pi 1.0.3's separate line-navigation and fullscreen transcript Home/End shortcuts.
+
+### Fixed
+
+- Fixed a process-tree test startup race by waiting for the complete descendant PID instead of readiness-file creation. Hook termination assertions remain unchanged.
+
 ## [3.0.2] - 2026-10-05
 
 ### Changed

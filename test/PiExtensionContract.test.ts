@@ -26,6 +26,7 @@ import { registerGoalInterface } from "../killeros/goal-interface.ts";
 import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
 import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
 import { registerHandoff } from "../killeros/handoff.ts";
+import { registerFooter } from "../killeros/footer.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
 import { createHarness, createTuiContext, requireInteractive, theme, waitFor } from "./ExtensionTestHarness.ts";
@@ -328,6 +329,119 @@ test("real native OpenAI transport preserves thinking-level sampling with priori
           session.dispose();
         }
       } finally {
+        resetCodexFastState();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("real Pi Azure Responses and Foundry requests survive reload without OpenAI priority", { timeout: 30_000 }, async (t) => {
+  for (const [id, api, endpoint] of [
+    ["gpt-6.1-sol", "azure-openai-responses", "responses"],
+    ["deepseek-v4-pro", "openai-completions", "chat/completions"],
+  ] as const) {
+    await t.test(api, async () => {
+      resetCodexFastState();
+      const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-azure-"));
+      let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+      try {
+        const cwd = path.join(directory, "project");
+        const agentDir = path.join(directory, "agent");
+        mkdirSync(cwd);
+        mkdirSync(agentDir);
+        const modelsPath = path.join(agentDir, "models.json");
+        writeFileSync(modelsPath, JSON.stringify({ providers: { azure: { modelOverrides: {
+          [id]: { samplingParams: { top_p: 0.8 }, samplingParamsByThinkingLevel: { high: { temperature: 0.6 } } },
+        } } } }));
+        const modelRuntime = await ModelRuntime.create({
+          authPath: path.join(agentDir, "auth.json"), modelsPath,
+          modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
+        });
+        const native = modelRuntime.getProvider("azure");
+        assert.ok(native, "Pi must expose the renamed Azure provider");
+        const model = modelRuntime.getModel("azure", id);
+        assert.ok(model, `Azure must expose ${id}`);
+        assert.equal(model.api, api);
+        const bodies: Record<string, unknown>[] = [];
+        const fakeFetch: typeof fetch = async (input, init) => {
+          const request = new Request(input, init);
+          const url = new URL(request.url);
+          assert.equal(url.origin, "https://killeros-test.ai.azure.com");
+          assert.ok(url.pathname.endsWith(`/${endpoint}`), url.pathname);
+          assert.equal(request.method, "POST");
+          const body: unknown = await request.json();
+          assert.ok(isUnknownRecord(body));
+          bodies.push(body);
+          return new Response(JSON.stringify({ error: { message: "Local Azure test rejection" } }), {
+            status: 400, headers: { "content-type": "application/json" },
+          });
+        };
+        modelRuntime.registerNativeProvider({
+          ...native,
+          streamSimple: (model, context, options) => native.streamSimple(model, context, {
+            ...options, fetch: fakeFetch, maxRetries: 0,
+            env: { ...options?.env, AZURE_OPENAI_BASE_URL: "https://killeros-test.ai.azure.com",
+              AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${id}=local-deployment` },
+          }),
+        });
+        await modelRuntime.setRuntimeApiKey("azure", "local-test-key");
+        const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+        const loader = new DefaultResourceLoader({
+          cwd, agentDir, settingsManager, noExtensions: true, noSkills: true,
+          noPromptTemplates: true, noThemes: true, noContextFiles: true,
+          extensionFactories: [(pi) => {
+            registerCodexFastMode(pi);
+            registerFooter(pi, createGoalRuntime());
+          }],
+        });
+        await loader.reload();
+        assert.deepEqual(loader.getExtensions().errors, []);
+        ({ session } = await createAgentSession({
+          cwd, agentDir, model, modelRuntime, settingsManager, resourceLoader: loader,
+          sessionManager: SessionManager.inMemory(cwd), noTools: "all",
+        }));
+        const errors: string[] = [];
+        const { ctx, captured, tui } = createTuiContext();
+        await session.bindExtensions({
+          mode: "tui", uiContext: extensionContextTestAdapter(ctx).ui,
+          onError(error) { errors.push(`${error.event}: ${error.error}`); },
+        });
+        await session.prompt("/codex-fast");
+        assert.equal(isCodexFastEnabled(), true);
+        for (const stage of ["startup", "reload"] as const) {
+          if (stage === "reload") await session.reload();
+          assert.equal(session.model?.provider, "azure", stage);
+          assert.equal(session.model?.id, id, stage);
+          assert.equal(isCodexFastEnabled(), true, stage);
+          const footer = captured.footerFactory(tui, theme, {
+            getGitBranch: () => undefined, onBranchChange: () => () => {},
+          });
+          try {
+            assert.ok((footer.render(160)[1] ?? "").includes(`${id} azure`));
+            assert.doesNotMatch(footer.render(160)[1] ?? "", /\bfast\b/u);
+          } finally {
+            footer.dispose?.();
+          }
+        }
+        session.setThinkingLevel("high");
+        await session.prompt("Test Azure locally");
+        await session.waitForIdle();
+        assert.equal(bodies.length, 1);
+        assert.equal(bodies[0].model, "local-deployment");
+        assert.equal(bodies[0].service_tier, undefined);
+        assert.equal(bodies[0].temperature, 0.6);
+        assert.equal(bodies[0].top_p, 0.8);
+        const response = session.messages.at(-1);
+        assert.ok(response?.role === "assistant");
+        assert.equal(response.provider, "azure");
+        assert.equal(response.api, api);
+        assert.equal(response.model, id);
+        assert.equal(response.stopReason, "error");
+        assert.match(response.errorMessage ?? "", /Local Azure test rejection/u);
+        assert.deepEqual(errors, []);
+      } finally {
+        session?.dispose();
         resetCodexFastState();
         rmSync(directory, { recursive: true, force: true });
       }

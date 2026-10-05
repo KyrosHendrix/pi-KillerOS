@@ -280,7 +280,7 @@ function sumSessionCost(ctx: ExtensionContext): number {
 
 const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   "amazon-bedrock": "Amazon Bedrock",
-  "azure-openai-responses": "Azure OpenAI",
+  azure: "Azure",
   "github-copilot": "GitHub Copilot",
   "google-vertex": "Google Vertex",
   "openai-codex": "OpenAI",

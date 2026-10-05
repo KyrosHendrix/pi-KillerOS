@@ -120,14 +120,14 @@ test("skill-specific workflow gating is no longer part of KillerOS", () => {
   assert.match(changelog, /Removed the decision-gated workflow subsystem/iu);
 });
 
-test("peer ranges require Pi 1.0.2 and support later Pi 1.x", () => {
+test("peer ranges require Pi 1.0.3 and support later Pi 1.x", () => {
   assert.deepEqual(packageJson.peerDependencies, {
-    "@earendil-works/pi-ai": ">=1.0.2 <2",
-    "@earendil-works/pi-coding-agent": ">=1.0.2 <2",
-    "@earendil-works/pi-tui": ">=1.0.2 <2",
+    "@earendil-works/pi-ai": ">=1.0.3 <2",
+    "@earendil-works/pi-coding-agent": ">=1.0.3 <2",
+    "@earendil-works/pi-tui": ">=1.0.3 <2",
     typebox: ">=1.1.38 <2",
   });
-  assert.match(readme, /Pi\s+`?1\.0\.2`? or later below 2\.0\.0/u);
+  assert.match(readme, /Pi\s+`?1\.0\.3`? or later below 2\.0\.0/u);
 });
 
 test("public TUI guidance preserves Pi defaults and documents regular-mode scrollback", () => {
@@ -140,7 +140,7 @@ test("public TUI guidance preserves Pi defaults and documents regular-mode scrol
   assert.match(changelog, /exact 0\.99\.2 minimum and latest stable 1\.x/u);
 });
 
-test("lockfile pins Pi 1.0.2 development packages", () => {
+test("lockfile pins Pi 1.0.3 development packages", () => {
   const lock: unknown = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
   assert.ok(isUnknownRecord(lock));
   assert.ok(isUnknownRecord(lock.packages));
@@ -151,7 +151,7 @@ test("lockfile pins Pi 1.0.2 development packages", () => {
   for (const name of ["pi-ai", "pi-coding-agent", "pi-server", "pi-tui"]) {
     const lockedPackage: unknown = lock.packages[`node_modules/@earendil-works/${name}`];
     assert.ok(isUnknownRecord(lockedPackage));
-    assert.equal(lockedPackage.version, "1.0.2", name);
+    assert.equal(lockedPackage.version, "1.0.3", name);
   }
 });
 
@@ -217,13 +217,13 @@ test("CI runs the full quality suite on Windows at the Node.js floor", () => {
   assert.match(windowsJob, /^        run: npm test$/mu);
 });
 
-test("CI checks locked Pi 1.0.2 and the minimum and latest matched Pi packages", () => {
+test("CI checks locked Pi 1.0.3 and the minimum and latest matched Pi packages", () => {
   assert.match(ci, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- dev/u);
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   const compatibilityJob = /^  pi-latest:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
   assert.ok(compatibilityJob);
   assert.match(compatibilityJob, /Pi latest compatibility/u);
-  assert.match(compatibilityJob, /pi-target:\s*\n\s*- '1\.0\.2'\s*\n\s*- '>=1\.0\.2 <2'/u);
+  assert.match(compatibilityJob, /pi-target:\s*\n\s*- '1\.0\.3'\s*\n\s*- '>=1\.0\.3 <2'/u);
   assert.match(compatibilityJob, /PI_TARGET: \$\{\{ matrix\.pi-target \}\}/u);
   assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version/u);
   assert.match(compatibilityJob, /npm ci --ignore-scripts --no-audit --no-fund/u);
@@ -238,10 +238,10 @@ test("CI checks locked Pi 1.0.2 and the minimum and latest matched Pi packages",
   assert.match(ci, /@earendil-works\/pi-server@\$PI_VERSION/u);
   assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
   assert.match(ci, /--package-lock=false/u);
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "1.0.2");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "1.0.2");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-server"], "1.0.2");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "1.0.2");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "1.0.3");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "1.0.3");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-server"], "1.0.3");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "1.0.3");
 });
 
 test("CI validates release metadata before package smoke testing", () => {
