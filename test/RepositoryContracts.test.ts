@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileS
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { ESLint } from "eslint";
 
 type PackageJson = {
   version: string;
@@ -188,6 +189,14 @@ test("public compaction documentation states the configurable default", () => {
   assert.match(readme, /"enabled": true/u);
   assert.match(readme, /"percentRemaining": 15/u);
   assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
+});
+
+test("lint ignores private Pi artifacts without excluding repository code", async () => {
+  const eslint = new ESLint({ cwd: repositoryRoot });
+  assert.equal(await eslint.isPathIgnored(".pi/verification/release-prompt.test.mjs"), true);
+  for (const file of ["Killeros.ts", "killeros/hooks.ts", "scripts/verify-release.ts", "test/RepositoryContracts.test.ts"]) {
+    assert.equal(await eslint.isPathIgnored(file), false, file);
+  }
 });
 
 test("CI blocks moderate dependency advisories without running lifecycle scripts", () => {

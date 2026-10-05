@@ -1,7 +1,7 @@
 import tseslint from "typescript-eslint";
 
 export default [
-  { ignores: ["eslint.config.js"] },
+  { ignores: ["eslint.config.js", ".pi/**"] },
   ...tseslint.configs.recommendedTypeChecked,
   {
     languageOptions: {
