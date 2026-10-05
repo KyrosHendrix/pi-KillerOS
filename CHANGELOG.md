@@ -4,6 +4,24 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-10-05
+
+### Changed
+
+- Raised the minimum supported Pi version and locked Pi development packages to 1.0.2. Compatibility CI now tests the exact 1.0.2 minimum and latest stable 1.x; users on older Pi versions must upgrade.
+- Documented Pi's native thinking-level sampling configuration and trusted-project MCP overrides without adding KillerOS commands or settings.
+
+### Added
+
+- Added real Pi contract coverage for capacity-error recovery within one logical goal turn, with task receipts and completion sounds deferred until settlement.
+- Verified that native OpenAI fast mode preserves thinking-level sampling overrides across API-key and ChatGPT subscription requests, extension reloads, and provider retries.
+
+### Fixed
+
+- Kept POSIX process-group cleanup pending after a timed-out or cancelled hook's shell exits, preserving forced termination and reporting bounded uncertainty unless group exit is confirmed. Fixes #42.
+- Preserved goal-request ownership through settlement so automatic compaction cannot restart completed or blocked goals as ordinary work. Active-goal recovery, later ordinary requests, and compaction error reporting remain supported. Fixes #43.
+- Corrected the process-tree timeout fixture's marker argument and delayed descendant writes beyond cleanup. Added a real cleanup-disabled control that detects surviving descendants and checks explicit uncertainty. Fixes #44.
+
 ## [3.0.1] - 2026-10-02
 
 ### Changed

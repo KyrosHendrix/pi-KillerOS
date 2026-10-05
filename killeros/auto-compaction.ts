@@ -121,12 +121,14 @@ export function registerAutoCompaction(
   const loadPreference = dependencies.loadPreference ?? (() => defaultPreference(settingsStore));
   const getCompactionSettings = dependencies.getCompactionSettings ?? defaultCompactionSettings;
   let request: AutoCompactionRequest | undefined;
+  let goalRequestOwned = false;
   let armed = true;
   let rearmOnNextLogicalRequest = false;
   let settingsErrorReported = false;
 
   const resetForLifecycle = (): void => {
     request = undefined;
+    goalRequestOwned = false;
     armed = true;
     rearmOnNextLogicalRequest = false;
     settingsErrorReported = false;
@@ -239,6 +241,11 @@ export function registerAutoCompaction(
     }
   };
 
+  pi.on("agent_start", (_event, ctx) => {
+    // Terminal decisions clear active status before turn_end, but still own this run.
+    goalRequestOwned = dependencies.goal?.isActive(ctx) === true;
+  });
+
   pi.on("turn_end", (_event, ctx) => {
     if (!supportedMode(ctx) || request) return;
 
@@ -277,7 +284,8 @@ export function registerAutoCompaction(
 
     armed = false;
     const token = Symbol();
-    const goal = dependencies.goal?.isActive(ctx) === true;
+    const activeGoal = dependencies.goal?.isActive(ctx) === true;
+    const goal = goalRequestOwned || activeGoal;
     request = {
       phase: "compacting",
       goal,
@@ -285,7 +293,7 @@ export function registerAutoCompaction(
       turnSettled: false,
       compactionCompleted: false,
     };
-    if (goal && dependencies.goal) {
+    if (activeGoal && dependencies.goal) {
       try {
         dependencies.goal.onRequested();
       } catch (error) {
@@ -299,26 +307,29 @@ export function registerAutoCompaction(
         onComplete: () => {
           if (request?.phase !== "compacting" || request.token !== token) return;
           rearmOnNextLogicalRequest = preference.percentRemaining === 100;
-          if (goal && dependencies.goal) {
+          if (goal) {
             request = undefined;
-            try {
-              dependencies.goal.onCompleted(ctx);
-            } catch (error) {
-              notifyFailure(ctx, error);
+            if (activeGoal && dependencies.goal) {
+              try {
+                dependencies.goal.onCompleted(ctx);
+              } catch (error) {
+                notifyFailure(ctx, error);
+              }
             }
             return;
           }
           request.compactionCompleted = true;
           finalizeOrdinaryContinuation(ctx, token);
         },
-        onError: (error) => finishRequestError(ctx, token, goal, error),
+        onError: (error) => finishRequestError(ctx, token, activeGoal, error),
       });
     } catch (error) {
-      finishRequestError(ctx, token, goal, error);
+      finishRequestError(ctx, token, activeGoal, error);
     }
   });
 
   pi.on("agent_settled", (_event, ctx) => {
+    goalRequestOwned = false;
     if (request?.phase === "continuation-dispatched") {
       request = undefined;
       notifyFailure(ctx, new Error("continuation was not accepted"));

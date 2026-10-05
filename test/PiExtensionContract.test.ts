@@ -28,7 +28,7 @@ import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
 import { registerHandoff } from "../killeros/handoff.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
-import { createHarness, createTuiContext, requireInteractive, theme } from "./ExtensionTestHarness.ts";
+import { createHarness, createTuiContext, requireInteractive, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -217,7 +217,7 @@ test("KillerOS initialization and reload preserve unset Pi display preferences",
   }
 });
 
-test("real native OpenAI transport sends priority and reports rejection without a tier-changing retry", { timeout: 30_000 }, async (t) => {
+test("real native OpenAI transport preserves thinking-level sampling with priority and provider retries", { timeout: 30_000 }, async (t) => {
   for (const [label, apiKey, status, expectedRequests] of [
     ["API-key rejection", "sk-local-test-key", 400, 1],
     ["ChatGPT subscription rejection", "local-test-chatgpt-token", 400, 1],
@@ -256,8 +256,18 @@ test("real native OpenAI transport sends priority and reports rejection without 
             clientId: "local-test-client", scopes: ["chatgpt.tokens.use.direct"],
           } }));
         }
+        const modelsPath = path.join(agentDir, "models.json");
+        writeFileSync(modelsPath, JSON.stringify({ providers: { openai: { modelOverrides: {
+          [model.id]: {
+            samplingParams: { temperature: 1, top_p: 0.95 },
+            samplingParamsByThinkingLevel: {
+              high: { temperature: 0.6 },
+              low: { temperature: 0.2, top_p: 0.8 },
+            },
+          },
+        } } } }));
         const modelRuntime = await ModelRuntime.create({
-          authPath: path.join(agentDir, "auth.json"), modelsPath: null,
+          authPath: path.join(agentDir, "auth.json"), modelsPath,
           modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
         });
         modelRuntime.registerNativeProvider({
@@ -277,8 +287,10 @@ test("real native OpenAI transport sends priority and reports rejection without 
         });
         await loader.reload();
         assert.deepEqual(loader.getExtensions().errors, []);
+        const configuredModel = modelRuntime.getModel("openai", model.id);
+        assert.ok(configuredModel);
         const { session } = await createAgentSession({
-          cwd, agentDir, model, modelRuntime, settingsManager, resourceLoader: loader,
+          cwd, agentDir, model: configuredModel, modelRuntime, settingsManager, resourceLoader: loader,
           sessionManager: SessionManager.inMemory(cwd), noTools: "all",
         });
         const errors: string[] = [];
@@ -289,20 +301,28 @@ test("real native OpenAI transport sends priority and reports rejection without 
           await session.reload();
           assert.equal(isCodexFastEnabled(), true);
           assert.equal(modelRuntime.isUsingSubscription("openai"), !apiKey.startsWith("sk-"));
-          await session.prompt("Test priority rejection locally");
-          await session.waitForIdle();
+          for (const [thinkingLevel, temperature, topP] of [["high", 0.6, 0.95], ["low", 0.2, 0.8]] as const) {
+            session.setThinkingLevel(thinkingLevel);
+            assert.equal(session.thinkingLevel, thinkingLevel);
+            const firstRequest = bodies.length;
+            await session.prompt("Test priority rejection locally");
+            await session.waitForIdle();
 
-          // HTTP 400 is not retryable. HTTP 429 gets exactly one configured Pi provider retry.
-          assert.equal(bodies.length, expectedRequests);
-          for (const body of bodies) {
-            assert.equal(body.model, model.id);
-            assert.equal(body.service_tier, "priority");
-            assert.ok(Array.isArray(body.input));
+            // HTTP 400 is not retryable. HTTP 429 gets exactly one configured Pi provider retry.
+            const requests = bodies.slice(firstRequest);
+            assert.equal(requests.length, expectedRequests);
+            for (const body of requests) {
+              assert.equal(body.model, model.id);
+              assert.equal(body.service_tier, "priority");
+              assert.equal(body.temperature, temperature);
+              assert.equal(body.top_p, topP);
+              assert.ok(Array.isArray(body.input));
+            }
+            const response = session.messages.filter((message) => message.role === "assistant").at(-1);
+            assert.ok(response?.role === "assistant");
+            assert.equal(response.stopReason, "error");
+            assert.match(response.errorMessage ?? "", /Priority is not available for this test account/u);
           }
-          const response = session.messages.filter((message) => message.role === "assistant").at(-1);
-          assert.ok(response?.role === "assistant");
-          assert.equal(response.stopReason, "error");
-          assert.match(response.errorMessage ?? "", /Priority is not available for this test account/u);
           assert.deepEqual(errors, []);
         } finally {
           session.dispose();
@@ -312,6 +332,104 @@ test("real native OpenAI transport sends priority and reports rejection without 
         rmSync(directory, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test("real Pi capacity retries keep one goal turn and defer receipts and completion sounds until settlement", { timeout: 15_000 }, async () => {
+  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-capacity-retry-"));
+  let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+  try {
+    const cwd = path.join(directory, "project");
+    const agentDir = path.join(directory, "agent");
+    mkdirSync(cwd);
+    mkdirSync(agentDir);
+    const runtime = createGoalRuntime();
+    const faux = fauxProvider({ provider: "killeros-capacity-retry", models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+    faux.setResponses([
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "Selected model is at capacity" }),
+      fauxAssistantMessage(fauxToolCall("killeros_goal_update", { status: "complete", evidence: "Recovered and verified" })),
+      fauxAssistantMessage("Goal finished after recovery"),
+    ]);
+    const modelRuntime = await ModelRuntime.create({
+      authPath: path.join(agentDir, "auth.json"), modelsPath: null,
+      modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
+    });
+    modelRuntime.registerNativeProvider(faux.provider);
+    await modelRuntime.setRuntimeApiKey("killeros-capacity-retry", "local-test-key");
+    const settingsManager = SettingsManager.inMemory({
+      compaction: { enabled: false }, cacheWarming: "off",
+      retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 1 },
+    });
+    settingsManager.setProjectTrusted(true);
+    let bells = 0;
+    const loader = new DefaultResourceLoader({
+      cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      extensionFactories: [(pi) => {
+        registerGoalInterface(pi, runtime);
+        registerGoalRuntime(pi, runtime);
+        registerWorkedFor(pi, Date.now, async () => ({
+          finish: async () => ({ state: "unavailable", reason: "not-git" }),
+          dispose: async () => undefined,
+        }));
+        registerGoalSettlement(pi, runtime);
+        registerRequestActivity(pi);
+        registerCompletionNotifications(pi, {
+          store: { load: () => true, save() {} }, ring: () => { bells += 1; },
+        });
+      }],
+    });
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+    ({ session } = await createAgentSession({
+      cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: loader,
+      sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")), noTools: "builtin",
+    }));
+    const host = session;
+    const receipts = () => host.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "killeros-worked-for");
+    const errors: string[] = [];
+    const { ctx, captured } = createTuiContext();
+    await host.bindExtensions({
+      mode: "tui", uiContext: extensionContextTestAdapter(ctx).ui,
+      onError(error) { errors.push(`${error.event}: ${error.error}`); },
+    });
+    const retries: Array<{ status: string | undefined; turns: number | undefined; receipts: number; bells: number; working: boolean }> = [];
+    let recovered = false;
+    let settlements = 0;
+    let resolveSettled: (() => void) | undefined;
+    const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+    const unsubscribe = host.subscribe((event) => {
+      if (event.type === "auto_retry_start") retries.push({
+        status: runtime.state?.status, turns: runtime.state?.turns,
+        receipts: receipts().length, bells, working: captured.workingMessages.at(-1) !== undefined,
+      });
+      if (event.type === "auto_retry_end") recovered = event.success;
+      if (event.type === "agent_settled") { settlements += 1; resolveSettled?.(); }
+    });
+    try {
+      await host.prompt("/goal Verify capacity recovery");
+      await settled;
+      await host.waitForIdle();
+      assert.deepEqual(retries, [{ status: "active", turns: 1, receipts: 0, bells: 0, working: true }]);
+      assert.equal(recovered, true);
+      assert.equal(faux.state.callCount, 3);
+      assert.equal(runtime.state?.status, "complete");
+      assert.equal(runtime.state?.turns, 1);
+      assert.equal(runtime.state?.maxTurns, 20);
+      assert.equal(settlements, 1);
+      const receipt = receipts();
+      assert.equal(receipt.length, 1);
+      assert.ok(receipt[0]?.type === "custom" && isUnknownRecord(receipt[0].data));
+      assert.equal(receipt[0].data.outcome, "done");
+      assert.equal(bells, 1);
+      assert.equal(captured.workingMessages.at(-1), undefined);
+      assert.equal(host.pendingMessageCount, 0);
+      assert.deepEqual(errors, []);
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    session?.dispose();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -706,6 +824,104 @@ test("real Pi compaction pauses a normally stopped goal after one decisionless r
         rmSync(directory, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test("real Pi terminal goal compaction cannot start extra tool work in TUI or RPC", { timeout: 30_000 }, async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    for (const status of ["complete", "blocked"] as const) {
+      await t.test(`${mode}/${status}`, async () => {
+        const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-terminal-compaction-"));
+        const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+        let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+        try {
+          const cwd = path.join(directory, "project"), agentDir = path.join(directory, "agent");
+          mkdirSync(cwd); mkdirSync(agentDir);
+          process.env.PI_CODING_AGENT_DIR = agentDir;
+          const compaction = { enabled: true, reserveTokens: 100, keepRecentTokens: 1 };
+          const preferences = path.join(agentDir, "killeros.json");
+          writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ compaction }));
+          writeFileSync(preferences, JSON.stringify({ autoCompaction: { enabled: false, percentRemaining: 100 } }));
+          const provider = `killeros-terminal-${mode}-${status}`;
+          const faux = fauxProvider({ provider, models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+          const extraFile = path.join(cwd, "unauthorized.txt");
+          const decisions: AssistantMessage[] = [];
+          const turns = status === "blocked" ? 3 : 1;
+          for (let turn = 1; turn <= turns; turn++) {
+            decisions.push(fauxAssistantMessage(fauxToolCall("killeros_goal_update", {
+              status, evidence: `Verified turn ${turn}`, ...(status === "blocked" ? { blockerKey: "external" } : {}),
+            })));
+            if (turn < turns) decisions.push(fauxAssistantMessage(`Audit ${turn} finished`));
+          }
+          faux.setResponses([
+            ...decisions,
+            () => {
+              // Trigger only at the final answer, so normal tool-result follow-up is not mistaken for a restart.
+              writeFileSync(preferences, JSON.stringify({ autoCompaction: { enabled: true, percentRemaining: 100 } }));
+              return fauxAssistantMessage("The terminal goal request finished");
+            },
+            fauxAssistantMessage(fauxToolCall("write", { path: extraFile, content: "Unauthorized continuation" })),
+            fauxAssistantMessage("Unauthorized work finished"),
+          ]);
+          const modelRuntime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, allowModelNetwork: false });
+          modelRuntime.registerNativeProvider(faux.provider);
+          await modelRuntime.setRuntimeApiKey(provider, "local-test-key");
+          const settingsManager = SettingsManager.inMemory({ compaction, retry: { enabled: false }, cacheWarming: "off" });
+          const sessionManager = SessionManager.create(cwd, path.join(directory, "sessions"));
+          sessionManager.appendMessage({ role: "user", content: "Earlier context", timestamp: Date.now() - 2 });
+          sessionManager.appendMessage(fauxAssistantMessage("Earlier answer", { timestamp: Date.now() - 1 }));
+          let compactions = 0;
+          let resolveCompacted: (() => void) | undefined;
+          const compacted = new Promise<void>((resolve) => { resolveCompacted = resolve; });
+          const errors: string[] = [];
+          const loader = new DefaultResourceLoader({
+            cwd, agentDir, settingsManager, additionalExtensionPaths: [path.join(repositoryRoot, "Killeros.ts")],
+            noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+            extensionFactories: [(pi) => {
+              pi.on("session_before_compact", (event) => {
+                compactions++;
+                return { compaction: { summary: "The goal is terminal. Do not continue it.", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore } };
+              });
+              pi.on("session_compact", () => { resolveCompacted?.(); });
+            }],
+          });
+          await loader.reload();
+          assert.deepEqual(loader.getExtensions().errors, []);
+          ({ session } = await createAgentSession({ cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, sessionManager, resourceLoader: loader }));
+          let starts = 0;
+          let finalAnswer = false;
+          session.subscribe((event) => {
+            if (event.type === "agent_start") starts++;
+            if (event.type === "message_end" && event.message.role === "assistant"
+              && event.message.content.some((part) => part.type === "text" && part.text === "The terminal goal request finished")) finalAnswer = true;
+          });
+          await session.bindExtensions({ mode, uiContext: extensionContextTestAdapter(createTuiContext().ctx).ui, onError(error) { errors.push(`${error.event}: ${error.error}`); } });
+          await session.prompt("/goal Stop after the terminal decision");
+          await compacted;
+          await waitFor(() => session?.isCompacting === false);
+          await new Promise((resolve) => setImmediate(resolve));
+          await session.waitForIdle();
+          const entry = sessionManager.getEntries().reverse().find((entry) => entry.type === "custom" && entry.customType === "killeros-goal");
+          assert.ok(entry?.type === "custom" && isUnknownRecord(entry.data));
+          const state = parseGoalState(entry.data.state);
+          assert.equal(state?.status, status);
+          assert.equal(state?.turns, turns);
+          assert.equal(finalAnswer, true);
+          assert.equal(compactions, 1);
+          assert.equal(starts, turns);
+          assert.equal(faux.state.callCount, turns * 2);
+          assert.equal(existsSync(extraFile), false);
+          assert.equal(session.messages.some((message) => message.role === "custom" && message.customType === "killeros-auto-compaction"), false);
+          assert.equal(session.pendingMessageCount, 0);
+          assert.deepEqual(errors, []);
+        } finally {
+          session?.dispose();
+          if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+          else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+          rmSync(directory, { recursive: true, force: true });
+        }
+      });
+    }
   }
 });
 
