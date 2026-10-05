@@ -236,6 +236,17 @@ function terminateHookProcess(child: HookChildProcess, force: boolean): void {
   }
 }
 
+function hookProcessGroupExited(child: HookChildProcess): boolean {
+  if (!child.pid) return false;
+  try {
+    process.kill(-child.pid, 0);
+    return false;
+  } catch (error) {
+    // Permission and other failures are uncertainty, not proof of exit.
+    return error instanceof Error && "code" in error && error.code === "ESRCH";
+  }
+}
+
 export function executeHook(options: ExecuteHookOptions): Promise<HookExecutionResult>;
 /** @deprecated Use the object-argument form. The positional adapter will be removed in the next major release. */
 export function executeHook(
@@ -297,6 +308,8 @@ export function executeHook(
     let forceTimer: NodeJS.Timeout | undefined;
     let settleTimer: NodeJS.Timeout | undefined;
     let windowsCleanupPending = false;
+    let posixCleanupPending = false;
+    let shellClosed = false;
     const finish = (code: number, exitUnconfirmed = false): void => {
       if (completed) return;
       completed = true;
@@ -334,10 +347,15 @@ export function executeHook(
         }, 2_000);
         return;
       }
+      posixCleanupPending = process.platform !== "win32" && child.pid !== undefined;
       forceTimer = setTimeout(() => {
         if (completed) return;
         terminateHookProcess(child, true);
-        settleTimer = setTimeout(() => finish(terminationCode(), true), 1_000);
+        if (completed) return;
+        settleTimer = setTimeout(() => {
+          const confirmed = posixCleanupPending && shellClosed && hookProcessGroupExited(child);
+          finish(terminationCode(), !confirmed);
+        }, 1_000);
       }, 1_000);
       terminateHookProcess(child, false);
     };
@@ -349,10 +367,13 @@ export function executeHook(
     if (child.stderr instanceof EventEmitter) child.stderr.on("error", captureStreamError);
     child.on("error", (error) => {
       appendBounded(stderr, error.message);
-      if (!windowsCleanupPending) finish(termination ? terminationCode() : 1);
+      if (!windowsCleanupPending && !posixCleanupPending) finish(termination ? terminationCode() : 1);
     });
     child.once("close", (code) => {
-      if (!windowsCleanupPending) finish(termination ? terminationCode() : code ?? 1);
+      shellClosed = true;
+      if (!windowsCleanupPending && (!posixCleanupPending || hookProcessGroupExited(child))) {
+        finish(termination ? terminationCode() : code ?? 1);
+      }
     });
     if (completed) return;
     const boundedTimeoutMs = Number.isNaN(timeoutMs)

@@ -28,7 +28,7 @@ import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
 import { registerHandoff } from "../killeros/handoff.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
-import { createHarness, createTuiContext, requireInteractive, theme } from "./ExtensionTestHarness.ts";
+import { createHarness, createTuiContext, requireInteractive, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -824,6 +824,104 @@ test("real Pi compaction pauses a normally stopped goal after one decisionless r
         rmSync(directory, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test("real Pi terminal goal compaction cannot start extra tool work in TUI or RPC", { timeout: 30_000 }, async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    for (const status of ["complete", "blocked"] as const) {
+      await t.test(`${mode}/${status}`, async () => {
+        const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-terminal-compaction-"));
+        const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+        let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+        try {
+          const cwd = path.join(directory, "project"), agentDir = path.join(directory, "agent");
+          mkdirSync(cwd); mkdirSync(agentDir);
+          process.env.PI_CODING_AGENT_DIR = agentDir;
+          const compaction = { enabled: true, reserveTokens: 100, keepRecentTokens: 1 };
+          const preferences = path.join(agentDir, "killeros.json");
+          writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ compaction }));
+          writeFileSync(preferences, JSON.stringify({ autoCompaction: { enabled: false, percentRemaining: 100 } }));
+          const provider = `killeros-terminal-${mode}-${status}`;
+          const faux = fauxProvider({ provider, models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+          const extraFile = path.join(cwd, "unauthorized.txt");
+          const decisions: AssistantMessage[] = [];
+          const turns = status === "blocked" ? 3 : 1;
+          for (let turn = 1; turn <= turns; turn++) {
+            decisions.push(fauxAssistantMessage(fauxToolCall("killeros_goal_update", {
+              status, evidence: `Verified turn ${turn}`, ...(status === "blocked" ? { blockerKey: "external" } : {}),
+            })));
+            if (turn < turns) decisions.push(fauxAssistantMessage(`Audit ${turn} finished`));
+          }
+          faux.setResponses([
+            ...decisions,
+            () => {
+              // Trigger only at the final answer, so normal tool-result follow-up is not mistaken for a restart.
+              writeFileSync(preferences, JSON.stringify({ autoCompaction: { enabled: true, percentRemaining: 100 } }));
+              return fauxAssistantMessage("The terminal goal request finished");
+            },
+            fauxAssistantMessage(fauxToolCall("write", { path: extraFile, content: "Unauthorized continuation" })),
+            fauxAssistantMessage("Unauthorized work finished"),
+          ]);
+          const modelRuntime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, allowModelNetwork: false });
+          modelRuntime.registerNativeProvider(faux.provider);
+          await modelRuntime.setRuntimeApiKey(provider, "local-test-key");
+          const settingsManager = SettingsManager.inMemory({ compaction, retry: { enabled: false }, cacheWarming: "off" });
+          const sessionManager = SessionManager.create(cwd, path.join(directory, "sessions"));
+          sessionManager.appendMessage({ role: "user", content: "Earlier context", timestamp: Date.now() - 2 });
+          sessionManager.appendMessage(fauxAssistantMessage("Earlier answer", { timestamp: Date.now() - 1 }));
+          let compactions = 0;
+          let resolveCompacted: (() => void) | undefined;
+          const compacted = new Promise<void>((resolve) => { resolveCompacted = resolve; });
+          const errors: string[] = [];
+          const loader = new DefaultResourceLoader({
+            cwd, agentDir, settingsManager, additionalExtensionPaths: [path.join(repositoryRoot, "Killeros.ts")],
+            noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+            extensionFactories: [(pi) => {
+              pi.on("session_before_compact", (event) => {
+                compactions++;
+                return { compaction: { summary: "The goal is terminal. Do not continue it.", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore } };
+              });
+              pi.on("session_compact", () => { resolveCompacted?.(); });
+            }],
+          });
+          await loader.reload();
+          assert.deepEqual(loader.getExtensions().errors, []);
+          ({ session } = await createAgentSession({ cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, sessionManager, resourceLoader: loader }));
+          let starts = 0;
+          let finalAnswer = false;
+          session.subscribe((event) => {
+            if (event.type === "agent_start") starts++;
+            if (event.type === "message_end" && event.message.role === "assistant"
+              && event.message.content.some((part) => part.type === "text" && part.text === "The terminal goal request finished")) finalAnswer = true;
+          });
+          await session.bindExtensions({ mode, uiContext: extensionContextTestAdapter(createTuiContext().ctx).ui, onError(error) { errors.push(`${error.event}: ${error.error}`); } });
+          await session.prompt("/goal Stop after the terminal decision");
+          await compacted;
+          await waitFor(() => session?.isCompacting === false);
+          await new Promise((resolve) => setImmediate(resolve));
+          await session.waitForIdle();
+          const entry = sessionManager.getEntries().reverse().find((entry) => entry.type === "custom" && entry.customType === "killeros-goal");
+          assert.ok(entry?.type === "custom" && isUnknownRecord(entry.data));
+          const state = parseGoalState(entry.data.state);
+          assert.equal(state?.status, status);
+          assert.equal(state?.turns, turns);
+          assert.equal(finalAnswer, true);
+          assert.equal(compactions, 1);
+          assert.equal(starts, turns);
+          assert.equal(faux.state.callCount, turns * 2);
+          assert.equal(existsSync(extraFile), false);
+          assert.equal(session.messages.some((message) => message.role === "custom" && message.customType === "killeros-auto-compaction"), false);
+          assert.equal(session.pendingMessageCount, 0);
+          assert.deepEqual(errors, []);
+        } finally {
+          session?.dispose();
+          if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+          else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+          rmSync(directory, { recursive: true, force: true });
+        }
+      });
+    }
   }
 });
 

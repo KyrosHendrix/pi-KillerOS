@@ -523,6 +523,61 @@ test("NaN hook timeouts use the default instead of firing immediately", async ()
   assert.deepEqual(child.signals, []);
 });
 
+test("POSIX cleanup keeps escalation after shell close for timeout and cancellation", async (t) => {
+  for (const [reason, outcome] of [
+    ["timeout", "exited"], ["cancelled", "exited"], ["timeout", "survived"],
+    ["cancelled", "permission denied"], ["timeout", "graceful"],
+  ] as const) {
+    await t.test(`${reason}/${outcome}`, async (t) => {
+      const platform = Object.getOwnPropertyDescriptor(process, "platform");
+      assert.ok(platform);
+      Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+      t.after(() => Object.defineProperty(process, "platform", platform));
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      class ClosingShell extends EventEmitter {
+        pid = 987654321;
+        stdout = new PassThrough();
+        stderr = new PassThrough();
+        kill(): never { assert.fail("must terminate the process group, not only the shell"); }
+      }
+      const shell = new ClosingShell();
+      const signals: Array<NodeJS.Signals | number | undefined> = [];
+      let groupAlive = true;
+      t.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => {
+        assert.equal(pid, -shell.pid);
+        if (signal === 0) {
+          if (outcome === "permission denied") throw Object.assign(new Error("cannot inspect group"), { code: "EPERM" });
+          if (!groupAlive) throw Object.assign(new Error("group exited"), { code: "ESRCH" });
+          return true;
+        }
+        signals.push(signal);
+        if (signal === "SIGTERM") {
+          if (outcome === "graceful") groupAlive = false;
+          shell.emit("close", null);
+        }
+        if (signal === "SIGKILL" && outcome !== "survived") groupAlive = false;
+        return true;
+      });
+      const controller = new AbortController();
+      const pending = executeHook({
+        command: "ignored", cwd: process.cwd(), environment: {}, timeoutMs: 10,
+        spawnProcess: () => shell, signal: controller.signal,
+      });
+      if (reason === "cancelled") controller.abort();
+      else t.mock.timers.tick(10);
+      t.mock.timers.tick(1_000);
+      t.mock.timers.tick(1_000);
+      const result = await pending;
+      assert.deepEqual(signals, outcome === "graceful" ? ["SIGTERM"] : ["SIGTERM", "SIGKILL"]);
+      assert.equal(groupAlive, outcome === "survived");
+      assert.equal(result.code, reason === "timeout" ? 124 : 130);
+      assert.equal(result.timedOut, reason === "timeout");
+      assert.equal(result.cancelled, reason === "cancelled");
+      assert.equal(result.exitUnconfirmed, outcome === "survived" || outcome === "permission denied");
+    });
+  }
+});
+
 test("never-closing hooks report unconfirmed exit after bounded cleanup", async () => {
   class NeverClosingHook extends EventEmitter {
     stdout = new PassThrough();
@@ -749,42 +804,113 @@ test("Windows hook cleanup kills the shell and its child without taskkill in PAT
   }
 });
 
-test("timed-out hooks terminate the process tree or report bounded uncertainty", async () => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-tree-"));
-  try {
-    const configDirectory = path.join(directory, ".pi");
-    mkdirSync(configDirectory);
-    const script = path.join(directory, "hook-child.cjs");
-    const marker = path.join(directory, "late-marker");
-    writeFileSync(script, [
-      "const { spawn } = require('node:child_process');",
-      "const marker = process.argv[1];",
-      "spawn(process.execPath, ['-e', \"require('node:fs').writeFileSync(process.argv[1], 'late')\", marker], { stdio: 'ignore' });",
-      "setTimeout(() => {}, 5000);",
-    ].join("\n"));
-    const command = `"${process.execPath}" "${script}" "${marker}"`;
-    writeFileSync(path.join(configDirectory, "killeros-hooks.json"), JSON.stringify({
-      hooks: { tool_call: [{ matcher: "^write$", command, timeoutMs: 1_000 }] },
-    }));
-
-    const { handlers } = createHarness();
-    const notifications: TestNotification[] = [];
-    const { ctx } = createTuiContext();
-    ctx.cwd = directory;
-    ctx.ui.notify = (message, level) => notifications.push({ message, level });
-    for (const handler of getHandlers(handlers, "session_start")) await handler({}, ctx);
-    const started = Date.now();
-    const results = await emitSequentially(getHandlers(handlers, "tool_call"), {
-      toolCallId: "tree-timeout",
-      toolName: "write",
-      input: { path: "example.txt", content: "test" },
-    }, ctx);
-    assert.equal(results.find((result) => result?.block)?.block, true);
-    assert.ok(Date.now() - started >= 1_000);
-    assert.match(last(notifications).message, /Hook failed \(timed out\)/u);
-    await new Promise((resolve) => setTimeout(resolve, 6_000));
-    assert.equal(existsSync(marker), false);
-  } finally {
+async function startHookTree(directory: string) {
+  const script = path.join(directory, "hook-child.cjs");
+  const marker = path.join(directory, "late-marker");
+  const ready = path.join(directory, "ready");
+  const source = [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const marker = process.argv[2];",
+    "const ready = process.argv[3];",
+    // The descendant ignores TERM and does not retain the shell's output pipes.
+    "spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {});require('node:fs').writeFileSync(process.argv[2], String(process.pid));setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late'), 4000);setTimeout(() => process.exit(), 5000);\", marker, ready], { stdio: 'ignore' });",
+    "const poll = setInterval(() => { if (fs.existsSync(ready)) { clearInterval(poll); console.log(JSON.stringify([process.pid, Number(fs.readFileSync(ready, 'utf8'))])); } }, 10);",
+    "setTimeout(() => process.exit(), 6000);",
+  ].join("\n");
+  writeFileSync(script, source);
+  const command = `"${process.execPath}" "${script}" "${marker}" "${ready}"`;
+  const shell = spawn(command, { detached: process.platform !== "win32", shell: true, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const pids: number[] = [];
+  if (shell.pid) pids.push(shell.pid);
+  const cleanup = async (): Promise<void> => {
+    if (process.platform !== "win32" && shell.pid) {
+      try { process.kill(-shell.pid, "SIGKILL"); } catch { /* Already exited. */ }
+    }
+    if (existsSync(ready)) pids.push(Number(readFileSync(ready, "utf8")));
+    for (const pid of pids) {
+      if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+      try {
+        if (process.platform === "win32") {
+          execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+        } else process.kill(pid, "SIGKILL");
+      } catch { /* Already exited. */ }
+    }
     await removeDirectoryEventually(directory);
+  };
+  try {
+    const output: unknown = (await once(shell.stdout, "data", { signal: AbortSignal.timeout(10_000) }))[0];
+    assert.ok(Buffer.isBuffer(output));
+    const parsed: unknown = JSON.parse(output.toString("utf8"));
+    assert.ok(Array.isArray(parsed));
+    for (const pid of parsed) {
+      assert.ok(typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0);
+      pids.push(pid);
+    }
+    assert.equal(parsed.length, 2, "both hook processes must start before termination");
+    assert.equal(existsSync(marker), false, "the marker must be delayed beyond cleanup");
+    return { command, shell, script, source, marker, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+test("timed-out hooks terminate the process tree or report bounded uncertainty", { timeout: 15_000 }, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-tree-"));
+  const tree = await startHookTree(directory);
+  try {
+    const result = await executeHook({ command: tree.command, cwd: directory, environment: {}, timeoutMs: 100, spawnProcess: () => tree.shell });
+    assert.equal(result.code, 124);
+    assert.equal(result.timedOut, true);
+    await new Promise((resolve) => setTimeout(resolve, 4_200));
+    assert.equal(readFileSync(tree.script, "utf8"), tree.source, "the script must not be mistaken for the marker");
+    if (!result.exitUnconfirmed) assert.equal(existsSync(tree.marker), false, "confirmed cleanup must prevent late descendant writes");
+  } finally {
+    await tree.cleanup();
+  }
+});
+
+test("the process-tree fixture detects a late survivor when cleanup is disabled", { timeout: 15_000 }, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-tree-control-"));
+  const tree = await startHookTree(directory);
+  const closed = once(tree.shell, "close");
+  try {
+    // Withhold the PID and ignore both kill signals to disable cleanup safely in this adapter.
+    const result = await executeHook({
+      command: tree.command, cwd: directory, environment: {}, timeoutMs: 100,
+      spawnProcess: () => ({
+        stdout: tree.shell.stdout, stderr: tree.shell.stderr, kill: () => true,
+        on: (event, listener) => tree.shell.on(event, listener),
+        once: (event, listener) => tree.shell.once(event, listener),
+      }),
+    });
+    assert.equal(result.timedOut, true);
+    assert.equal(result.exitUnconfirmed, true, "a surviving tree must never be reported confirmed stopped");
+    assert.equal(existsSync(tree.marker), false, "the descendant must write after the cleanup window");
+    await closed;
+    assert.equal(readFileSync(tree.marker, "utf8"), "late");
+    assert.equal(readFileSync(tree.script, "utf8"), tree.source);
+  } finally {
+    await tree.cleanup();
+  }
+});
+
+test("POSIX cancellation stops a TERM-resistant descendant after the shell exits", {
+  skip: process.platform === "win32", timeout: 15_000,
+}, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-tree-abort-"));
+  const tree = await startHookTree(directory);
+  try {
+    const controller = new AbortController();
+    const pending = executeHook({ command: tree.command, cwd: directory, environment: {}, spawnProcess: () => tree.shell, signal: controller.signal });
+    controller.abort();
+    const result = await pending;
+    assert.equal(result.code, 130);
+    assert.equal(result.cancelled, true);
+    await new Promise((resolve) => setTimeout(resolve, 4_200));
+    assert.equal(existsSync(tree.marker), false, "SIGKILL must stop the TERM-resistant descendant");
+  } finally {
+    await tree.cleanup();
   }
 });

@@ -103,7 +103,7 @@ A direct quoted path-shaped file target binds silent file proof. For an extensio
 /goal Fix `killeros/footer.ts`, verified by npm test
 ```
 
-Bare quoted prose remains model-reported. KillerOS captures the file baseline at goal start and only completes when the file is created or changed. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Same-turn recovery requires an actual interruption; successful or skipped compaction cannot restart a normally stopped goal without a decision. Restored goals keep their persisted limit.
+Bare quoted prose remains model-reported. KillerOS captures the file baseline at goal start and only completes when the file is created or changed. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Same-turn recovery requires an actual interruption; successful or skipped compaction cannot restart a normally stopped goal without a decision. A request that completes or blocks a goal remains goal-owned through settlement, so automatic compaction cannot restart it as ordinary work. Later ordinary requests still support compaction continuation. Restored goals keep their persisted limit.
 
 Session replacement, reload, and committed tree navigation discard unfinished task receipts. Late receipt results do not write or notify through the old session context or attach to a different branch. Cancelled navigation preserves the pending receipt.
 
@@ -154,6 +154,8 @@ Releases go through CI on `main`; do not push version tags manually. The package
 ## Security
 
 Pi extensions run with your user permissions. Review the source before installing globally. Hook commands run only for projects Pi marks as trusted; check `.pi/killeros-hooks.json` before enabling project trust. KillerOS accepts that configuration only as a regular, non-linked file no larger than 64 KiB in the project's real `.pi` directory.
+
+On POSIX systems, timed-out or cancelled hooks receive `SIGTERM`, followed by `SIGKILL` if cleanup remains pending. Shell exit alone does not confirm that the original process group stopped. Cleanup uses a two-second window and reports uncertainty if group exit cannot be confirmed.
 
 Handoff validation rejects recognized credential assignments in plain text, Markdown lists, bold labels, and inline-code labels before creating a destination session. This pattern check cannot detect every secret or personally identifying value. Rejected values are not included in the error notification.
 

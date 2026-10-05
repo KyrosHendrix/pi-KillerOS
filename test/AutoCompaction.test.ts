@@ -644,6 +644,81 @@ test("a successful goal compaction uses the goal continuation callback without a
   assert.equal(harness.sentMessages.length, 0);
 });
 
+test("terminal goal requests never become ordinary compaction continuations", async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    for (const status of ["complete", "blocked"] as const) {
+      for (const order of ["before settlement", "after settlement"] as const) {
+        await t.test(`${mode}/${status}/${order}`, async () => {
+          const harness = createGoalHarness(mode, 100);
+          await harness.startGoal("Stop after the terminal decision");
+          const turns = status === "blocked" ? 3 : 1;
+          for (let turn = 1; turn <= turns; turn++) {
+            await harness.emit("before_agent_start", { type: "before_agent_start", systemPrompt: "Test prompt" });
+            await harness.emit("agent_start");
+            await harness.decide({ status, evidence: `Verified turn ${turn}`, ...(status === "blocked" ? { blockerKey: "external" } : {}) });
+            if (turn < turns) {
+              await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+              await harness.emit("agent_settled");
+              await new Promise((resolve) => setImmediate(resolve));
+            }
+          }
+          assert.equal(harness.state().state?.status, status);
+          await harness.emit("turn_end");
+          assert.equal(harness.compactCalls.length, 1);
+          if (order === "before settlement") harness.compactCalls[0]?.onComplete?.(compactResult());
+          await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+          await harness.emit("agent_settled");
+          if (order === "after settlement") harness.compactCalls[0]?.onComplete?.(compactResult());
+          harness.compactCalls[0]?.onComplete?.(compactResult());
+          await new Promise((resolve) => setImmediate(resolve));
+
+          assert.equal(harness.sentMessages.length, turns, "compaction must not start another request");
+          assert.equal(harness.state().state?.status, status);
+          assert.equal(harness.state().state?.turns, turns);
+          assert.equal(harness.state().automaticCompaction, undefined);
+          assert.deepEqual(harness.notifications.filter(({ type }) => type === "error"), []);
+
+          // A later ordinary request must not inherit the terminal goal's ownership.
+          await harness.emit("before_agent_start", { type: "before_agent_start", systemPrompt: "Ordinary prompt" });
+          await harness.emit("agent_start");
+          await harness.emit("message_start", { message: { role: "user", content: "Ordinary work" } });
+          await harness.emit("turn_end");
+          await harness.emit("agent_settled");
+          harness.compactCalls[1]?.onComplete?.(compactResult());
+          assert.equal(harness.compactCalls.length, 2);
+          const continuation = harness.sentMessages.at(-1)?.message;
+          assert.ok(isUnknownRecord(continuation));
+          assert.equal(continuation.customType, AUTO_COMPACTION_MESSAGE_TYPE);
+          assert.equal(harness.sentMessages.length, turns + 1);
+        });
+      }
+    }
+  }
+});
+
+test("terminal goal compaction skips stay silent and failures stay visible without continuing", async () => {
+  for (const outcome of ["skipped", "failed"] as const) {
+    for (const synchronous of [false, true]) {
+      const harness = createGoalHarness("rpc", 100);
+      await harness.startGoal("Keep the completed request stopped");
+      await harness.emit("before_agent_start", { systemPrompt: "Test prompt" });
+      await harness.emit("agent_start");
+      await harness.decide({ status: "complete", evidence: "Verified" });
+      const error = new Error(outcome === "skipped" ? SESSION_TOO_SMALL_COMPACTION_ERROR : "provider unavailable");
+      if (synchronous) harness.failCompactionSynchronously(error);
+      await harness.emit("turn_end");
+      await harness.emit("agent_settled");
+      if (!synchronous) harness.compactCalls[0]?.onError?.(error);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(harness.state().state?.status, "complete");
+      assert.equal(harness.sentMessages.length, 1);
+      const errors = harness.notifications.filter(({ type }) => type === "error");
+      assert.equal(errors.length, outcome === "failed" ? 1 : 0);
+      if (outcome === "failed") assert.match(errors[0]?.message ?? "", /provider unavailable/u);
+    }
+  }
+});
+
 test("an active goal pauses for automatic compaction and resumes once after settlement", async () => {
   for (const mode of ["tui", "rpc"] as const) {
     const harness = createGoalHarness(mode);
