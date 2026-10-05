@@ -19,7 +19,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## Requirements
 
 - Node.js 22.19.0+
-- Pi 0.99.2 or later below 2.0.0
+- Pi 1.0.2 or later below 2.0.0
 - An interactive TUI session for the custom header, editor, footer, and `question`
 
 ## Install
@@ -112,6 +112,24 @@ Pending `/goal` commands discard their mutation if committed navigation changes 
 Failed Git metadata reads keep the footer's last successful file counts and mark task changes unavailable. They are not treated as an empty repository.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
+
+### Pi model and MCP settings
+
+Use Pi's native `/thinking` selector for reasoning levels. Pi 1.0.2 can also apply different sampling parameters for each level through `samplingParamsByThinkingLevel` in `models.json`. For example, a model entry can contain:
+
+```json
+{
+  "samplingParams": { "temperature": 1.0, "top_p": 0.95 },
+  "samplingParamsByThinkingLevel": {
+    "off": { "temperature": 0.7, "top_p": 0.8 },
+    "high": { "temperature": 0.6 }
+  }
+}
+```
+
+Only configure parameters the endpoint accepts. These settings apply to `openai-completions`, `openai-responses`, and `azure-openai-responses`, not legacy `openai-codex`. Missing levels inherit model defaults; request-level sampling parameters take precedence. `/codex-fast` preserves sampling parameters when it adds the priority service tier. See Pi's [sampling configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md#configure-sampling-by-thinking-level) for the full file format and merge rules.
+
+Use Pi's `/mcp` command and `.pi/mcp.json` to enable, disable, or change the exposure of a user-level MCP server for a trusted project without copying its credentials. See [project MCP overrides](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#configure-servers). KillerOS does not manage MCP configuration.
 
 ## Development
 

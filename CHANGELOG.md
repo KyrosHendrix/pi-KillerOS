@@ -4,6 +4,16 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the minimum supported Pi version and locked Pi development packages to 1.0.2. Compatibility CI now tests the exact 1.0.2 minimum and latest stable 1.x; users on older Pi versions must upgrade.
+- Documented Pi's native thinking-level sampling configuration and trusted-project MCP overrides without adding KillerOS commands or settings.
+
+### Added
+
+- Added real Pi contract coverage for capacity-error recovery within one logical goal turn, with task receipts and completion sounds deferred until settlement.
+- Verified that native OpenAI fast mode preserves thinking-level sampling overrides across API-key and ChatGPT subscription requests, extension reloads, and provider retries.
+
 ## [3.0.1] - 2026-10-02
 
 ### Changed
