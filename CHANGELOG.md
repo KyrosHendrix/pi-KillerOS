@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.3] - 2026-10-07
+
 ### Changed
 
 - Raised the minimum supported Pi version and all four locked Pi development packages to 1.0.4. Compatibility CI now targets the exact 1.0.4 minimum and latest `>=1.0.4 <2`, with unchanged stable check names and package-file immutability guards.
@@ -20,6 +22,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 ### Fixed
 
 - Fixed a process-tree test startup race by waiting for the complete descendant PID instead of readiness-file creation. Hook termination assertions remain unchanged.
+- Reused bounded cleanup retries throughout real Pi integration tests so transient Windows directory locks do not fail CI after the assertions pass. Added a repository contract against unbounded fixture cleanup.
 
 ## [3.0.2] - 2026-10-05
 
