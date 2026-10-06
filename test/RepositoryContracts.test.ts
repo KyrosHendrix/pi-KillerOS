@@ -143,6 +143,14 @@ test("peer ranges require Pi 1.0.4 and reject Pi 1.0.3 and 2.x", () => {
   assert.match(readme, /Users on older Pi versions must upgrade/u);
 });
 
+test("unreleased notes state only the current Pi minimum", () => {
+  const unreleased = changelog.split(/^## \[/mu)[1];
+  assert.ok(unreleased?.startsWith("Unreleased]"));
+  const minimums = [...unreleased.matchAll(/minimum supported Pi version[^\n]*?to (\d+\.\d+\.\d+)/gu)]
+    .map((match) => match[1]);
+  assert.deepEqual(minimums, minimums.length === 0 ? [] : [packageJson.devDependencies["@earendil-works/pi-coding-agent"]]);
+});
+
 test("public TUI guidance preserves Pi defaults and documents regular-mode scrollback", () => {
   assert.match(readme, /Pi 1\.0 defaults to fullscreen/u);
   assert.match(readme, /`--tui-mode regular`/u);

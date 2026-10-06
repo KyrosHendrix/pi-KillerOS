@@ -8,7 +8,6 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 - Raised the minimum supported Pi version and all four locked Pi development packages to 1.0.4. Compatibility CI now targets the exact 1.0.4 minimum and latest `>=1.0.4 <2`, with unchanged stable check names and package-file immutability guards.
 - Documented Pi 1.0.4's native wildcard tool filters, MCP availability under explicit tool allowlists, and codemode image reads.
-- Raised the minimum supported Pi version and locked Pi development packages to 1.0.3. Compatibility CI now tests the exact 1.0.3 minimum and latest stable 1.x; users on older Pi versions must upgrade.
 - Updated Azure footer naming and fast-mode exclusion tests for Pi's renamed `azure` provider. Documented the required Azure configuration migration, the unchanged Responses API identifier, native editor/transcript navigation, and saved codemode images.
 - Gave Pi compatibility CI checks stable minimum/latest names so future Pi version changes do not require renaming GitHub's required checks. Documented the one-time protection migration without weakening existing safeguards.
 
