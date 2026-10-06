@@ -19,8 +19,10 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## Requirements
 
 - Node.js 22.19.0+
-- Pi 1.0.2 or later below 2.0.0
+- Pi 1.0.4 or later below 2.0.0
 - An interactive TUI session for the custom header, editor, footer, and `question`
+
+Users on older Pi versions must upgrade.
 
 ## Install
 
@@ -34,7 +36,7 @@ Or from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin a release by appending its tag, for example `@v3.0.2`. Add `-l` to install only for the current project. Restart Pi after installing.
+Pin a release by appending its tag, for example `@v3.0.3`. Add `-l` to install only for the current project. Restart Pi after installing.
 
 ## Commands
 
@@ -69,7 +71,11 @@ Pi 1.0 defaults to fullscreen. Use `--tui-mode regular` for one invocation or se
 | RPC | Goals, proactive compaction; no TUI components, sounds, title indicator |
 | Print/JSON | No interactive questions, `/goal`, or proactive compaction |
 
+With Pi 1.0.3's default [keybindings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md#fullscreen), `Home` and `End` move within the current editor line. In fullscreen mode, `Ctrl+Home` and `Ctrl+End` scroll to the transcript's beginning or end without moving the editor cursor. KillerOS inherits these bindings; user overrides still apply.
+
 `question` and the active `killeros_goal_update` tool use Pi's `model-only` exposure. They stay directly declared to the model when codemode is disabled or enabled in `on` or `only` mode, but scripts and other tools cannot call them through `ctx.executeTool()`. The goal tool remains inactive without an active goal. Questions still require TUI mode; a direct RPC call fails with `The question tool requires interactive TUI mode`. KillerOS does not enable or configure codemode.
+
+Pi 1.0.4's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns such as `"killeros_*"` so the shell does not expand them. An explicit allowlist must include `question` for interactive questions and permit `killeros_goal_update` for goals. Selection does not make questions usable outside TUI mode. Excluding the goal tool pauses goals before any model request. See Pi's [tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
 
 ## Configuration
 
@@ -129,7 +135,15 @@ Use Pi's native `/thinking` selector for reasoning levels. Pi 1.0.2 can also app
 
 Only configure parameters the endpoint accepts. These settings apply to `openai-completions`, `openai-responses`, and `azure-openai-responses`, not legacy `openai-codex`. Missing levels inherit model defaults; request-level sampling parameters take precedence. `/codex-fast` preserves sampling parameters when it adds the priority service tier. See Pi's [sampling configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md#configure-sampling-by-thinking-level) for the full file format and merge rules.
 
+Pi 1.0.3 renames the Azure **provider** from `azure-openai-responses` to `azure` and adds Azure Foundry Chat Completions, including `azure/deepseek-v4-pro`. Rename the provider key in `auth.json` or run `/login azure` again, rename it in `models.json`, and update `defaultProvider`, `enabledModels` patterns, and `modelThinkingLevels` keys in `settings.json`. The Responses **API** identifier remains `azure-openai-responses`; Foundry Chat Completions uses `openai-completions`. The `AZURE_OPENAI_*` environment variables are unchanged. Old Azure sessions fall back to another model on resume and lose prompt-cache reuse. KillerOS does not migrate credentials or Pi settings. See Pi's [Azure configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md#azure-openai).
+
+In Pi 1.0.4 codemode, `tools.read()` on an image returns an image block that you can pass to native `image()`. See Pi's [codemode tool calls](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#call-tools).
+
+When codemode is enabled, Pi 1.0.3's `image()` also saves images to temporary files and includes their paths in the result, so later turns can copy or move them. Pi creates these output files with user-only permissions on POSIX systems; Windows access follows inherited filesystem ACLs. KillerOS uses Pi's native codemode behavior; see [image generation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#generate-images).
+
 Use Pi's `/mcp` command and `.pi/mcp.json` to enable, disable, or change the exposure of a user-level MCP server for a trusted project without copying its credentials. See [project MCP overrides](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#configure-servers). KillerOS does not manage MCP configuration.
+
+In Pi 1.0.4, a nonempty `--tools` list with no `mcp__` entry preserves MCP tool availability according to each server's exposure. For example, `--tools codemode` does not disable MCP connections or remove their tools. Use `--no-mcp` to disable MCP connections through Pi's built-in MCP support for one run. Explicit MCP selection and exclusion remain Pi's responsibility; see [MCP tool exposure](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#control-tool-exposure).
 
 ## Development
 
@@ -147,7 +161,9 @@ npm ci && npm run check && npm test
 4. Merge using **Create a merge commit**. Squash and rebase merging are disabled because the automated `main`-to-`dev` sync requires shared ancestry. Avoid advancing `dev` until that sync finishes.
 5. Check the `main` CI run and the following Release run. Successful CI on the current `main` commit triggers npm publication with provenance, creates the GitHub release, and fast-forwards `dev` to the released commit. A green PR alone never publishes.
 
-`main` requires pull requests and the CI workflow's required checks, including for administrators. Force pushes and branch deletion are blocked. If CI job names change, update GitHub's required status checks to match.
+`main` requires pull requests and the CI workflow's required checks, including for administrators. Force pushes and branch deletion are blocked. Pi compatibility checks use the stable names `Pi compatibility (minimum)` and `Pi compatibility (latest)`, independent of the tested versions.
+
+When adopting these names, first confirm both checks passed on the release PR's exact head commit. Replace only the two old versioned Pi required checks with their corresponding stable names, preserving their GitHub Actions app bindings and every other protection. If other CI job names change, update GitHub's required status checks to match.
 
 Releases go through CI on `main`; do not push version tags manually. The package smoke job validates release metadata before packing, and the release workflow checks it again before publication. The prepublish check rejects ordinary direct `npm publish`, but `--ignore-scripts` can bypass it. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
 

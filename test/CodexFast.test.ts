@@ -96,7 +96,7 @@ test("enabled fast mode passes unsupported, ambiguous, and invalid requests thro
   for (const model of [
     undefined,
     { ...nativeModel, provider: "anthropic" },
-    { ...nativeModel, provider: "azure-openai-responses" },
+    { ...nativeModel, provider: "azure" },
     { ...nativeModel, provider: "OpenAI" },
     { ...nativeModel, api: "openai-completions" },
     { ...nativeModel, api: "virtual" },

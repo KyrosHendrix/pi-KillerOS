@@ -814,8 +814,9 @@ async function startHookTree(directory: string) {
     "const marker = process.argv[2];",
     "const ready = process.argv[3];",
     // The descendant ignores TERM and does not retain the shell's output pipes.
-    "spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {});require('node:fs').writeFileSync(process.argv[2], String(process.pid));setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late'), 4000);setTimeout(() => process.exit(), 5000);\", marker, ready], { stdio: 'ignore' });",
-    "const poll = setInterval(() => { if (fs.existsSync(ready)) { clearInterval(poll); console.log(JSON.stringify([process.pid, Number(fs.readFileSync(ready, 'utf8'))])); } }, 10);",
+    "spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {});require('node:fs').writeFileSync(process.argv[2], String(process.pid) + '\\\\n');setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late'), 4000);setTimeout(() => process.exit(), 5000);\", marker, ready], { stdio: 'ignore' });",
+    // A newline marks the complete PID; file creation alone can expose an empty or partial write.
+    "const poll = setInterval(() => { if (!fs.existsSync(ready)) return; const pid = fs.readFileSync(ready, 'utf8'); if (!pid.endsWith('\\n')) return; clearInterval(poll); console.log(JSON.stringify([process.pid, Number(pid)])); }, 10);",
     "setTimeout(() => process.exit(), 6000);",
   ].join("\n");
   writeFileSync(script, source);
@@ -855,6 +856,19 @@ async function startHookTree(directory: string) {
     throw error;
   }
 }
+
+test("process-tree readiness waits for PID contents instead of file creation", { timeout: 15_000 }, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-tree-readiness-"));
+  const ready = path.join(directory, "ready");
+  // Reproduce the window between opening the readiness file and writing its PID.
+  writeFileSync(ready, "");
+  const tree = await startHookTree(directory);
+  try {
+    assert.match(readFileSync(ready, "utf8"), /^[1-9]\d*\n$/u);
+  } finally {
+    await tree.cleanup();
+  }
+});
 
 test("timed-out hooks terminate the process tree or report bounded uncertainty", { timeout: 15_000 }, async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-tree-"));
