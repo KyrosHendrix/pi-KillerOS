@@ -120,6 +120,12 @@ test("skill-specific workflow gating is no longer part of KillerOS", () => {
   assert.match(changelog, /Removed the decision-gated workflow subsystem/iu);
 });
 
+test("real Pi fixtures use bounded cleanup for transient Windows directory locks", () => {
+  const contracts = readFileSync(new URL("./PiExtensionContract.test.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(contracts, /\brmSync\(/u);
+  assert.match(contracts, /removeDirectoryEventually/u);
+});
+
 test("peer ranges require Pi 1.0.4 and reject Pi 1.0.3 and 2.x", () => {
   assert.deepEqual(packageJson.peerDependencies, {
     "@earendil-works/pi-ai": ">=1.0.4 <2",

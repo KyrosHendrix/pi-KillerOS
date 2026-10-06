@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,7 @@ import { registerHandoff } from "../killeros/handoff.ts";
 import { registerFooter } from "../killeros/footer.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
-import { createHarness, createTuiContext, requireInteractive, theme, waitFor } from "./ExtensionTestHarness.ts";
+import { createHarness, createTuiContext, removeDirectoryEventually, requireInteractive, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -149,7 +149,7 @@ test("the packed KillerOS package activates and reloads through Pi's public life
       session.dispose();
     }
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    await removeDirectoryEventually(directory);
   }
 });
 
@@ -213,7 +213,7 @@ test("KillerOS initialization and reload preserve unset Pi display preferences",
         session?.dispose();
         if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
         else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-        rmSync(directory, { recursive: true, force: true });
+        await removeDirectoryEventually(directory);
       }
     });
   }
@@ -331,7 +331,7 @@ test("real native OpenAI transport preserves thinking-level sampling with priori
         }
       } finally {
         resetCodexFastState();
-        rmSync(directory, { recursive: true, force: true });
+        await removeDirectoryEventually(directory);
       }
     });
   }
@@ -448,7 +448,7 @@ test("real Pi Azure Responses and Foundry requests survive reload without OpenAI
       } finally {
         session?.dispose();
         resetCodexFastState();
-        rmSync(directory, { recursive: true, force: true });
+        await removeDirectoryEventually(directory);
       }
     });
   }
@@ -558,7 +558,7 @@ test("real Pi capacity and HTTP/2 retries keep one goal turn and defer receipts 
         }
       } finally {
         session?.dispose();
-        rmSync(directory, { recursive: true, force: true });
+        await removeDirectoryEventually(directory);
       }
     });
   }
@@ -768,7 +768,7 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
         } finally {
           if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
           else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-          rmSync(directory, { recursive: true, force: true });
+          await removeDirectoryEventually(directory);
         }
       });
     }
@@ -860,7 +860,7 @@ test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codem
           assert.deepEqual(errors, []);
         } finally {
           session?.dispose();
-          rmSync(directory, { recursive: true, force: true });
+          await removeDirectoryEventually(directory);
         }
       });
     }
@@ -976,7 +976,7 @@ test("real Pi delivery starts one hidden ordinary continuation after turn_end ->
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-    rmSync(directory, { recursive: true, force: true });
+    await removeDirectoryEventually(directory);
   }
 });
 
@@ -1063,7 +1063,7 @@ test("real Pi compaction pauses a normally stopped goal after one decisionless r
         session?.dispose();
         if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
         else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-        rmSync(directory, { recursive: true, force: true });
+        await removeDirectoryEventually(directory);
       }
     });
   }
@@ -1160,7 +1160,7 @@ test("real Pi terminal goal compaction cannot start extra tool work in TUI or RP
           session?.dispose();
           if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
           else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-          rmSync(directory, { recursive: true, force: true });
+          await removeDirectoryEventually(directory);
         }
       });
     }
@@ -1239,7 +1239,7 @@ test("real Pi handoff survives immediate disposal and resume without an agent tu
     assert.deepEqual(errors, []);
   } finally {
     await runtimeHost?.dispose();
-    rmSync(directory, { recursive: true, force: true });
+    await removeDirectoryEventually(directory);
   }
 });
 
@@ -1381,7 +1381,7 @@ test("cancelled real session replacements preserve automatic compaction recovery
       await runtimeHost?.dispose();
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-      rmSync(directory, { recursive: true, force: true });
+      await removeDirectoryEventually(directory);
     }
   }
 });
@@ -1521,7 +1521,7 @@ test("real Pi session boundaries discard pending receipts without stale settleme
         await runtimeHost?.dispose();
         if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
         else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-        rmSync(directory, { recursive: true, force: true });
+        await removeDirectoryEventually(directory);
       }
     });
   }
@@ -1645,7 +1645,7 @@ test("a stale replacement releases a running goal's held continuation in real Pi
           await session.waitForIdle();
           session.dispose();
         }
-        rmSync(directory, { recursive: true, force: true });
+        await removeDirectoryEventually(directory);
       }
     });
   }
@@ -1654,7 +1654,7 @@ test("a stale replacement releases a running goal's held continuation in real Pi
 test("BUG-05 real Pi tree navigation invalidates a pending goal-start command", { timeout: 20000 }, async (t) => {
   for (const cancelled of [false, true]) {
     const root = mkdtempSync(path.join(process.cwd(), "node_modules", ".killeros-edge-goal-command-"));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
+    t.after(() => removeDirectoryEventually(root));
     const cwd = path.join(root, "project"), agentDir = path.join(root, "agent");
     mkdirSync(cwd); mkdirSync(agentDir);
     const state = createGoalRuntime();
