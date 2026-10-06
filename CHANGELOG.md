@@ -6,12 +6,15 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Changed
 
+- Raised the minimum supported Pi version and all four locked Pi development packages to 1.0.4. Compatibility CI now targets the exact 1.0.4 minimum and latest `>=1.0.4 <2`, with unchanged stable check names and package-file immutability guards.
+- Documented Pi 1.0.4's native wildcard tool filters, MCP availability under explicit tool allowlists, and codemode image reads.
 - Raised the minimum supported Pi version and locked Pi development packages to 1.0.3. Compatibility CI now tests the exact 1.0.3 minimum and latest stable 1.x; users on older Pi versions must upgrade.
 - Updated Azure footer naming and fast-mode exclusion tests for Pi's renamed `azure` provider. Documented the required Azure configuration migration, the unchanged Responses API identifier, native editor/transcript navigation, and saved codemode images.
 - Gave Pi compatibility CI checks stable minimum/latest names so future Pi version changes do not require renaming GitHub's required checks. Documented the one-time protection migration without weakening existing safeguards.
 
 ### Added
 
+- Added real Pi regressions for wildcard decision-tool selection and exclusion, codemode-only provider prompt rules, and pending-stream cancellation retries that preserve one goal turn and defer receipts and sounds until settlement.
 - Added real Pi contract coverage for Azure Responses and Foundry Chat Completions requests both before and after reload, preserving sampling settings and deployment names without applying OpenAI priority service.
 - Added custom-editor coverage for Pi 1.0.3's separate line-navigation and fullscreen transcript Home/End shortcuts.
 

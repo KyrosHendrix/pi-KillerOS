@@ -100,9 +100,9 @@ jobs:
         # Keep required-check names stable when the supported Pi versions change.
         include:
           - pi-channel: minimum
-            pi-target: '1.0.3'
+            pi-target: '1.0.4'
           - pi-channel: latest
-            pi-target: '>=1.0.3 <2'
+            pi-target: '>=1.0.4 <2'
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

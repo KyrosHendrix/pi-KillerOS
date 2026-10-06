@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentTools, type AssistantMessage, type Provider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type Provider } from "@earendil-works/pi-ai";
 import { getKeybindings } from "@earendil-works/pi-tui";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { Type } from "typebox";
@@ -23,6 +23,7 @@ import { isCodexFastEnabled, resetCodexFastState } from "../killeros/codex-fast-
 import { registerCompletionNotifications } from "../killeros/notifications.ts";
 import { registerWorkedFor } from "../killeros/worked-for.ts";
 import { registerGoalInterface } from "../killeros/goal-interface.ts";
+import { registerQuestionTool } from "../killeros/question.ts";
 import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
 import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
 import { registerHandoff } from "../killeros/handoff.ts";
@@ -453,101 +454,113 @@ test("real Pi Azure Responses and Foundry requests survive reload without OpenAI
   }
 });
 
-test("real Pi capacity retries keep one goal turn and defer receipts and completion sounds until settlement", { timeout: 15_000 }, async () => {
-  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-capacity-retry-"));
-  let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
-  try {
-    const cwd = path.join(directory, "project");
-    const agentDir = path.join(directory, "agent");
-    mkdirSync(cwd);
-    mkdirSync(agentDir);
-    const runtime = createGoalRuntime();
-    const faux = fauxProvider({ provider: "killeros-capacity-retry", models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
-    faux.setResponses([
-      fauxAssistantMessage("", { stopReason: "error", errorMessage: "Selected model is at capacity" }),
-      fauxAssistantMessage(fauxToolCall("killeros_goal_update", { status: "complete", evidence: "Recovered and verified" })),
-      fauxAssistantMessage("Goal finished after recovery"),
-    ]);
-    const modelRuntime = await ModelRuntime.create({
-      authPath: path.join(agentDir, "auth.json"), modelsPath: null,
-      modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
-    });
-    modelRuntime.registerNativeProvider(faux.provider);
-    await modelRuntime.setRuntimeApiKey("killeros-capacity-retry", "local-test-key");
-    const settingsManager = SettingsManager.inMemory({
-      compaction: { enabled: false }, cacheWarming: "off",
-      retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 1 },
-    });
-    settingsManager.setProjectTrusted(true);
-    let bells = 0;
-    const loader = new DefaultResourceLoader({
-      cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      extensionFactories: [(pi) => {
-        registerGoalInterface(pi, runtime);
-        registerGoalRuntime(pi, runtime);
-        registerWorkedFor(pi, Date.now, async () => ({
-          finish: async () => ({ state: "unavailable", reason: "not-git" }),
-          dispose: async () => undefined,
-        }));
-        registerGoalSettlement(pi, runtime);
-        registerRequestActivity(pi);
-        registerCompletionNotifications(pi, {
-          store: { load: () => true, save() {} }, ring: () => { bells += 1; },
+test("real Pi capacity and HTTP/2 retries keep one goal turn and defer receipts and completion sounds until settlement", { timeout: 30_000 }, async (t) => {
+  for (const errorMessage of ["Selected model is at capacity", "The pending stream has been canceled"]) {
+    await t.test(errorMessage, async () => {
+      const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-provider-retry-"));
+      let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+      try {
+        const cwd = path.join(directory, "project");
+        const agentDir = path.join(directory, "agent");
+        mkdirSync(cwd);
+        mkdirSync(agentDir);
+        const runtime = createGoalRuntime();
+        const faux = fauxProvider({ provider: "killeros-provider-retry", models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+        const modelRuntime = await ModelRuntime.create({
+          authPath: path.join(agentDir, "auth.json"), modelsPath: null,
+          modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
         });
-      }],
+        modelRuntime.registerNativeProvider(faux.provider);
+        await modelRuntime.setRuntimeApiKey("killeros-provider-retry", "local-test-key");
+        const settingsManager = SettingsManager.inMemory({
+          compaction: { enabled: false }, cacheWarming: "off",
+          retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 1 },
+        });
+        settingsManager.setProjectTrusted(true);
+        let bells = 0;
+        const loader = new DefaultResourceLoader({
+          cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+          extensionFactories: [(pi) => {
+            registerGoalInterface(pi, runtime);
+            registerGoalRuntime(pi, runtime);
+            registerWorkedFor(pi, Date.now, async () => ({
+              finish: async () => ({ state: "unavailable", reason: "not-git" }),
+              dispose: async () => undefined,
+            }));
+            registerGoalSettlement(pi, runtime);
+            registerRequestActivity(pi);
+            registerCompletionNotifications(pi, {
+              store: { load: () => true, save() {} }, ring: () => { bells += 1; },
+            });
+          }],
+        });
+        await loader.reload();
+        assert.deepEqual(loader.getExtensions().errors, []);
+        ({ session } = await createAgentSession({
+          cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: loader,
+          sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")), noTools: "builtin",
+        }));
+        const host = session;
+        const receipts = () => host.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "killeros-worked-for");
+        const errors: string[] = [];
+        const { ctx, captured } = createTuiContext();
+        await host.bindExtensions({
+          mode: "tui", uiContext: extensionContextTestAdapter(ctx).ui,
+          onError(error) { errors.push(`${error.event}: ${error.error}`); },
+        });
+        const retries: Array<{ status: string | undefined; turns: number | undefined; maxTurns: number | undefined; receipts: number; bells: number; working: boolean }> = [];
+        let recovered = false;
+        let settlements = 0;
+        faux.setResponses([
+          fauxAssistantMessage("", { stopReason: "error", errorMessage }),
+          fauxAssistantMessage(fauxToolCall("killeros_goal_update", { status: "complete", evidence: "Recovered and verified" })),
+          fauxAssistantMessage("Goal finished after recovery"),
+        ].map((message) => () => {
+          assert.equal(receipts().length, 0, "provider follow-ups must not persist receipts before settlement");
+          assert.equal(bells, 0, "provider follow-ups must not ring before settlement");
+          assert.equal(settlements, 0);
+          assert.notEqual(captured.workingMessages.at(-1), undefined);
+          return message;
+        }));
+        let resolveSettled: (() => void) | undefined;
+        const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+        const unsubscribe = host.subscribe((event) => {
+          if (event.type === "auto_retry_start") retries.push({
+            status: runtime.state?.status, turns: runtime.state?.turns, maxTurns: runtime.state?.maxTurns,
+            receipts: receipts().length, bells, working: captured.workingMessages.at(-1) !== undefined,
+          });
+          if (event.type === "auto_retry_end") recovered = event.success;
+          if (event.type === "agent_settled") { settlements += 1; resolveSettled?.(); }
+        });
+        try {
+          await host.prompt("/goal Verify provider retry recovery");
+          await settled;
+          await host.waitForIdle();
+          assert.deepEqual(retries, [{ status: "active", turns: 1, maxTurns: 20, receipts: 0, bells: 0, working: true }]);
+          assert.equal(recovered, true);
+          assert.equal(faux.state.callCount, 3);
+          assert.equal(runtime.state?.status, "complete");
+          assert.equal(runtime.state?.turns, 1);
+          assert.equal(runtime.state?.maxTurns, 20);
+          assert.equal(settlements, 1);
+          const receipt = receipts();
+          assert.equal(receipt.length, 1);
+          assert.ok(receipt[0]?.type === "custom" && isUnknownRecord(receipt[0].data));
+          assert.equal(receipt[0].data.outcome, "done");
+          assert.equal(bells, 1);
+          assert.equal(captured.workingMessages.at(-1), undefined);
+          assert.equal(host.pendingMessageCount, 0);
+          assert.equal(runtime.continuationScheduled, false);
+          assert.equal(runtime.goalTurnInFlight, false);
+          assert.deepEqual(errors, []);
+        } finally {
+          unsubscribe();
+        }
+      } finally {
+        session?.dispose();
+        rmSync(directory, { recursive: true, force: true });
+      }
     });
-    await loader.reload();
-    assert.deepEqual(loader.getExtensions().errors, []);
-    ({ session } = await createAgentSession({
-      cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: loader,
-      sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")), noTools: "builtin",
-    }));
-    const host = session;
-    const receipts = () => host.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "killeros-worked-for");
-    const errors: string[] = [];
-    const { ctx, captured } = createTuiContext();
-    await host.bindExtensions({
-      mode: "tui", uiContext: extensionContextTestAdapter(ctx).ui,
-      onError(error) { errors.push(`${error.event}: ${error.error}`); },
-    });
-    const retries: Array<{ status: string | undefined; turns: number | undefined; receipts: number; bells: number; working: boolean }> = [];
-    let recovered = false;
-    let settlements = 0;
-    let resolveSettled: (() => void) | undefined;
-    const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
-    const unsubscribe = host.subscribe((event) => {
-      if (event.type === "auto_retry_start") retries.push({
-        status: runtime.state?.status, turns: runtime.state?.turns,
-        receipts: receipts().length, bells, working: captured.workingMessages.at(-1) !== undefined,
-      });
-      if (event.type === "auto_retry_end") recovered = event.success;
-      if (event.type === "agent_settled") { settlements += 1; resolveSettled?.(); }
-    });
-    try {
-      await host.prompt("/goal Verify capacity recovery");
-      await settled;
-      await host.waitForIdle();
-      assert.deepEqual(retries, [{ status: "active", turns: 1, receipts: 0, bells: 0, working: true }]);
-      assert.equal(recovered, true);
-      assert.equal(faux.state.callCount, 3);
-      assert.equal(runtime.state?.status, "complete");
-      assert.equal(runtime.state?.turns, 1);
-      assert.equal(runtime.state?.maxTurns, 20);
-      assert.equal(settlements, 1);
-      const receipt = receipts();
-      assert.equal(receipt.length, 1);
-      assert.ok(receipt[0]?.type === "custom" && isUnknownRecord(receipt[0].data));
-      assert.equal(receipt[0].data.outcome, "done");
-      assert.equal(bells, 1);
-      assert.equal(captured.workingMessages.at(-1), undefined);
-      assert.equal(host.pendingMessageCount, 0);
-      assert.deepEqual(errors, []);
-    } finally {
-      unsubscribe();
-    }
-  } finally {
-    session?.dispose();
-    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -566,9 +579,16 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
           const provider = `killeros-exposure-${mode}-${codemode}`;
           const faux = fauxProvider({ provider, models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
           const declarations: string[][] = [];
+          const prompts: string[] = [];
+          const requestInstructions: string[] = [];
+          const hiddenGuideline = "KILLEROS_HIDDEN_TOOL_GUIDELINE_104";
+          const questionGuideline = "Use question only when user input is required to choose between concrete alternatives";
           const setResponses = (messages: AssistantMessage[]): void => {
             faux.setResponses(messages.map((message) => (context) => {
               declarations.push(getCurrentTools(context.messages).map((tool) => tool.name));
+              prompts.push(getCurrentSystemPrompt(context.messages));
+              requestInstructions.push(context.messages.map((entry) => typeof entry.content === "string" ? entry.content
+                : entry.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")).join("\n"));
               return message;
             }));
           };
@@ -618,6 +638,7 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
                 });
                 pi.registerTool({
                   name: "unrelated", label: "Unrelated", description: "An ordinary direct tool",
+                  promptGuidelines: [hiddenGuideline],
                   parameters: Type.Object({}),
                   async execute() { return { content: [{ type: "text", text: "Unchanged" }], details: undefined }; },
                 });
@@ -628,7 +649,7 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
           assert.deepEqual(loader.getExtensions().errors, []);
           const { session } = await createAgentSession({
             cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, sessionManager,
-            resourceLoader: loader, noTools: "builtin",
+            resourceLoader: loader, tools: ["question", "killeros_*", "exposure_probe", "unrelated", ...(codemode === "disabled" ? [] : ["codemode"])],
           });
           const errors: string[] = [];
           const { ctx, tui } = createTuiContext();
@@ -644,7 +665,11 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
           const assertDeclarations = (start: number, activeGoal: boolean, end = declarations.length): void => {
             const requests = declarations.slice(start, end);
             assert.ok(requests.length > 0, "the provider must receive a request");
-            for (const names of requests) {
+            for (const [index, names] of requests.entries()) {
+              const prompt = prompts[start + index];
+              assert.ok(prompt);
+              assert.ok(prompt.includes(questionGuideline), "declared question rules must reach the provider");
+              assert.equal(prompt.includes(hiddenGuideline), codemode !== "only", "hidden tool rules must not reach the system prompt");
               assert.equal(names.includes("question"), true, `question missing from ${names.join(", ")}`);
               assert.equal(names.includes("killeros_goal_update"), activeGoal);
               assert.equal(names.includes("exposure_probe"), true);
@@ -678,6 +703,8 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
             }
             assert.equal(probes, probesBefore + 1);
             assert.equal(declarations.length - firstRequest, 4);
+            assert.match(requestInstructions[firstRequest], /Before ending this turn, choose exactly one accepted goal decision/u);
+            assert.match(requestInstructions[firstRequest], /call killeros_goal_update with status complete/u);
             assertDeclarations(firstRequest, true, firstRequest + 3);
             assertDeclarations(firstRequest + 3, false);
             const results = session.messages.slice(firstMessage).filter((message) => message.role === "toolResult");
@@ -704,11 +731,16 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
           };
           try {
             await session.bindExtensions({ mode, uiContext: ui, onError(error) { errors.push(`${error.event}: ${error.error}`); } });
-            if (codemode !== "disabled") session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
+            for (const name of ["question", "killeros_goal_update"]) {
+              assert.equal(session.getToolDefinition(name)?.exposure, "model-only");
+              assert.equal(session.getToolDefinition(name)?.executionMode, "sequential");
+            }
+            assert.equal(session.getActiveToolNames().includes("killeros_goal_update"), false, "wildcard selection must not activate an idle goal tool");
             const unrelatedActive = session.getActiveToolNames();
             setResponses([fauxAssistantMessage("No goal")]);
             await session.prompt("Inspect the declarations without a goal");
             assertDeclarations(0, false);
+            assert.doesNotMatch(prompts[0], /Active KillerOS goal/u);
 
             await runGoal(() => session.prompt("/goal Verify native tool exposure"));
             for (const status of ["paused", "blocked", "complete", "cleared"] as const) {
@@ -736,6 +768,98 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
         } finally {
           if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
           else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+          rmSync(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+});
+
+test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codemode", { timeout: 30_000 }, async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    for (const excluded of ["killeros_*", "question"]) {
+      await t.test(`${mode}/${excluded}`, async () => {
+        const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-tool-exclusion-"));
+        let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+        try {
+          const cwd = path.join(directory, "project"), agentDir = path.join(directory, "agent");
+          mkdirSync(cwd); mkdirSync(agentDir);
+          const runtime = createGoalRuntime();
+          const faux = fauxProvider({ provider: "killeros-tool-exclusion", models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+          const declarations: string[][] = [];
+          faux.setResponses([
+            (context) => {
+              declarations.push(getCurrentTools(context.messages).map((tool) => tool.name));
+              return fauxAssistantMessage(fauxToolCall("codemode", {
+                code: 'for (const name of ["question", "killeros_goal_update"]) { try { await tools[name]({}); text("Unexpected call: " + name); } catch (error) { text(error.message); } }',
+              }));
+            },
+            (context) => {
+              declarations.push(getCurrentTools(context.messages).map((tool) => tool.name));
+              return fauxAssistantMessage("Exclusions verified");
+            },
+          ]);
+          const modelRuntime = await ModelRuntime.create({
+            authPath: path.join(agentDir, "auth.json"), modelsPath: null,
+            modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
+          });
+          modelRuntime.registerNativeProvider(faux.provider);
+          await modelRuntime.setRuntimeApiKey("killeros-tool-exclusion", "local-test-key");
+          const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off" });
+          const loader = new DefaultResourceLoader({
+            cwd, agentDir, settingsManager, noExtensions: true, noSkills: true,
+            noPromptTemplates: true, noThemes: true, noContextFiles: true,
+            extensionFactories: [createCodemodeExtension({ mode: "only" }), (pi) => {
+              registerQuestionTool(pi);
+              registerGoalInterface(pi, runtime);
+              registerGoalRuntime(pi, runtime);
+              registerGoalSettlement(pi, runtime);
+            }],
+          });
+          await loader.reload();
+          assert.deepEqual(loader.getExtensions().errors, []);
+          ({ session } = await createAgentSession({
+            cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: loader,
+            sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")),
+            tools: ["question", "killeros_*", "codemode"], excludeTools: [excluded],
+          }));
+          const errors: string[] = [];
+          const { ctx } = createTuiContext();
+          const ui = extensionContextTestAdapter({ ui: { ...ctx.ui,
+            custom: async () => { assert.fail("scripts must not open question UI"); },
+          } }).ui;
+          await session.bindExtensions({ mode, uiContext: ui,
+            onError(error) { errors.push(`${error.event}: ${error.error}`); } });
+          await session.prompt("/goal Verify exclusions through native selection");
+          if (excluded === "killeros_*") {
+            assert.equal(runtime.state?.status, "paused");
+            assert.equal(runtime.state?.turns, 0);
+            assert.equal(runtime.state?.stopReason, "killeros_goal_update is unavailable");
+            assert.equal(faux.state.callCount, 0, "an excluded goal tool must prevent any provider request");
+            await session.prompt("Inspect the remaining declarations");
+          }
+          await session.waitForIdle();
+          assert.equal(faux.state.callCount, 2);
+          for (const names of declarations) {
+            assert.equal(names.includes("question"), excluded !== "question");
+            assert.equal(names.includes("killeros_goal_update"), excluded !== "killeros_*");
+            assert.equal(names.includes("codemode"), true);
+          }
+          const script = session.messages.find((message) => message.role === "toolResult" && message.toolName === "codemode");
+          assert.ok(script?.role === "toolResult");
+          assert.equal(script.isError, false, JSON.stringify(script.content));
+          const output = script.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+          assert.match(output, /tools\.question does not exist/u);
+          assert.match(output, /tools\.killeros_goal_update does not exist/u);
+          assert.doesNotMatch(output, /Unexpected call/u);
+          for (const name of ["question", "killeros_goal_update"]) {
+            assert.equal(session.getCallableToolNames().includes(name), false);
+          }
+          assert.equal(session.pendingMessageCount, 0);
+          assert.equal(runtime.continuationScheduled, false);
+          assert.deepEqual(errors, []);
+        } finally {
+          session?.dispose();
           rmSync(directory, { recursive: true, force: true });
         }
       });
