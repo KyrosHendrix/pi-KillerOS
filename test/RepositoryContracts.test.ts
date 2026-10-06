@@ -222,8 +222,8 @@ test("CI checks locked Pi 1.0.3 and the minimum and latest matched Pi packages",
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   const compatibilityJob = /^  pi-latest:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
   assert.ok(compatibilityJob);
-  assert.match(compatibilityJob, /Pi latest compatibility/u);
-  assert.match(compatibilityJob, /pi-target:\s*\n\s*- '1\.0\.3'\s*\n\s*- '>=1\.0\.3 <2'/u);
+  assert.match(compatibilityJob, /^    name: Pi compatibility \(\$\{\{ matrix\.pi-channel \}\}\)$/mu);
+  assert.match(compatibilityJob, /include:\s*\n\s*- pi-channel: minimum\s*\n\s*pi-target: '1\.0\.3'\s*\n\s*- pi-channel: latest\s*\n\s*pi-target: '>=1\.0\.3 <2'/u);
   assert.match(compatibilityJob, /PI_TARGET: \$\{\{ matrix\.pi-target \}\}/u);
   assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version/u);
   assert.match(compatibilityJob, /npm ci --ignore-scripts --no-audit --no-fund/u);

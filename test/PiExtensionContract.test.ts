@@ -423,23 +423,27 @@ test("real Pi Azure Responses and Foundry requests survive reload without OpenAI
           } finally {
             footer.dispose?.();
           }
+          session.setThinkingLevel("high");
+          const firstRequest = bodies.length;
+          await session.prompt(`Test Azure locally at ${stage}`);
+          await session.waitForIdle();
+          assert.equal(bodies.length, firstRequest + 1, stage);
+          const body = bodies[firstRequest];
+          assert.ok(body, stage);
+          assert.equal(body.model, "local-deployment", stage);
+          assert.equal(body.service_tier, undefined, stage);
+          assert.equal(body.temperature, 0.6, stage);
+          assert.equal(body.top_p, 0.8, stage);
+          const response = session.messages.at(-1);
+          assert.ok(response?.role === "assistant", stage);
+          assert.equal(response.provider, "azure", stage);
+          assert.equal(response.api, api, stage);
+          assert.equal(response.model, id, stage);
+          assert.equal(response.stopReason, "error", stage);
+          assert.match(response.errorMessage ?? "", /Local Azure test rejection/u, stage);
+          assert.deepEqual(errors, [], stage);
         }
-        session.setThinkingLevel("high");
-        await session.prompt("Test Azure locally");
-        await session.waitForIdle();
-        assert.equal(bodies.length, 1);
-        assert.equal(bodies[0].model, "local-deployment");
-        assert.equal(bodies[0].service_tier, undefined);
-        assert.equal(bodies[0].temperature, 0.6);
-        assert.equal(bodies[0].top_p, 0.8);
-        const response = session.messages.at(-1);
-        assert.ok(response?.role === "assistant");
-        assert.equal(response.provider, "azure");
-        assert.equal(response.api, api);
-        assert.equal(response.model, id);
-        assert.equal(response.stopReason, "error");
-        assert.match(response.errorMessage ?? "", /Local Azure test rejection/u);
-        assert.deepEqual(errors, []);
+        assert.equal(bodies.length, 2, "startup and reload must each send one Azure request");
       } finally {
         session?.dispose();
         resetCodexFastState();
