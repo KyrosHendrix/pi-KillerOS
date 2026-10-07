@@ -489,9 +489,12 @@ test("real Pi Azure Responses and Foundry requests survive reload without OpenAI
   }
 });
 
-test("real Pi capacity and HTTP/2 retries keep one goal turn and defer receipts and completion sounds until settlement", { timeout: 30_000 }, async (t) => {
-  for (const errorMessage of ["Selected model is at capacity", "The pending stream has been canceled"]) {
-    await t.test(errorMessage, async () => {
+test("real Pi capacity and HTTP/2 retries preserve active turns and blocked completion permission until settlement", { timeout: 30_000 }, async (t) => {
+  for (const [goalStatus, errorMessage] of [
+    ["active", "Selected model is at capacity"], ["active", "The pending stream has been canceled"],
+    ["blocked", "Selected model is at capacity"], ["blocked", "The pending stream has been canceled"],
+  ] as const) {
+    await t.test(`${goalStatus}/${errorMessage}`, async () => {
       const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-provider-retry-"));
       let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
       try {
@@ -536,6 +539,13 @@ test("real Pi capacity and HTTP/2 retries keep one goal turn and defer receipts 
           sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")), noTools: "builtin",
         }));
         const host = session;
+        if (goalStatus === "blocked") {
+          host.sessionManager.appendCustomEntry("killeros-goal", {
+            version: 1, event: "blocked", state: transitionGoalState({
+              ...createNewGoalState("Verify provider retry recovery", 0, undefined, Date.now(), { maxTurns: 20 }), turns: 1,
+            }, "blocked", "External prerequisite", {}, Date.now()),
+          });
+        }
         const receipts = () => host.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "killeros-worked-for");
         const errors: string[] = [];
         const { ctx, captured } = createTuiContext();
@@ -568,10 +578,10 @@ test("real Pi capacity and HTTP/2 retries keep one goal turn and defer receipts 
           if (event.type === "agent_settled") { settlements += 1; resolveSettled?.(); }
         });
         try {
-          await host.prompt("/goal Verify provider retry recovery");
+          await host.prompt(goalStatus === "active" ? "/goal Verify provider retry recovery" : "The prerequisite is resolved. Verify and complete the original goal.");
           await settled;
           await host.waitForIdle();
-          assert.deepEqual(retries, [{ status: "active", turns: 1, maxTurns: 20, receipts: 0, bells: 0, working: true }]);
+          assert.deepEqual(retries, [{ status: goalStatus, turns: 1, maxTurns: 20, receipts: 0, bells: 0, working: true }]);
           assert.equal(recovered, true);
           assert.equal(faux.state.callCount, 3);
           assert.equal(runtime.state?.status, "complete");
@@ -587,6 +597,7 @@ test("real Pi capacity and HTTP/2 retries keep one goal turn and defer receipts 
           assert.equal(host.pendingMessageCount, 0);
           assert.equal(runtime.continuationScheduled, false);
           assert.equal(runtime.goalTurnInFlight, false);
+          assert.equal(runtime.blockedCompletion, undefined);
           assert.deepEqual(errors, []);
         } finally {
           unsubscribe();
@@ -684,7 +695,7 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
           assert.deepEqual(loader.getExtensions().errors, []);
           const { session } = await createAgentSession({
             cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, sessionManager,
-            resourceLoader: loader, tools: ["question", "killeros_*", "exposure_probe", "unrelated", ...(codemode === "disabled" ? [] : ["codemode"])],
+            resourceLoader: loader, tools: ["question", "killeros_*", "exposure_probe", "unrelated", "write", "read", ...(codemode === "disabled" ? [] : ["codemode"])],
           });
           const errors: string[] = [];
           const { ctx, tui } = createTuiContext();
@@ -712,6 +723,23 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
               assert.equal(names.includes("unrelated"), codemode !== "only", "codemode-only must actually hide direct tools");
             }
           };
+          const runToSettlement = async (start: () => Promise<unknown>, finalText: string): Promise<void> => {
+            let finish: (() => void) | undefined;
+            const finished = new Promise<void>((resolve) => { finish = resolve; });
+            const unsubscribe = session.subscribe((event) => {
+              const final = session.messages.filter((message) => message.role === "assistant").at(-1);
+              if (event.type === "agent_settled" && final?.role === "assistant"
+                && final.content.some((part) => part.type === "text" && part.text === finalText)) finish?.();
+            });
+            try {
+              await start();
+              await finished;
+              await session.waitForIdle();
+              await new Promise<void>((resolve) => setImmediate(resolve));
+            } finally {
+              unsubscribe();
+            }
+          };
           const runGoal = async (start: () => Promise<unknown>): Promise<void> => {
             const firstRequest = declarations.length;
             const firstMessage = session.messages.length;
@@ -723,19 +751,7 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
               fauxAssistantMessage(fauxToolCall("killeros_goal_update", { status: "complete", evidence: "Direct completion verified" })),
               fauxAssistantMessage("exposure turn finished"),
             ]);
-            let finish: (() => void) | undefined;
-            const finished = new Promise<void>((resolve) => { finish = resolve; });
-            const unsubscribe = session.subscribe((event) => {
-              if (event.type === "message_end" && event.message.role === "assistant"
-                && event.message.content.some((part) => part.type === "text" && part.text === "exposure turn finished")) finish?.();
-            });
-            try {
-              await start();
-              await finished;
-              await session.waitForIdle();
-            } finally {
-              unsubscribe();
-            }
+            await runToSettlement(start, "exposure turn finished");
             assert.equal(probes, probesBefore + 1);
             assert.equal(declarations.length - firstRequest, 4);
             assert.match(requestInstructions[firstRequest], /Before ending this turn, choose exactly one accepted goal decision/u);
@@ -778,6 +794,75 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
             assert.doesNotMatch(prompts[0], /Active KillerOS goal/u);
 
             await runGoal(() => session.prompt("/goal Verify native tool exposure"));
+
+            // Reach blocked through real decisions, reload it, then finish the original file in ordinary work.
+            setResponses([1, 2, 3].flatMap((turn) => [
+              fauxAssistantMessage(fauxToolCall("killeros_goal_update", {
+                status: "blocked", blockerKey: "external", evidence: `External prerequisite still missing ${turn}`,
+              })),
+              fauxAssistantMessage(`Blocker turn ${turn} finished`),
+            ]));
+            await runToSettlement(
+              () => session.prompt("/goal Write the Markdown file to `report.md` and verify its contents"),
+              "Blocker turn 3 finished",
+            );
+            const blockedEntry = goalEntries().at(-1)?.data;
+            assert.ok(isUnknownRecord(blockedEntry));
+            const blocked = parseGoalState(blockedEntry.state);
+            assert.ok(blocked?.status === "blocked");
+            assert.equal(blocked.turns, 3);
+            assert.equal(session.getActiveToolNames().includes("killeros_goal_update"), false);
+            const requestsBeforeReload = declarations.length;
+            await session.reload();
+            await session.waitForIdle();
+            assert.equal(declarations.length, requestsBeforeReload, "restoring blocked must not start work");
+            const firstBlockedRequest = declarations.length;
+            const firstBlockedMessage = session.messages.length;
+            const work = codemode === "only"
+              ? [fauxAssistantMessage(fauxToolCall("codemode", {
+                code: 'await tools.write({path: "report.md", content: "Verified report\\n"}); text(await tools.read({path: "report.md"}));',
+              }))]
+              : [
+                fauxAssistantMessage(fauxToolCall("write", { path: "report.md", content: "Verified report\n" })),
+                fauxAssistantMessage(fauxToolCall("read", { path: "report.md" })),
+              ];
+            setResponses([
+              fauxAssistantMessage(fauxToolCall("exposure_probe", {})),
+              ...work,
+              fauxAssistantMessage(fauxToolCall("killeros_goal_update", {
+                status: "complete", evidence: "Read the report and audited the whole original objective",
+              })),
+              fauxAssistantMessage("Blocked goal completed without resumption"),
+            ]);
+            await runToSettlement(
+              () => session.prompt("The prerequisite is resolved. Finish and verify the original report."),
+              "Blocked goal completed without resumption",
+            );
+            assert.ok(declarations.length > firstBlockedRequest + 1, JSON.stringify({ errors, messages: session.messages.slice(firstBlockedMessage) }));
+            assertDeclarations(firstBlockedRequest, true, declarations.length - 1);
+            assertDeclarations(declarations.length - 1, false);
+            assert.match(requestInstructions[firstBlockedRequest], /Status: blocked/u);
+            assert.ok(requestInstructions[firstBlockedRequest].includes(blocked.objective));
+            assert.equal(readFileSync(path.join(cwd, "report.md"), "utf8"), "Verified report\n");
+            const laterResults = session.messages.slice(firstBlockedMessage).filter((message) => message.role === "toolResult");
+            assert.ok(laterResults.length >= 3);
+            for (const result of laterResults) assert.equal(result.isError, false, JSON.stringify(result.content));
+            const completeEntry = goalEntries().at(-1)?.data;
+            assert.ok(isUnknownRecord(completeEntry));
+            assert.equal(completeEntry.event, "complete");
+            const completed = parseGoalState(completeEntry.state);
+            assert.ok(completed?.status === "complete");
+            assert.equal(completed.lastDecision?.kind, "complete");
+            for (const key of ["objective", "createdAt", "verification", "baselineTokens", "turns", "maxTurns", "activeMilliseconds"] as const) {
+              assert.deepEqual(completed[key], blocked[key], key);
+            }
+            assert.equal(session.pendingMessageCount, 0);
+            const requestsAfterCompletion = declarations.length;
+            await session.reload();
+            await session.waitForIdle();
+            assert.equal(declarations.length, requestsAfterCompletion);
+            assert.equal(session.getActiveToolNames().includes("killeros_goal_update"), false);
+
             for (const status of ["paused", "blocked", "complete", "cleared"] as const) {
               const state = createNewGoalState("Restore the saved goal", 0, undefined, Date.now());
               sessionManager.appendCustomEntry("killeros-goal", {
@@ -788,8 +873,8 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
               assert.deepEqual(session.getActiveToolNames(), unrelatedActive, `${status} must not change unrelated tools`);
               const firstRequest = declarations.length;
               setResponses([fauxAssistantMessage(`Goal ${status}`)]);
-              await session.prompt(`Inspect ${status} goal declarations`);
-              assertDeclarations(firstRequest, false);
+              await runToSettlement(() => session.prompt(`Inspect ${status} goal declarations`), `Goal ${status}`);
+              assertDeclarations(firstRequest, status === "blocked");
               if (status === "paused") await runGoal(() => session.prompt("/goal resume"));
             }
             sessionManager.appendCustomEntry("killeros-goal", {
@@ -812,7 +897,7 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
 
 test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codemode", { timeout: 30_000 }, async (t) => {
   for (const mode of ["tui", "rpc"] as const) {
-    for (const excluded of ["killeros_*", "question"]) {
+    for (const excluded of ["killeros_*", "question", "allowlist"]) {
       await t.test(`${mode}/${excluded}`, async () => {
         const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-tool-exclusion-"));
         let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -856,7 +941,8 @@ test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codem
           ({ session } = await createAgentSession({
             cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: loader,
             sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")),
-            tools: ["question", "killeros_*", "codemode"], excludeTools: [excluded],
+            tools: excluded === "allowlist" ? ["question", "codemode"] : ["question", "killeros_*", "codemode"],
+            excludeTools: excluded === "allowlist" ? [] : [excluded],
           }));
           const errors: string[] = [];
           const { ctx } = createTuiContext();
@@ -866,7 +952,7 @@ test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codem
           await session.bindExtensions({ mode, uiContext: ui,
             onError(error) { errors.push(`${error.event}: ${error.error}`); } });
           await session.prompt("/goal Verify exclusions through native selection");
-          if (excluded === "killeros_*") {
+          if (excluded !== "question") {
             assert.equal(runtime.state?.status, "paused");
             assert.equal(runtime.state?.turns, 0);
             assert.equal(runtime.state?.stopReason, "killeros_goal_update is unavailable");
@@ -877,7 +963,7 @@ test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codem
           assert.equal(faux.state.callCount, 2);
           for (const names of declarations) {
             assert.equal(names.includes("question"), excluded !== "question");
-            assert.equal(names.includes("killeros_goal_update"), excluded !== "killeros_*");
+            assert.equal(names.includes("killeros_goal_update"), excluded === "question");
             assert.equal(names.includes("codemode"), true);
           }
           const script = session.messages.find((message) => message.role === "toolResult" && message.toolName === "codemode");
@@ -892,6 +978,38 @@ test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codem
           }
           assert.equal(session.pendingMessageCount, 0);
           assert.equal(runtime.continuationScheduled, false);
+
+          const blocked = transitionGoalState({
+            ...createNewGoalState("Finish the original blocked objective", 0, undefined, Date.now()), turns: 3,
+          }, "blocked", "Waiting for an external prerequisite", {}, Date.now());
+          session.sessionManager.appendCustomEntry("killeros-goal", { version: 1, event: "blocked", state: blocked });
+          await session.reload();
+          assert.equal(runtime.state?.status, "blocked");
+          assert.equal(session.getActiveToolNames().includes("killeros_goal_update"), false);
+          const firstBlockedRequest = declarations.length;
+          faux.setResponses([
+            (context) => {
+              declarations.push(getCurrentTools(context.messages).map((tool) => tool.name));
+              return fauxAssistantMessage(fauxToolCall("codemode", {
+                code: 'try { await tools.killeros_goal_update({status: "complete", evidence: "Nested attempt"}); text("Unexpected call"); } catch (error) { text(error.message); }',
+              }));
+            },
+            (context) => {
+              declarations.push(getCurrentTools(context.messages).map((tool) => tool.name));
+              return fauxAssistantMessage("Ordinary blocked work without a goal decision");
+            },
+          ]);
+          await session.prompt("Finish this ordinary response without resuming the blocked goal");
+          await session.waitForIdle();
+          assert.equal(declarations.length - firstBlockedRequest, 2, "selection must not abort an ordinary request");
+          for (const names of declarations.slice(firstBlockedRequest)) {
+            assert.equal(names.includes("killeros_goal_update"), excluded === "question");
+          }
+          assert.equal(runtime.state?.status, "blocked");
+          assert.deepEqual(runtime.state, blocked);
+          assert.equal(runtime.goalTurnInFlight, false);
+          assert.equal(runtime.continuationScheduled, false);
+          assert.equal(session.pendingMessageCount, 0);
           assert.deepEqual(errors, []);
         } finally {
           session?.dispose();
@@ -1166,9 +1284,11 @@ test("real Pi terminal goal compaction cannot start extra tool work in TUI or RP
           assert.deepEqual(loader.getExtensions().errors, []);
           ({ session } = await createAgentSession({ cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, sessionManager, resourceLoader: loader }));
           let starts = 0;
+          let settlements = 0;
           let finalAnswer = false;
           session.subscribe((event) => {
             if (event.type === "agent_start") starts++;
+            if (event.type === "agent_settled") settlements++;
             if (event.type === "message_end" && event.message.role === "assistant"
               && event.message.content.some((part) => part.type === "text" && part.text === "The terminal goal request finished")) finalAnswer = true;
           });
@@ -1190,6 +1310,40 @@ test("real Pi terminal goal compaction cannot start extra tool work in TUI or RP
           assert.equal(existsSync(extraFile), false);
           assert.equal(session.messages.some((message) => message.role === "custom" && message.customType === "killeros-auto-compaction"), false);
           assert.equal(session.pendingMessageCount, 0);
+          await waitFor(() => settlements === turns);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          if (status === "blocked") {
+            writeFileSync(preferences, JSON.stringify({ autoCompaction: { enabled: false, percentRemaining: 100 } }));
+            const laterCompacted = new Promise<void>((resolve) => { resolveCompacted = resolve; });
+            faux.setResponses([
+              fauxAssistantMessage(fauxToolCall("killeros_goal_update", { status: "complete", evidence: "Audited the original objective after resolving the prerequisite" })),
+              () => {
+                writeFileSync(preferences, JSON.stringify({ autoCompaction: { enabled: true, percentRemaining: 100 } }));
+                return fauxAssistantMessage("The later terminal completion finished");
+              },
+              fauxAssistantMessage(fauxToolCall("write", { path: extraFile, content: "Unauthorized blocked completion restart" })),
+              fauxAssistantMessage("Unauthorized work finished"),
+            ]);
+            await session.prompt("The prerequisite is resolved. Audit and complete the original goal without resuming it.");
+            await laterCompacted;
+            await waitFor(() => session?.isCompacting === false);
+            await session.waitForIdle();
+            await waitFor(() => settlements === turns + 1);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            const finalEntry = sessionManager.getEntries().reverse().find((entry) => entry.type === "custom" && entry.customType === "killeros-goal");
+            assert.ok(finalEntry?.type === "custom" && isUnknownRecord(finalEntry.data));
+            const completed = parseGoalState(finalEntry.data.state);
+            assert.equal(completed?.status, "complete");
+            assert.equal(completed?.turns, turns);
+            assert.deepEqual(completed?.verification, state?.verification);
+            assert.equal(completed?.activeMilliseconds, state?.activeMilliseconds);
+            assert.equal(compactions, 2);
+            assert.equal(starts, turns + 1);
+            assert.equal(faux.state.callCount, turns * 2 + 2);
+            assert.equal(existsSync(extraFile), false);
+            assert.equal(session.messages.some((message) => message.role === "custom" && message.customType === "killeros-auto-compaction"), false);
+            assert.equal(session.pendingMessageCount, 0);
+          }
           assert.deepEqual(errors, []);
         } finally {
           session?.dispose();

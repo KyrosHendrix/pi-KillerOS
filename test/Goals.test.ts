@@ -47,7 +47,7 @@ test("goal updates use a Google-compatible status enum", () => {
   assert.deepEqual(properties.status, {
     type: "string",
     enum: ["complete", "continue", "blocked"],
-    description: "Record exactly one active-goal decision: complete, continue, or blocked",
+    description: "Record an active-goal decision, or complete a blocked goal during an eligible later ordinary request",
   });
   assert.equal(Check(tool.parameters, { status: "complete", evidence: "verified" }), true, "complete");
   assert.equal(Check(tool.parameters, { status: "continue", evidence: "progress", nextAction: "inspect the result" }), true, "continue");

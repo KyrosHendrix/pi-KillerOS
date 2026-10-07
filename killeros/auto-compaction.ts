@@ -23,6 +23,7 @@ export interface AutoCompactionPreference {
 
 export interface AutoCompactionGoalHandlers {
   isActive(ctx: ExtensionContext): boolean;
+  hasAcceptedTerminalDecision(): boolean;
   onRequested(): void;
   onCompleted(ctx: ExtensionContext): void;
   onFailed(ctx: ExtensionContext, error: unknown): void;
@@ -246,7 +247,20 @@ export function registerAutoCompaction(
     goalRequestOwned = dependencies.goal?.isActive(ctx) === true;
   });
 
+  // Capture later blocked completion before goal settlement discards its permission.
+  // A compaction already pending as ordinary work must also stop after that decision.
+  const observeTerminalDecision = (): void => {
+    if (!dependencies.goal?.hasAcceptedTerminalDecision()) return;
+    goalRequestOwned = true;
+    if (request?.phase === "compacting") {
+      request.goal = true;
+      if (request.compactionCompleted) request = undefined;
+    }
+  };
+  pi.on("agent_end", observeTerminalDecision);
+
   pi.on("turn_end", (_event, ctx) => {
+    observeTerminalDecision();
     if (!supportedMode(ctx) || request) return;
 
     let preference: AutoCompactionPreference;
@@ -305,9 +319,10 @@ export function registerAutoCompaction(
     try {
       ctx.compact({
         onComplete: () => {
+          observeTerminalDecision();
           if (request?.phase !== "compacting" || request.token !== token) return;
           rearmOnNextLogicalRequest = preference.percentRemaining === 100;
-          if (goal) {
+          if (goal || request.goal) {
             request = undefined;
             if (activeGoal && dependencies.goal) {
               try {
