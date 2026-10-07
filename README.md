@@ -165,9 +165,15 @@ npm ci && npm run check && npm test
 
 `main` requires pull requests and the CI workflow's required checks, including for administrators. Force pushes and branch deletion are blocked. Pi compatibility checks use the stable names `Pi compatibility (minimum)` and `Pi compatibility (latest)`, independent of the tested versions.
 
-When adopting these names, first confirm both checks passed on the release PR's exact head commit. Replace only the two old versioned Pi required checks with their corresponding stable names, preserving their GitHub Actions app bindings and every other protection. If other CI job names change, update GitHub's required status checks to match.
+When adopting these names, first confirm both checks passed on the release PR's exact head commit. Replace only the two old versioned Pi required checks with their corresponding stable names, preserving their GitHub Actions app bindings and every other protection.
 
-Releases go through CI on `main`; do not push version tags manually. The package smoke job validates release metadata before packing, and the release workflow checks it again before publication. The prepublish check rejects ordinary direct `npm publish`, but `--ignore-scripts` can bypass it. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
+`Quality (Node 22.19.0)` validates current release metadata before the full test suite. It also tests the publication lifecycle with the release workflow's pinned npm CLI in an isolated installation. The packed-package Pi test checks the installed archive's entry point, README, changelog, theme, package name, and current version before activation and reload. These archive assertions run throughout the Node, Windows, and Pi compatibility matrix.
+
+`Package smoke test` remains during the required-check migration. Before removing it, land the replacement coverage and confirm the Node-floor quality check passed on the replacement PR's exact head commit and that the coverage is present on `main`. Inspect live branch protection and rulesets, obtain approval, and remove only the smoke requirement while preserving the required quality check's GitHub Actions binding and every other protection. Remove the job in a follow-up PR and recheck that PR's final head. Do not remove the job if these prerequisites are unmet.
+
+Releases go through CI on `main`; do not push version tags manually. The release workflow publishes the source directory with `npm publish . --ignore-scripts=false`. The package's `prepublishOnly` lifecycle invokes the existing release validator once at that boundary, even if an inherited npm setting disables scripts. A validator failure stops publication and release creation. The earlier verified-commit, provenance, version, tag, and release-note checks remain.
+
+The prepublish guard rejects ordinary direct publication, but it does not prove GitHub authorization. Disabling scripts or publishing a tarball bypasses `prepublishOnly`. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
 
 ## Security
 
