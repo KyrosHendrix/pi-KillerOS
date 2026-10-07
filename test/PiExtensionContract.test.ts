@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -50,6 +50,39 @@ function runNpm(args: string[], cwd: string, userConfig: string): string {
   return execFileSync("npm", npmArgs, options);
 }
 
+function assertInstalledPackage(directory: string, expectedVersion: string): void {
+  for (const file of ["Killeros.ts", "README.md", "CHANGELOG.md", "themes/killeros.json"]) {
+    assert.equal(existsSync(path.join(directory, file)), true, `Package is missing: ${file}`);
+  }
+  const identity: unknown = JSON.parse(readFileSync(path.join(directory, "package.json"), "utf8"));
+  assert.ok(isUnknownRecord(identity));
+  assert.equal(identity.name, "killeros", "Unexpected package name");
+  assert.equal(identity.version, expectedVersion, "Unexpected package version");
+}
+
+test("installed archive assertions reject every missing required file and incorrect package identity", async () => {
+  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-package-assertions-"));
+  try {
+    for (const file of ["Killeros.ts", "README.md", "CHANGELOG.md", "themes/killeros.json"]) {
+      mkdirSync(path.dirname(path.join(directory, file)), { recursive: true });
+      writeFileSync(path.join(directory, file), "fixture");
+    }
+    writeFileSync(path.join(directory, "package.json"), JSON.stringify({ name: "killeros", version: "3.0.3" }));
+    assertInstalledPackage(directory, "3.0.3");
+    for (const file of ["Killeros.ts", "README.md", "CHANGELOG.md", "themes/killeros.json"]) {
+      unlinkSync(path.join(directory, file));
+      assert.throws(() => assertInstalledPackage(directory, "3.0.3"), { message: new RegExp(file.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u") });
+      writeFileSync(path.join(directory, file), "fixture");
+    }
+    for (const identity of [{ name: "not-killeros", version: "3.0.3" }, { name: "killeros", version: "3.0.2" }]) {
+      writeFileSync(path.join(directory, "package.json"), JSON.stringify(identity));
+      assert.throws(() => assertInstalledPackage(directory, "3.0.3"));
+    }
+  } finally {
+    await removeDirectoryEventually(directory);
+  }
+});
+
 test("the packed KillerOS package activates and reloads through Pi's public lifecycle", async () => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-pi-lifecycle-"));
   try {
@@ -80,8 +113,10 @@ test("the packed KillerOS package activates and reloads through Pi's public life
       tarball,
     ], consumerDirectory, userConfig);
     const installedPackage = path.join(consumerDirectory, "node_modules", "killeros");
-    assert.equal(existsSync(path.join(installedPackage, "Killeros.ts")), true);
-    assert.equal(existsSync(path.join(installedPackage, "themes", "killeros.json")), true);
+    const manifest: unknown = JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
+    assert.ok(isUnknownRecord(manifest));
+    assert.ok(typeof manifest.version === "string");
+    assertInstalledPackage(installedPackage, manifest.version);
 
     const cwd = path.join(directory, "project");
     const agentDir = path.join(directory, "agent");
