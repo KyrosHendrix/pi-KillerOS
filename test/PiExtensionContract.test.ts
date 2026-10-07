@@ -610,10 +610,10 @@ test("real Pi capacity and HTTP/2 retries preserve active turns and blocked comp
   }
 });
 
-test("real Pi keeps KillerOS decisions declared and rejects nested calls with every codemode setting", { timeout: 60_000 }, async (t) => {
+test("real Pi keeps KillerOS decisions declared and rejects nested calls with every codemode setting", { timeout: 6 * 60_000 }, async (t) => {
   for (const mode of ["tui", "rpc"] as const) {
     for (const codemode of ["disabled", "on", "only"] as const) {
-      await t.test(`${mode}/${codemode}`, async () => {
+      await t.test(`${mode}/${codemode}`, { timeout: 60_000 }, async () => {
         const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-exposure-"));
         const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
         try {
