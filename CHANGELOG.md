@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopped false CRLF change counts in the footer and task receipts for text files with `eol=lf`. Added a differential Git-oracle matrix covering attributes, `core.autocrlf`, text and binary contents, plus mode and symlink comparisons. Fixes #47.
+
 ## [3.0.3] - 2026-10-07
 
 ### Changed

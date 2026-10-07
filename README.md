@@ -117,6 +117,8 @@ Pending `/goal` commands discard their mutation if committed navigation changes 
 
 Failed Git metadata reads keep the footer's last successful file counts and mark task changes unavailable. They are not treated as an empty repository.
 
+Passive Git scans compare content without running repository filters. CRLF text that normalizes to the indexed LF content stays unchanged, including with `text=auto eol=lf` or bare `eol=lf`. Git's `status` can still report a modification after a size-changing rewrite because of its index stat cache, even when `git diff` is empty.
+
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 
 ### Pi model and MCP settings
