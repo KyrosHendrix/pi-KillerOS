@@ -272,7 +272,45 @@ test("CI checks locked Pi 1.0.4 and the minimum and latest matched Pi packages",
   assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "1.0.4");
 });
 
-test("CI validates release metadata before package smoke testing", () => {
+test("Node-floor quality validates current metadata and tests the release-pinned npm lifecycle before the full suite", () => {
+  const qualityJob = /^  quality:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci)?.[0];
+  assert.ok(qualityJob);
+  assert.match(qualityJob, /node-version:\s*\n\s*- '22\.19\.0'\s*\n\s*- 'lts\/\*'/u);
+  assert.match(qualityJob, /- name: Validate release metadata\s+if: matrix\.node-version == '22\.19\.0'\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
+  assert.ok(qualityJob.indexOf("scripts/verify-release.ts") < qualityJob.indexOf("run: npm test"));
+  assert.equal((qualityJob.match(/KILLEROS_RELEASE:/gu) ?? []).length, 1);
+  assert.doesNotMatch(ci.split("jobs:")[0], /KILLEROS_RELEASE/u);
+  assert.doesNotMatch(qualityJob.split("steps:")[0], /KILLEROS_RELEASE/u);
+  const publishingNpm = /npm install --global npm@(\d+\.\d+\.\d+)/u.exec(release)?.[1];
+  assert.ok(publishingNpm);
+  assert.ok(qualityJob.includes(`npm@${publishingNpm}`));
+  assert.match(qualityJob, /- name: Provision publishing npm\s+if: matrix\.node-version == '22\.19\.0'/u);
+  assert.match(qualityJob, /npm install --prefix "\$RUNNER_TEMP\/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@/u);
+  assert.match(qualityJob, /- name: Test publication lifecycle with publishing npm\s+if: matrix\.node-version == '22\.19\.0'\s+env:\s+KILLEROS_TEST_NPM_CLI: \$\{\{ runner\.temp \}\}\/killeros-publishing-npm\/node_modules\/npm\/bin\/npm-cli\.js\s+run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test\/verify-release\.test\.ts/u);
+  assert.ok(qualityJob.indexOf('--test-name-pattern="publication lifecycle"') < qualityJob.indexOf("run: npm test"));
+  assert.doesNotMatch(qualityJob, /npm install --global/u);
+  const lifecycleTests = readFileSync(new URL("./verify-release.test.ts", import.meta.url), "utf8");
+  assert.match(lifecycleTests, /test\("publication lifecycle /u, "The pinned-npm entry point must select a retained test");
+});
+
+function assertPublicationBoundary(workflow: string): void {
+  const publishStep = /      - name: Publish package to npm\r?\n[\s\S]*?(?=\r?\n      - name:)/u.exec(workflow)?.[0];
+  assert.ok(publishStep);
+  assert.match(publishStep, /if: steps\.metadata\.outputs\.publish_npm == 'true'/u);
+  assert.match(publishStep, /env:\s+KILLEROS_RELEASE: 'true'/u);
+  assert.match(publishStep, /run: npm publish \. --ignore-scripts=false\s*$/u);
+  assert.doesNotMatch(publishStep, /scripts\/verify-release\.ts/u);
+}
+
+test("publication boundary requires directory publication with lifecycle scripts explicitly enabled", () => {
+  assertPublicationBoundary(release);
+  for (const command of ["npm publish", "npm publish .", "npm publish killeros.tgz --ignore-scripts=false", "npm publish . --ignore-scripts=true"]) {
+    const invalid = release.replace("npm publish . --ignore-scripts=false", command);
+    assert.throws(() => assertPublicationBoundary(invalid), command);
+  }
+});
+
+test("CI retains package smoke coverage until required-check migration", () => {
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   const packageJob = /^  package:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
   assert.ok(packageJob);
@@ -302,7 +340,7 @@ test("GitHub releases require green current main and consistent package provenan
   assert.match(release, /publish_npm/u);
   assert.equal(packageJson.scripts.prepublishOnly, "node --experimental-strip-types scripts/verify-release.ts");
   assert.match(release, /KILLEROS_RELEASE: 'true'/u);
-  assert.match(release, /node --experimental-strip-types scripts\/verify-release\.ts\s+npm publish/u);
+  assertPublicationBoundary(release);
   assert.ok(release.indexOf("Existing tag") < release.indexOf("- name: Publish package to npm"));
   assert.match(release, /sync-dev:\s+name: Sync main back into dev\s+needs: release/su);
   assert.match(release, /publish:\s+\$\{\{ steps\.metadata\.outputs\.publish \}\}/u);

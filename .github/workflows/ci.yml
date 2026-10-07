@@ -60,6 +60,22 @@ jobs:
       - name: Type-check
         run: npm run check
 
+      - name: Validate release metadata
+        if: matrix.node-version == '22.19.0'
+        env:
+          KILLEROS_RELEASE: 'true'
+        run: node --experimental-strip-types scripts/verify-release.ts
+
+      - name: Provision publishing npm
+        if: matrix.node-version == '22.19.0'
+        run: npm install --prefix "$RUNNER_TEMP/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@11.5.1
+
+      - name: Test publication lifecycle with publishing npm
+        if: matrix.node-version == '22.19.0'
+        env:
+          KILLEROS_TEST_NPM_CLI: ${{ runner.temp }}/killeros-publishing-npm/node_modules/npm/bin/npm-cli.js
+        run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test/verify-release.test.ts
+
       - name: Test
         run: npm test
 
