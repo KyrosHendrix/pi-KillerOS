@@ -13,7 +13,7 @@ import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const GoalUpdateParams = Type.Object({
   status: StringEnum(["complete", "continue", "blocked"] as const, {
-    description: "Record exactly one active-goal decision: complete, continue, or blocked",
+    description: "Record an active-goal decision, or complete a blocked goal during an eligible later ordinary request",
   }),
   evidence: Type.String({
     minLength: 1,
@@ -148,7 +148,7 @@ export function registerGoalInterface(
   pi.registerTool<typeof GoalUpdateParams, GoalUpdateDetails>({
     name: GOAL_UPDATE_TOOL,
     label: "Goal update",
-    description: "Record exactly one active-goal decision: complete after verification, continue with evidence and one next action, or audit the same blocker before blocking it.",
+    description: "Record exactly one active-goal decision: complete after verification, continue with evidence and one next action, or audit the same blocker before blocking it. During an eligible later ordinary request for a blocked goal, only verified completion of the whole unchanged objective is permitted; it does not resume work or grant turns.",
     parameters: GoalUpdateParams,
     exposure: "model-only",
     executionMode: "sequential",
@@ -157,14 +157,27 @@ export function registerGoalInterface(
       if (!isGoalModeSupported(ctx)) throw new Error("KillerOS goals require TUI or RPC mode");
       if (!isSavedSession(ctx)) throw new Error("KillerOS goals require a saved session");
       const state = runtime.state;
-      if (!state || state.status !== "active") throw new Error("There is no active KillerOS goal to update");
-      if (!runtime.goalTurnInFlight
-        || runtime.goalTurn?.turn !== state.turns
-        || runtime.goalTurn.revision !== state.revision) {
-        throw new Error("A goal decision can only be recorded during an active KillerOS goal turn");
-      }
-      if (state.turnDecision !== undefined) {
-        throw new Error("Only one goal decision may be accepted per logical goal turn");
+      if (!state || state.status !== "active" && state.status !== "blocked") throw new Error("There is no active KillerOS goal to update");
+      const generation = runtime.lifecycleGeneration;
+      const permission = runtime.blockedCompletion;
+      const ownsDecision = (): boolean => runtime.state === state
+        && runtime.lifecycleGeneration === generation
+        && (state.status === "blocked"
+          ? permission?.kind === "eligible"
+            && runtime.blockedCompletion === permission
+            && permission.state === state
+            && permission.generation === generation
+          : runtime.goalTurnInFlight
+            && runtime.goalTurn?.turn === state.turns
+            && runtime.goalTurn.revision === state.revision
+            && state.turnDecision === undefined);
+      if (state.status === "blocked") {
+        if (!ownsDecision()) throw new Error("A blocked goal can only be completed during an eligible later ordinary request");
+        if (params.status !== "complete") throw new Error("A blocked goal accepts only complete; automatic continuation remains stopped");
+        if (state.turns === 0) throw new Error("A zero-turn blocked goal cannot record completion; no accounted goal turn exists");
+      } else {
+        if (state.turnDecision !== undefined) throw new Error("Only one goal decision may be accepted per logical goal turn");
+        if (!ownsDecision()) throw new Error("A goal decision can only be recorded during an active KillerOS goal turn");
       }
       if (params.status !== "complete" && params.status !== "continue" && params.status !== "blocked") {
         throw new Error("Goal update status is invalid");
@@ -175,11 +188,7 @@ export function registerGoalInterface(
       if (params.status === "complete") {
         if (state.verification) await verifyGoalDeliverable(state.verification);
         signal?.throwIfAborted();
-        if (runtime.state !== state
-          || runtime.goalTurn?.turn !== state.turns
-          || runtime.goalTurn.revision !== state.revision
-          || state.turnDecision !== undefined
-          || !runtime.goalTurnInFlight) throw new Error("Goal changed while completion was being verified");
+        if (!ownsDecision()) throw new Error("Goal changed while completion was being verified");
         const verification: "file" | "model-reported" = state.verification ? "file" : "model-reported";
         const decision = { kind: "complete" as const, turn: state.turns, evidence, verification };
         try {
@@ -188,6 +197,7 @@ export function registerGoalInterface(
           pauseGoalAfterFailure(pi, runtime, ctx, `goal completion could not be saved: ${error instanceof Error ? error.message : String(error)}`);
           throw error;
         }
+        if (state.status === "blocked") runtime.blockedCompletion = { kind: "accepted", generation };
         const text = state.verification
           ? `Goal verified complete at ${safeTerminalText(state.verification.path)}: ${evidence}`
           : `Goal marked complete (model-reported): ${evidence}`;
@@ -197,6 +207,7 @@ export function registerGoalInterface(
         };
       }
 
+      if (state.status !== "active") throw new Error("A blocked goal accepts only complete");
       if (params.status === "continue") {
         if (typeof params.nextAction !== "string") throw new Error("A continue decision requires a nextAction");
         const nextAction = normalizeGoalText(params.nextAction, GOAL_EVIDENCE_LIMIT, "Goal nextAction");

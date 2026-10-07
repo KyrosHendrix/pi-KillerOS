@@ -97,7 +97,11 @@ function setGoalUpdateToolActive(pi: ExtensionAPI, active: boolean): void {
 }
 
 export function syncGoalUpdateTool(pi: ExtensionAPI, runtime: GoalRuntime): void {
-  setGoalUpdateToolActive(pi, runtime.state?.status === "active");
+  const permission = runtime.blockedCompletion;
+  setGoalUpdateToolActive(pi, runtime.state?.status === "active"
+    || permission?.kind === "eligible"
+      && permission.state === runtime.state
+      && permission.generation === runtime.lifecycleGeneration);
 }
 
 function goalUpdateToolIsAvailable(pi: ExtensionAPI): boolean {
@@ -119,6 +123,7 @@ export function persistGoalState(
   const data: GoalEntryData = { version: GOAL_VERSION, event, state: state ?? null };
   pi.appendEntry(GOAL_ENTRY_TYPE, data);
   runtime.state = state;
+  runtime.blockedCompletion = undefined;
   if (event === "clear") {
     runtime.lifecycleGeneration += 1;
     runtime.continuationHeld = undefined;
@@ -372,6 +377,21 @@ function goalInstructions(state: GoalState, heading: string): string {
   ].join("\n");
 }
 
+function blockedGoalSystemPrompt(state: Extract<GoalState, { status: "blocked" }>): string {
+  return [
+    "# Blocked KillerOS goal",
+    "Status: blocked",
+    "Objective:",
+    state.objective,
+    "",
+    "Treat the exact saved objective above as authoritative. Automatic goal continuation remains stopped; this ordinary request grants no goal turns.",
+    "If killeros_goal_update is available, you may call it only with status complete and current evidence after auditing and verifying the whole unchanged objective.",
+    "File proof checks only the persisted deliverable against its original baseline, not every acceptance criterion. General-objective completion is model-reported.",
+    "The disappearance of a blocker alone does not prove completion. If useful work remains or this request is unrelated, finish normally without a goal update. No decision is mandatory.",
+    "Never use the goal tool to continue, audit a blocker, pause, resume, edit, replace, or clear this goal. User controls remain unchanged.",
+  ].join("\n");
+}
+
 function goalSystemPrompt(state: GoalState): string {
   return goalInstructions(state, "Active KillerOS goal");
 }
@@ -406,6 +426,7 @@ export function registerGoalRuntime(
     const generation = runtime.lifecycleGeneration;
     const restored = restoreGoalState(ctx);
     runtime.state = isGoalModeSupported(ctx) ? restored.state : undefined;
+    runtime.blockedCompletion = undefined;
     syncGoalUpdateTool(pi, runtime);
     runtime.continuationScheduled = false;
     runtime.continuationHeld = undefined;
@@ -434,6 +455,7 @@ export function registerGoalRuntime(
 
   pi.on("session_shutdown", (_event, ctx) => {
     runtime.lifecycleGeneration += 1;
+    runtime.blockedCompletion = undefined;
     if (runtime.state?.status === "active") {
       const checkpoint = checkpointActiveGoalState(runtime.state, Date.now());
       try {
@@ -453,7 +475,13 @@ export function registerGoalRuntime(
     runtime.continuationScheduled = false;
     if (!runtime.goalTurnInFlight && isGoalModeSupported(ctx) && isSavedSession(ctx) && pauseGoalAtTurnLimit(pi, runtime, ctx)) return;
     const current = runtime.state;
-    if (!isGoalModeSupported(ctx) || !isSavedSession(ctx) || !current || current.status !== "active") return;
+    if (!isGoalModeSupported(ctx) || !isSavedSession(ctx) || !current) return;
+    if (current.status === "blocked") {
+      runtime.blockedCompletion ??= { kind: "eligible", state: current, generation: runtime.lifecycleGeneration };
+      syncGoalUpdateTool(pi, runtime);
+      return { systemPrompt: `${event.systemPrompt}\n\n${blockedGoalSystemPrompt(current)}` };
+    }
+    if (current.status !== "active") return;
     if (runtime.goalTurnInFlight) {
       if (!goalUpdateToolIsAvailable(pi)) {
         pauseGoalBeforeTurn(pi, runtime, ctx);

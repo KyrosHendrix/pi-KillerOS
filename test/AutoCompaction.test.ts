@@ -632,6 +632,7 @@ test("a successful goal compaction uses the goal continuation callback without a
   const events: string[] = [];
   const harness = createHarness("rpc", undefined, {
     isActive: () => true,
+    hasAcceptedTerminalDecision: () => false,
     onRequested: () => events.push("requested"),
     onCompleted: () => events.push("completed"),
     onFailed: (_ctx, error) => events.push(`failed:${String(error)}`),
@@ -694,6 +695,92 @@ test("terminal goal requests never become ordinary compaction continuations", as
       }
     }
   }
+});
+
+async function startBlocked(harness: ReturnType<typeof createGoalHarness>): Promise<void> {
+  await harness.startGoal("Audit the original blocked objective");
+  for (let turn = 1; turn <= 3; turn++) {
+    await harness.emit("before_agent_start", { systemPrompt: "Goal prompt" });
+    await harness.emit("agent_start");
+    await harness.decide({ status: "blocked", evidence: `Missing prerequisite ${turn}`, blockerKey: "external" });
+    await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+    await harness.emit("agent_settled");
+  }
+  assert.equal(harness.state().state?.status, "blocked");
+  assert.equal(harness.sentMessages.length, 3);
+}
+
+test("accepted blocked completion prevents compaction restart in either callback order, including already pending compaction", async (t) => {
+  for (const mode of ["tui", "rpc"] as const) {
+    for (const timing of ["before completion", "after completion"] as const) {
+      for (const order of ["before settlement", "after settlement", "before completion"] as const) {
+        if (order === "before completion" && timing === "after completion") continue;
+        for (const outcome of ["completed", "skipped"] as const) {
+          await t.test(`${mode}/${timing}/${order}/${outcome}`, async () => {
+            const harness = createGoalHarness(mode, 100);
+            await startBlocked(harness);
+            await harness.emit("before_agent_start", { systemPrompt: "Ordinary prompt" });
+            await harness.emit("agent_start");
+            await harness.emit("message_start", { message: { role: "user", content: "Finish the original objective" } });
+            const callback = () => {
+              const call = harness.compactCalls[0];
+              assert.ok(call);
+              if (outcome === "completed") call.onComplete?.(compactResult());
+              else call.onError?.(new Error(SESSION_TOO_SMALL_COMPACTION_ERROR));
+            };
+            if (timing === "before completion") await harness.emit("turn_end");
+            if (order === "before completion") callback();
+            await harness.decide({ status: "complete", evidence: "Audited all original criteria" });
+            if (timing === "after completion") await harness.emit("turn_end");
+            if (order === "before settlement") callback();
+            await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+            await harness.emit("agent_settled");
+            if (order === "after settlement") callback();
+            callback();
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            assert.equal(harness.state().state?.status, "complete");
+            assert.equal(harness.state().state?.turns, 3);
+            assert.equal(harness.state().automaticCompaction, undefined);
+            assert.equal(harness.state().blockedCompletion, undefined);
+            assert.equal(harness.sentMessages.length, 3, "accepted completion must stop ordinary compaction continuation");
+            assert.deepEqual(harness.notifications.filter(({ type }) => type === "error"), []);
+
+            await harness.emit("before_agent_start", { systemPrompt: "Later unrelated prompt" });
+            await harness.emit("agent_start");
+            await harness.emit("message_start", { message: { role: "user", content: "Unrelated task" } });
+            await harness.emit("turn_end");
+            const next = harness.compactCalls[1];
+            assert.ok(next, "the later unrelated request must still compact");
+            await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+            await harness.emit("agent_settled");
+            next.onComplete?.(compactResult());
+            assert.equal(harness.sentMessages.length, 4);
+            const message = harness.sentMessages.at(-1)?.message;
+            assert.ok(isUnknownRecord(message));
+            assert.equal(message.customType, AUTO_COMPACTION_MESSAGE_TYPE);
+          });
+        }
+      }
+    }
+  }
+});
+
+test("a blocked request without accepted completion keeps ordinary compaction continuation", async () => {
+  const harness = createGoalHarness("rpc", 100);
+  await startBlocked(harness);
+  const blocked = harness.state().state;
+  await harness.emit("before_agent_start", { systemPrompt: "Ordinary prompt" });
+  await harness.emit("agent_start");
+  await harness.emit("turn_end");
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await harness.emit("agent_settled");
+  assert.equal(harness.state().state, blocked);
+  assert.equal(harness.state().automaticCompaction, undefined);
+  assert.equal(harness.sentMessages.length, 4);
+  const message = harness.sentMessages.at(-1)?.message;
+  assert.ok(isUnknownRecord(message));
+  assert.equal(message.customType, AUTO_COMPACTION_MESSAGE_TYPE);
 });
 
 test("terminal goal compaction skips stay silent and failures stay visible without continuing", async () => {
@@ -1166,6 +1253,7 @@ test("an active goal receives one requested and one skipped callback without fai
   const events: string[] = [];
   const harness = createHarness("rpc", undefined, {
     isActive: () => true,
+    hasAcceptedTerminalDecision: () => false,
     onRequested: () => events.push("requested"),
     onCompleted: () => events.push("completed"),
     onFailed: (_ctx, error) => events.push(`failed:${String(error)}`),

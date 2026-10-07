@@ -325,7 +325,8 @@ function matchesIndex(content: Buffer, entry: IndexEntry, autoCrlf: string): boo
   if (blobObjectId(content, entry.objectId.length) === entry.objectId) return true;
   if (entry.mode === "120000" || !content.includes(Buffer.from("\r\n"))) return false;
   const attributes = entry.eolAttributes;
-  if (attributes.endsWith("eol=lf") || attributes === "-text") return false;
+  // eol controls checkout bytes; text files still normalize CRLF when compared with the index.
+  if (attributes === "-text") return false;
   const automatic = attributes.startsWith("text=auto") || !attributes;
   if (!attributes && !["true", "input"].includes(autoCrlf)) return false;
   if (automatic) {

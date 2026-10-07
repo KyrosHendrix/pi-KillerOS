@@ -220,6 +220,8 @@ export function registerGoalSettlement(
   runtime: GoalRuntime,
 ): AutoCompactionGoalHandlers {
   pi.on("agent_settled", (_event, ctx) => {
+    runtime.blockedCompletion = undefined;
+    syncGoalUpdateTool(pi, runtime);
     const wasGoalTurn = runtime.goalTurnInFlight;
     const continuationWasScheduled = runtime.continuationScheduled;
     const agentEndObserved = runtime.agentEndObserved;
@@ -311,6 +313,8 @@ export function registerGoalSettlement(
   });
 
   return {
+    hasAcceptedTerminalDecision: (): boolean => runtime.blockedCompletion?.kind === "accepted"
+      && runtime.blockedCompletion.generation === runtime.lifecycleGeneration,
     isActive: (ctx: ExtensionContext): boolean => isGoalModeSupported(ctx)
       && isSavedSession(ctx)
       && runtime.state?.status === "active",

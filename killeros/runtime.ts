@@ -121,6 +121,10 @@ export interface GoalTurnExecution {
   revision: number;
 }
 
+export type BlockedGoalCompletion =
+  | { kind: "eligible"; state: Extract<GoalState, { status: "blocked" }>; generation: number }
+  | { kind: "accepted"; generation: number };
+
 export interface GoalRuntime {
   state?: GoalState;
   continuationScheduled: boolean;
@@ -128,6 +132,7 @@ export interface GoalRuntime {
   goalTurnInFlight: boolean;
   agentEndObserved: boolean;
   goalTurn?: GoalTurnExecution;
+  blockedCompletion?: BlockedGoalCompletion;
   automaticCompaction?: AutomaticGoalCompaction;
   persistenceRetryNeeded: boolean;
   lastStopReason?: string;

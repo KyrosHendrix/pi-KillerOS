@@ -896,30 +896,40 @@ test("receipts neither fetch promised blobs nor report verified changes", async 
   ));
 });
 
-test("forced LF worktree changes match Git in footer counts and receipts", async (t) => {
-  const root = await fixture();
-  t.after(() => rm(root, { recursive: true, force: true }));
-  git(root, "config", "core.autocrlf", "false");
-  const file = path.join(root, "forced.txt");
-  await writeFile(path.join(root, ".gitattributes"), "forced.txt text eol=lf\n");
-  await writeFile(file, "line\n");
-  git(root, "add", ".gitattributes", "forced.txt");
-  git(root, "commit", "--quiet", "-m", "forced LF fixture");
+for (const attributes of ["text=auto eol=lf", "eol=lf", "text eol=lf"]) {
+  test(`CRLF content under ${attributes} stays clean in footer counts and receipts`, async (t) => {
+    const root = await fixture();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    git(root, "config", "core.autocrlf", "false");
+    const file = path.join(root, "forced.txt");
+    await writeFile(path.join(root, ".gitattributes"), `forced.txt ${attributes}\n`);
+    await writeFile(file, "line\r\n");
+    git(root, "add", ".gitattributes", "forced.txt");
+    git(root, "commit", "--quiet", "-m", "forced LF fixture");
 
-  // Exact bytes stay clean even when Git's index stat cache cannot be used.
-  await utimes(file, new Date(0), new Date(0));
-  assert.deepEqual(await resolveGitFileChanges(root), { modified: 0, added: 0, deleted: 0 });
-  const collection = await beginChangeReceipt(root);
+    assert.equal(git(root, "status", "--porcelain=v1").toString(), "");
+    // Normalized bytes stay clean even when Git's index stat cache cannot be used.
+    await utimes(file, new Date(0), new Date(0));
+    assert.deepEqual(await resolveGitFileChanges(root), { modified: 0, added: 0, deleted: 0 });
+    const collection = await beginChangeReceipt(root);
 
-  await writeFile(file, "line\r\n");
+    await writeFile(file, "line\r\n");
 
-  assert.equal(git(root, "status", "--porcelain=v1").toString(), " M forced.txt\n");
-  assert.deepEqual(await resolveGitFileChanges(root), { modified: 1, added: 0, deleted: 0 });
-  assert.deepEqual(await collection.finish(), {
-    state: "available", totalFiles: 1, additions: 0, deletions: 0,
-    files: [{ kind: "modified", path: "forced.txt", additions: 0, deletions: 0 }], omittedFiles: 0,
+    assert.equal(git(root, "diff", "--", "forced.txt").toString(), "");
+    assert.deepEqual(await resolveGitFileChanges(root), { modified: 0, added: 0, deleted: 0 });
+    assert.deepEqual(await collection.finish(), {
+      state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0,
+    });
+
+    const editedCollection = await beginChangeReceipt(root);
+    await writeFile(file, "changed\r\n");
+    assert.deepEqual(await resolveGitFileChanges(root), { modified: 1, added: 0, deleted: 0 });
+    assert.deepEqual(await editedCollection.finish(), {
+      state: "available", totalFiles: 1, additions: 1, deletions: 1,
+      files: [{ kind: "modified", path: "forced.txt", additions: 1, deletions: 1 }], omittedFiles: 0,
+    });
   });
-});
+}
 
 test("passive scans fail closed on incomplete index metadata", async (t) => {
   const root = await fixture();
@@ -972,7 +982,7 @@ test("passive normalization respects attributes, binary detection, and skip-work
   git(root, "update-index", "--skip-worktree", "clean.txt");
   await rm(path.join(root, "clean.txt"));
 
-  assert.deepEqual(await resolveGitFileChanges(root), { modified: 4, added: 0, deleted: 0 });
+  assert.deepEqual(await resolveGitFileChanges(root), { modified: 3, added: 0, deleted: 0 });
 });
 
 test("line-ending-only edits remain visible with normalized line counts", async (t) => {

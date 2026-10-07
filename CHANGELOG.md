@@ -4,6 +4,19 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.4] - 2026-10-07
+
+### Changed
+
+- Made the explicitly enabled `prepublishOnly` lifecycle the single release-validator invocation at npm publication. The release workflow now publishes the source directory with `npm publish . --ignore-scripts=false`, preserving the existing release checks and trusted publishing.
+- Added current release-metadata validation and isolated publication-lifecycle tests with release-pinned npm to the Node-floor quality check. Extended the existing packed-package Pi test to check all required files and package identity without another pack operation. The package smoke job remains until replacement coverage lands and the required-check migration is approved and verified.
+
+### Fixed
+
+- Allowed later verified ordinary work to complete the same saved blocked goal without resume, clear, or extra automatic turns. Completion retains the original objective, file baseline, and accounting, respects native tool selection, and prevents compaction from restarting completed work.
+- Stopped false CRLF change counts in the footer and task receipts for text files with `eol=lf`. Added a differential Git-oracle matrix covering attributes, `core.autocrlf`, text and binary contents, plus mode and symlink comparisons. Fixes #47.
+- Gave each real Pi decision-tool exposure scenario its own bounded timeout so slower Windows TUI scenarios do not cancel the remaining codemode and RPC coverage. All behavioral assertions remain unchanged.
+
 ## [3.0.3] - 2026-10-07
 
 ### Changed

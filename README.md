@@ -36,7 +36,7 @@ Or from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin a release by appending its tag, for example `@v3.0.3`. Add `-l` to install only for the current project. Restart Pi after installing.
+Pin a release by appending its tag, for example `@v3.0.4`. Add `-l` to install only for the current project. Restart Pi after installing.
 
 ## Commands
 
@@ -73,9 +73,9 @@ Pi 1.0 defaults to fullscreen. Use `--tui-mode regular` for one invocation or se
 
 With Pi 1.0.3's default [keybindings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md#fullscreen), `Home` and `End` move within the current editor line. In fullscreen mode, `Ctrl+Home` and `Ctrl+End` scroll to the transcript's beginning or end without moving the editor cursor. KillerOS inherits these bindings; user overrides still apply.
 
-`question` and the active `killeros_goal_update` tool use Pi's `model-only` exposure. They stay directly declared to the model when codemode is disabled or enabled in `on` or `only` mode, but scripts and other tools cannot call them through `ctx.executeTool()`. The goal tool remains inactive without an active goal. Questions still require TUI mode; a direct RPC call fails with `The question tool requires interactive TUI mode`. KillerOS does not enable or configure codemode.
+`question` and the active `killeros_goal_update` tool use Pi's `model-only` exposure. They stay directly declared to the model when codemode is disabled or enabled in `on` or `only` mode, but scripts and other tools cannot call them through `ctx.executeTool()`. The goal tool is active for active goals and, during a later ordinary request, for completion only of a saved blocked goal. It is inactive outside those cases. Questions still require TUI mode; a direct RPC call fails with `The question tool requires interactive TUI mode`. KillerOS does not enable or configure codemode.
 
-Pi 1.0.4's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns such as `"killeros_*"` so the shell does not expand them. An explicit allowlist must include `question` for interactive questions and permit `killeros_goal_update` for goals. Selection does not make questions usable outside TUI mode. Excluding the goal tool pauses goals before any model request. See Pi's [tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
+Pi 1.0.4's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns such as `"killeros_*"` so the shell does not expand them. An explicit allowlist must include `question` for interactive questions and permit `killeros_goal_update` for goals. Selection does not make questions usable outside TUI mode. Excluding the goal tool pauses goals that are active before any model request. A later ordinary request with a blocked goal still runs, but cannot record its completion when the tool is excluded. See Pi's [tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
 
 ## Configuration
 
@@ -109,13 +109,17 @@ A direct quoted path-shaped file target binds silent file proof. For an extensio
 /goal Fix `killeros/footer.ts`, verified by npm test
 ```
 
-Bare quoted prose remains model-reported. KillerOS captures the file baseline at goal start and only completes when the file is created or changed. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Same-turn recovery requires an actual interruption; successful or skipped compaction cannot restart a normally stopped goal without a decision. A request that completes or blocks a goal remains goal-owned through settlement, so automatic compaction cannot restart it as ordinary work. Later ordinary requests still support compaction continuation. Restored goals keep their persisted limit.
+Bare quoted prose remains model-reported. KillerOS captures the file baseline at goal start and only completes when the file is created or changed. File proof verifies that deliverable, not every natural-language acceptance criterion. The assistant must audit the whole objective before reporting completion; KillerOS cannot independently prove arbitrary objectives from prose. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Same-turn recovery requires an actual interruption; successful or skipped compaction cannot restart a normally stopped goal without a decision. A request that completes or blocks a goal remains goal-owned through settlement, so automatic compaction cannot restart it as ordinary work. Later ordinary requests still support compaction continuation. Restored goals keep their persisted limit.
+
+A blocked goal stays stopped. In a later ordinary TUI or RPC request in a saved session, the assistant can complete the same unchanged objective through `killeros_goal_update` after verification and current evidence. Only `complete` is accepted on this path. Completion does not resume automatic work, grant turns, restart the active clock, or require `/goal clear`. It retains the original file baseline and records either `file` proof or `model-reported` completion. Failed proof and ordinary responses without a completion decision leave the goal blocked. Paused goals still require explicit user controls. A completed goal leaves the footer but remains inspectable through `/goal` and session history.
 
 Session replacement, reload, and committed tree navigation discard unfinished task receipts. Late receipt results do not write or notify through the old session context or attach to a different branch. Cancelled navigation preserves the pending receipt.
 
 Pending `/goal` commands discard their mutation if committed navigation changes the branch or another mutation changes the goal while confirmation, idle waiting, or file-baseline reading is in progress. Cancelled navigation preserves valid pending commands. Discarding a stale replacement after its idle wait preserves the surviving goal's authorized continuation.
 
 Failed Git metadata reads keep the footer's last successful file counts and mark task changes unavailable. They are not treated as an empty repository.
+
+Passive Git scans compare content without running repository filters. CRLF text that normalizes to the indexed LF content stays unchanged, including with `text=auto eol=lf` or bare `eol=lf`. Git's `status` can still report a modification after a size-changing rewrite because of its index stat cache, even when `git diff` is empty.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 
@@ -163,9 +167,15 @@ npm ci && npm run check && npm test
 
 `main` requires pull requests and the CI workflow's required checks, including for administrators. Force pushes and branch deletion are blocked. Pi compatibility checks use the stable names `Pi compatibility (minimum)` and `Pi compatibility (latest)`, independent of the tested versions.
 
-When adopting these names, first confirm both checks passed on the release PR's exact head commit. Replace only the two old versioned Pi required checks with their corresponding stable names, preserving their GitHub Actions app bindings and every other protection. If other CI job names change, update GitHub's required status checks to match.
+When adopting these names, first confirm both checks passed on the release PR's exact head commit. Replace only the two old versioned Pi required checks with their corresponding stable names, preserving their GitHub Actions app bindings and every other protection.
 
-Releases go through CI on `main`; do not push version tags manually. The package smoke job validates release metadata before packing, and the release workflow checks it again before publication. The prepublish check rejects ordinary direct `npm publish`, but `--ignore-scripts` can bypass it. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
+`Quality (Node 22.19.0)` validates current release metadata before the full test suite. It also tests the publication lifecycle with the release workflow's pinned npm CLI in an isolated installation. The packed-package Pi test checks the installed archive's entry point, README, changelog, theme, package name, and current version before activation and reload. These archive assertions run throughout the Node, Windows, and Pi compatibility matrix.
+
+`Package smoke test` remains during the required-check migration. Before removing it, land the replacement coverage and confirm the Node-floor quality check passed on the replacement PR's exact head commit and that the coverage is present on `main`. Inspect live branch protection and rulesets, obtain approval, and remove only the smoke requirement while preserving the required quality check's GitHub Actions binding and every other protection. Remove the job in a follow-up PR and recheck that PR's final head. Do not remove the job if these prerequisites are unmet.
+
+Releases go through CI on `main`; do not push version tags manually. The release workflow publishes the source directory with `npm publish . --ignore-scripts=false`. The package's `prepublishOnly` lifecycle invokes the existing release validator once at that boundary, even if an inherited npm setting disables scripts. A validator failure stops publication and release creation. The earlier verified-commit, provenance, version, tag, and release-note checks remain.
+
+The prepublish guard rejects ordinary direct publication, but it does not prove GitHub authorization. Disabling scripts or publishing a tarball bypasses `prepublishOnly`. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
 
 ## Security
 
