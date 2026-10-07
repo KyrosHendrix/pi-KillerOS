@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.4] - 2026-10-07
+
 ### Changed
 
 - Made the explicitly enabled `prepublishOnly` lifecycle the single release-validator invocation at npm publication. The release workflow now publishes the source directory with `npm publish . --ignore-scripts=false`, preserving the existing release checks and trusted publishing.
