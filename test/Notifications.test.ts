@@ -73,6 +73,18 @@ function createTemporaryDirectory(t: TestContext): string {
   return directory;
 }
 
+test("final cancellation suppresses the bell after a normal result or no result", async () => {
+  for (const reason of ["stop", undefined] as const) {
+    const harness = createNotificationHarness({ saved: true });
+    await harness.emit("session_start");
+    await harness.emit("agent_start");
+    if (reason) await harness.emit("agent_end", assistantEnd(reason));
+    await harness.emit("agent_settled", { aborted: true });
+    await harness.emit("agent_settled", { aborted: false });
+    assert.equal(harness.rings, 0);
+  }
+});
+
 test("notification preference defaults off and round-trips globally", (t) => {
   const directory = createTemporaryDirectory(t);
   const settingsPath = path.join(directory, "killeros.json");

@@ -454,7 +454,7 @@ export function registerWorkedFor(
     }
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async (event, ctx) => {
     if (!active || ctx.mode !== "tui") return;
     const settled = active;
     const generation = lifecycleGeneration;
@@ -469,7 +469,7 @@ export function registerWorkedFor(
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");
     }
     const settledTokens = sessionTokenTotal(ctx);
-    const outcome = workedForOutcome(settled.stopReason);
+    const outcome = "aborted" in event && event.aborted === true ? "stopped" : workedForOutcome(settled.stopReason);
     const throughput = outcome === "done" && !settled.throughputInvalid && settled.responseStartedAt === undefined
       && positiveInteger(settled.outputTokens) && positiveDuration(settled.responseMilliseconds)
       ? { outputTokens: settled.outputTokens, responseMilliseconds: settled.responseMilliseconds }

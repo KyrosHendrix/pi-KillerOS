@@ -13,12 +13,32 @@ import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
 
 type WorkedForEvent = {
   type: string;
+  aborted?: boolean;
   messages?: Array<{ role?: string; stopReason?: StopReason }>;
   message?: { role: string; provider?: string; model?: string; responseModel?: string; usage?: { output?: number; reasoning?: unknown }; stopReason?: StopReason };
   toolName?: string;
   input?: Record<string, unknown>;
   isError?: boolean;
 };
+
+test("final cancellation records Stopped and preserves observed changes and checks", async () => {
+  for (const reason of ["stop", undefined] as const) {
+    const changes = {
+      state: "available", totalFiles: 1, additions: 2, deletions: 1, omittedFiles: 0,
+      files: [{ kind: "modified", path: "fixture.txt", additions: 2, deletions: 1 }],
+    } satisfies ChangeSummary;
+    const harness = createWorkedForHarness("tui", async () => ({ finish: async () => changes, dispose: async () => undefined }));
+    await harness.emit("agent_start");
+    await harness.emit("tool_result", { toolName: "bash", input: { command: "npm test" }, isError: false });
+    if (reason) await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: reason }] });
+    await harness.emit("agent_settled", { aborted: true });
+    assert.equal(harness.appendedEntries.length, 1);
+    assert.deepEqual(harness.appendedEntries[0]?.data, {
+      version: 4, milliseconds: 0, outcome: "stopped", tokens: 0,
+      ...EMPTY_V4, changes, checks: [{ label: "npm test", outcome: "passed" }],
+    });
+  }
+});
 
 type WorkedForSessionEntry =
   | { type: "compaction" | "branch_summary"; usage: { totalTokens: number } }

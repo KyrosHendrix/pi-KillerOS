@@ -5,9 +5,10 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type Provider } from "@earendil-works/pi-ai";
-import { getKeybindings } from "@earendil-works/pi-tui";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { mistralProvider } from "@earendil-works/pi-ai/providers/mistral";
 import { Type } from "typebox";
+import { parseArgs } from "../node_modules/@earendil-works/pi-coding-agent/dist/cli/args.js";
 import {
   createAgentSession,
   createAgentSessionRuntime,
@@ -18,6 +19,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { registerRequestActivity } from "../killeros/activity.ts";
+import { registerAutoCompaction } from "../killeros/auto-compaction.ts";
 import { registerCodexFastMode } from "../killeros/codex-fast.ts";
 import { isCodexFastEnabled, resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { registerCompletionNotifications } from "../killeros/notifications.ts";
@@ -30,10 +32,13 @@ import { registerHandoff } from "../killeros/handoff.ts";
 import { registerFooter } from "../killeros/footer.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
-import { createHarness, createTuiContext, removeDirectoryEventually, requireInteractive, theme, waitFor } from "./ExtensionTestHarness.ts";
+import { createHarness, createTuiContext, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const piManifest: unknown = JSON.parse(readFileSync(path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8"));
+assert.ok(isUnknownRecord(piManifest) && typeof piManifest.version === "string");
+const piHasModifiers = Number(piManifest.version.split(".")[1]) >= 1;
 
 /** Runs npm with isolated config and no implicit shell when npm exposes its entry point. */
 function runNpm(args: string[], cwd: string, userConfig: string): string {
@@ -489,10 +494,15 @@ test("real Pi Azure Responses and Foundry requests survive reload without OpenAI
   }
 });
 
-test("real Pi capacity and HTTP/2 retries preserve active turns and blocked completion permission until settlement", { timeout: 30_000 }, async (t) => {
+test("real Pi retries preserve active turns and blocked completion permission until settlement", { timeout: 60_000 }, async (t) => {
   for (const [goalStatus, errorMessage] of [
     ["active", "Selected model is at capacity"], ["active", "The pending stream has been canceled"],
     ["blocked", "Selected model is at capacity"], ["blocked", "The pending stream has been canceled"],
+    ...(piHasModifiers ? [
+      ["active", "server_busy"], ["blocked", "server_busy"],
+      ["active", "servers are currently busy"], ["blocked", "servers are currently busy"],
+      ["active", "mistral finish_reason:error"], ["blocked", "mistral finish_reason:error"],
+    ] as const : []),
   ] as const) {
     await t.test(`${goalStatus}/${errorMessage}`, async () => {
       const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-provider-retry-"));
@@ -504,12 +514,39 @@ test("real Pi capacity and HTTP/2 retries preserve active turns and blocked comp
         mkdirSync(agentDir);
         const runtime = createGoalRuntime();
         const faux = fauxProvider({ provider: "killeros-provider-retry", models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+        const mistral: Provider | undefined = errorMessage === "mistral finish_reason:error" ? mistralProvider() : undefined;
+        const model = mistral?.getModels().find((candidate) => candidate.id === "mistral-small-latest") ?? faux.getModel();
+        let transportRequests = 0;
+        const fakeFetch: typeof fetch = async (input, init) => {
+          const request = new Request(input, init);
+          assert.equal(request.url, "https://api.mistral.ai/v1/chat/completions");
+          const body: unknown = await request.json();
+          assert.ok(isUnknownRecord(body));
+          if (transportRequests < 2) {
+            assert.ok(Array.isArray(body.tools));
+            assert.equal(JSON.stringify(body.tools).includes("killeros_goal_update"), true);
+          }
+          assert.equal(receipts().length, 0);
+          assert.equal(bells, 0);
+          transportRequests += 1;
+          const delta = transportRequests === 2
+            ? { tool_calls: [{ index: 0, id: "abcdefghi", type: "function", function: {
+              name: "killeros_goal_update", arguments: JSON.stringify({ status: "complete", evidence: "Recovered and verified" }),
+            } }] }
+            : { content: transportRequests === 1 ? "" : "Goal finished after recovery" };
+          const finish = transportRequests === 1 ? "error" : transportRequests === 2 ? "tool_calls" : "stop";
+          return new Response(`data: ${JSON.stringify({ id: "local", model: model.id, choices: [{ index: 0, delta, finish_reason: finish }], usage: { prompt_tokens: 10, completion_tokens: 2 } })}\n\ndata: [DONE]\n\n`, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        };
         const modelRuntime = await ModelRuntime.create({
           authPath: path.join(agentDir, "auth.json"), modelsPath: null,
           modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false,
         });
-        modelRuntime.registerNativeProvider(faux.provider);
-        await modelRuntime.setRuntimeApiKey("killeros-provider-retry", "local-test-key");
+        modelRuntime.registerNativeProvider(mistral ? {
+          ...mistral, streamSimple: (model, context, options) => mistral.streamSimple(model, context, { ...options, fetch: fakeFetch }),
+        } : faux.provider);
+        await modelRuntime.setRuntimeApiKey(model.provider, "local-test-key");
         const settingsManager = SettingsManager.inMemory({
           compaction: { enabled: false }, cacheWarming: "off",
           retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 1 },
@@ -535,7 +572,7 @@ test("real Pi capacity and HTTP/2 retries preserve active turns and blocked comp
         await loader.reload();
         assert.deepEqual(loader.getExtensions().errors, []);
         ({ session } = await createAgentSession({
-          cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: loader,
+          cwd, agentDir, model, modelRuntime, settingsManager, resourceLoader: loader,
           sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")), noTools: "builtin",
         }));
         const host = session;
@@ -556,6 +593,7 @@ test("real Pi capacity and HTTP/2 retries preserve active turns and blocked comp
         const retries: Array<{ status: string | undefined; turns: number | undefined; maxTurns: number | undefined; receipts: number; bells: number; working: boolean }> = [];
         let recovered = false;
         let settlements = 0;
+        let normalizedError: string | undefined;
         faux.setResponses([
           fauxAssistantMessage("", { stopReason: "error", errorMessage }),
           fauxAssistantMessage(fauxToolCall("killeros_goal_update", { status: "complete", evidence: "Recovered and verified" })),
@@ -570,6 +608,7 @@ test("real Pi capacity and HTTP/2 retries preserve active turns and blocked comp
         let resolveSettled: (() => void) | undefined;
         const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
         const unsubscribe = host.subscribe((event) => {
+          if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error") normalizedError = event.message.errorMessage;
           if (event.type === "auto_retry_start") retries.push({
             status: runtime.state?.status, turns: runtime.state?.turns, maxTurns: runtime.state?.maxTurns,
             receipts: receipts().length, bells, working: captured.workingMessages.at(-1) !== undefined,
@@ -583,7 +622,8 @@ test("real Pi capacity and HTTP/2 retries preserve active turns and blocked comp
           await host.waitForIdle();
           assert.deepEqual(retries, [{ status: goalStatus, turns: 1, maxTurns: 20, receipts: 0, bells: 0, working: true }]);
           assert.equal(recovered, true);
-          assert.equal(faux.state.callCount, 3);
+          assert.equal(mistral ? transportRequests : faux.state.callCount, 3);
+          if (mistral) assert.equal(normalizedError, "Provider stopped with: error (server error)");
           assert.equal(runtime.state?.status, "complete");
           assert.equal(runtime.state?.turns, 1);
           assert.equal(runtime.state?.maxTurns, 20);
@@ -698,14 +738,12 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
             resourceLoader: loader, tools: ["question", "killeros_*", "exposure_probe", "unrelated", "write", "read", ...(codemode === "disabled" ? [] : ["codemode"])],
           });
           const errors: string[] = [];
-          const { ctx, tui } = createTuiContext();
+          const { ctx } = createTuiContext();
           const ui = extensionContextTestAdapter({ ui: {
             ...ctx.ui,
-            custom(factory: (...args: unknown[]) => unknown) {
+            async select(_title: string, options: string[]) {
               opened++;
-              return new Promise<unknown>((resolve) => {
-                requireInteractive(factory(tui, theme, getKeybindings(), resolve)).handleInput("\r");
-              });
+              return options[0];
             },
           } }).ui;
           const assertDeclarations = (start: number, activeGoal: boolean, end = declarations.length): void => {
@@ -895,9 +933,9 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
   }
 });
 
-test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codemode", { timeout: 30_000 }, async (t) => {
+test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codemode", { timeout: 60_000 }, async (t) => {
   for (const mode of ["tui", "rpc"] as const) {
-    for (const excluded of ["killeros_*", "question", "allowlist"]) {
+    for (const excluded of ["killeros_*", "killeros_goal_update", "question", "allowlist"]) {
       await t.test(`${mode}/${excluded}`, async () => {
         const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-tool-exclusion-"));
         let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -947,7 +985,8 @@ test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codem
           const errors: string[] = [];
           const { ctx } = createTuiContext();
           const ui = extensionContextTestAdapter({ ui: { ...ctx.ui,
-            custom: async () => { assert.fail("scripts must not open question UI"); },
+            select: async () => { assert.fail("scripts must not open question UI"); },
+            input: async () => { assert.fail("scripts must not open question UI"); },
           } }).ui;
           await session.bindExtensions({ mode, uiContext: ui,
             onError(error) { errors.push(`${error.event}: ${error.error}`); } });
@@ -1017,6 +1056,164 @@ test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codem
         }
       });
     }
+  }
+});
+
+test("Pi 1.1 user cancellation stops goal work after a normal result, during retry, and during pending compaction", { skip: !piHasModifiers, timeout: 30_000 }, async (t) => {
+  for (const stage of ["normal result", "retry", "goal compaction", "ordinary compaction"] as const) {
+    await t.test(stage, async () => {
+      const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-cancellation-"));
+      let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+      try {
+        const cwd = path.join(directory, "project"), agentDir = path.join(directory, "agent");
+        mkdirSync(cwd); mkdirSync(agentDir);
+        const runtime = createGoalRuntime();
+        const compacting = stage.endsWith("compaction");
+        const ordinary = stage === "ordinary compaction";
+        const faux = fauxProvider({ provider: "killeros-cancellation", models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+        const modelRuntime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null,
+          modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false });
+        modelRuntime.registerNativeProvider(faux.provider);
+        await modelRuntime.setRuntimeApiKey("killeros-cancellation", "local-test-key");
+        const settingsManager = SettingsManager.inMemory({ compaction: { enabled: compacting, reserveTokens: 100, keepRecentTokens: 1 },
+          retry: { enabled: true, maxRetries: 1, baseDelayMs: 30_000, maxAgentDelayMs: 30_000 }, cacheWarming: "off" });
+        settingsManager.setProjectTrusted(true);
+        let bells = 0;
+        let resolveCompacting: (() => void) | undefined;
+        const compactionStarted = new Promise<void>((resolve) => { resolveCompacting = resolve; });
+        const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
+          noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+          extensionFactories: [(pi) => {
+            registerGoalInterface(pi, runtime); registerGoalRuntime(pi, runtime);
+            registerWorkedFor(pi, Date.now, async () => ({ finish: async () => ({ state: "unavailable", reason: "not-git" }), dispose: async () => undefined }));
+            const goal = registerGoalSettlement(pi, runtime);
+            registerAutoCompaction(pi, { goal, loadPreference: () => ({ enabled: compacting, percentRemaining: 100 }),
+              getCompactionSettings: () => ({ enabled: compacting, reserveTokens: 100, keepRecentTokens: 1 }) });
+            registerCompletionNotifications(pi, { store: { load: () => true, save() {} }, ring: () => { bells += 1; } });
+            pi.on("session_before_compact", async (event) => {
+              resolveCompacting?.();
+              if (!event.signal.aborted) await new Promise<void>((resolve) => event.signal.addEventListener("abort", () => resolve(), { once: true }));
+              return { cancel: true };
+            });
+          }],
+        });
+        await loader.reload();
+        assert.deepEqual(loader.getExtensions().errors, []);
+        ({ session } = await createAgentSession({ cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: loader,
+          sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")), noTools: "builtin" }));
+        const host = session;
+        const errors: string[] = [];
+        const { ctx } = createTuiContext();
+        await host.bindExtensions({ mode: "tui", uiContext: extensionContextTestAdapter(ctx).ui,
+          onError(error) { errors.push(`${error.event}: ${error.error}`); } });
+        const settlements: boolean[] = [];
+        let cancellation: Promise<void> | undefined;
+        host.subscribe((event) => {
+          if (stage === "normal result" && event.type === "agent_end") cancellation = host.abort();
+          if (stage === "retry" && event.type === "auto_retry_start") cancellation = new Promise<void>((resolve, reject) => {
+            setImmediate(() => { host.abort().then(resolve, reject); });
+          });
+          if (event.type === "agent_settled") settlements.push("aborted" in event && event.aborted === true);
+        });
+        faux.setResponses(stage === "retry" ? [fauxAssistantMessage("", { stopReason: "error", errorMessage: "server_busy" })]
+          : ordinary ? [fauxAssistantMessage("ordinary response")]
+            : [fauxAssistantMessage(fauxToolCall("killeros_goal_update", { status: "continue", evidence: "First step verified", nextAction: "Do the next step" })), fauxAssistantMessage("normal response")]);
+        const prompt = host.prompt(ordinary ? "Inspect the fixture" : "/goal Finish the isolated fixture");
+        if (compacting) {
+          await compactionStarted;
+          await host.abort();
+        }
+        await prompt;
+        await cancellation;
+        await host.waitForIdle();
+        if (compacting) await waitFor(() => !host.isCompacting && runtime.automaticCompaction === undefined);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(faux.state.callCount, stage === "normal result" ? 2 : 1);
+        assert.deepEqual(settlements, [true]);
+        const receipts = host.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "killeros-worked-for");
+        assert.equal(receipts.length, 1);
+        assert.ok(receipts[0]?.type === "custom" && isUnknownRecord(receipts[0].data));
+        assert.equal(receipts[0].data.outcome, "stopped");
+        assert.equal(bells, 0);
+        if (!ordinary) {
+          assert.equal(runtime.state?.status, "paused");
+          assert.equal(runtime.state?.turns, 1);
+          assert.equal(runtime.state?.maxTurns, 20);
+          assert.notEqual(runtime.state?.resumeAfterManualCompaction, true);
+        }
+        assert.equal(runtime.continuationScheduled, false);
+        assert.equal(host.pendingMessageCount, 0);
+        assert.deepEqual(errors, []);
+      } finally {
+        session?.dispose();
+        await removeDirectoryEventually(directory);
+      }
+    });
+  }
+});
+
+test("Pi 1.1 native CLI rejects mixed modifiers and wildcard modifiers", { skip: !piHasModifiers }, () => {
+  for (const selection of ["read,+codemode", "+codemode,-killeros_*"]) {
+    const args = parseArgs(["--tools", selection]);
+    assert.equal(args.diagnostics.some((diagnostic) => diagnostic.type === "error"), true, selection);
+    assert.equal(args.tools, undefined);
+  }
+  for (const selection of ["+codemode", "-killeros_goal_update", "read,killeros_*"]) {
+    const args = parseArgs(["--tools", selection]);
+    assert.deepEqual(args.diagnostics, []);
+    assert.deepEqual(args.tools, selection.split(","));
+  }
+});
+
+test("Pi 1.1 +codemode retains native defaults through goal activation and reload", { skip: !piHasModifiers, timeout: 30_000 }, async () => {
+  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-tool-modifiers-"));
+  let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+  try {
+    const cwd = path.join(directory, "project"), agentDir = path.join(directory, "agent");
+    mkdirSync(cwd); mkdirSync(agentDir);
+    const runtime = createGoalRuntime();
+    const faux = fauxProvider({ provider: "killeros-modifiers", models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
+    const modelRuntime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null,
+      modelsStorePath: path.join(agentDir, "models-cache.json"), allowModelNetwork: false });
+    modelRuntime.registerNativeProvider(faux.provider);
+    await modelRuntime.setRuntimeApiKey("killeros-modifiers", "local-test-key");
+    const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off" });
+    const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      extensionFactories: [createCodemodeExtension({ mode: "on" }), (pi) => {
+        registerQuestionTool(pi); registerGoalInterface(pi, runtime); registerGoalRuntime(pi, runtime); registerGoalSettlement(pi, runtime);
+      }],
+    });
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+    ({ session } = await createAgentSession({ cwd, agentDir, model: faux.getModel(), modelRuntime, settingsManager,
+      resourceLoader: loader, sessionManager: SessionManager.create(cwd, path.join(directory, "sessions")),
+      tools: parseArgs(["--tools", "+codemode"]).tools,
+    }));
+    const { ctx } = createTuiContext();
+    const errors: string[] = [];
+    await session.bindExtensions({ mode: "tui", uiContext: extensionContextTestAdapter(ctx).ui,
+      onError(error) { errors.push(`${error.event}: ${error.error}`); } });
+    for (const stage of ["startup", "reload"] as const) {
+      if (stage === "reload") await session.reload();
+      faux.setResponses([(context) => {
+        const names = getCurrentTools(context.messages).map((tool) => tool.name);
+        for (const name of ["read", "bash", "edit", "write", "codemode", "question", "killeros_goal_update"]) assert.equal(names.includes(name), true, `${stage}/${name}`);
+        return fauxAssistantMessage(fauxToolCall("killeros_goal_update", { status: "complete", evidence: "Defaults verified" }));
+      }, fauxAssistantMessage("Verified")]);
+      await session.prompt(`/goal Verify defaults at ${stage}`);
+      await session.waitForIdle();
+      assert.equal(runtime.state?.status, "complete");
+      for (const name of ["question", "killeros_goal_update"]) {
+        assert.equal(session.getToolDefinition(name)?.exposure, "model-only");
+        assert.equal(session.getToolDefinition(name)?.executionMode, "sequential");
+        assert.equal(session.getCallableToolNames().includes(name), false);
+      }
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    session?.dispose();
+    await removeDirectoryEventually(directory);
   }
 });
 

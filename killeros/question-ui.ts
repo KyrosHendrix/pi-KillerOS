@@ -1,21 +1,13 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  decodeKittyPrintable,
-  Editor,
-  Markdown,
-  truncateToWidth,
-  visibleWidth,
-  wrapTextWithAnsi,
-  type EditorTheme,
-} from "@earendil-works/pi-tui";
-import type { ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { safeTerminalText } from "./safe-terminal-text.ts";
 
 export interface DisplayOption {
   label: string;
+  answer: string;
   description?: string;
   preview?: string;
   originalIndex: number;
-  isOther: boolean;
 }
 
 export type QuestionSelection =
@@ -31,65 +23,12 @@ export const CUSTOM_INPUT_HISTORY_BYTES = 64 * 1024;
 export const FILTER_QUERY_MAX_CHARACTERS = 4_000;
 export const FILTER_QUERY_MAX_BYTES = 16_000;
 
-function isPrintableInput(data: string): boolean {
-  return data.length > 0 && !/[\u0000-\u001F\u007F-\u009F]/u.test(data);
-}
-
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-function decodeQuestionFilterInput(data: string): string | undefined {
-  const kittyPrintable = decodeKittyPrintable(data);
-  if (kittyPrintable !== undefined) return isPrintableInput(kittyPrintable) ? kittyPrintable : undefined;
-
-  const pasteStart = "\x1B[200~";
-  const pasteEnd = "\x1B[201~";
-  const startIndex = data.indexOf(pasteStart);
-  const endIndex = data.indexOf(pasteEnd, startIndex + pasteStart.length);
-  if (startIndex >= 0 && endIndex >= 0) {
-    return data
-      .slice(startIndex + pasteStart.length, endIndex)
-      .replace(/\r\n|\r|\n/gu, "")
-      .replace(/\t/gu, "    ")
-      .replace(/[\u0000-\u001F\u007F-\u009F]/gu, "");
-  }
-
-  return isPrintableInput(data) ? data : undefined;
-}
-
-function removeLastGrapheme(value: string): string {
-  const segments = [...graphemeSegmenter.segment(value)];
-  const last = segments.at(-1);
-  return last ? value.slice(0, last.index) : "";
-}
-
-function inputCharacterCount(value: string): number {
-  let count = 0;
-  for (const _character of value) count += 1;
-  return count;
-}
-
 export function oneLine(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
-function boundedRenderLine(value: string, width: number, suffix: string): string {
-  return truncateToWidth(value.replace(/\r\n|\r|\n/gu, " "), width, suffix);
-}
-
-function visibleOptionRange(total: number, selected: number, capacity: number): { start: number; end: number } {
-  const size = Math.max(1, Math.min(total, capacity));
-  const start = Math.max(0, Math.min(selected - Math.floor(size / 2), total - size));
-  return { start, end: Math.min(total, start + size) };
-}
-
-function boundedQuestionLines(question: string, width: number, rowLimit: number): string[] {
-  const wrapped = wrapTextWithAnsi(question.replace(/\s+/gu, " ").trim(), width);
-  if (wrapped.length <= rowLimit) return wrapped;
-  const visible = wrapped.slice(0, rowLimit);
-  const finalIndex = rowLimit - 1;
-  const finalLine = visible[finalIndex];
-  if (finalLine !== undefined) visible[finalIndex] = truncateToWidth(finalLine, width, "…");
-  return visible;
+function inputCharacterCount(value: string): number {
+  return [...value].length;
 }
 
 function compactMultipleAnswers(answers: readonly string[], width: number): string {
@@ -139,452 +78,192 @@ export class MultipleResultText {
   invalidate(): void {}
 }
 
+type Choice<T> = { label: string; value: T };
+type DialogSize = { width: number; rows: number };
+type MainAction =
+  | { kind: "option"; option: DisplayOption }
+  | { kind: "custom" }
+  | { kind: "submit" }
+  | { kind: "actions" };
+type MoreAction = "filter" | "clear" | "history" | "remove" | "review" | "question";
+class QuestionAborted extends Error {}
+
+function dialogSize(): DialogSize {
+  return { width: Math.max(1, (process.stdout.columns || 80) - 6), rows: process.stdout.rows || 24 };
+}
+
 export async function openQuestionUi(config: {
   ctx: ExtensionContext;
-  signal?: AbortSignal;
+  signal: AbortSignal;
   question: string;
   options: DisplayOption[];
-  originalOptions: readonly { label: string }[];
   mode: "single" | "multiple";
   minSelections: number;
   maxSelections: number;
   customInputHistory: readonly string[];
   rememberCustomInput: (value: string) => boolean;
 }): Promise<QuestionSelection> {
-  const {
-    ctx,
-    signal,
-    question,
-    options: displayOptions,
-    originalOptions,
-    mode,
-    minSelections,
-    maxSelections,
-    customInputHistory,
-    rememberCustomInput,
-  } = config;
-  const options = displayOptions;
-      let finishFromAbort: (() => void) | undefined;
-      const resultPromise = ctx.ui.custom<QuestionSelection>((tui, theme, keybindings, done) => {
-        let optionIndex = 0;
-        type EditMode = "none" | "filter" | "custom";
-        let editMode: EditMode = "none";
-        let filterQuery = "";
-        const selectedOriginalIndices = new Set<number>();
-        let customAnswer: string | undefined;
-        let cachedWidth: number | undefined;
-        let cachedRows: number | undefined;
-        let cachedLines: string[] | undefined;
-        let completed = false;
+  const { ctx, signal, question, options, mode, minSelections, maxSelections, customInputHistory, rememberCustomInput } = config;
+  const selected = new Set<number>();
+  let customAnswer: string | undefined;
+  let filter = "";
+  const checkAbort = (): void => { if (signal.aborted) throw new QuestionAborted(); };
+  const count = (): number => selected.size + (customAnswer === undefined ? 0 : 1);
+  const notifyMaximum = (): void => ctx.ui.notify(`Select at most ${maxSelections} answer${maxSelections === 1 ? "" : "s"}`, "error");
 
-        const finish = (selection: QuestionSelection): void => {
-          if (completed) return;
-          completed = true;
-          done(selection);
-        };
-        finishFromAbort = () => finish({ kind: "aborted" });
+  // Resize dismisses only this native step. Rebuild its pages without losing question state.
+  async function nativeRequest(request: (stepSignal: AbortSignal) => Promise<string | undefined>) {
+    checkAbort();
+    const resize = new AbortController();
+    const onResize = (): void => resize.abort();
+    process.stdout.on("resize", onResize);
+    try {
+      const value = await request(AbortSignal.any([signal, resize.signal]));
+      checkAbort();
+      return resize.signal.aborted ? { kind: "resize" as const } : { kind: "result" as const, value };
+    } finally {
+      process.stdout.off("resize", onResize);
+    }
+  }
 
-        const keyHint = (keybinding: Parameters<typeof keybindings.getKeys>[0], description: string): string => {
-          const keyText = keybindings.getKeys(keybinding)
-            .join("/")
-            .split("/")
-            .map((key) => key.split("+").map((part) => process.platform === "darwin" && part.toLowerCase() === "alt" ? "option" : part).join("+"))
-            .join("/");
-          return theme.fg("dim", keyText) + theme.fg("muted", ` ${description}`);
-        };
+  async function choose<T>(title: string | ((size: DialogSize) => string), entries: Choice<T>[]): Promise<T | undefined> {
+    let start = 0;
+    while (true) {
+      const size = dialogSize();
+      const text = typeof title === "string" ? title.split("\n").slice(0, 2).map((line) => truncateToWidth(oneLine(line), size.width, "…")).join("\n") : title(size);
+      // Reserve native borders, hints, header/footer, and both page controls.
+      const capacity = Math.max(1, size.rows - 13 - text.split("\n").length);
+      start = Math.min(start, Math.max(0, entries.length - 1));
+      const page = entries.slice(start, start + capacity);
+      const labels = page.map((entry, index) => truncateToWidth(`${start + index + 1}. ${oneLine(entry.label)}`, size.width, "…"));
+      const next = "Next choices";
+      const previous = "Previous choices";
+      const offered = [...labels, ...(start + capacity < entries.length ? [next] : []), ...(start > 0 ? [previous] : [])];
+      const response = await nativeRequest((stepSignal) => ctx.ui.select(text, offered, { signal: stepSignal }));
+      checkAbort();
+      if (response.kind === "resize") continue;
+      if (response.value === undefined) return undefined;
+      if (response.value === next && offered.includes(next)) { start += capacity; continue; }
+      if (response.value === previous && offered.includes(previous)) { start = Math.max(0, start - capacity); continue; }
+      const index = labels.indexOf(response.value);
+      const entry = page[index];
+      if (!entry) throw new Error("Native question selection does not match an offered choice");
+      return entry.value;
+    }
+  }
 
-        const editorTheme: EditorTheme = {
-          borderColor: (text) => theme.fg("accent", text),
-          selectList: {
-            selectedPrefix: (text) => theme.fg("accent", text),
-            selectedText: (text) => theme.fg("accent", text),
-            description: (text) => theme.fg("muted", text),
-            scrollInfo: (text) => theme.fg("dim", text),
-            noMatch: (text) => theme.fg("warning", text),
-          },
-        };
-        const editor = new Editor(tui, editorTheme);
-        customInputHistory.forEach((value) => editor.addToHistory(value));
+  async function input(title: string, placeholder = ""): Promise<string | undefined> {
+    checkAbort();
+    const size = dialogSize();
+    // Pi reflows native input on resize. Keep its component and in-progress draft.
+    const value = await ctx.ui.input(truncateToWidth(title, size.width, "…"), truncateToWidth(oneLine(placeholder), size.width, "…"), { signal });
+    checkAbort();
+    return value;
+  }
 
-        const filteredOptions = (): DisplayOption[] => {
-          const query = filterQuery.trim().toLowerCase();
-          return options.filter((option) => option.isOther
-            || query.length === 0
-            || option.label.toLowerCase().includes(query)
-            || option.description?.toLowerCase().includes(query));
-        };
-        const selectedCount = (): number => selectedOriginalIndices.size + (customAnswer === undefined ? 0 : 1);
-        const orderedMultipleSelection = () => {
-          const selectedIndices = [...selectedOriginalIndices].sort((left, right) => left - right);
-          const predefined = selectedIndices.map((index) => {
-            const option = originalOptions[index - 1];
-            if (!option) throw new Error("Question selection no longer matches an available option");
-            return option.label;
-          });
-          return {
-            answers: customAnswer === undefined ? predefined : [...predefined, customAnswer],
-            selectedIndices,
-            ...(customAnswer === undefined ? {} : { customAnswer }),
-          };
-        };
+  async function review(content: string): Promise<void> {
+    let page = 0;
+    let pages = 1;
+    while (true) {
+      const action = await choose<"next" | "previous" | "back">((size) => {
+        const lines = wrapTextWithAnsi(content, size.width);
+        const capacity = Math.max(1, size.rows - 18);
+        pages = Math.max(1, Math.ceil(lines.length / capacity));
+        page = Math.min(page, pages - 1);
+        return [`Review ${page + 1}/${pages}`, ...lines.slice(page * capacity, (page + 1) * capacity)].join("\n");
+      }, [ { label: "Next page", value: "next" }, { label: "Previous page", value: "previous" }, { label: "Back", value: "back" } ]);
+      if (action === undefined || action === "back") return;
+      if (action === "next") page = Math.min(page + 1, pages - 1);
+      else page = Math.max(0, page - 1);
+    }
+  }
 
-        const invalidate = (): void => {
-          cachedWidth = undefined;
-          cachedRows = undefined;
-          cachedLines = undefined;
-          editor.invalidate();
-        };
-        const refresh = (): void => {
-          invalidate();
-          tui.requestRender();
-        };
-        const notifyFilterLimit = (): void => ctx.ui.notify(
-          `Question filters are limited to ${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()} characters and ${FILTER_QUERY_MAX_BYTES.toLocaleString()} bytes`,
-          "error",
-        );
-        const appendFilterInput = (value: string): void => {
-          const next = filterQuery + value;
-          if (inputCharacterCount(next) > FILTER_QUERY_MAX_CHARACTERS || Buffer.byteLength(next, "utf8") > FILTER_QUERY_MAX_BYTES) {
-            notifyFilterLimit();
-            return;
-          }
-          filterQuery = next;
-          optionIndex = 0;
-          refresh();
-        };
-        const togglePredefined = (option: DisplayOption): void => {
-          if (selectedOriginalIndices.has(option.originalIndex)) {
-            selectedOriginalIndices.delete(option.originalIndex);
-            refresh();
-            return;
-          }
-          if (selectedCount() >= maxSelections) {
-            ctx.ui.notify(`Select at most ${maxSelections} answer${maxSelections === 1 ? "" : "s"}`, "error");
-            return;
-          }
-          selectedOriginalIndices.add(option.originalIndex);
-          refresh();
-        };
-        const enterCustomMode = (): void => {
-          editMode = "custom";
-          editor.setText(mode === "multiple" ? customAnswer ?? "" : "");
-          refresh();
-        };
-        const enterFilterMode = (): void => {
-          editMode = "filter";
-          editor.setText(filterQuery);
-          refresh();
-        };
+  function acceptCustom(raw: string): QuestionSelection | undefined {
+    checkAbort();
+    const answer = safeTerminalText(raw).trim();
+    if (!answer) { ctx.ui.notify("Enter a nonempty custom answer", "error"); return; }
+    if (inputCharacterCount(raw.trim()) > CUSTOM_INPUT_MAX_CHARACTERS) {
+      ctx.ui.notify(`Custom answers are limited to ${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()} characters`, "error");
+      return;
+    }
+    if (mode === "multiple" && customAnswer === undefined && count() >= maxSelections) { notifyMaximum(); return; }
+    if (!rememberCustomInput(answer)) { ctx.ui.notify(`Custom answer history is limited to ${CUSTOM_INPUT_HISTORY_BYTES} bytes`, "error"); return; }
+    if (mode === "single") return { kind: "custom", answer };
+    customAnswer = answer;
+  }
 
-        editor.onSubmit = (value) => {
-          if (editMode === "filter") {
-            filterQuery = value;
-            optionIndex = 0;
-            editMode = "none";
-            editor.setText("");
-            refresh();
-            return;
-          }
-          const answer = value.trim();
-          if (answer) {
-            if (inputCharacterCount(answer) > CUSTOM_INPUT_MAX_CHARACTERS) {
-              ctx.ui.notify(`Custom answers are limited to ${CUSTOM_INPUT_MAX_CHARACTERS} characters`, "error");
-              return;
+  try {
+    while (true) {
+      checkAbort();
+      const query = filter.trim().toLowerCase();
+      const visible = options.filter((option) => !query || option.label.toLowerCase().includes(query) || option.description?.toLowerCase().includes(query));
+      const entries: Choice<MainAction>[] = visible.map((option) => ({
+        label: `${mode === "multiple" ? selected.has(option.originalIndex) ? "[x] " : "[ ] " : ""}${option.label}${option.description ? ` · ${oneLine(option.description)}` : ""}`,
+        value: { kind: "option", option },
+      }));
+      if (mode === "multiple") entries.push({ label: "Submit answers", value: { kind: "submit" } });
+      entries.push({ label: customAnswer === undefined ? "Custom answer" : "Edit custom answer", value: { kind: "custom" } }, { label: "More actions", value: { kind: "actions" } });
+      const summary = mode === "multiple" ? `Selected ${count()} · choose ${minSelections}–${maxSelections}` : "Choose one answer";
+      const action = await choose(`${summary}${filter ? " · filtered" : ""}\n${question}`, entries);
+      checkAbort();
+      if (action === undefined) return { kind: "cancelled" };
+      switch (action.kind) {
+        case "option":
+          if (mode === "single") return { kind: "selected", answer: action.option.answer, originalIndex: action.option.originalIndex };
+          if (selected.has(action.option.originalIndex)) selected.delete(action.option.originalIndex);
+          else if (count() >= maxSelections) notifyMaximum();
+          else selected.add(action.option.originalIndex);
+          break;
+        case "submit": {
+          if (count() < minSelections) { ctx.ui.notify(`Select at least ${minSelections} answer${minSelections === 1 ? "" : "s"}`, "error"); break; }
+          const ordered = options.filter((option) => selected.has(option.originalIndex));
+          return { kind: "multiple", answers: [...ordered.map((option) => option.answer), ...(customAnswer === undefined ? [] : [customAnswer])], selectedIndices: ordered.map((option) => option.originalIndex), ...(customAnswer === undefined ? {} : { customAnswer }) };
+        }
+        case "custom": {
+          const raw = await input("Custom answer", customAnswer);
+          if (raw !== undefined) { const result = acceptCustom(raw); if (result) return result; }
+          break;
+        }
+        case "actions": {
+          const more: Choice<MoreAction>[] = [ { label: "Filter options", value: "filter" }, { label: "Review question", value: "question" }, { label: "Review option details", value: "review" } ];
+          if (filter) more.push({ label: "Clear filter", value: "clear" });
+          if (customInputHistory.length > 0) more.push({ label: "Recent answers", value: "history" });
+          if (customAnswer !== undefined) more.push({ label: "Remove custom answer", value: "remove" });
+          const extra = await choose("More actions", more);
+          checkAbort();
+          switch (extra) {
+            case undefined: break;
+            case "clear": filter = ""; break;
+            case "remove": customAnswer = undefined; break;
+            case "question": await review(question); break;
+            case "review": {
+              const option = await choose("Review option details", options.map((option) => ({ label: option.label, value: option })));
+              if (option) await review([option.label, option.description, option.preview].filter((value) => value !== undefined).join("\n\n"));
+              break;
             }
-            if (mode === "multiple") {
-              const addsSelection = customAnswer === undefined;
-              if (addsSelection && selectedCount() >= maxSelections) {
-                editor.setText(value);
-                ctx.ui.notify(`Select at most ${maxSelections} answer${maxSelections === 1 ? "" : "s"}`, "error");
-                refresh();
-                return;
+            case "filter": {
+              const raw = await input("Filter options", filter);
+              checkAbort();
+              if (raw !== undefined) {
+                if (inputCharacterCount(raw) > FILTER_QUERY_MAX_CHARACTERS || Buffer.byteLength(raw, "utf8") > FILTER_QUERY_MAX_BYTES) ctx.ui.notify(`Question filters are limited to ${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()} characters and ${FILTER_QUERY_MAX_BYTES.toLocaleString()} bytes`, "error");
+                else filter = safeTerminalText(raw);
               }
-              if (!rememberCustomInput(answer)) {
-                editor.setText(value);
-                ctx.ui.notify(`Custom answer history is limited to ${CUSTOM_INPUT_HISTORY_BYTES} bytes`, "error");
-                refresh();
-                return;
-              }
-              customAnswer = answer;
-              editMode = "none";
-              editor.setText("");
-              refresh();
-              return;
+              break;
             }
-            if (!rememberCustomInput(answer)) {
-              ctx.ui.notify(`Custom answer history is limited to ${CUSTOM_INPUT_HISTORY_BYTES} bytes`, "error");
-              return;
+            case "history": {
+              const answer = await choose("Recent answers", [...customInputHistory].reverse().map((answer) => ({ label: answer, value: answer })));
+              if (answer !== undefined) { const result = acceptCustom(answer); if (result) return result; }
+              break;
             }
-            finish({ kind: "custom", answer });
-            return;
+            default: { const exhaustive: never = extra; return exhaustive; }
           }
-          editMode = "none";
-          editor.setText("");
-          refresh();
-        };
-
-        const handleEditorInput = (data: string): void => {
-          if (keybindings.matches(data, "tui.select.cancel")) {
-            editMode = "none";
-            editor.setText("");
-            refresh();
-            return;
-          }
-          const before = editor.getExpandedText();
-          editor.handleInput(data);
-          const after = editor.getExpandedText();
-          const overLimit = editMode === "filter"
-            ? inputCharacterCount(after) > FILTER_QUERY_MAX_CHARACTERS || Buffer.byteLength(after, "utf8") > FILTER_QUERY_MAX_BYTES
-            : inputCharacterCount(after) > CUSTOM_INPUT_MAX_CHARACTERS;
-          if (overLimit) {
-            editor.setText(before);
-            if (editMode === "filter") notifyFilterLimit();
-            else ctx.ui.notify(`Custom answers are limited to ${CUSTOM_INPUT_MAX_CHARACTERS} characters`, "error");
-          }
-          refresh();
-        };
-
-        const handleInput = (data: string): void => {
-          if (editMode !== "none") {
-            handleEditorInput(data);
-            return;
-          }
-
-          const visibleOptions = filteredOptions();
-          if (optionIndex >= visibleOptions.length) optionIndex = Math.max(0, visibleOptions.length - 1);
-          const pageSize = Math.max(1, Math.min(5, Math.ceil(Math.max(1, tui.terminal.rows - 5) / 2)));
-          if (keybindings.matches(data, "tui.select.up")) {
-            optionIndex = Math.max(0, optionIndex - 1);
-            refresh();
-            return;
-          }
-          if (keybindings.matches(data, "tui.select.down")) {
-            optionIndex = Math.min(visibleOptions.length - 1, optionIndex + 1);
-            refresh();
-            return;
-          }
-          if (keybindings.matches(data, "tui.select.pageUp")) {
-            optionIndex = Math.max(0, optionIndex - pageSize);
-            refresh();
-            return;
-          }
-          if (keybindings.matches(data, "tui.select.pageDown")) {
-            optionIndex = Math.min(visibleOptions.length - 1, optionIndex + pageSize);
-            refresh();
-            return;
-          }
-
-          const printableInput = decodeQuestionFilterInput(data);
-          const isPasteInput = data.includes("\x1B[200~");
-          if (mode === "multiple") {
-            const selected = visibleOptions[optionIndex];
-            if (!isPasteInput && printableInput === " ") {
-              if (!selected) return;
-              if (selected.isOther) {
-                if (customAnswer !== undefined) {
-                  customAnswer = undefined;
-                  refresh();
-                }
-              } else togglePredefined(selected);
-              return;
-            }
-            if (!isPasteInput && printableInput === "/") {
-              enterFilterMode();
-              return;
-            }
-            if (!isPasteInput && printableInput && /^[1-9]$/u.test(printableInput)) {
-              const numbered = visibleOptions[Number(printableInput) - 1];
-              if (!numbered) return;
-              if (numbered.isOther) enterCustomMode();
-              else togglePredefined(numbered);
-              return;
-            }
-            if (keybindings.matches(data, "tui.select.confirm")) {
-              if (selected?.isOther) {
-                enterCustomMode();
-              } else if (selectedCount() < minSelections) {
-                ctx.ui.notify(`Select at least ${minSelections} answer${minSelections === 1 ? "" : "s"}`, "error");
-              } else {
-                finish({ kind: "multiple", ...orderedMultipleSelection() });
-              }
-              return;
-            }
-            if (keybindings.matches(data, "tui.select.cancel")) {
-              if (filterQuery) {
-                filterQuery = "";
-                optionIndex = 0;
-                refresh();
-              } else finish({ kind: "cancelled" });
-              return;
-            }
-            return;
-          }
-
-          if (keybindings.matches(data, "tui.select.confirm")) {
-            const selected = visibleOptions[optionIndex];
-            if (!selected) return;
-            if (selected.isOther) enterCustomMode();
-            else finish({ kind: "selected", answer: selected.label, originalIndex: selected.originalIndex });
-            return;
-          }
-          if (keybindings.matches(data, "tui.select.cancel")) {
-            if (filterQuery) {
-              filterQuery = "";
-              optionIndex = 0;
-              refresh();
-            } else finish({ kind: "cancelled" });
-            return;
-          }
-          if (keybindings.matches(data, "tui.editor.deleteCharBackward")) {
-            if (filterQuery) {
-              filterQuery = removeLastGrapheme(filterQuery);
-              optionIndex = 0;
-              refresh();
-            }
-            return;
-          }
-          if (!isPasteInput && printableInput && /^[1-9]$/u.test(printableInput)) {
-            const selected = visibleOptions[Number(printableInput) - 1];
-            if (!selected) return;
-            if (selected.isOther) enterCustomMode();
-            else finish({ kind: "selected", answer: selected.label, originalIndex: selected.originalIndex });
-            return;
-          }
-          if (printableInput) appendFilterInput(printableInput);
-        };
-
-        const render = (width: number): string[] => {
-          if (width <= 0) return [];
-          const rowBudget = tui.terminal.rows;
-          if (rowBudget <= 0) return [];
-          if (cachedLines && cachedWidth === width && cachedRows === rowBudget) return cachedLines;
-          const visibleOptions = filteredOptions();
-          if (optionIndex >= visibleOptions.length) optionIndex = Math.max(0, visibleOptions.length - 1);
-          const selected = visibleOptions[optionIndex];
-          const position = `Option ${Math.min(optionIndex + 1, visibleOptions.length)}/${visibleOptions.length}`;
-          const editorText = editor.getExpandedText();
-          const editorCount = inputCharacterCount(editorText).toLocaleString();
-          const filterCount = inputCharacterCount(editMode === "filter" ? editorText : filterQuery).toLocaleString();
-          const compactDraft = editorText.replace(/\r\n|\r|\n/gu, " ↵ ") || (editMode === "filter" ? "Type a filter" : "Type an answer");
-          const selectionRange = minSelections === maxSelections ? `${minSelections}` : `${minSelections}–${maxSelections}`;
-          const selectionStatus = `Selected ${selectedCount()} · required ${selectionRange}`;
-          const optionLabel = (option: DisplayOption, index: number): string => {
-            if (mode === "single") return `${index === optionIndex ? ">" : " "} ${index + 1}. ${option.label}`;
-            const checked = option.isOther ? customAnswer !== undefined : selectedOriginalIndices.has(option.originalIndex);
-            const label = option.isOther && customAnswer !== undefined ? `Custom: ${oneLine(customAnswer)}` : option.label;
-            return `${index === optionIndex ? ">" : " "} ${checked ? "[x]" : "[ ]"} ${index + 1}. ${label}`;
-          };
-          const browseHint = mode === "multiple"
-            ? `space toggle • / filter • ${keyHint("tui.select.confirm", selected?.isOther ? (customAnswer ? "edit custom" : "add custom") : "submit")} • ${keyHint("tui.select.cancel", filterQuery ? "clear filter" : "cancel")}`
-            : `${keyHint("tui.select.confirm", "select")} • ${keyHint("tui.select.cancel", "cancel")}`;
-          const editHint = `${keyHint("tui.input.submit", editMode === "filter" ? "apply" : "submit")} • ${keyHint("tui.select.cancel", "options")}`;
-
-          let lines: string[];
-          if (rowBudget <= 2) {
-            if (editMode !== "none") lines = [`${editMode === "filter" ? "Filter" : "Answer"} ${editMode === "filter" ? filterCount : editorCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`, compactDraft];
-            else if (mode === "multiple") {
-              const focusedRow = selected ? optionLabel(selected, optionIndex) : "";
-              const compactSelectionStatus = visibleWidth(selectionStatus) <= width
-                ? selectionStatus
-                : `Selected ${selectedCount()}`;
-              lines = focusedRow && visibleWidth(focusedRow) <= width
-                ? [focusedRow, compactSelectionStatus]
-                : [compactSelectionStatus, focusedRow];
-            } else lines = [`${selected ? `> ${selected.label}` : "No matching options"} · ${position}`];
-          } else if (rowBudget <= 5) {
-            lines = [
-              ...boundedQuestionLines(question, width, Math.max(1, rowBudget - 3)),
-              editMode !== "none"
-                ? `${editMode === "filter" ? "Filter" : "Answer"} ${editMode === "filter" ? filterCount : editorCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`
-                : selected ? optionLabel(selected, optionIndex) : "No matching options",
-              editMode !== "none" ? compactDraft : mode === "multiple" ? selectionStatus : filterQuery ? `Filter ${filterCount}/${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()}` : position,
-              editMode !== "none" ? editHint : browseHint,
-            ];
-          } else {
-            const questionLines = boundedQuestionLines(question, width, Math.max(1, rowBudget - 5));
-            const contentRows = rowBudget - questionLines.length - 4;
-            const optionCapacity = Math.max(1, Math.min(5, Math.ceil(contentRows / 2)));
-            const detailCapacity = Math.max(0, contentRows - optionCapacity);
-            const { start, end } = visibleOptionRange(visibleOptions.length, optionIndex, optionCapacity);
-            const hiddenAbove = start > 0 ? `↑ ${start}` : "";
-            const hiddenBelowCount = visibleOptions.length - end;
-            const hiddenBelow = hiddenBelowCount > 0 ? `↓ ${hiddenBelowCount}` : "";
-            const hiddenStatus = [hiddenAbove, hiddenBelow].filter(Boolean).join(" · ");
-            const progress = editMode === "filter"
-              ? `Filter ${filterCount}/${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()}`
-              : editMode === "custom"
-                ? `Answer ${editorCount}/${CUSTOM_INPUT_MAX_CHARACTERS.toLocaleString()}`
-                : mode === "multiple"
-                  ? `${selectionStatus}${hiddenStatus ? ` · ${hiddenStatus}` : ""}`
-                  : filterQuery ? `Filter ${filterCount}/${FILTER_QUERY_MAX_CHARACTERS.toLocaleString()} · ${position}` : `${position}${hiddenStatus ? ` · ${hiddenStatus}` : ""}`;
-            const navigationHint = editMode !== "none" ? editHint : mode === "multiple"
-              ? `${keyHint("tui.select.up", "up")} • ${keyHint("tui.select.down", "down")} • ${browseHint}`
-              : `${keyHint("tui.select.up", "up")} • ${keyHint("tui.select.down", "down")} • ${keyHint("tui.select.confirm", "select")} • ${keyHint("tui.select.cancel", filterQuery ? "clear filter" : "cancel")}`;
-            lines = [
-              theme.fg("accent", "─".repeat(width)),
-              ...questionLines.map((line) => theme.fg("text", line)),
-              theme.fg("muted", truncateToWidth(` ${progress}`, width, "…")),
-            ];
-            if (editMode !== "none") {
-              const editorLines = editor.render(width);
-              const draftLines = editorLines.length > 2 ? editorLines.slice(1, -1) : editorLines;
-              lines.push(...(draftLines.length > 0 ? draftLines : [editMode === "filter" ? "Type a filter" : "Type an answer"]).slice(-contentRows));
-            } else {
-              for (let index = start; index < end; index += 1) {
-                const option = visibleOptions[index];
-                if (!option) continue;
-                const color: ThemeColor = index === optionIndex ? "accent" : "text";
-                lines.push(theme.fg(color, truncateToWidth(optionLabel(option, index), width, "…")));
-              }
-              const detailLines: string[] = [];
-              if (selected?.description) detailLines.push(...wrapTextWithAnsi(theme.fg("muted", selected.description), width));
-              if (selected?.preview) {
-                detailLines.push(theme.fg("accent", theme.bold("Proposal preview")));
-                detailLines.push(...new Markdown(selected.preview, 0, 0, {
-                  heading: (text) => theme.fg("accent", theme.bold(text)), link: (text) => theme.fg("accent", text),
-                  linkUrl: (text) => theme.fg("dim", text), code: (text) => theme.fg("mdCode", text),
-                  codeBlock: (text) => theme.fg("mdCodeBlock", text), codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
-                  quote: (text) => theme.fg("mdQuote", text), quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
-                  hr: (text) => theme.fg("mdHr", text), listBullet: (text) => theme.fg("mdListBullet", text),
-                  bold: (text) => theme.bold(text), italic: (text) => theme.italic(text), strikethrough: (text) => theme.strikethrough(text),
-                  underline: (text) => theme.underline(text),
-                }, { color: (text) => theme.fg("muted", text) }).render(width));
-              }
-              if (detailCapacity > 0 && detailLines.length > detailCapacity) {
-                const visibleDetailRows = Math.max(0, detailCapacity - 1);
-                lines.push(...detailLines.slice(0, visibleDetailRows));
-                const hiddenRows = detailLines.length - visibleDetailRows;
-                lines.push(theme.fg("dim", `… ${hiddenRows} more line${hiddenRows === 1 ? "" : "s"}`));
-              } else lines.push(...detailLines.slice(0, detailCapacity));
-            }
-            lines.push(theme.fg("dim", truncateToWidth(` ${navigationHint}`, width, "…")));
-            lines.push(theme.fg("accent", "─".repeat(width)));
-          }
-          cachedWidth = width;
-          cachedRows = rowBudget;
-          cachedLines = lines.slice(0, rowBudget).map((line) => boundedRenderLine(line, width, rowBudget <= 5 ? "…" : ""));
-          return cachedLines;
-        };
-
-        let focused = false;
-        return {
-          get focused(): boolean { return focused; },
-          set focused(value: boolean) { focused = value; editor.focused = value; },
-          render,
-          handleInput,
-          invalidate,
-        };
-      });
-
-      const abortHandler = (): void => finishFromAbort?.();
-      signal?.addEventListener("abort", abortHandler, { once: true });
-      if (signal?.aborted) abortHandler();
-      let result: QuestionSelection;
-      try {
-        result = await resultPromise;
-      } finally {
-        signal?.removeEventListener("abort", abortHandler);
+          break;
+        }
+        default: { const exhaustive: never = action; return exhaustive; }
       }
-
-  return result;
+    }
+  } catch (error) {
+    if (error instanceof QuestionAborted) return { kind: "aborted" };
+    throw error;
+  }
 }

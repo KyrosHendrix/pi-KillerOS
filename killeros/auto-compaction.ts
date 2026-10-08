@@ -343,8 +343,14 @@ export function registerAutoCompaction(
     }
   });
 
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", (event, ctx) => {
     goalRequestOwned = false;
+    // Pi aborts the agent when our pending compaction starts. Its callback owns
+    // recovery, including cancellation; the settlement flag alone is ambiguous.
+    if ("aborted" in event && event.aborted === true && request?.phase !== "compacting") {
+      request = undefined;
+      return;
+    }
     if (request?.phase === "continuation-dispatched") {
       request = undefined;
       notifyFailure(ctx, new Error("continuation was not accepted"));

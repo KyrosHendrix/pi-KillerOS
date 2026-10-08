@@ -4,6 +4,21 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.5] - 2026-10-08
+
+### Fixed
+
+- Used Pi 1.1.0's final cancellation signal for `Stopped` task receipts and silent completion notifications, including cancellation after a normal assistant response or without an assistant result. Kept observed changes and checks and the Pi 1.0.4 fallback.
+- Stopped accepted goal continuation after final request cancellation while preserving compaction recovery through its completion and cancellation callbacks.
+
+### Added
+
+- Added real Pi 1.1.0 cancellation, busy-error retry, native Mistral transport retry, and additive tool-selection checks. Documented native tool modifiers and reliable extension-tool exclusion through `--exclude-tools`, including Pi 1.1.0's modifier limitation. Kept the Pi and Node support floors and locked development packages unchanged.
+
+### Changed
+
+- Moved question input to Pi's native dialogs, with KillerOS coordinating bounded multi-select, filtering, custom answers, recent-answer history, and paged text previews. Each step uses native dialog controls and Pi 1.1.0's blocked-status reporting. Preserved the question tool's inputs and results, TUI restriction, and sequential model-only exposure; cancellation and session changes prevent stale steps or partial success.
+
 ## [3.0.4] - 2026-10-07
 
 ### Changed

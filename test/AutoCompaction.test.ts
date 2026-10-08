@@ -130,6 +130,46 @@ function compactResult(): { summary: string; firstKeptEntryId: string; tokensBef
   return { summary: "summary", firstKeptEntryId: "entry-1", tokensBefore: 90_000 };
 }
 
+test("cancelling ordinary pending compaction prevents recovery after aborted settlement", async () => {
+  const harness = createHarness();
+  await harness.emit("agent_start");
+  await harness.emit("turn_end");
+  assert.equal(harness.compactCalls.length, 1);
+  await harness.emit("agent_settled", { aborted: true });
+  harness.compactCalls[0]?.onError?.(new Error("Compaction cancelled"));
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(harness.sentMessages, []);
+});
+
+test("an owned compaction abort can recover the authorized same goal turn", async () => {
+  const harness = createGoalHarness();
+  await harness.startGoal("Finish after compaction");
+  await harness.emit("turn_end");
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "aborted" }] });
+  await harness.emit("agent_settled", { aborted: true });
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(harness.lastState().status, "active");
+  assert.equal(harness.lastState().turns, 1);
+  assert.equal(harness.sentMessages.length, 2);
+});
+
+test("cancelling goal compaction prevents an authorized continuation", async () => {
+  const harness = createGoalHarness();
+  await harness.startGoal("Stop when cancelled");
+  await harness.decide({ status: "continue", evidence: "First check passed", nextAction: "Run the next check" });
+  await harness.emit("turn_end");
+  await harness.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+  await harness.emit("agent_settled", { aborted: true });
+  harness.compactCalls[0]?.onError?.(new Error("Compaction cancelled"));
+  harness.compactCalls[0]?.onComplete?.(compactResult());
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(harness.lastState().status, "paused");
+  assert.equal(harness.lastState().turns, 1);
+  assert.equal(harness.sentMessages.length, 1);
+});
+
 function createCommandHarness(
   settingsStore: KillerosSettingsStore,
   mode: "tui" | "rpc" = "tui",

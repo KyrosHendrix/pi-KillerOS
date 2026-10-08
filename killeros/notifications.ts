@@ -116,11 +116,11 @@ export function registerCompletionNotifications(
     }
   });
 
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", (event, ctx) => {
     if (!requestPending || ctx.mode !== "tui") return;
     if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
     requestPending = false;
-    if (!enabled || lastStopReason === "aborted") return;
+    if (!enabled || "aborted" in event && event.aborted === true || lastStopReason === "aborted") return;
     try {
       runtime.ring();
     } catch (error) {

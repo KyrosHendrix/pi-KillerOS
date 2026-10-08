@@ -73,6 +73,37 @@ test("continue records model-reported evidence and authorizes exactly one next t
   assert.match(harness.sentMessages[1]?.message.content ?? "", /Finish the objective/u);
 });
 
+test("final user cancellation stops an accepted continuation after a normal result", async () => {
+  const harness = createHarness<GoalData>();
+  const { ctx, tool } = await start(harness);
+  await tool.execute("continue", { status: "continue", evidence: "First check passed", nextAction: "Run the next check" },
+    new AbortController().signal, () => {}, ctx);
+  await emitSequentially(getHandlers(harness.handlers, "agent_end"), {
+    messages: [{ role: "assistant", stopReason: "stop" }],
+  }, ctx);
+  await emitSequentially(getHandlers(harness.handlers, "agent_settled"), { aborted: true }, ctx);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(state(harness).status, "paused");
+  assert.equal(state(harness).turns, 1);
+  assert.notEqual(state(harness).resumeAfterManualCompaction, true);
+});
+
+test("an aborted assistant stays stopped until an explicit manual compaction saves its summary", async () => {
+  const harness = createHarness<GoalData>();
+  const { ctx } = await start(harness);
+  await emitSequentially(getHandlers(harness.handlers, "agent_end"), {
+    messages: [{ role: "assistant", stopReason: "aborted" }],
+  }, ctx);
+  await emitSequentially(getHandlers(harness.handlers, "agent_settled"), { aborted: true }, ctx);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(state(harness).status, "paused");
+  await emitSequentially(getHandlers(harness.handlers, "session_compact"), { reason: "manual" }, ctx);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(harness.sentMessages.length, 2);
+  assert.equal(state(harness).status, "active");
+  assert.equal(state(harness).turns, 1);
+});
+
 test("identical normalized continue reports pause before a duplicate turn", async () => {
   const harness = createHarness<GoalData>();
   const { ctx, tool } = await start(harness);

@@ -1,17 +1,68 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Check } from "typebox/value";
-import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS, getKeybindings, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
-import { createHarness, createTuiContext, getHandlers, getTool, last, requireInteractive, theme, type TestInteractive, type TestResult, type TestTool, type TestTui } from "./ExtensionTestHarness.ts";
-
-type QuestionOption = { label: string; description?: string; preview?: string; [key: string]: unknown };
-
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { createHarness, createTuiContext, getHandlers, getTool, theme, type TestTool } from "./ExtensionTestHarness.ts";
 type TestNotification = { message: string; level?: string };
-
-
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+ return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+type NativeStep =
+  | { select: RegExp | undefined; inspect?: (title: string, options: string[]) => void }
+  | { input: string | undefined };
+
+function nativeQuestion(tool: TestTool, steps: NativeStep[], params: Record<string, unknown> = {}, signal = new AbortController().signal) {
+  const notifications: TestNotification[] = [];
+  const ctx = { mode: "tui", ui: {
+    async select(title: string, options: string[]) {
+      const step = steps.shift();
+      assert.ok(step && "select" in step, `Unexpected selector: ${title} / ${options.join(", ")}`);
+      step.inspect?.(title, options);
+      if (!step.select) return undefined;
+      const pattern = step.select;
+      const chosen = options.find((option) => pattern.test(option));
+      assert.ok(chosen, `Missing choice ${step.select}: ${options.join(", ")}`);
+      return chosen;
+    },
+    async input() {
+      const step = steps.shift();
+      assert.ok(step && "input" in step, "Unexpected native input");
+      return step.input;
+    },
+    custom() { assert.fail("Question input must use native dialogs"); },
+    notify(message: string, level?: string) { notifications.push({ message, level }); },
+  } };
+  const result = tool.execute("native-question", { question: "Choose", options: [{ label: "Alpha" }, { label: "Beta" }], ...params }, signal, () => {}, ctx).then((value) => {
+    assert.equal(steps.length, 0, "All requested native interactions must occur");
+    return value;
+  });
+  return { notifications, result };
+}
+
+test("native question preserves duplicate option identity and the single result", async () => {
+  const { result } = nativeQuestion(getTool(createHarness(), "question"), [{ select: /^2\. /u }], {
+    options: [{ label: "Custom answer" }, { label: "Custom answer" }],
+  });
+  assert.deepEqual(await result, {
+    content: [{ type: "text", text: "User selected: Custom answer" }],
+    details: { question: "Choose", options: ["Custom answer", "Custom answer"], answer: "Custom answer", selectedIndex: 2, wasCustom: false },
+  });
+});
+
+test("native question multi-select keeps hidden selections under filtering", async () => {
+  const { result } = nativeQuestion(getTool(createHarness(), "question"), [
+    { select: /\[ \] Alpha/u }, { select: /More actions/u }, { select: /Filter options/u }, { input: "bEtA" },
+    { select: /\[ \] Beta/u, inspect(_title, options) { assert.equal(options.some((option) => /Alpha/u.test(option)), false); } },
+    { select: /Submit answers/u },
+  ], { mode: "multiple", minSelections: 2, maxSelections: 2 });
+  assert.deepEqual((await result).details, { question: "Choose", options: ["Alpha", "Beta"], mode: "multiple", answers: ["Alpha", "Beta"], selectedIndices: [1, 2] });
+});
+
+test("native question cancellation discards pending multi-select answers", async () => {
+  const { result } = nativeQuestion(getTool(createHarness(), "question"), [{ select: /Alpha/u }, { select: undefined }], { mode: "multiple" });
+  assert.deepEqual((await result).details, { question: "Choose", options: ["Alpha", "Beta"], mode: "multiple", answers: [], selectedIndices: [], cancelled: true });
+});
+
 
 test("question is model-only and sequential", () => {
   const tool = getTool(createHarness(), "question");
@@ -68,9 +119,9 @@ test("question accepts omitted or explicit 1/1 single-select bounds before rende
   const ctx = {
     mode: "tui",
     ui: {
-      custom: () => {
+      select: () => {
         opened += 1;
-        return Promise.resolve({ kind: "cancelled" });
+        return Promise.resolve(undefined);
       },
       notify: () => {},
     },
@@ -138,46 +189,6 @@ test("question retains multiple-select bound validation before rendering and exe
   }
 });
 
-async function startQuestion(
-  tool: TestTool,
-  options: QuestionOption[] = [{ label: "Alpha" }],
-  questionText = "Choose",
-  terminalRows = 40,
-  keybindings = getKeybindings(),
-  extraParams: Record<string, unknown> = {},
-): Promise<{
-  component: TestInteractive;
-  finish: (value: unknown) => void;
-  result: Promise<TestResult>;
-  notifications: TestNotification[];
-  tui: TestTui;
-}> {
-  let component: TestInteractive | undefined;
-  let finish: ((value: unknown) => void) | undefined;
-  const notifications: TestNotification[] = [];
-  const tui: TestTui = { requestRender() {}, terminal: { rows: terminalRows } };
-  const ctx = {
-    mode: "tui" as const,
-    ui: {
-      custom: (factory: (...args: unknown[]) => unknown) => new Promise<unknown>((resolve) => {
-        finish = resolve;
-        component = requireInteractive(factory(tui, theme, keybindings, resolve));
-      }),
-      notify: (message: string, level?: string) => notifications.push({ message, level }),
-    },
-  };
-  const result = tool.execute(
-    "question-test",
-    { question: questionText, options, ...extraParams },
-    new AbortController().signal,
-    () => {},
-    ctx,
-  );
-  assert.ok(component);
-  assert.ok(finish);
-  return { component, finish, result, notifications, tui };
-}
-
 test("question renderers strip terminal controls while preserving line breaks", () => {
   const { tools } = createHarness();
   const unsafe = "safe\x1B[2Jspoof\u0007\nnext";
@@ -197,223 +208,6 @@ test("question renderers strip terminal controls while preserving line breaks", 
   }
 });
 
-test("question options render bounded markdown proposal previews before selection", async () => {
-  const { tools } = createHarness();
-  const preview = Array.from(
-    { length: 20 },
-    (_, index) => `- **AGENTS.md** — run \`check-${index + 1}\``,
-  ).join("\n");
-  const question = await startQuestion(getTool(tools, "question"), [{
-    label: "Looks good",
-    description: "Apply the proposal",
-    preview,
-  }], "Choose", 14);
-  const renderedLines = question.component.render(80);
-  const rendered = renderedLines.join("\n");
-  assert.match(rendered, /Proposal preview/u);
-  assert.match(rendered, /AGENTS\.md/u);
-  assert.match(rendered, /more lines/u);
-  assert.doesNotMatch(rendered, /\*\*|`/u);
-  assert.ok(renderedLines.length <= 14);
-  question.finish({ kind: "cancelled" });
-  await question.result;
-});
-
-test("direct single-select questions preserve selection and cancellation results", async () => {
-  const tool = getTool(createHarness(), "question");
-  const selected = await startQuestion(tool);
-  selected.component.handleInput("\r");
-  assert.deepEqual(await selected.result, {
-    content: [{ type: "text", text: "User selected: Alpha" }],
-    details: { question: "Choose", options: ["Alpha"], answer: "Alpha", selectedIndex: 1, wasCustom: false },
-  });
-  const cancelled = await startQuestion(tool);
-  cancelled.component.handleInput("\x1B");
-  assert.deepEqual(await cancelled.result, {
-    content: [{ type: "text", text: "User cancelled the question" }],
-    details: { question: "Choose", options: ["Alpha"], answer: null, cancelled: true },
-  });
-  await assert.rejects(tool.execute(
-    "aborted-question",
-    { question: "Choose", options: [{ label: "Alpha" }] },
-    AbortSignal.abort(),
-    () => {},
-    { mode: "tui", ui: { custom: () => assert.fail("aborted question must not open") } },
-  ), { message: "Question cancelled before it opened" });
-});
-
-test("question keeps single-select as the unchanged default", async () => {
-  const question = await startQuestion(getTool(createHarness(), "question"), [{ label: "Alpha" }, { label: "Beta" }]);
-  question.component.handleInput("\x1B[B");
-  question.component.handleInput("\r");
-  assert.deepEqual((await question.result).details, {
-    question: "Choose", options: ["Alpha", "Beta"], answer: "Beta", selectedIndex: 2, wasCustom: false,
-  });
-});
-
-test("multi-select toggles choices and returns original option order", async () => {
-  const question = await startQuestion(
-    getTool(createHarness(), "question"),
-    [{ label: "Alpha" }, { label: "Beta" }, { label: "Gamma" }],
-    "Choose all", 10, getKeybindings(), { mode: "multiple", minSelections: 2, maxSelections: 3 },
-  );
-  question.component.handleInput("\x1B[B");
-  question.component.handleInput(" ");
-  question.component.handleInput("\x1B[A");
-  question.component.handleInput(" ");
-  question.component.handleInput("\r");
-  const result = await question.result;
-  assert.equal(result.content[0].text, "User selected multiple answers:\n- Alpha\n- Beta");
-  assert.deepEqual(result.details, {
-    question: "Choose all", options: ["Alpha", "Beta", "Gamma"], mode: "multiple", answers: ["Alpha", "Beta"], selectedIndices: [1, 2],
-  });
-});
-
-test("multi-select toggles with digits and supports one editable custom answer", async () => {
-  const question = await startQuestion(
-    getTool(createHarness(), "question"), [{ label: "Alpha" }, { label: "Beta" }],
-    "Choose all", 10, getKeybindings(), { mode: "multiple", maxSelections: 3 },
-  );
-  question.component.handleInput("2");
-  question.component.handleInput("3");
-  question.component.handleInput("Different choice");
-  question.component.handleInput("\r");
-  question.component.handleInput("3");
-  question.component.handleInput("\x01");
-  question.component.handleInput("Edited ");
-  question.component.handleInput("\r");
-  question.component.handleInput("\r");
-  const result = await question.result;
-  assert.deepEqual(result.details.answers, ["Beta", "Edited Different choice"]);
-  assert.deepEqual(result.details.selectedIndices, [2]);
-  assert.equal(result.details.customAnswer, "Edited Different choice");
-});
-
-test("multi-select enforces bounds without replacing choices", async () => {
-  const question = await startQuestion(
-    getTool(createHarness(), "question"), [{ label: "Alpha" }, { label: "Beta" }],
-    "Choose all", 10, getKeybindings(), { mode: "multiple", minSelections: 1, maxSelections: 1 },
-  );
-  question.component.handleInput("\r");
-  assert.match(last(question.notifications).message, /Select at least 1/u);
-  question.component.handleInput(" ");
-  question.component.handleInput("\x1B[B");
-  question.component.handleInput(" ");
-  assert.match(last(question.notifications).message, /Select at most 1/u);
-  question.component.handleInput("\r");
-  assert.deepEqual((await question.result).details.answers, ["Alpha"]);
-});
-
-test("multi-select custom controls preserve selections and drafts", async () => {
-  const question = await startQuestion(
-    getTool(createHarness(), "question"), [{ label: "Alpha" }],
-    "Choose all", 10, getKeybindings(), { mode: "multiple", maxSelections: 1 },
-  );
-  question.component.handleInput(" ");
-  question.component.handleInput("2");
-  question.component.handleInput("blocked draft");
-  question.component.handleInput("\r");
-  assert.match(last(question.notifications).message, /Select at most 1/u);
-  assert.match(question.component.render(60).join("\n"), /blocked draft/u);
-  question.component.handleInput("\x1B");
-  question.component.handleInput("\x1B[A");
-  question.component.handleInput(" ");
-  question.component.handleInput("\x1B[B");
-  question.component.handleInput(" ");
-  assert.equal(question.notifications.length, 1);
-  question.component.handleInput("\r");
-  question.component.handleInput("custom");
-  question.component.handleInput("\r");
-  question.component.handleInput(" ");
-  question.component.handleInput("\x1B");
-  assert.deepEqual((await question.result).details.answers, []);
-});
-
-test("multi-select cancellation returns empty arrays", async () => {
-  const question = await startQuestion(
-    getTool(createHarness(), "question"), [{ label: "Alpha" }],
-    "Choose all", 10, getKeybindings(), { mode: "multiple" },
-  );
-  question.component.handleInput("\x1B");
-  assert.deepEqual((await question.result).details, {
-    question: "Choose all", options: ["Alpha"], mode: "multiple", answers: [], selectedIndices: [], cancelled: true,
-  });
-});
-
-test("multi-select uses slash filter mode, accepts spaces, and keeps hidden checks", async () => {
-  const question = await startQuestion(
-    getTool(createHarness(), "question"), [{ label: "Alpha one" }, { label: "Beta two" }],
-    "Choose all", 10, getKeybindings(), { mode: "multiple", minSelections: 2 },
-  );
-  question.component.handleInput(" ");
-  question.component.handleInput("ignored");
-  assert.doesNotMatch(question.component.render(60).join("\n"), /Filter 7/u);
-  question.component.handleInput("/");
-  question.component.handleInput("Beta two");
-  assert.match(question.component.render(60).join("\n"), /Filter 8\/4,000/u);
-  question.component.handleInput("\r");
-  const applied = question.component.render(60).join("\n");
-  assert.match(applied, /Beta two/u);
-  assert.doesNotMatch(applied, /Alpha one/u);
-  question.component.handleInput(" ");
-  question.component.handleInput("\r");
-  assert.deepEqual((await question.result).details.answers, ["Alpha one", "Beta two"]);
-});
-
-test("multi-select filter edits can be discarded, cleared, pasted, and bounded", async () => {
-  const question = await startQuestion(
-    getTool(createHarness(), "question"), [{ label: "Alpha" }, { label: "Beta two" }],
-    "Choose all", 10, getKeybindings(), { mode: "multiple" },
-  );
-  question.component.handleInput("/");
-  question.component.handleInput("Alpha");
-  question.component.handleInput("\r");
-  question.component.handleInput("/");
-  question.component.handleInput("Beta");
-  question.component.handleInput("\x1B");
-  assert.match(question.component.render(60).join("\n"), /Alpha/u);
-  assert.doesNotMatch(question.component.render(60).join("\n"), /Beta two/u);
-  question.component.handleInput("/");
-  assert.match(question.component.render(60).join("\n"), /Alpha/u);
-  question.component.handleInput("\x01");
-  question.component.handleInput("\x0B");
-  question.component.handleInput("\x1B[200~Beta two\x1B[201~");
-  question.component.handleInput("\r");
-  assert.match(question.component.render(60).join("\n"), /Beta two/u);
-  question.component.handleInput("\x1B");
-  assert.match(question.component.render(60).join("\n"), /Alpha/u);
-  question.component.handleInput("/");
-  question.component.handleInput(`\x1B[200~${"\u{10400}".repeat(4_001)}\x1B[201~`);
-  assert.match(last(question.notifications).message, /4,000 characters.*16,000 bytes/u);
-  question.component.handleInput("\x1B");
-  question.component.handleInput("\x1B");
-  await question.result;
-});
-
-test("multi-select renders checked state, controls, and bounded compact layouts", async () => {
-  const question = await startQuestion(
-    getTool(createHarness(), "question"),
-    Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1} ${"L".repeat(180)}` })),
-    `Choose ${"Q".repeat(990)}`, 12, getKeybindings(), { mode: "multiple", minSelections: 1, maxSelections: 10 },
-  );
-  assert.match(question.component.render(80).join("\n"), /\[ \].*Choice 1/u);
-  assert.match(question.component.render(80).join("\n"), /Selected 0.*1–10/u);
-  assert.match(question.component.render(80).join("\n"), /space.*toggle.*\/.*filter.*enter.*submit/iu);
-  question.component.handleInput(" ");
-  assert.match(question.component.render(80).join("\n"), /\[x\].*Choice 1/iu);
-  question.tui.terminal.rows = 1;
-  assert.match(question.component.render(10).join("\n"), /Selected 1/u);
-  for (const rows of [1, 2, 3, 5, 6, 12]) {
-    question.tui.terminal.rows = rows;
-    const rendered = question.component.render(20);
-    assert.ok(rendered.length <= rows);
-    assert.ok(rendered.every((line) => visibleWidth(line) <= 20));
-    assert.match(rendered.join("\n"), /Choice 1|Selected 1/u);
-  }
-  question.finish({ kind: "cancelled" });
-  await question.result;
-});
-
 test("multi-select transcript shows range, exact overflow, and every expanded answer", () => {
   const tool = getTool(createHarness(), "question");
   const args = { question: "Choose all", options: [{ label: "Alpha" }, { label: "Beta" }], mode: "multiple", minSelections: 1, maxSelections: 2 };
@@ -428,20 +222,6 @@ test("multi-select transcript shows range, exact overflow, and every expanded an
   assert.match(collapsed, /\+[1-3] more/u);
   const expanded = tool.renderResult(result, { expanded: true }, theme).render(24).join("\n");
   for (const answer of result.details.answers) assert.match(expanded, new RegExp(answer, "u"));
-});
-
-test("question shows option, filter, and answer progress", async () => {
-  const { tools } = createHarness();
-  const question = await startQuestion(getTool(tools, "question"), [{ label: "Alpha" }], "Choose", 8);
-  assert.match(question.component.render(40).join("\n"), /Option 1\/2/u);
-  question.component.handleInput("abc");
-  assert.match(question.component.render(40).join("\n"), /Filter 3\/4,000/u);
-  question.component.handleInput("\x1B");
-  question.component.handleInput("2");
-  question.component.handleInput("draft");
-  assert.match(question.component.render(40).join("\n"), /Answer 5\/4,000/u);
-  question.finish({ kind: "cancelled" });
-  await question.result;
 });
 
 test("question transcript is three rows collapsed and complete when expanded", () => {
@@ -473,286 +253,259 @@ test("question transcript is three rows collapsed and complete when expanded", (
   assert.equal((tool.renderResult(result, { expanded: true }, theme).render(40).join("\n").match(/A/gu) ?? []).length, 4_000);
 });
 
-test("question follows remapped selector bindings exactly", async () => {
-  const previous = getKeybindings();
-  const remapped = new TuiKeybindingsManager(TUI_KEYBINDINGS, {
-    "tui.select.down": "ctrl+n",
-    "tui.select.up": "ctrl+p",
-    "tui.select.confirm": "ctrl+y",
-    "tui.select.cancel": "ctrl+g",
+test("native question rejects invalid counts without losing selections and permits toggling off", async () => {
+  const { result, notifications } = nativeQuestion(getTool(createHarness(), "question"), [
+    { select: /Submit answers/u }, { select: /Alpha/u }, { select: /Beta/u }, { select: /\[x\] Alpha/u },
+    { select: /Beta/u }, { select: /Submit answers/u },
+  ], { mode: "multiple", maxSelections: 1 });
+  assert.deepEqual((await result).details.answers, ["Beta"]);
+  assert.deepEqual(notifications.map((item) => item.message), ["Select at least 1 answer", "Select at most 1 answer"]);
+});
+
+test("native question edits and removes custom answers while preserving predefined choices", async () => {
+  const { result } = nativeQuestion(getTool(createHarness(), "question"), [
+    { select: /Alpha/u }, { select: /Custom answer/u }, { input: " First " },
+    { select: /Edit custom answer/u }, { input: undefined },
+    { select: /Edit custom answer/u }, { input: "Edited" },
+    { select: /More actions/u }, { select: /Remove custom answer/u },
+    { select: /Custom answer/u }, { input: "Final" }, { select: /Submit answers/u },
+  ], { mode: "multiple", maxSelections: 2 });
+  assert.deepEqual(await result, {
+    content: [{ type: "text", text: "User selected multiple answers:\n- Alpha\n- Final" }],
+    details: { question: "Choose", options: ["Alpha", "Beta"], mode: "multiple", answers: ["Alpha", "Final"], selectedIndices: [1], customAnswer: "Final" },
   });
-  setKeybindings(remapped);
+});
+
+test("native question custom input cancellation returns to single selection", async () => {
+  const { result } = nativeQuestion(getTool(createHarness(), "question"), [ { select: /Custom answer/u }, { input: undefined }, { select: /Beta/u } ]);
+  assert.deepEqual((await result).details, { question: "Choose", options: ["Alpha", "Beta"], answer: "Beta", selectedIndex: 2, wasCustom: false });
+});
+
+test("native question validates Unicode custom answers and strips terminal controls", async () => {
+  const { result, notifications } = nativeQuestion(getTool(createHarness(), "question"), [
+    { select: /Custom answer/u }, { input: "  " },
+    { select: /Custom answer/u }, { input: "𐐀".repeat(4_001) },
+    { select: /Custom answer/u }, { input: "\x1b[2J𐐀".repeat(1) + "𐐀".repeat(3_999) },
+    { select: /Custom answer/u }, { input: "𐐀".repeat(4_000) },
+  ]);
+  assert.deepEqual((await result).details.answer, "𐐀".repeat(4_000));
+  assert.deepEqual(notifications.map((item) => item.message), ["Enter a nonempty custom answer", "Custom answers are limited to 4,000 characters", "Custom answers are limited to 4,000 characters"]);
+  const safe = nativeQuestion(getTool(createHarness(), "question"), [{ select: /Custom answer/u }, { input: "safe\x1b[2Janswer\u0007" }]);
+  assert.equal((await safe.result).details.answer, "safeanswer");
+});
+
+test("native question custom answer cannot bypass the maximum selection count", async () => {
+  const { result, notifications } = nativeQuestion(getTool(createHarness(), "question"), [
+    { select: /Alpha/u }, { select: /Custom answer/u }, { input: "Other" }, { select: /Submit answers/u },
+  ], { mode: "multiple", maxSelections: 1 });
+  assert.deepEqual((await result).details.answers, ["Alpha"]);
+  assert.deepEqual(notifications.map((item) => item.message), ["Select at most 1 answer"]);
+});
+
+test("native question filters descriptions, recovers zero matches, and discards cancelled edits", async () => {
+  const { result } = nativeQuestion(getTool(createHarness(), "question"), [
+    { select: /More actions/u }, { select: /Filter options/u }, { input: "missing" },
+    { select: /More actions/u, inspect(_title, options) { assert.equal(options.some((value) => /Alpha|Beta/u.test(value)), false); } },
+    { select: /Filter options/u }, { input: undefined },
+    { select: /More actions/u }, { select: /Clear filter/u },
+    { select: /More actions/u }, { select: /Filter options/u }, { input: "SECOND" },
+    { select: /Beta/u },
+  ], { options: [{ label: "Alpha" }, { label: "Beta", description: "Second choice" }] });
+  assert.equal((await result).details.selectedIndex, 2);
+});
+
+test("native question filter limits reject oversized input without losing checked options", async () => {
+  const { result, notifications } = nativeQuestion(getTool(createHarness(), "question"), [
+    { select: /Alpha/u }, { select: /More actions/u }, { select: /Filter options/u }, { input: "𐐀".repeat(4_001) },
+    { select: /More actions/u }, { select: /Filter options/u }, { input: "𐐀".repeat(4_000) },
+    { select: /Submit answers/u },
+  ], { mode: "multiple" });
+  assert.deepEqual((await result).details.answers, ["Alpha"]);
+  assert.deepEqual(notifications.map((item) => item.message), ["Question filters are limited to 4,000 characters and 16,000 bytes"]);
+});
+
+test("native question history reuses complete answers, deduplicates them, and clears on session changes", async () => {
+  const harness = createHarness();
+  const tool = getTool(harness, "question");
+  for (const answer of ["First", "Second", "First"]) {
+    assert.equal((await nativeQuestion(tool, [{ select: /Custom answer/u }, { input: answer }]).result).details.answer, answer);
+  }
+  const reused = nativeQuestion(tool, [
+    { select: /More actions/u }, { select: /Recent answers/u },
+    { select: /Second/u, inspect(_title, choices) { assert.deepEqual(choices, ["1. First", "2. Second"]); } },
+  ]);
+  assert.equal((await reused.result).details.answer, "Second");
+  for (const handler of getHandlers(harness.handlers, "session_start")) await handler({ reason: "new" }, createTuiContext().ctx);
+  const cleared = nativeQuestion(tool, [ { select: /More actions/u }, { select: undefined, inspect(_title, choices) { assert.equal(choices.some((value) => /Recent answers/u.test(value)), false); } }, { select: /Alpha/u } ]);
+  assert.equal((await cleared.result).details.answer, "Alpha");
+});
+
+test("native question recent-answer history evicts old entries under the byte bound", async () => {
+  const tool = getTool(createHarness(), "question");
+  for (let index = 0; index < 6; index++) {
+    const answer = `${index}:` + "𐐀".repeat(3_998);
+    assert.equal((await nativeQuestion(tool, [{ select: /Custom answer/u }, { input: answer }]).result).details.answer, answer);
+  }
+  const { result } = nativeQuestion(tool, [
+    { select: /More actions/u }, { select: /Recent answers/u },
+    { select: /5:/u, inspect(_title, choices) { assert.equal(choices.length, 4); assert.equal(choices.some((value) => /0:|1:/u.test(value)), false); } },
+  ]);
+  assert.equal((await result).details.answer, "5:" + "𐐀".repeat(3_998));
+});
+
+test("native question previews preserve complete text through pages and preserve selected answers", async () => {
+  const preview = Array.from({ length: 19 }, (_, index) => `preview-line-${index}`).join("\n");
+  const seen: string[] = [];
+  const tool = getTool(createHarness(), "question");
+  const { result } = nativeQuestion(tool, [
+    { select: /Alpha/u }, { select: /More actions/u }, { select: /Review option details/u }, { select: /Alpha/u },
+    ...Array.from({ length: 4 }, () => ({ select: /Next page/u, inspect(title: string) { seen.push(title); } })),
+    { select: /Previous page/u, inspect(title: string) { seen.push(title); } },
+    { select: /Back/u }, { select: /Submit answers/u },
+  ], { mode: "multiple", options: [{ label: "Alpha", description: "Description", preview }, { label: "Beta" }] });
+  assert.deepEqual((await result).details.answers, ["Alpha"]);
+  for (let index = 0; index < 19; index++) assert.ok(seen.join("\n").includes(`preview-line-${index}\n`) || seen.join("\n").endsWith(`preview-line-${index}`));
+  assert.ok(seen.join("\n").includes("Description"));
+});
+
+for (const step of ["selector", "input", "between steps"] as const) {
+  test(`native question abort ${step} returns no partial answer or next dialog`, async () => {
+    const controller = new AbortController();
+    let opened = 0;
+    const tool = getTool(createHarness(), "question");
+    const result = tool.execute("cancel", { question: "Choose", options: [{ label: "Alpha" }], mode: "multiple" }, controller.signal, () => {}, {
+      mode: "tui", ui: {
+        async select(_title: string, options: string[], opts: { signal: AbortSignal }) {
+          opened++;
+          if (step === "input") return options.find((value) => /Custom answer/u.test(value));
+          if (step === "between steps") { controller.abort(); return options[0]; }
+          return new Promise<undefined>((resolve) => { opts.signal.addEventListener("abort", () => resolve(undefined), { once: true }); controller.abort(); });
+        },
+        async input(_title: string, _placeholder: string, opts: { signal: AbortSignal }) {
+          opened++;
+          return new Promise<undefined>((resolve) => { opts.signal.addEventListener("abort", () => resolve(undefined), { once: true }); controller.abort(); });
+        },
+        notify() {},
+      },
+    });
+    await assert.rejects(result, { message: "Question cancelled because the agent operation was aborted" });
+    assert.equal(opened, step === "input" ? 2 : 1);
+  });
+}
+
+for (const event of ["session_start", "session_tree", "session_shutdown"]) {
+  test(`native question ${event} invalidation closes the open dialog`, async () => {
+    const harness = createHarness();
+    const { ctx } = createTuiContext();
+    let opened = 0;
+    let dismiss: (() => void) | undefined;
+    const result = getTool(harness, "question").execute("stale", { question: "Choose", options: [{ label: "Alpha" }] }, new AbortController().signal, () => {}, {
+      mode: "tui", ui: {
+        select(_title: string, _options: string[], opts: { signal: AbortSignal }) {
+          opened++;
+          return new Promise<undefined>((resolve) => { dismiss = () => resolve(undefined); opts.signal.addEventListener("abort", dismiss, { once: true }); });
+        },
+      },
+    });
+    const rejected = assert.rejects(result, { message: "Question cancelled because the agent operation was aborted" });
+    for (const handler of getHandlers(harness.handlers, event)) await handler({ reason: "new" }, ctx);
+    assert.ok(dismiss);
+    await rejected;
+    assert.equal(opened, 1);
+    const fresh = nativeQuestion(getTool(harness, "question"), [{ select: /Alpha/u }]);
+    assert.equal((await fresh.result).details.answer, "Alpha");
+  });
+}
+
+test("native question terminal resize rebuilds the step without losing selected answers", async () => {
+  let calls = 0;
+  const notifications: string[] = [];
+  const result = await getTool(createHarness(), "question").execute("resize", { question: "Choose", options: [{ label: "Alpha" }], mode: "multiple" }, new AbortController().signal, () => {}, {
+    mode: "tui", ui: {
+      async select(title: string, options: string[], opts: { signal: AbortSignal }) {
+        calls++;
+        if (calls === 1) return options[0];
+        assert.match(title, /Selected 1/u);
+        if (calls === 2) return new Promise<undefined>((resolve) => {
+          opts.signal.addEventListener("abort", () => resolve(undefined), { once: true });
+          process.stdout.emit("resize");
+        });
+        return options.find((value) => /Submit answers/u.test(value));
+      },
+      notify(message: string) { notifications.push(message); },
+    },
+  });
+  assert.deepEqual(result.details.answers, ["Alpha"]);
+  assert.equal(calls, 3);
+  assert.deepEqual(notifications, []);
+});
+
+test("native question option paging bounds offered rows and returns the original ninth option", async () => {
+  const previousRows = process.stdout.rows;
+  process.stdout.rows = 20;
   try {
-    const { tools } = createHarness();
-    const question = await startQuestion(
-      getTool(tools, "question"),
-      [{ label: "Alpha" }, { label: "Beta" }],
-      "Choose",
-      8,
-      remapped,
-    );
-    question.component.handleInput("\x1B[B");
-    assert.match(question.component.render(80).join("\n"), /> 1\. Alpha/u);
-    question.component.handleInput("\x0E");
-    assert.match(question.component.render(80).join("\n"), /> 2\. Beta/u);
-    assert.match(question.component.render(80).join("\n"), /ctrl\+p.*ctrl\+n/u);
-    question.component.handleInput("\x19");
-    assert.match((await question.result).content[0].text, /Beta/u);
+  const { result } = nativeQuestion(getTool(createHarness(), "question"), [
+    { select: /Next choices/u, inspect(title, choices) { assert.ok(title.split("\n").length + choices.length <= 12); assert.ok(choices.every((value) => visibleWidth(value) <= 74)); } },
+    { select: /Choice 9/u },
+  ], { options: Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1} ${"L".repeat(180)}` })) });
+  assert.equal((await result).details.selectedIndex, 9);
   } finally {
-    setKeybindings(previous);
+    process.stdout.rows = previousRows;
   }
 });
 
-test("question renders nothing when no terminal width is available", async () => {
-  const { tools } = createHarness();
-  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 3);
-  assert.deepEqual(question.component.render(0), []);
-  assert.deepEqual(question.component.render(-1), []);
-  question.finish({ kind: "cancelled" });
-  await question.result;
+test("native question lets Pi resize text input without discarding the draft", async () => {
+  let inputs = 0;
+  const result = await getTool(createHarness(), "question").execute("input-resize", { question: "Choose", options: [{ label: "Alpha" }] }, new AbortController().signal, () => {}, {
+    mode: "tui", ui: {
+      async select(_title: string, options: string[]) { return options.find((value) => /Custom answer/u.test(value)); },
+      async input(_title: string, _placeholder: string, opts: { signal: AbortSignal }) {
+        inputs++;
+        assert.equal(inputs, 1, "Resizing input must preserve the native editing component");
+        process.stdout.emit("resize");
+        assert.equal(opts.signal.aborted, false);
+        return "Draft after resize";
+      },
+      notify() {},
+    },
+  });
+  assert.equal(result.details.answer, "Draft after resize");
 });
 
-test("question renders no rows when terminal height is zero", async () => {
-  const { tools } = createHarness();
-  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 0);
-  assert.deepEqual(question.component.render(80), []);
-  question.tui.terminal.rows = 3;
-  assert.deepEqual(question.component.render(80), ["Choose", "> 1. Alpha", "Option 1/2"]);
-  question.finish({ kind: "cancelled" });
-  await question.result;
-});
-
-test("question keeps a custom draft visible at the six-row layout boundary", async () => {
-  const { tools } = createHarness();
-  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 6);
-  question.component.handleInput("2");
-  question.component.handleInput("visible draft");
-  assert.match(question.component.render(40).join("\n"), /visible draft/u);
-  question.finish({ kind: "cancelled" });
-  await question.result;
-});
-
-test("question wraps its full prompt when terminal width narrows", async () => {
-  const { tools } = createHarness();
-  const prompt = "Which deployment strategy should we use for this application now that the terminal is narrower than full screen?";
-  const question = await startQuestion(getTool(tools, "question"), undefined, prompt, 12);
-
-  assert.match(question.component.render(80).join("\n"), /narrower than full screen\?/u);
-  const narrowed = question.component.render(40);
-  assert.match(narrowed.join("\n"), /narrower than full screen\?/u);
-  assert.ok(narrowed.length <= 12);
-  assert.ok(narrowed.every((line) => visibleWidth(line) <= 40));
-
-  question.finish({ kind: "cancelled" });
-  await question.result;
-});
-
-test("question rendering never exceeds terminal height for valid maximum content", async () => {
-  const { tools } = createHarness();
-  const options = Array.from({ length: 9 }, (_, index) => ({
-    label: `Option ${index + 1} ${"L".repeat(190)}`,
-    description: "D".repeat(500),
-    preview: Array.from({ length: 100 }, () => "- preview content").join("\n"),
-  }));
-
-  for (const rows of [1, 2, 3, 5, 6, 12]) {
-    for (const width of [20, 40, 80]) {
-      const question = await startQuestion(getTool(tools, "question"), options, `Question ${"Q".repeat(990)}`, rows);
-      const rendered = question.component.render(width);
-      assert.ok(rendered.length <= rows, `${width} columns rendered ${rendered.length}/${rows} rows`);
-      if (rows >= 3) assert.match(rendered.join("\n"), /Question/u);
-      assert.match(rendered.join("\n"), /Option 1/u);
-      question.finish({ kind: "cancelled" });
-      await question.result;
-    }
+test("native question history keeps only the newest hundred distinct answers", async () => {
+  const tool = getTool(createHarness(), "question");
+  for (let index = 0; index <= 100; index++) {
+    assert.equal((await nativeQuestion(tool, [{ select: /Custom answer/u }, { input: `answer-${index}` }]).result).details.answer, `answer-${index}`);
   }
+  const { result } = nativeQuestion(tool, [
+    { select: /More actions/u }, { select: /Recent answers/u },
+    ...Array.from({ length: 9 }, () => ({ select: /Next choices/u })),
+    { select: /answer-1$/u, inspect(_title, choices) { assert.equal(choices.includes("Next choices"), false); assert.equal(choices.some((value) => /answer-0$/u.test(value)), false); } },
+  ]);
+  assert.equal((await result).details.answer, "answer-1");
 });
 
-test("multiline custom answers stay within tiny terminal row and width limits", async () => {
-  const { tools } = createHarness();
-  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 3);
-  question.component.handleInput("2");
-  question.component.handleInput("first \u{10400}界");
-  question.component.handleInput("\x1B[13;2u");
-  question.component.handleInput("second line that clips");
-
-  for (const rows of [1, 2, 3]) {
-    question.tui.terminal.rows = rows;
-    const rendered = question.component.render(18);
-    assert.ok(rendered.length <= rows, `rendered ${rendered.length}/${rows} rows`);
-    assert.ok(rendered.every((line) => !/[\r\n]/u.test(line)), `height ${rows} returned an embedded line break`);
-    assert.ok(rendered.every((line) => visibleWidth(line) <= 18), `height ${rows} exceeded the terminal width`);
-    if (rows >= 2) assert.match(rendered.join("\n"), /first/u);
-  }
-
-  question.finish({ kind: "cancelled" });
-  await question.result;
+test("native question cancelling history and review steps preserves selected answers", async () => {
+  const tool = getTool(createHarness(), "question");
+  assert.equal((await nativeQuestion(tool, [{ select: /Custom answer/u }, { input: "Saved" }]).result).details.answer, "Saved");
+  const { result } = nativeQuestion(tool, [
+    { select: /Alpha/u }, { select: /More actions/u }, { select: /Recent answers/u }, { select: undefined },
+    { select: /More actions/u }, { select: /Review option details/u }, { select: undefined },
+    { select: /More actions/u }, { select: /Review option details/u }, { select: /Alpha/u }, { select: undefined },
+    { select: /Submit answers/u },
+  ], { mode: "multiple" });
+  assert.deepEqual((await result).details.answers, ["Alpha"]);
 });
 
-test("question invalidates cached rows when terminal height changes at the same width", async () => {
-  const { tools } = createHarness();
-  const question = await startQuestion(
-    getTool(tools, "question"),
-    Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1}` })),
-    "Choose one",
-    12,
-  );
-  assert.ok(question.component.render(40).length <= 12);
-  question.tui.terminal.rows = 3;
-  const resized = question.component.render(40);
-  assert.ok(resized.length <= 3);
-  assert.match(resized.join("\n"), /Choose one/u);
-  assert.match(resized.join("\n"), /Choice 1/u);
-  question.finish({ kind: "cancelled" });
-  await question.result;
-});
-
-test("question keeps the selected option visible while its window moves", async () => {
-  const { tools } = createHarness();
-  const question = await startQuestion(
-    getTool(tools, "question"),
-    Array.from({ length: 9 }, (_, index) => ({ label: `Choice ${index + 1}` })),
-    "Choose one",
-    7,
-  );
-  for (let index = 0; index < 8; index += 1) question.component.handleInput("\x1B[B");
-  const rendered = question.component.render(30).join("\n");
-  assert.match(rendered, /Choice 9/u);
-  assert.match(rendered, /Option 9\/10/u);
-  question.finish({ kind: "cancelled" });
-  await question.result;
-});
-
-test("maximum filter text stays on one bounded status row", async () => {
-  const { tools } = createHarness();
-  const question = await startQuestion(getTool(tools, "question"), undefined, "Choose", 8);
-  question.component.handleInput(`\x1B[200~${"Z".repeat(4_000)}\x1B[201~`);
-  const rendered = question.component.render(20);
-  assert.ok(rendered.length <= 8);
-  assert.match(rendered.join("\n"), /Filter 4,000\/4,000/u);
-  assert.ok(rendered.join("\n").length < 500);
-  question.finish({ kind: "cancelled" });
-  await question.result;
-});
-
-test("question filtering decodes Kitty input, paste, and grapheme backspace", async () => {
-  const { tools } = createHarness();
-  const question = await startQuestion(getTool(tools, "question"));
-
-  question.component.handleInput("\x1B[97u");
-  assert.match(question.component.render(80).join("\n"), /Filter 1\/4,000/u);
-
-  question.component.handleInput("\x1B");
-  question.component.handleInput("\x1B[200~a\nb\tc\x1B[201~");
-  assert.match(question.component.render(80).join("\n"), /Filter 7\/4,000/u);
-
-  question.component.handleInput("\x1B");
-  question.component.handleInput("\x1B[200~e\u0301\x1B[201~");
-  assert.match(question.component.render(80).join("\n"), /Filter 2\/4,000/u);
-  question.component.handleInput("\x7F");
-  assert.doesNotMatch(question.component.render(80).join("\n"), /Filter /u);
-
-  question.component.handleInput("\x1B[155u");
-  assert.doesNotMatch(question.component.render(80).join("\n"), /Filter /u);
-
-  question.component.handleInput("\x1B[200~1\x1B[201~");
-  assert.match(question.component.render(80).join("\n"), /Filter 1\/4,000/u);
-
-  question.finish({ kind: "cancelled" });
-  await question.result;
-});
-
-test("question filter bounds character and byte input", async () => {
-  const { tools } = createHarness();
-  assert.match(getTool(tools, "question").description, /4,000 characters and 16,000 bytes/u);
-
-  const huge = await startQuestion(getTool(tools, "question"));
-  huge.component.handleInput(`\x1B[200~${"Q".repeat(1_000_000)}\x1B[201~`);
-  assert.match(last(huge.notifications).message, /4,000 characters/u);
-  assert.ok(huge.component.render(80).join("\n").length < 20_000);
-  huge.finish({ kind: "cancelled" });
-  await huge.result;
-
-  const question = await startQuestion(getTool(tools, "question"));
-  const boundary = "Z".repeat(4_000);
-  question.component.handleInput(`\x1B[200~${boundary}\x1B[201~`);
-  const boundaryRender = question.component.render(80).join("\n");
-  assert.match(boundaryRender, /Filter 4,000\/4,000/u);
-  assert.ok(boundaryRender.length < 500);
-
-  question.component.handleInput("\x1B[200~Z\x1B[201~");
-  assert.match(last(question.notifications).message, /4,000 characters/u);
-  assert.match(question.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
-  question.finish({ kind: "cancelled" });
-  await question.result;
-
-  const unicode = await startQuestion(getTool(tools, "question"));
-  const unicodeBoundary = "\u{10400}".repeat(4_000);
-  unicode.component.handleInput(`\x1B[200~${unicodeBoundary}\x1B[201~`);
-  assert.match(unicode.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
-  unicode.component.handleInput("\x1B[200~\u{10400}\x1B[201~");
-  assert.match(last(unicode.notifications).message, /4,000 characters|16,000 bytes/u);
-  assert.match(unicode.component.render(80).join("\n"), /Filter 4,000\/4,000/u);
-  unicode.finish({ kind: "cancelled" });
-  await unicode.result;
-});
-
-test("custom-answer history does not replace a multiline draft on Up", async () => {
-  const { tools } = createHarness();
-  const tool = getTool(tools, "question");
-  const first = await startQuestion(tool);
-  first.component.handleInput("2");
-  first.component.handleInput("old answer");
-  first.component.handleInput("\r");
-  await first.result;
-
-  const second = await startQuestion(tool);
-  second.component.handleInput("2");
-  second.component.handleInput("first line");
-  second.component.handleInput("\x1B[13;2u");
-  second.component.handleInput("second line");
-  second.component.handleInput("\x1B[A");
-  const rendered = second.component.render(80).join("\n");
-  assert.match(rendered, /first line/);
-  assert.match(rendered, /second line/);
-  assert.doesNotMatch(rendered, /old answer/);
-
-  second.finish({ kind: "cancelled" });
-  await second.result;
-});
-
-test("custom-answer history enforces Unicode character and byte limits", async () => {
-  const { tools, handlers } = createHarness();
-  const first = await startQuestion(getTool(tools, "question"));
-  first.component.handleInput("2");
-  const boundary = "\u{10400}".repeat(4_000);
-  first.component.handleInput(`\x1B[200~${boundary}\x1B[201~`);
-  assert.equal(first.notifications.length, 0);
-  first.component.handleInput("\x1B[200~\u{10400}\x1B[201~");
-  assert.match(last(first.notifications).message, /4000 characters/u);
-  first.component.handleInput("\r");
-  await first.result;
-
-  for (let index = 0; index < 5; index += 1) {
-    const answer = await startQuestion(getTool(tools, "question"));
-    answer.component.handleInput("2");
-    answer.component.handleInput(`\x1B[200~answer-${index}-${"\u{10400}".repeat(3_991)}\x1B[201~`);
-    answer.component.handleInput("\r");
-    await answer.result;
-  }
-  const historyProbe = await startQuestion(getTool(tools, "question"));
-  historyProbe.component.handleInput("2");
-  for (let index = 0; index < 5; index += 1) historyProbe.component.handleInput("\x1B[A");
-  assert.doesNotMatch(historyProbe.component.render(80).join("\n"), /answer-0-/u);
-  historyProbe.finish({ kind: "cancelled" });
-  await historyProbe.result;
-
-  const session = createTuiContext();
-  for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "new" }, session.ctx);
-  const afterNewSession = await startQuestion(getTool(tools, "question"));
-  afterNewSession.component.handleInput("2");
-  afterNewSession.component.handleInput("\x1B[A");
-  assert.doesNotMatch(afterNewSession.component.render(80).join("\n"), /\u{10400}/u);
-  afterNewSession.finish({ kind: "cancelled" });
-  await afterNewSession.result;
+test("native question cancellation while the selector closes cannot publish a late answer", async () => {
+  const controller = new AbortController();
+  const result = getTool(createHarness(), "question").execute("closing-abort", { question: "Choose", options: [{ label: "Alpha" }] }, controller.signal, () => {}, {
+    mode: "tui", ui: {
+      async select(_title: string, choices: string[]) {
+        queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => controller.abort())));
+        return choices[0];
+      },
+    },
+  });
+  await assert.rejects(result, { message: "Question cancelled because the agent operation was aborted" });
 });
