@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.5] - 2026-10-08
+
 ### Fixed
 
 - Used Pi 1.1.0's final cancellation signal for `Stopped` task receipts and silent completion notifications, including cancellation after a normal assistant response or without an assistant result. Kept observed changes and checks and the Pi 1.0.4 fallback.
