@@ -219,7 +219,7 @@ export function registerGoalSettlement(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
 ): AutoCompactionGoalHandlers {
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", (event, ctx) => {
     runtime.blockedCompletion = undefined;
     syncGoalUpdateTool(pi, runtime);
     const wasGoalTurn = runtime.goalTurnInFlight;
@@ -229,6 +229,18 @@ export function registerGoalSettlement(
     runtime.goalTurnInFlight = false;
     runtime.agentEndObserved = false;
     runtime.continuationScheduled = false;
+
+    // ctx.compact() also aborts the request. An owned compaction must settle through
+    // its success/error callback; its cancellation cannot authorize recovery.
+    if ("aborted" in event && event.aborted === true && !runtime.automaticCompaction
+      && runtime.lastStopReason !== "aborted") {
+      runtime.lastStopReason = undefined;
+      runtime.lastError = undefined;
+      if (runtime.state?.status === "active") {
+        pauseGoalAfterFailure(pi, runtime, ctx, "the agent request was cancelled");
+      }
+      return;
+    }
 
     if (runtime.automaticCompaction) {
       const stopReason = runtime.lastStopReason;

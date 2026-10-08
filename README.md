@@ -77,6 +77,22 @@ With Pi 1.0.3's default [keybindings](https://github.com/earendil-works/pi/blob/
 
 Pi 1.0.4's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns such as `"killeros_*"` so the shell does not expand them. An explicit allowlist must include `question` for interactive questions and permit `killeros_goal_update` for goals. Selection does not make questions usable outside TUI mode. Excluding the goal tool pauses goals that are active before any model request. A later ordinary request with a blocked goal still runs, but cannot record its completion when the tool is excluded. See Pi's [tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
 
+Pi 1.1.0 also accepts a list containing only exact `+name` and `-name` entries to change its default selection. For example, `pi --tools +codemode` adds codemode while retaining the default tools, and `pi --tools +codemode,-write` also removes `write` from that selection. Plain allowlists still replace the selection. Pi rejects mixed lists such as `read,+codemode` and modifier patterns such as `-killeros_*`. Use `--exclude-tools "killeros_*"` for wildcard exclusions.
+
+In Pi 1.1.0, removing an extension tool with a `-name` modifier does not prevent Pi from activating it on registration or reload. To exclude the goal tool reliably, use `pi --exclude-tools killeros_goal_update`. KillerOS delegates selection to Pi; it does not parse or repair native CLI filters.
+
+Pi 1.1.0 reports program status through OSC 7501 when the terminal supports it. KillerOS questions use Pi's native selectors and text inputs. Each open question step reports `blocked` and restores the previous status after an answer, cancellation, or abort. Existing native confirmation dialogs do the same. `PI_PROGRAM_STATUS=1` forces native reporting and `PI_PROGRAM_STATUS=0` disables it. KillerOS preserves this preference and lets Pi handle all status reporting. See Pi's [program status](https://github.com/earendil-works/pi/blob/v1.1.0/packages/coding-agent/docs/terminal-setup.md#program-status).
+
+### Questions
+
+The `question` tool asks one question per invocation. Single-select is the default; choosing a numbered option submits that answer. In multi-select mode, choosing an option toggles its selection and opens the selector again. Choose **Submit answers** when finished. KillerOS checks the requested minimum and maximum and returns the selected predefined answers in their original order, followed by an optional custom answer. Dialog steps stay within the same tool execution and do not start model requests or grant goal turns.
+
+Choose **Custom answer** to open Pi's text input. Multi-select allows one custom answer, which you can edit or remove. Blank answers do not submit; custom answers accept up to 4,000 Unicode characters. Cancelling custom input returns to the selector with existing selections intact. **More actions** includes filtering, clearing a filter, reviewing the full question and option details, and selecting a recent custom answer. Filtering matches labels and descriptions without losing hidden selections. Filter queries accept up to 4,000 Unicode characters and 16,000 UTF-8 bytes.
+
+Descriptions appear in bounded option summaries. Review shows full descriptions and proposal previews as paged plain text, including any markdown source. **Next page**, **Previous page**, and **Back** navigate the review. Long option lists and recent-answer history also use pages. Recent answers stay within the current session, with at most 100 distinct entries and 64 KiB of text; session changes clear them.
+
+The flow uses Pi's native dialog keybindings and editing behavior. Multi-select takes successive selection steps; the former space-toggle and slash-filter shortcuts are replaced by explicit actions. Resizing selectors rebuilds their pages while preserving selections, and Pi resizes text input without discarding its draft. Cancelling the main selector discards unsubmitted answers. Cancelling a filter, history, or review step returns to the selector. Agent cancellation or session invalidation closes the question and prevents another step from opening.
+
 ## Configuration
 
 The packaged `killeros` theme activates on TUI start. Compaction triggers by default at 15% tokens remaining, stored in global `killeros.json`:
@@ -122,6 +138,8 @@ Failed Git metadata reads keep the footer's last successful file counts and mark
 Passive Git scans compare content without running repository filters. CRLF text that normalizes to the indexed LF content stays unchanged, including with `text=auto eol=lf` or bare `eol=lf`. Git's `status` can still report a modification after a size-changing rewrite because of its index stat cache, even when `git diff` is empty.
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
+
+On Pi 1.1.0, final request cancellation records `Stopped` and suppresses the completion sound even when the last assistant response ended normally. Recorded changes and checks remain in the receipt. Cancellation stops goal continuation and provider retry work; cancelling a pending compaction prevents its recovery. Pi 1.0.4 retains the assistant stop-reason fallback. Receipts and sounds still wait for final `agent_settled`, including across provider retries.
 
 ### Pi model and MCP settings
 

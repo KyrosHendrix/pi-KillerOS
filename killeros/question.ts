@@ -87,8 +87,10 @@ type QuestionDetails = SingleQuestionDetails | MultipleQuestionDetails;
 
 export function registerQuestionTool(pi: ExtensionAPI): void {
   const customInputHistory: string[] = [];
+  const pendingQuestions = new Set<AbortController>();
   let customInputHistoryBytes = 0;
   const clearCustomInputHistory = (): void => {
+    for (const pending of pendingQuestions) pending.abort();
     customInputHistory.length = 0;
     customInputHistoryBytes = 0;
   };
@@ -132,32 +134,37 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
       if (signal?.aborted) throw new Error("Question cancelled before it opened");
 
       const question = safeTerminalText(params.question);
-      const options: DisplayOption[] = [
-        ...params.options.map((option, index) => ({
+      const options: DisplayOption[] = params.options.map((option, index) => ({
           label: safeTerminalText(option.label),
+          answer: option.label,
           description: option.description === undefined ? undefined : safeTerminalText(option.description),
           preview: option.preview === undefined ? undefined : safeTerminalText(option.preview),
           originalIndex: index + 1,
-          isOther: false,
-        })),
-        { label: "Type a custom answer", originalIndex: params.options.length + 1, isOther: true },
-      ];
+      }));
 
-      const result = await openQuestionUi({
-        ctx,
-        signal,
-        question,
-        options,
-        originalOptions: params.options,
-        mode,
-        minSelections,
-        maxSelections,
-        customInputHistory,
-        rememberCustomInput,
-      });
+      const pending = new AbortController();
+      pendingQuestions.add(pending);
+      let result;
+      try {
+        result = await openQuestionUi({
+          ctx,
+          signal: signal ? AbortSignal.any([signal, pending.signal]) : pending.signal,
+          question,
+          options,
+          mode,
+          minSelections,
+          maxSelections,
+          customInputHistory,
+          rememberCustomInput,
+        });
+      } finally {
+        pendingQuestions.delete(pending);
+      }
 
       const simpleOptions = params.options.map((option) => option.label);
-      if (result.kind === "aborted") throw new Error("Question cancelled because the agent operation was aborted");
+      if (result.kind === "aborted" || pending.signal.aborted || signal?.aborted) {
+        throw new Error("Question cancelled because the agent operation was aborted");
+      }
       if (result.kind === "cancelled" && mode === "multiple") {
         return {
           content: [{ type: "text", text: "User cancelled the question" }],
