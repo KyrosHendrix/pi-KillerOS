@@ -17,6 +17,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Fixed unhandled RPC test-driver stdin errors when a child exits during a write. A real-process control now verifies write rejection, retained diagnostics, and orderly cleanup.
 - Fixed the native-terminal test driver's exit race by draining queued screen parsing before rejecting final-output waits or disposing the parser. Kept the native capability probe alive until its input confirmation is observed before orderly shutdown. Successful cleanup waits for queued parsing and tracked native callbacks to quiesce before disposing the parser; cleanup errors are surfaced and the observer is disabled on every close path.
 - Fixed RPC fixture cancellation checks before sending commands or returning cached records. Added subprocess controls that reject unauthorized writes and prevent PID-tree escalation after the parent exits but inherited pipes remain open.
 

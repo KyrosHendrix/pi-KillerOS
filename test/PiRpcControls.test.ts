@@ -9,7 +9,7 @@ import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const driver = new URL("./support/PiRpcProcess.ts", import.meta.url).href;
 
-for (const fault of ["cancelled", "parent-exit"] as const) {
+for (const fault of ["cancelled", "parent-exit", "stdin-closed"] as const) {
   test(`RPC driver controls ${fault} without unauthorized writes or PID escalation`, { timeout: 30_000 }, async (t) => {
     const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-rpc-control-"));
     const env: NodeJS.ProcessEnv = { HOME: directory, USERPROFILE: directory, TEMP: directory, TMP: directory, PATH: path.dirname(process.execPath) };
@@ -32,6 +32,8 @@ const descendant = "const fs = require('node:fs'); const parent = Number(process
 writeFileSync(parentScript, fault === 'cancelled' ? \
 "const emit = value => process.stdout.write(JSON.stringify(value) + String.fromCharCode(10)); const commands = []; let buffer = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', data => { buffer += data; let newline; while ((newline = buffer.indexOf(String.fromCharCode(10))) >= 0) { const packet = JSON.parse(buffer.slice(0,newline)); buffer = buffer.slice(newline + 1); commands.push(packet.type); emit({type:'response', id:packet.id, success:true, data:{commands:[...commands]}}); } }); emit({type:'ready'});" : \
 "import { spawn } from 'node:child_process'; const child = spawn(process.execPath, ['-e', " + JSON.stringify(descendant) + "], {detached:true, env:{...process.env, OWNED_PARENT:String(process.pid), RELEASE:" + JSON.stringify(release) + "}, stdio:['ignore','inherit','inherit']}); child.unref(); process.stdin.on('data', () => process.stdin.destroy()); process.stdin.on('end', () => process.stdin.destroy()); process.stdout.write(JSON.stringify({type:'ready'}) + String.fromCharCode(10));");
+if (fault === 'stdin-closed') writeFileSync(parentScript,
+"import { existsSync } from 'node:fs'; const deadline = setTimeout(() => process.exit(2), 6000); const barrier = setInterval(() => { if (existsSync(" + JSON.stringify(release) + ")) { clearInterval(barrier); clearTimeout(deadline); } }, 5); process.stdout.write(JSON.stringify({type:'ready'}) + String.fromCharCode(10));");
 // Shield destructive escalation only in this disposable process. Native exits and pipes stay real.
 let unsafeEscalations = 0;
 childProcess.execFileSync = () => { unsafeEscalations++; throw new Error('unsafe PID escalation attempted'); };
@@ -53,6 +55,13 @@ try {
     await assert.rejects(owner.command('forbidden', {}, {signal:cancellation.signal}), error => error === reason);
     state = await owner.command('state');
     assert.deepEqual(state.data.commands, ['state']);
+    cleanup = await owner.close();
+    assert.equal(cleanup.forced, false);
+  } else if (fault === 'stdin-closed') {
+    const rejectedWrite = assert.rejects(owner.send({type:'closed-input', data:'x'.repeat(1024 * 1024)}), /EOF|EPIPE|closed|destroyed/i);
+    writeFileSync(release, 'go');
+    await rejectedWrite;
+    assert.match(JSON.parse(owner.diagnostics()).failure, /EOF|EPIPE|closed|destroyed/i);
     cleanup = await owner.close();
     assert.equal(cleanup.forced, false);
   } else {

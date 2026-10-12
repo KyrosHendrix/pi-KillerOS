@@ -63,6 +63,7 @@ export class PiRpcProcess {
       });
     });
     this.child.once("error", (error) => this.fail(error));
+    this.child.stdin.on("error", (error: Error) => this.fail(error));
     stdout.on("data", (chunk: Buffer) => this.consumeStdout(chunk));
     stderr.on("data", (chunk: Buffer) => {
       this.stderr = `${this.stderr}${chunk.toString("utf8")}`.slice(-16_384);
