@@ -309,7 +309,7 @@ test("installed Pi terminal accepts resized questions, cancels partial selection
   } catch (error) { failure = error; }
   finally {
     for (const child of [capability, terminal]) if (child) {
-      try { const result = await child.close(); cleanup.push(JSON.stringify(result)); if (result.forced || result.code !== 0) cleanupFailures.push(new Error(`Terminal cleanup was not orderly: ${JSON.stringify(result)}`)); }
+      try { const result = await child.close(); cleanup.push(JSON.stringify(result)); if (result.forced || result.code !== 0 || result.failure !== undefined) cleanupFailures.push(new Error(`Terminal cleanup was not orderly: ${JSON.stringify(result)}`)); }
       catch (error) { cleanupFailures.push(error); }
     }
     if (server.listening) {

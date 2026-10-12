@@ -1,5 +1,12 @@
+import { createHook, type AsyncHook } from "node:async_hooks";
 import xterm from "@xterm/headless";
 import { hasNative, spawn, type IPty } from "zigpty";
+
+type TerminalCloseResult = { code: number; forced: boolean; failure?: string };
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /** One native terminal, with parsed screens, bounded raw diagnostics, and owned shutdown. */
 export class PiTerminalProcess {
@@ -10,7 +17,10 @@ export class PiTerminalProcess {
   private exitCode: number | undefined;
   private parsedSequence = 0;
   private pendingWrites = 0;
-  private closing: Promise<{ code: number; forced: boolean }> | undefined;
+  private readonly nativeResources = new Set<number>();
+  private nativeResourcesCreated = 0;
+  private readonly nativeCleanupHook: AsyncHook;
+  private closing: Promise<TerminalCloseResult> | undefined;
 
   constructor(options: { file: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; cols?: number; rows?: number }) {
     if (!hasNative) throw new Error("A native PTY binding is required; pipe fallback is not terminal coverage");
@@ -19,7 +29,23 @@ export class PiTerminalProcess {
     const cols = options.cols ?? 100;
     const rows = options.rows ?? 30;
     this.terminal = new xterm.Terminal({ cols, rows, allowProposedApi: true, scrollback: 200 });
-    this.pty = spawn(options.file, options.args, { cwd: options.cwd, env, cols, rows, name: "xterm-256color", encoding: null });
+    let spawning = true;
+    this.nativeCleanupHook = createHook({
+      init: (id, type) => {
+        if (spawning && type.startsWith("zigpty")) { this.nativeResources.add(id); this.nativeResourcesCreated++; }
+      },
+      destroy: (id) => {
+        if (!this.nativeResources.delete(id)) return;
+        for (const notify of this.changed) notify();
+      },
+    }).enable();
+    try {
+      this.pty = spawn(options.file, options.args, { cwd: options.cwd, env, cols, rows, name: "xterm-256color", encoding: null });
+    } catch (error) {
+      this.nativeCleanupHook.disable();
+      this.terminal.dispose();
+      throw error;
+    } finally { spawning = false; }
     this.terminal.onData((data) => { if (this.exitCode === undefined) this.pty.write(data); });
     this.pty.onData((data) => {
       const bytes = typeof data === "string" ? Buffer.from(data, "utf8") : data;
@@ -49,7 +75,7 @@ export class PiTerminalProcess {
   }
 
   diagnostics(): string {
-    return JSON.stringify({ exitCode: this.exitCode, sequence: this.sequence, screen: this.screen(), rawBase64: this.raw.toString("base64") }).slice(-65_536);
+    return JSON.stringify({ exitCode: this.exitCode, nativeResources: this.nativeResources.size, nativeResourcesCreated: this.nativeResourcesCreated, sequence: this.sequence, screen: this.screen(), rawBase64: this.raw.toString("base64") }).slice(-65_536);
   }
 
   write(data: string): void {
@@ -88,7 +114,7 @@ export class PiTerminalProcess {
     });
   }
 
-  async close(): Promise<{ code: number; forced: boolean }> {
+  async close(): Promise<TerminalCloseResult> {
     this.closing ??= this.closeOwned();
     return await this.closing;
   }
@@ -101,38 +127,71 @@ export class PiTerminalProcess {
     } finally { if (timer) clearTimeout(timer); }
   }
 
-  private async closeOwned(): Promise<{ code: number; forced: boolean }> {
-    // Pi's public clear and exit actions also handle an unfinished editor draft.
+  private async closeOwned(): Promise<TerminalCloseResult> {
     let writeFailure: unknown;
-    if (this.exitCode === undefined) {
-      try { this.pty.write("\x03\x04"); }
-      catch (error) { writeFailure = error; }
-    }
-    let code = await this.waitForExit(5_000);
-    const forced = code === undefined;
-    if (forced) {
-      // The native handle still belongs to this live child. No post-exit PID kill.
-      this.pty.kill("SIGKILL");
-      code = await this.waitForExit(5_000);
-    }
-    if (code === undefined) throw new Error(`Terminal cleanup could not be confirmed: ${this.diagnostics()}`, { cause: writeFailure });
-    // Native exit can precede xterm's queued parsing of the child's final output.
+    let killFailure: unknown;
+    const closeFailures: unknown[] = [];
+    let closeAttempted = false;
+    const closeOwnedPty = (): void => {
+      if (closeAttempted || this.pty.exitCode !== null) return;
+      closeAttempted = true;
+      try { this.pty.close(); }
+      catch (error) { closeFailures.push(error); }
+    };
     try {
+      // Pi's public clear and exit actions also handle an unfinished editor draft.
+      if (this.exitCode === undefined) {
+        try { this.pty.write("\x03\x04"); }
+        catch (error) { writeFailure = error; }
+      }
+      let code = await this.waitForExit(5_000);
+      const forced = code === undefined && this.pty.exitCode === null;
+      if (code === undefined && !forced) code = this.pty.exitCode ?? undefined;
+      if (forced) {
+        // Check the native handle's state before either escalation or close can act on it.
+        if (this.pty.exitCode === null) {
+          try { this.pty.kill("SIGKILL"); }
+          catch (error) { killFailure = error; }
+        }
+        if (killFailure !== undefined) closeOwnedPty();
+        code = await this.waitForExit(5_000);
+        if (code === undefined && this.pty.exitCode !== null) code = this.pty.exitCode;
+        if (code === undefined) {
+          closeOwnedPty();
+          code = await this.waitForExit(5_000);
+        }
+      }
+      if (code === undefined) {
+        throw new Error(`Terminal cleanup could not be confirmed: ${this.diagnostics()}`);
+      }
+
+      // Exit notification precedes native callback destruction and queued screen parsing.
       await new Promise<void>((resolve, reject) => {
         const check = (): void => {
-          if (this.pendingWrites !== 0) return;
+          if (this.pendingWrites !== 0 || this.nativeResources.size !== 0) return;
           clearTimeout(timer);
           this.changed.delete(check);
           resolve();
         };
         const timer = setTimeout(() => {
           this.changed.delete(check);
-          reject(new Error(`Terminal parser cleanup timed out: ${this.diagnostics()}`));
+          reject(new Error(`Terminal native/parser cleanup timed out: ${this.diagnostics()}`));
         }, 3_000);
         this.changed.add(check);
+        // Native handle close and destroy hooks flush on successive event-loop turns.
+        setImmediate(() => setImmediate(check));
         check();
       });
-    } finally { this.terminal.dispose(); }
-    return { code, forced };
+      const failures = [writeFailure, killFailure, ...closeFailures].filter((error) => error !== undefined);
+      const failure = failures.map(errorText).join("; ");
+      return { code, forced, ...(failure ? { failure } : {}) };
+    } catch (error) {
+      const failures = [writeFailure, killFailure, ...closeFailures].filter((failure) => failure !== undefined);
+      if (failures.length > 0) throw new AggregateError([error, ...failures], `Terminal cleanup failed: ${errorText(error)}`);
+      throw error;
+    } finally {
+      this.nativeCleanupHook.disable();
+      if (this.exitCode !== undefined && this.pendingWrites === 0 && this.nativeResources.size === 0) this.terminal.dispose();
+    }
   }
 }
