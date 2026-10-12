@@ -223,8 +223,10 @@ test("installed Pi terminal accepts resized questions, cancels partial selection
       "if (!process.stdin.isTTY || !process.stdout.isTTY) process.exit(2);",
       "process.stdin.setRawMode(true); process.stdin.setEncoding('utf8');",
       "process.stdout.on('resize', () => process.stdout.write('RESIZE:' + process.stdout.columns + 'x' + process.stdout.rows + '\\r\\n'));",
+      "let input = '';",
+      "process.stdin.on('data', data => { input += data; if (input.includes('PING')) { input = ''; const [cols, rows] = process.stdout.getWindowSize(); process.stdout.write('INPUT:' + cols + 'x' + rows + '\\r\\n'); process.exitCode = cols === 80 && rows === 24 ? 0 : 3; } if (data.includes('\\x04')) process.stdin.pause(); });",
+      // Observe input while the probe is alive; native PTY exit can discard unread final bytes.
       "process.stdout.write('READY:100x30\\r\\n');",
-      "process.stdin.on('data', data => { if (data.includes('PING')) { const [cols, rows] = process.stdout.getWindowSize(); process.stdout.write('INPUT:' + cols + 'x' + rows + '\\r\\n'); process.stdin.pause(); process.exitCode = cols === 80 && rows === 24 ? 0 : 3; } });",
     ].join("\n")], cwd: project, env });
     await capability.waitForScreen((screen) => screen.includes("READY:100x30"), { signal: t.signal });
     capability.resize(80, 24);

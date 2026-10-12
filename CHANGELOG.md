@@ -17,7 +17,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
-- Fixed the native-terminal test driver's exit race by draining queued screen parsing before rejecting final-output waits or disposing the parser.
+- Fixed the native-terminal test driver's exit race by draining queued screen parsing before rejecting final-output waits or disposing the parser. Kept the native capability probe alive until its input confirmation is observed before orderly shutdown.
 - Fixed RPC fixture cancellation checks before sending commands or returning cached records. Added subprocess controls that reject unauthorized writes and prevent PID-tree escalation after the parent exits but inherited pipes remain open.
 
 ## [3.0.5] - 2026-10-08
