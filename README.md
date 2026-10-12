@@ -55,7 +55,7 @@ You can also install from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-To pin a release, use `npm:killeros@3.0.5` or append a Git tag such as `@v3.0.5` to the Git source. Add `-l` to install only for the current project. Pi loads project packages only after you grant project trust.
+To pin a release, use `npm:killeros@3.0.6` or append a Git tag such as `@v3.0.6` to the Git source. Add `-l` to install only for the current project. Pi loads project packages only after you grant project trust.
 
 ### Commands
 

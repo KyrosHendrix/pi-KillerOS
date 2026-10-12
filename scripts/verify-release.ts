@@ -35,7 +35,9 @@ try {
   if (extractReleaseSection(readFileSync("CHANGELOG.md", "utf8"), version) === null) {
     throw new Error(`CHANGELOG.md has no section for version ${version}`);
   }
-  if (!readFileSync("README.md", "utf8").includes(`Pin a release by appending its tag, for example \`@v${version}\`.`)) {
+  const readme = readFileSync("README.md", "utf8");
+  if (!readme.includes(`Pin a release by appending its tag, for example \`@v${version}\`.`)
+    && !readme.includes(`To pin a release, use \`npm:killeros@${version}\` or append a Git tag such as \`@v${version}\` to the Git source.`)) {
     throw new Error(`README.md does not reference @v${version} in the pinned release example`);
   }
 } catch (error) {

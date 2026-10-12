@@ -103,9 +103,11 @@ test("passive mode comparison agrees with Git for executable changes", { skip: p
   git(root, ["add", "."]);
   git(root, ["commit", "--quiet", "-m", "mode fixture"]);
   await chmod(path.join(root, "file"), 0o755);
+  await utimes(path.join(root, "file"), new Date(0), new Date(0));
   for (const fileMode of ["true", "false"]) {
     git(root, ["config", "core.filemode", fileMode]);
-    const oracleChanged = git(root, ["diff-files", "--name-only"]).toString().trim() === "file";
+    // diff refreshes stale index stat data; diff-files alone can report a metadata-only change.
+    const oracleChanged = git(root, ["diff", "--name-only"]).toString().trim() === "file";
     assert.equal(oracleChanged, fileMode === "true");
     const snapshot = await inspectWorktreeWithoutFilters(root, async (args) => git(root, args));
     assert.equal(snapshot.files.has("file"), oracleChanged);

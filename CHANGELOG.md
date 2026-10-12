@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.6] - 2026-10-12
+
 ### Changed
 
 - Rewrote the README with installation and onboarding steps, grouped usage and configuration guidance, development checks, and release and security expectations.
@@ -20,6 +22,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Fixed release validation for the README's rewritten npm and Git pin examples while retaining stale-version rejection. Made the executable-mode Git oracle refresh index metadata before comparing changes, preventing metadata-only CI failures without changing its assertions.
 - Show the footer's manual `/compact` hint at the existing rounded 15% warning threshold only when KillerOS automatic compaction is known to be off. Commands and turn-end settings reads refresh the hint, including external changes and read failures, without changing automatic triggers or Pi's independent compaction behavior.
 - Fixed unhandled RPC test-driver stdin errors when a child exits during a write. A real-process control now verifies write rejection, retained diagnostics, and orderly cleanup.
 - Fixed the native-terminal test driver's exit race by draining queued screen parsing before rejecting final-output waits or disposing the parser. Kept the native capability probe alive until its input confirmation is observed before orderly shutdown. Successful cleanup waits for queued parsing and tracked native callbacks to quiesce before disposing the parser; cleanup errors are surfaced and the observer is disabled on every close path.
