@@ -13,7 +13,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 - Added real-Pi cancellation coverage through the complete KillerOS entry point, checking paused goal state, stopped receipts, and suppressed completion sounds.
 - Added an installed-CLI goal workflow covering package loading, public command routing, model-issued completion, durable session restoration, and no unsolicited model work. Verified on Windows Node 22.19.0 with Pi 1.1.0; the exact Windows Node 24.19.0/Pi 1.1.0 combination is skipped after reproduced native RPC shutdown crashes.
-- Added a native-terminal installed-package pilot for question selection after resize, cancellation without partial answers, and multiline editor text across fullscreen transcript navigation. Kept focused question and editor tests, added terminal startup and assertion-failure cleanup controls, and added five-run no-forced-exit CI checks for the installed pilots and changed cancellation lifecycle. Terminal failure logs retain selected versions, sanitized launch arguments, and bounded screen and raw-output diagnostics.
+- Added a native-terminal installed-package pilot for question selection after resize, cancellation without partial answers, and multiline editor text across fullscreen transcript navigation. Kept focused question and editor tests, added terminal startup and assertion-failure cleanup controls, and added five-run no-forced-exit CI checks for the installed pilots and changed cancellation lifecycle before the normal-concurrency full suite. Terminal failure logs retain selected versions, sanitized launch arguments, and bounded screen and raw-output diagnostics.
 
 ### Fixed
 

@@ -76,9 +76,6 @@ jobs:
           KILLEROS_TEST_NPM_CLI: ${{ runner.temp }}/killeros-publishing-npm/node_modules/npm/bin/npm-cli.js
         run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test/verify-release.test.ts
 
-      - name: Test
-        run: npm test
-
       - name: Repeat installed CLI pilot without forced exit
         shell: bash
         run: |
@@ -94,6 +91,9 @@ jobs:
             echo "Terminal pilot and fault controls run $attempt/5"
             node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver reports|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
           done
+
+      - name: Test
+        run: npm test
 
   windows:
     name: Windows (Node 22.19.0)
@@ -119,9 +119,6 @@ jobs:
       - name: Check
         run: npm run check
 
-      - name: Test
-        run: npm test
-
       - name: Repeat installed CLI pilot without forced exit
         shell: bash
         run: |
@@ -137,6 +134,9 @@ jobs:
             echo "Terminal pilot and fault controls run $attempt/5"
             node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver reports|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
           done
+
+      - name: Test
+        run: npm test
 
   pi-latest:
     name: Pi compatibility (${{ matrix.pi-channel }})
@@ -188,9 +188,6 @@ jobs:
       - name: Type-check against matched Pi
         run: npm run check
 
-      - name: Test against matched Pi
-        run: npm test
-
       - name: Repeat installed CLI pilot without forced exit
         shell: bash
         run: |
@@ -215,6 +212,9 @@ jobs:
             echo "Pi cancellation lifecycle run $attempt/5"
             node --test --experimental-strip-types --test-name-pattern="Pi 1.1 user cancellation stops goal work after a normal result, during retry, and during pending compaction" test/PiExtensionContract.test.ts || exit $?
           done
+
+      - name: Test against matched Pi
+        run: npm test
 
   package:
     name: Package smoke test
