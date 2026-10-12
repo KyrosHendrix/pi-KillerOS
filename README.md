@@ -1,219 +1,358 @@
 # KillerOS
 
-A TypeScript extension for the [Pi coding agent](https://github.com/earendil-works/pi) that replaces the stock TUI and adds long-running goals, reasoning controls, and workflow commands.
+## A custom terminal UI and goal runner for the Pi coding agent
 
-![KillerOS TUI showing the startup masthead, an active goal, a settled task receipt, and the goal footer](.github/assets/killeros-preview.png)
+KillerOS is a TypeScript extension for the [Pi coding agent](https://github.com/earendil-works/pi). It replaces Pi's stock terminal UI and lets the agent work toward an objective across turns and context compaction. You can pause or resume a goal, carry context into a fresh session, and answer structured questions without leaving the terminal.
 
-## What you get
+The UI has a dark theme with coral accents, a multiline editor with slash-command completion, and a footer for model, context, and goal state. The startup masthead shows versions, model, working directory, and Git branch. Settled task receipts show duration and token usage. Completion sounds are optional.
 
-- A custom TUI: startup masthead with versions, model, working directory, and Git branch; a dark theme with coral accents; a multiline editor with slash-command completion; a footer that tracks model, context, and goal state; settled task receipts with duration and token usage.
-- `/goal`: set an objective and Pi keeps working toward it across turns, compaction, reloads, and branch navigation. Each turn must record `continue` with evidence and one next action, `complete`, or the existing blocker decision; otherwise the goal pauses. New goals pause after 20 turns; `/goal resume` grants another 20.
-- `/codex-fast`: toggles the `priority` service tier on legacy Codex and eligible native OpenAI Responses requests or reports its status.
-- `/handoff`: starts a fresh linked session carrying visible continuation context.
-- `/auto-compact`: reports, enables, disables, or tunes automatic context compaction.
-- A `question` tool with single-select and multi-select modes.
-- Lifecycle hooks (`tool_call`, `tool_result`, `agent_settled`) from `.pi/killeros-hooks.json`, plus `AGENTS.local.md` loading for trusted projects.
-- Optional completion sounds for settled requests.
+![KillerOS terminal UI with the startup masthead, an active goal, a settled task receipt, and the goal footer](.github/assets/killeros-preview.png)
 
+- [Install and start](#install-and-start)
+- [Use KillerOS](#use-killeros)
+- [Configuration and Pi compatibility](#configuration-and-pi-compatibility)
+- [Set up for development](#set-up-for-development)
+- [Contribution and release expectations](#contribution-and-release-expectations)
+- [Known issues and limits](#known-issues-and-limits)
+- [Security](#security)
 
-## Requirements
+## Install and start
+
+### Requirements
 
 - Node.js 22.19.0+
 - Pi 1.1.0 or later below 2.0.0
-- An interactive TUI session for the custom header, editor, footer, and `question`
+- An interactive TUI session for the custom header, editor, footer, and questions
 
-Users on older Pi versions must upgrade.
+KillerOS supports Windows and Linux. Users on older Pi versions must upgrade.
 
-## Install
+Pi extensions run with your user permissions. Review the source before installing globally. See [Security](#security) before trusting project hooks. Goal work sends model requests and can incur provider charges.
 
-```bash
-pi install npm:killeros
-```
+1. [Install Pi](https://github.com/earendil-works/pi#getting-started) if you do not already have it.
+2. Install KillerOS:
 
-Or from GitHub:
+   ```bash
+   pi install npm:killeros
+   ```
+
+3. Restart Pi in the project you want to work on:
+
+   ```bash
+   pi
+   ```
+
+4. If you have not configured a provider, run `/login` in Pi. Then enter an objective:
+
+   ```text
+   /goal Create `./summary.md` describing this repository's entry points, verified against the source files
+   ```
+
+The goal appears in the footer. The agent works until it records completion, reports a blocker, or pauses. On completion, `summary.md` contains the repository summary. A new goal has a 20-turn limit. Use `/goal` to inspect it and `/goal resume` to grant another 20 turns when the limit is exhausted.
+
+You can also install from GitHub:
 
 ```bash
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-Pin a release by appending its tag, for example `@v3.0.5`. Add `-l` to install only for the current project. Restart Pi after installing.
+To pin a release, use `npm:killeros@3.0.5` or append a Git tag such as `@v3.0.5` to the Git source. Add `-l` to install only for the current project. Pi loads project packages only after you grant project trust.
 
-## Commands
+### Commands
 
 ```text
 /goal                     View the current goal
-/goal <objective>        Set an objective
+/goal <objective>         Set an objective
 /goal pause               Stop automatic continuation
 /goal resume              Resume automatic continuation
 /goal clear               Remove the current goal
-/codex-fast [status]      Toggle or report Codex fast mode
+/codex-fast [status]      Toggle or report fast mode
 /auto-compact [status|on|off|<percent>]
                           Inspect or change automatic compaction
 /notification             Configure the completion sound
-/handoff [focus]          Fresh session with continuation context
-/clear                    New session after confirmation
+/handoff [focus]          Start a linked session with continuation context
+/clear                    Start a new session after confirmation
 /exit                     Quit Pi gracefully
 ```
 
-Fast mode is off by default. `/codex-fast` toggles it, and `/codex-fast status` reports the preference without changing it. The preference stays in the current Pi process across model switches and extension reloads, but is not saved between processes. The command name and notification strings retain their legacy Codex wording.
+## Use KillerOS
 
-Fast mode applies to legacy `openai-codex` requests and selected native models with provider `openai`, API `openai-responses`, and base URL `https://api.openai.com/v1`, with an optional trailing slash. Native request payloads must also name the selected model's exact ID. Both API-key and ChatGPT subscription authentication use this rule. Custom endpoints, Azure, other APIs, and ambiguous native requests pass through unchanged. When enabled, fast mode overrides an eligible request's existing service tier with `priority`; when disabled, it leaves the request unchanged.
+### Goals and proof
 
-The TUI footer's `fast` label means the enabled preference applies to the selected model, not that OpenAI accepted priority service. OpenAI controls account and model eligibility, the actual service tier, and charges. Priority can affect billing; subscription login does not guarantee accepted or free priority service. KillerOS leaves provider errors to Pi and does not silently retry with a different tier.
-
-## Behavior by mode
-
-Pi defaults to fullscreen. Use `--tui-mode regular` for one invocation or set `"tuiMode": "regular"` in Pi's [settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md#terminal-and-display) to restore terminal-owned scrollback. KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged.
-
-| Mode | What works |
-| --- | --- |
-| TUI | Everything |
-| RPC | Goals, proactive compaction; no TUI components, sounds, title indicator |
-| Print/JSON | No interactive questions, `/goal`, or proactive compaction |
-
-With Pi's default [keybindings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md#fullscreen), `Home` and `End` move within the current editor line. In fullscreen mode, `Ctrl+Home` and `Ctrl+End` scroll to the transcript's beginning or end without moving the editor cursor. KillerOS inherits these bindings; user overrides still apply.
-
-`question` and the active `killeros_goal_update` tool use Pi's `model-only` exposure. They stay directly declared to the model when codemode is disabled or enabled in `on` or `only` mode, but scripts and other tools cannot call them through `ctx.executeTool()`. The goal tool is active for active goals and, during a later ordinary request, for completion only of a saved blocked goal. It is inactive outside those cases. Questions still require TUI mode; a direct RPC call fails with `The question tool requires interactive TUI mode`. KillerOS does not enable or configure codemode.
-
-Pi's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns such as `"killeros_*"` so the shell does not expand them. An explicit allowlist must include `question` for interactive questions and permit `killeros_goal_update` for goals. Selection does not make questions usable outside TUI mode. Excluding the goal tool pauses goals that are active before any model request. A later ordinary request with a blocked goal still runs, but cannot record its completion when the tool is excluded. See Pi's [tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
-
-Pi 1.1.0 also accepts a list containing only exact `+name` and `-name` entries to change its default selection. For example, `pi --tools +codemode` adds codemode while retaining the default tools, and `pi --tools +codemode,-write` also removes `write` from that selection. Plain allowlists still replace the selection. Pi rejects mixed lists such as `read,+codemode` and modifier patterns such as `-killeros_*`. Use `--exclude-tools "killeros_*"` for wildcard exclusions.
-
-In Pi 1.1.0, removing an extension tool with a `-name` modifier does not prevent Pi from activating it on registration or reload. To exclude the goal tool reliably, use `pi --exclude-tools killeros_goal_update`. KillerOS delegates selection to Pi; it does not parse or repair native CLI filters.
-
-Pi 1.1.0 reports program status through OSC 7501 when the terminal supports it. KillerOS questions use Pi's native selectors and text inputs. Each open question step reports `blocked` and restores the previous status after an answer, cancellation, or abort. Existing native confirmation dialogs do the same. `PI_PROGRAM_STATUS=1` forces native reporting and `PI_PROGRAM_STATUS=0` disables it. KillerOS preserves this preference and lets Pi handle all status reporting. See Pi's [program status](https://github.com/earendil-works/pi/blob/v1.1.0/packages/coding-agent/docs/terminal-setup.md#program-status).
-
-### Questions
-
-The `question` tool asks one question per invocation. Single-select is the default; choosing a numbered option submits that answer. In multi-select mode, choosing an option toggles its selection and opens the selector again. Choose **Submit answers** when finished. KillerOS checks the requested minimum and maximum and returns the selected predefined answers in their original order, followed by an optional custom answer. Dialog steps stay within the same tool execution and do not start model requests or grant goal turns.
-
-Choose **Custom answer** to open Pi's text input. Multi-select allows one custom answer, which you can edit or remove. Blank answers do not submit; custom answers accept up to 4,000 Unicode characters. Cancelling custom input returns to the selector with existing selections intact. **More actions** includes filtering, clearing a filter, reviewing the full question and option details, and selecting a recent custom answer. Filtering matches labels and descriptions without losing hidden selections. Filter queries accept up to 4,000 Unicode characters and 16,000 UTF-8 bytes.
-
-Descriptions appear in bounded option summaries. Review shows full descriptions and proposal previews as paged plain text, including any markdown source. **Next page**, **Previous page**, and **Back** navigate the review. Long option lists and recent-answer history also use pages. Recent answers stay within the current session, with at most 100 distinct entries and 64 KiB of text; session changes clear them.
-
-The flow uses Pi's native dialog keybindings and editing behavior. Multi-select takes successive selection steps; the former space-toggle and slash-filter shortcuts are replaced by explicit actions. Resizing selectors rebuilds their pages while preserving selections, and Pi resizes text input without discarding its draft. Cancelling the main selector discards unsubmitted answers. Cancelling a filter, history, or review step returns to the selector. Agent cancellation or session invalidation closes the question and prevents another step from opening.
-
-## Configuration
-
-The packaged `killeros` theme activates on TUI start. Compaction triggers by default at 15% tokens remaining, stored in global `killeros.json`:
-
-```json
-{
-  "autoCompaction": {
-    "enabled": true,
-    "percentRemaining": 15
-  },
-  "handoffMaxTokens": 8192
-}
-```
-
-Use `/auto-compact status` to inspect the effective KillerOS preference, `/auto-compact on` or `/auto-compact off` to toggle it, and `/auto-compact <percent>` to set an integer threshold from 0 through 100. A threshold of 0 does not disable Pi's own token reserve.
-
-Concurrent `/auto-compact` commands preserve independent changes to the enabled flag and threshold, along with unrelated settings. Malformed settings and failed writes report an error without claiming success or replacing the original file.
-
-`handoffMaxTokens` caps the `/handoff` summary output at 8192 tokens by default; raise it when long sessions truncate the summary. The handoff is saved as a visible user-context message before success is reported, so the linked session survives immediate exit and resume without sending another prompt. Creating the handoff does not start an agent turn.
-
-State proof in the objective so the agent can verify it with its normal tools:
+Include the result you want and how the agent can verify it:
 
 ```text
 /goal Reduce p95 checkout latency below 120 ms, verified by the checkout benchmark, while keeping the correctness suite green
 ```
 
-A direct quoted path-shaped file target binds silent file proof. For an extensionless relative file, use an explicit path such as `./summary` or `.\summary`:
+KillerOS cannot independently prove arbitrary objectives from prose. The assistant must check the whole objective before reporting completion.
+
+A directly quoted, path-shaped file target adds silent file proof. KillerOS captures its baseline at goal start and accepts completion only after the file is created or changed. For an extensionless relative file, use an explicit path such as `./summary` or `.\summary`. Bare quoted prose uses model-reported completion. File proof verifies the deliverable, not every acceptance criterion in the objective.
+
+Each goal turn must record a decision through `killeros_goal_update`:
+
+- `continue`, with evidence and one next action.
+- `complete`, after verification.
+- A blocker decision that stops automatic work.
+
+An ordinary response does not authorize another turn. Missing decisions, repeated continuation reports, and an unavailable goal tool pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20. Restored goals retain their saved limit.
+
+Goals survive compaction, reloads, and session-tree navigation. Compaction recovery never grants turns. Recovery within the same turn requires an actual interruption. Successful or skipped compaction cannot restart a stopped goal without an accepted decision. A request that completes or blocks a goal stays goal-owned through settlement, so automatic compaction cannot restart it as ordinary work.
+
+A blocked goal stays stopped. During a later ordinary TUI or RPC request in a saved session, the assistant can complete the same unchanged objective with current evidence. This path accepts only `complete`. It preserves the original file baseline and records `file` proof or `model-reported` completion. It does not resume automatic work, grant turns, restart the active clock, or require `/goal clear`. Failed proof or a response without a completion decision leaves the goal blocked. Paused goals still require explicit user controls.
+
+Completed goals leave the footer but remain available through `/goal` and session history.
+
+Pending goal commands do not replace newer state. If committed navigation changes the branch or another mutation changes the goal during confirmation, idle waiting, or file-baseline reading, KillerOS discards the pending mutation. Cancelled navigation preserves valid pending commands. Discarding a stale replacement preserves the surviving goal's authorized continuation.
+
+### Context and automatic compaction
+
+Compaction triggers by default at 15% tokens remaining. Use `/auto-compact status` to inspect the effective KillerOS preference, `on` or `off` to toggle it, or an integer from 0 through 100 to set the threshold:
 
 ```text
-/goal Fix `killeros/footer.ts`, verified by npm test
+/auto-compact 20
+/auto-compact off
 ```
 
-Bare quoted prose remains model-reported. KillerOS captures the file baseline at goal start and only completes when the file is created or changed. File proof verifies that deliverable, not every natural-language acceptance criterion. The assistant must audit the whole objective before reporting completion; KillerOS cannot independently prove arbitrary objectives from prose. A normal response never continues a goal by itself: the agent must record `continue`, `complete`, or a blocker decision through `killeros_goal_update`. Repeated continuation reports and unavailable goal tools pause the goal. New goals pause after 20 turns without warning. An explicit `/goal resume` on an exhausted goal grants another 20 turns; compaction recovery never grants turns. Same-turn recovery requires an actual interruption; successful or skipped compaction cannot restart a normally stopped goal without a decision. A request that completes or blocks a goal remains goal-owned through settlement, so automatic compaction cannot restart it as ordinary work. Later ordinary requests still support compaction continuation. Restored goals keep their persisted limit.
+Turning off KillerOS automatic compaction does not turn off Pi's own automatic compaction. A threshold of 0 does not disable Pi's token reserve. Later ordinary requests can still use compaction continuation.
 
-A blocked goal stays stopped. In a later ordinary TUI or RPC request in a saved session, the assistant can complete the same unchanged objective through `killeros_goal_update` after verification and current evidence. Only `complete` is accepted on this path. Completion does not resume automatic work, grant turns, restart the active clock, or require `/goal clear`. It retains the original file baseline and records either `file` proof or `model-reported` completion. Failed proof and ordinary responses without a completion decision leave the goal blocked. Paused goals still require explicit user controls. A completed goal leaves the footer but remains inspectable through `/goal` and session history.
+The footer shows remaining context as `ctx 85% (849K/1M)`. The percentage and numerator both mean remaining. The denominator is Pi's configured context capacity, not an independently verified provider limit. Counts use decimal K and M units and round down.
 
-Session replacement, reload, and committed tree navigation discard unfinished task receipts. Late receipt results do not write or notify through the old session context or attach to a different branch. Cancelled navigation preserves the pending receipt.
+On narrow terminals, the footer drops the remaining count, then capacity, before dropping the model name and percentage. Unknown usage shows only capacity. Unknown capacity shows `ctx —%` without an invented limit. Usage estimates can be unavailable after compaction.
 
-Pending `/goal` commands discard their mutation if committed navigation changes the branch or another mutation changes the goal while confirmation, idle waiting, or file-baseline reading is in progress. Cancelled navigation preserves valid pending commands. Discarding a stale replacement after its idle wait preserves the surviving goal's authorized continuation.
+At the rounded 15% remaining warning threshold, the footer suggests `/compact` only when KillerOS automatic compaction is known to be off. Successful `/auto-compact` changes refresh the hint immediately. Turn-end settings reads also refresh it, including changes made by another process. The warning stays at 15% regardless of the automatic threshold. Settings-read errors omit the hint.
 
-Failed Git metadata reads keep the footer's last successful file counts and mark task changes unavailable. They are not treated as an empty repository.
+### Fast mode and billing
 
-Passive Git scans compare content without running repository filters. CRLF text that normalizes to the indexed LF content stays unchanged, including with `text=auto eol=lf` or bare `eol=lf`. Git's `status` can still report a modification after a size-changing rewrite because of its index stat cache, even when `git diff` is empty.
+Priority service can affect billing. OpenAI controls account and model eligibility, the accepted service tier, and charges. A ChatGPT subscription does not guarantee accepted or free priority service.
 
-Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
+Fast mode is off by default. `/codex-fast` toggles it. `/codex-fast status` reports the preference without changing it. The preference lasts for the current Pi process, including model switches and extension reloads. KillerOS does not save it between processes. The command and notifications retain their legacy Codex wording.
 
-On Pi 1.1.0, final request cancellation records `Stopped` and suppresses the completion sound even when the last assistant response ended normally. Recorded changes and checks remain in the receipt. Cancellation stops goal continuation and provider retry work; cancelling a pending compaction prevents its recovery. Receipts and sounds still wait for final `agent_settled`, including across provider retries.
+Fast mode applies to legacy `openai-codex` requests and native requests that meet all these conditions:
 
-### Pi model and MCP settings
+- The selected model uses provider `openai` and API `openai-responses`.
+- Its base URL is `https://api.openai.com/v1`, with an optional trailing slash.
+- The request payload names the selected model's exact ID.
 
-Use Pi's native `/thinking` selector for reasoning levels. Pi can also apply different sampling parameters for each level through `samplingParamsByThinkingLevel` in `models.json`. For example, a model entry can contain:
+API-key and ChatGPT subscription authentication follow the same rule. Custom endpoints, Azure, other APIs, and ambiguous native requests pass through unchanged.
+
+When enabled, fast mode overrides an eligible request's service tier with `priority` and preserves sampling and other payload fields. When disabled, it leaves the request unchanged. The footer's `fast` label means the preference applies to the selected model, not that OpenAI accepted priority service. KillerOS leaves provider errors and retries to Pi. It does not silently retry with a different tier.
+
+### Questions
+
+The `question` tool supports single-select and multi-select answers. It asks one question per invocation and requires TUI mode.
+
+In single-select mode, choosing a numbered option submits the answer. In multi-select mode, choosing an option toggles its selection and reopens the selector. Choose **Submit answers** when finished. KillerOS checks the requested minimum and maximum. It returns predefined answers in their original order, followed by an optional custom answer.
+
+Choose **Custom answer** to open Pi's text input. Multi-select allows one custom answer, which you can edit or remove. Blank answers do not submit. Custom answers accept up to 4,000 Unicode characters. Cancelling custom input returns to the selector without losing selections.
+
+**More actions** lets you filter options, clear a filter, review the full question and option details, or select a recent custom answer. Filters match labels and descriptions without losing hidden selections. Filter queries accept up to 4,000 Unicode characters and 16,000 UTF-8 bytes.
+
+Option summaries have bounded descriptions. Review displays full descriptions and proposal previews as paged plain text, including Markdown source. Use **Next page**, **Previous page**, and **Back** to navigate. Long option lists and recent-answer history also use pages. History holds at most 100 distinct answers and 64 KiB of text in the current session. Session changes clear it.
+
+Questions use Pi's native dialog keybindings and text editing. Multi-select uses successive selection steps, not the former space-toggle and slash-filter shortcuts. Resizing preserves selections and text-input drafts.
+
+Cancelling the main selector discards unsubmitted answers. Cancelling a filter, history, or review step returns to the selector. Agent cancellation or session invalidation closes the question and prevents another step. Dialog steps stay within one tool execution. They do not send model requests or grant goal turns.
+
+### Handoff
+
+`/handoff [focus]` creates a fresh linked session with visible continuation context. It saves that context as a user message before reporting success, so you can exit and resume immediately without another prompt. Creating the handoff does not start an agent turn.
+
+The summary output limit is 8192 tokens by default. Raise `handoffMaxTokens` if long sessions truncate it. Handoff validation rejects recognized credentials before creating the destination session. See [Security](#security) for the limits of that check.
+
+### Receipts, sounds, and Git status
+
+Receipts and completion sounds wait for final `agent_settled`, including across provider retries. Sounds are off by default. Configure them with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
+
+On Pi 1.1.0, final request cancellation records `Stopped` and suppresses the sound even if the last assistant response ended normally. The receipt retains recorded changes and checks. Cancellation stops goal continuation and provider retry work. Cancelling pending compaction prevents its recovery.
+
+Session replacement, reload, and committed tree navigation discard unfinished receipts. Late results cannot write or notify through the old session context or attach to another branch. Cancelled navigation preserves pending receipts.
+
+Failed Git reads retain the footer's last successful file counts and mark task changes unavailable. KillerOS does not treat a failed scan as an empty repository. Passive scans compare content without executing repository filters or repository-owned Git shims.
+
+## Configuration and Pi compatibility
+
+### KillerOS settings
+
+KillerOS activates its packaged `killeros` theme on TUI start. It stores settings in `killeros.json` in Pi's global agent directory, normally `~/.pi/agent/killeros.json`:
 
 ```json
 {
-  "samplingParams": { "temperature": 1.0, "top_p": 0.95 },
-  "samplingParamsByThinkingLevel": {
-    "off": { "temperature": 0.7, "top_p": 0.8 },
-    "high": { "temperature": 0.6 }
-  }
+	"autoCompaction": {
+		"enabled": true,
+		"percentRemaining": 15
+	},
+	"handoffMaxTokens": 8192
 }
 ```
 
-Only configure parameters the endpoint accepts. These settings apply to `openai-completions`, `openai-responses`, and `azure-openai-responses`, not legacy `openai-codex`. Missing levels inherit model defaults; request-level sampling parameters take precedence. `/codex-fast` preserves sampling parameters when it adds the priority service tier. See Pi's [sampling configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md#configure-sampling-by-thinking-level) for the full file format and merge rules.
+Concurrent `/auto-compact` commands preserve independent changes to the enabled flag and threshold, along with unrelated settings. Malformed settings and failed writes report errors without claiming success or replacing the original file.
 
-Pi uses `azure` for the Azure **provider** and supports Azure Foundry Chat Completions, including `azure/deepseek-v4-pro`. If your configuration still uses the old `azure-openai-responses` provider key, rename it to `azure` in `auth.json` or run `/login azure` again. Apply the same rename in `models.json`, and update `defaultProvider`, `enabledModels` patterns, and `modelThinkingLevels` keys in `settings.json`. The Responses **API** identifier remains `azure-openai-responses`; Foundry Chat Completions uses `openai-completions`. The `AZURE_OPENAI_*` environment variables are unchanged. Old Azure sessions fall back to another model on resume and lose prompt-cache reuse. KillerOS does not migrate credentials or Pi settings. See Pi's [Azure configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md#azure-openai).
+Trusted projects can use lifecycle hooks for `tool_call`, `tool_result`, and `agent_settled` in `.pi/killeros-hooks.json`. KillerOS also loads `AGENTS.local.md` for trusted projects. Review these files before granting trust.
 
-In Pi codemode, `tools.read()` on an image returns an image block that you can pass to native `image()`. See Pi's [codemode tool calls](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#call-tools).
+### Supported modes and navigation
 
-When codemode is enabled, Pi's `image()` also saves images to temporary files and includes their paths in the result, so later turns can copy or move them. Pi creates these output files with user-only permissions on POSIX systems; Windows access follows inherited filesystem ACLs. KillerOS uses Pi's native codemode behavior; see [image generation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#generate-images).
+Pi defaults to fullscreen. Use `--tui-mode regular` for one invocation or set `"tuiMode": "regular"` in [Pi settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md#terminal-and-display) to restore terminal-owned scrollback. KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged.
 
-Use Pi's `/mcp` command and `.pi/mcp.json` to enable, disable, or change the exposure of a user-level MCP server for a trusted project without copying its credentials. See [project MCP overrides](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#configure-servers). KillerOS does not manage MCP configuration.
+| Mode | Support |
+| --- | --- |
+| TUI | Custom UI, questions, goals, proactive compaction, sounds, and title indicator |
+| RPC | Goals and proactive compaction, without TUI components, sounds, or title indicator |
+| Print or JSON | No interactive questions, `/goal`, or proactive compaction |
 
-In Pi, a nonempty `--tools` list with no `mcp__` entry preserves MCP tool availability according to each server's exposure. For example, `--tools codemode` does not disable MCP connections or remove their tools. Use `--no-mcp` to disable MCP connections through Pi's built-in MCP support for one run. Explicit MCP selection and exclusion remain Pi's responsibility; see [MCP tool exposure](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#control-tool-exposure).
+With Pi's default [keybindings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md#fullscreen), `Home` and `End` move within the current editor line. In fullscreen mode, `Ctrl+Home` and `Ctrl+End` scroll to the transcript's beginning or end without moving the editor cursor. KillerOS inherits these bindings and preserves user overrides.
 
-## Development
+Pi 1.1.0 reports program status through OSC 7501 in supported terminals. Each question step reports `blocked` and restores the previous status after an answer, cancellation, or abort. Native confirmation dialogs do the same. `PI_PROGRAM_STATUS=1` forces reporting and `PI_PROGRAM_STATUS=0` disables it. KillerOS preserves the preference and uses Pi's native reporting. See [program status](https://github.com/earendil-works/pi/blob/v1.1.0/packages/coding-agent/docs/terminal-setup.md#program-status).
 
-Strict TypeScript throughout. Tests run on Node's built-in test runner:
+### Tool selection and codemode
+
+`question` and the active `killeros_goal_update` tool are sequential and use Pi's `model-only` exposure. Pi declares them directly to the model with codemode disabled or enabled in `on` or `only` mode. Scripts and other tools cannot call them through `ctx.executeTool()`.
+
+The goal tool is active for active goals. During a later ordinary request, it can also be active for completion only of the same saved blocked goal. It is inactive outside those cases. A direct RPC question call fails with `The question tool requires interactive TUI mode`. KillerOS does not enable or configure codemode.
+
+Pi's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns such as `"killeros_*"` so the shell does not expand them. An explicit allowlist must include `question` for interactive questions and permit `killeros_goal_update` for goals. Tool selection does not make questions usable outside TUI mode.
+
+Excluding the goal tool pauses goals that are active before any model request. A later ordinary request with a blocked goal still runs, but cannot record completion if the tool is excluded. See [Pi tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
+
+Pi 1.1.0 accepts lists containing only exact `+name` and `-name` entries to change the default selection:
 
 ```bash
+pi --tools +codemode
+pi --tools +codemode,-write
+```
+
+Plain allowlists replace the selection. Pi rejects mixed lists such as `read,+codemode` and modifier patterns such as `-killeros_*`. Use `--exclude-tools "killeros_*"` for wildcard exclusions.
+
+On Pi 1.1.0, a `-name` modifier does not reliably prevent an extension tool from activating on registration or reload. To exclude the goal tool, use:
+
+```bash
+pi --exclude-tools killeros_goal_update
+```
+
+KillerOS delegates selection to Pi. It does not parse or repair native CLI filters.
+
+In Pi codemode, `tools.read()` on an image returns an image block that you can pass to native `image()`. See [codemode tool calls](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#call-tools).
+
+Pi's `image()` also saves images to temporary files and returns their paths for later turns to copy or move. On POSIX systems, Pi creates these files with user-only permissions. Windows access follows inherited filesystem ACLs. See [image generation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#generate-images).
+
+### Reasoning, sampling, and Azure
+
+Use Pi's native `/thinking` selector for reasoning levels. Pi supports per-level sampling through `samplingParamsByThinkingLevel` in `models.json`. A model entry can contain:
+
+```json
+{
+	"samplingParams": { "temperature": 1.0, "top_p": 0.95 },
+	"samplingParamsByThinkingLevel": {
+		"off": { "temperature": 0.7, "top_p": 0.8 },
+		"high": { "temperature": 0.6 }
+	}
+}
+```
+
+Configure only parameters your endpoint accepts. These settings apply to `openai-completions`, `openai-responses`, and `azure-openai-responses`, not legacy `openai-codex`. Missing levels inherit model defaults. Request-level sampling parameters take precedence. `/codex-fast` preserves sampling when it adds the priority tier. See [sampling configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md#configure-sampling-by-thinking-level) for the full format and merge rules.
+
+Pi's Azure provider is `azure`. It supports Azure Foundry Chat Completions, including `azure/deepseek-v4-pro`. If you still use the old `azure-openai-responses` provider key:
+
+1. Rename it to `azure` in `auth.json`, or run `/login azure` again.
+2. Apply the same rename in `models.json`.
+3. Update `defaultProvider`, `enabledModels` patterns, and `modelThinkingLevels` keys in `settings.json`.
+
+The Responses API identifier remains `azure-openai-responses`. Foundry Chat Completions uses `openai-completions`. The `AZURE_OPENAI_*` environment variables are unchanged. Old Azure sessions fall back to another model on resume and lose prompt-cache reuse. KillerOS does not migrate credentials or Pi settings. See [Azure configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md#azure-openai).
+
+### MCP settings
+
+Use Pi's `/mcp` command and `.pi/mcp.json` to enable, disable, or change the exposure of a user-level MCP server for a trusted project without copying credentials. KillerOS does not manage MCP configuration. See [project MCP overrides](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#configure-servers).
+
+In Pi, a nonempty `--tools` list with no `mcp__` entry preserves MCP tool availability according to server exposure. For example, `--tools codemode` does not disable MCP connections or remove their tools. Use `--no-mcp` to disable MCP connections through Pi's built-in support for one run. Explicit MCP selection and exclusion remain Pi's responsibility. See [MCP tool exposure](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#control-tool-exposure).
+
+## Set up for development
+
+Clone the repository and install its pinned development dependencies:
+
+```bash
+git clone https://github.com/KyrosHendrix/pi-KillerOS.git
+cd pi-KillerOS
 npm ci --ignore-scripts --no-audit --no-fund
+```
+
+Run the local package for one Pi invocation:
+
+```bash
+npx pi -e .
+```
+
+Disable any installed copy of KillerOS for that invocation to avoid loading it alongside the checkout. Restart Pi or use `/reload` after edits.
+
+There is no build step. The project uses strict TypeScript, and Node's built-in test runner executes the `.ts` tests directly:
+
+```bash
 npm run check
 npm test
 ```
 
-Development dependencies pin Pi 1.1.0. CI checks that baseline and the latest compatible Pi release without changing the tracked manifest or lockfile. Both compatibility checks retain their required-check names. Required CI jobs repeat the installed CLI and terminal pilots five times without forced exit. The latest-Pi job also repeats the cancellation lifecycle checks five times. The complete default suite runs once per job.
+`check` runs TypeScript without emitting files, then ESLint. For README or changelog-only changes, run the repository contracts:
 
-The default suite remains authoritative. To check the installed CLI and native-terminal scenarios without forced exit:
+```bash
+node --test --test-force-exit --experimental-strip-types test/RepositoryContracts.test.ts
+```
+
+The default suite is authoritative. To run the installed CLI and native-terminal scenarios without forced exit:
 
 ```bash
 node --test --experimental-strip-types --test-name-pattern="installed Pi CLI|installed Pi terminal|terminal driver reports|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts
 ```
 
-The RPC pilot has a reproduced native shutdown crash on Windows Node 24.19.0 with Pi 1.1.0. That exact combination is skipped, not certified. Use Node 22.19.0 on Windows to execute the RPC pilot. The terminal pilot and its cleanup controls still run on both Node versions.
+Development dependencies pin Pi 1.1.0. CI checks the Node.js floor, current LTS, Windows, and the minimum and latest compatible Pi releases. Compatibility installs leave the tracked manifest and lockfile unchanged. Required jobs repeat installed CLI and terminal pilots five times without forced exit. The latest-Pi job also repeats cancellation lifecycle checks five times. Each job runs the full default suite once.
+
+## Contribution and release expectations
+
+Run `npm run check` and `npm test` before submitting code changes. Changes to commands, configuration, requirements, or mode behavior also need README updates. Record completed changes to shipped behavior, supported workflows, public documentation, or build, test, and release guarantees under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md). Do not bump the version unless preparing a release.
 
 ### Release process
 
-1. Prepare the release on `dev`: update `package.json` and both root versions in `package-lock.json`, update the README's pinned tag, and move completed changelog entries into a dated version section under `[Unreleased]`.
-2. Run `npm run check` and `npm test`, commit and push to `dev`, then open a pull request into `main`. Push later fixes to the same PR so CI reruns.
-3. Wait for every required check to pass, including CodeQL and dependency review, and resolve review conversations. The PR must be up to date with `main`.
-4. Merge using **Create a merge commit**. Squash and rebase merging are disabled because the automated `main`-to-`dev` sync requires shared ancestry. Avoid advancing `dev` until that sync finishes.
-5. Check the `main` CI run and the following Release run. Successful CI on the current `main` commit triggers npm publication with provenance, creates the GitHub release, and fast-forwards `dev` to the released commit. A green PR alone never publishes.
+1. Prepare the release on `dev`. Update `package.json` and both root versions in `package-lock.json`. Update this README's pinned release examples. Move completed changelog entries into a dated version section below `[Unreleased]`.
+2. Run `npm run check` and `npm test`. Commit and push to `dev`, then open a pull request into `main`. Push later fixes to the same PR so CI reruns.
+3. Wait for every required check, including CodeQL and dependency review. Resolve review conversations and bring the PR up to date with `main`.
+4. Merge with **Create a merge commit**. Squash and rebase merging are disabled because the automated `main`-to-`dev` sync requires shared ancestry. Do not advance `dev` until the sync finishes.
+5. Check the `main` CI run and the following Release run. Successful CI on the current `main` commit triggers npm publication with provenance, creates the GitHub release, and fast-forwards `dev` to the released commit. A green PR alone does not publish.
 
-`main` requires pull requests and the CI workflow's required checks, including for administrators. Force pushes and branch deletion are blocked. Pi compatibility checks use the stable names `Pi compatibility (minimum)` and `Pi compatibility (latest)`, independent of the tested versions.
+Releases go through CI on `main`; do not push version tags manually. `main` requires pull requests and required CI checks, including for administrators. Force pushes and branch deletion are blocked.
 
-When adopting these names, first confirm both checks passed on the release PR's exact head commit. Replace only the two old versioned Pi required checks with their corresponding stable names, preserving their GitHub Actions app bindings and every other protection.
+The release workflow publishes the source directory with `npm publish . --ignore-scripts=false`. At that boundary, `prepublishOnly` invokes the release validator once, even if an inherited npm setting disables scripts. Validation failure stops publication and release creation. The workflow also checks the verified commit, provenance, version, tag, and release notes.
 
-`Quality (Node 22.19.0)` validates current release metadata before the full test suite. It also tests the publication lifecycle with the release workflow's pinned npm CLI in an isolated installation. The packed-package Pi test checks the installed archive's entry point, README, changelog, theme, package name, and current version before activation and reload. These archive assertions run throughout the Node, Windows, and Pi compatibility matrix.
+The prepublish guard rejects ordinary direct publication, but does not prove GitHub authorization. Disabling scripts or publishing a tarball bypasses it. Configure npm's trusted publisher for `release.yml`, require two-factor authentication and disallow tokens in package publishing access, and revoke unused publish tokens. Maintainers can still publish interactively with 2FA, so workflow-only publication also depends on maintainer policy.
 
-`Package smoke test` remains during the required-check migration. Before removing it, land the replacement coverage and confirm the Node-floor quality check passed on the replacement PR's exact head commit and that the coverage is present on `main`. Inspect live branch protection and rulesets, obtain approval, and remove only the smoke requirement while preserving the required quality check's GitHub Actions binding and every other protection. Remove the job in a follow-up PR and recheck that PR's final head. Do not remove the job if these prerequisites are unmet.
+### Required-check maintenance
 
-Releases go through CI on `main`; do not push version tags manually. The release workflow publishes the source directory with `npm publish . --ignore-scripts=false`. The package's `prepublishOnly` lifecycle invokes the existing release validator once at that boundary, even if an inherited npm setting disables scripts. A validator failure stops publication and release creation. The earlier verified-commit, provenance, version, tag, and release-note checks remain.
+Pi compatibility checks have stable names, `Pi compatibility (minimum)` and `Pi compatibility (latest)`, independent of tested versions. When adopting those names, confirm both passed on the release PR's exact head commit. Replace only the old versioned Pi requirements. Preserve their GitHub Actions app bindings and every other protection.
 
-The prepublish guard rejects ordinary direct publication, but it does not prove GitHub authorization. Disabling scripts or publishing a tarball bypasses `prepublishOnly`. Configure npm's trusted publisher for `release.yml`, set package publishing access to "Require two-factor authentication and disallow tokens", and revoke unused publish tokens. npm maintainers can still publish interactively with 2FA, so workflow-only publishing also depends on maintainer policy.
+`Quality (Node 22.19.0)` validates release metadata before the full suite and tests the publication lifecycle with the release workflow's pinned npm CLI in an isolated installation. The packed-package Pi test checks the archive's entry point, README, changelog, theme, package name, and current version before activation and reload. Those assertions run across the Node, Windows, and Pi compatibility matrix.
+
+`Package smoke test` remains during the required-check migration. Before removing its requirement:
+
+1. Land the replacement coverage and confirm it exists on `main`.
+2. Confirm the Node-floor quality check passed on the replacement PR's exact head commit.
+3. Inspect live branch protection and rulesets, and obtain approval.
+4. Remove only the smoke requirement. Preserve the required quality check's GitHub Actions binding and all other protections.
+5. Remove the job in a follow-up PR and recheck that PR's final head.
+
+Keep the job if those prerequisites are unmet.
+
+## Known issues and limits
+
+- The RPC pilot reproduces a native shutdown crash on Windows Node 24.19.0 with Pi 1.1.0. That exact combination is skipped, not certified. Use Node 22.19.0 on Windows to run the pilot. Terminal pilots and cleanup controls still run on both Node versions.
+- Pi 1.1.0's `-name` tool modifiers do not reliably exclude extension tools. Use `--exclude-tools`, as described in [Tool selection and codemode](#tool-selection-and-codemode).
+- Passive Git scans treat CRLF text as unchanged when it normalizes to the indexed LF content, including with `text=auto eol=lf` or bare `eol=lf`. After a size-changing rewrite, Git's index stat cache can still make `git status` report a modification even when `git diff` is empty.
+- Questions require TUI mode. Print and JSON modes do not support goals or proactive compaction. See [Supported modes and navigation](#supported-modes-and-navigation).
+
+Report bugs through the [issue tracker](https://github.com/KyrosHendrix/pi-KillerOS/issues). Check the [changelog](CHANGELOG.md) for release-specific changes.
 
 ## Security
 
-Pi extensions run with your user permissions. Review the source before installing globally. Hook commands run only for projects Pi marks as trusted; check `.pi/killeros-hooks.json` before enabling project trust. KillerOS accepts that configuration only as a regular, non-linked file no larger than 64 KiB in the project's real `.pi` directory.
+KillerOS hooks run only in projects Pi marks as trusted. Check `.pi/killeros-hooks.json` before granting trust. KillerOS accepts hook configuration only as a regular, non-linked file of at most 64 KiB in the project's real `.pi` directory.
 
-On POSIX systems, timed-out or cancelled hooks receive `SIGTERM`, followed by `SIGKILL` if cleanup remains pending. Shell exit alone does not confirm that the original process group stopped. Cleanup uses a two-second window and reports uncertainty if group exit cannot be confirmed.
+On POSIX systems, timed-out or cancelled hooks receive `SIGTERM`, then `SIGKILL` if cleanup remains pending. Shell exit alone does not confirm that the original process group stopped. Cleanup has a two-second window and reports uncertainty if it cannot confirm group exit.
 
-Handoff validation rejects recognized credential assignments in plain text, Markdown lists, bold labels, and inline-code labels before creating a destination session. This pattern check cannot detect every secret or personally identifying value. Rejected values are not included in the error notification.
+Handoff validation rejects recognized credential assignments in plain text, Markdown lists, bold labels, and inline-code labels before creating a destination session. Rejected values do not appear in the error notification. This pattern check cannot detect every secret or personally identifying value. Review context before carrying it into another session.
 
 ## License
 

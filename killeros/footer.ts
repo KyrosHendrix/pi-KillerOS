@@ -3,6 +3,8 @@ import { watch } from "node:fs";
 import path from "node:path";
 import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { readAutoCompactionPreference, type AutoCompactionPreference } from "./auto-compaction.ts";
+import { createKillerosSettingsStore, type KillerosSettingsStore } from "./settings.ts";
 import { isCodexFastEnabled, isCodexFastModel, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, modelDisplayName, padRight } from "./display.ts";
 import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, type PassiveGitRunner } from "./passive-git-status.ts";
@@ -255,14 +257,33 @@ export function contextPercentRemaining(ctx: ExtensionContext): number | null {
   return Math.round(Math.max(0, Math.min(100, percentRemaining)));
 }
 
-export function formatContextProgress(tokensUsed: number | null, contextWindow: number, theme: Theme): string {
-  if (tokensUsed === null || !Number.isFinite(tokensUsed)) return theme.fg("dim", "ctx —%");
-  const windowSize = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 128_000;
-  const used = Math.max(0, tokensUsed);
-  const percentRemaining = Math.max(0, Math.min(100, Math.round(((windowSize - used) / windowSize) * 100)));
+function validCapacity(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value) && value > 0;
+}
+
+function formatContextTokens(tokens: number): string {
+  const unit = tokens >= 1_000_000 ? 1_000_000 : tokens >= 1_000 ? 1_000 : 1;
+  // Floor labels so rounding never promises tokens that are not available.
+  const count = unit === 1 ? Math.floor(tokens) : Math.floor(tokens / (unit / 100)) / 100;
+  return `${count}${unit === 1_000_000 ? "M" : unit === 1_000 ? "K" : ""}`;
+}
+
+export function formatContextProgress(
+  tokensUsed: number | null,
+  contextWindow: number,
+  theme: Theme,
+  showManualHint = false,
+  detail: "full" | "capacity" | "percentage" = "full",
+): string {
+  if (!validCapacity(contextWindow)) return theme.fg("dim", "ctx —%");
+  const capacity = detail === "percentage" ? "" : ` (${formatContextTokens(contextWindow)})`;
+  if (tokensUsed === null || !Number.isFinite(tokensUsed)) return theme.fg("dim", `ctx —%${capacity}`);
+  const remaining = Math.max(0, contextWindow - Math.max(0, tokensUsed));
+  const percentRemaining = Math.round(remaining / contextWindow * 100);
   const color: ThemeColor = percentRemaining > 50 ? "success" : percentRemaining >= 20 ? "warning" : "error";
-  const action = percentRemaining <= 15 ? " · /compact" : "";
-  return theme.fg(color, `ctx ${percentRemaining}%${action}`);
+  const counts = detail === "full" ? ` (${formatContextTokens(remaining)}/${formatContextTokens(contextWindow)})` : capacity;
+  const action = showManualHint && percentRemaining <= 15 ? " · /compact" : "";
+  return theme.fg(color, `ctx ${percentRemaining}%${counts}${action}`);
 }
 
 function sumSessionCost(ctx: ExtensionContext): number {
@@ -367,7 +388,16 @@ function formatGitFileChanges(changes: GitFileChanges, theme: Theme): string {
   return `${theme.fg("dim", `±${total} [`)}${theme.fg("warning", `~${changes.modified}`)} ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}${theme.fg("dim", "]")}`;
 }
 
-export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void {
+export function registerFooter(
+  pi: ExtensionAPI,
+  goalRuntime: GoalRuntime,
+  settingsStore: KillerosSettingsStore = createKillerosSettingsStore(),
+): (preference: AutoCompactionPreference | undefined) => void {
+  let autoCompactionEnabled: boolean | undefined;
+  const updatePreference = (preference: AutoCompactionPreference | undefined): void => {
+    autoCompactionEnabled = preference?.enabled;
+    activeTui?.requestRender();
+  };
   let currentModel: ExtensionContext["model"];
   let thinkingLevel: ThinkingLevel = "off";
   let activeTui: TUI | undefined;
@@ -394,6 +424,11 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
   pi.on("session_start", (_event, ctx) => {
     resetSessionCost();
     if (ctx.mode !== "tui") return;
+    try {
+      autoCompactionEnabled = readAutoCompactionPreference(settingsStore.load()).enabled;
+    } catch {
+      autoCompactionEnabled = undefined;
+    }
     unsubscribeCodexFast?.();
     unsubscribeCodexFast = subscribeCodexFast(() => activeTui?.requestRender());
     const sessionStart = Date.now();
@@ -437,31 +472,31 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
           } catch {
             usage = undefined;
           }
-          const contextWindow = usage?.contextWindow ?? model?.contextWindow ?? 128_000;
-          const context = formatContextProgress(usage?.tokens ?? null, contextWindow, theme);
+          const contextWindow = validCapacity(usage?.contextWindow)
+            ? usage.contextWindow : validCapacity(model?.contextWindow) ? model.contextWindow : Number.NaN;
+          const contexts = (["full", "capacity", "percentage"] as const).map((detail) =>
+            formatContextProgress(usage?.tokens ?? null, contextWindow, theme, autoCompactionEnabled === false, detail));
           const branch = footerData.getGitBranch();
           const signature = formatModel(model, theme, true, isCodexFastEnabled());
           const fullDirectory = colorDirectory(cwd);
           const focusedDirectory = colorDirectory(compactDirectory(cwd));
           const goal = formatGoalFooter(goalRuntime.state, theme);
-          const primary = joinFooterParts([
-            signature,
-            level,
-            context,
-          ], theme);
-          const primaryFocused = joinFooterParts([signature, context], theme);
+          const primary = contexts.map((context) => joinFooterParts([signature, level, context], theme));
+          const primaryFocused = contexts.map((context) => joinFooterParts([signature, context], theme));
           const session = joinFooterParts([
             theme.fg("dim", formatTime(Date.now() - sessionStart)),
             theme.fg("dim", formatCost(getSessionCost(ctx))),
           ], theme);
           const essentialModel = formatModel(model, theme, false, isCodexFastEnabled());
-          const primaryRow = footerRowFits(primary, session, width)
-            ? renderFooterRow(primary, session, width)
-            : footerRowFits(primary, "", width)
-              ? renderFooterRow(primary, "", width)
-              : footerRowFits(primaryFocused, "", width)
-                ? renderFooterRow(primaryFocused, "", width)
-                : renderFooterRow(essentialModel, context, width);
+          const candidates = [
+            { left: primary[0] ?? "", right: session },
+            ...primary.map((left) => ({ left, right: "" })),
+            ...primaryFocused.map((left) => ({ left, right: "" })),
+            ...contexts.map((right) => ({ left: essentialModel, right })),
+          ];
+          const selected = candidates.find(({ left, right }) => footerRowFits(left, right, width))
+            ?? { left: essentialModel, right: contexts[2] ?? "" };
+          const primaryRow = renderFooterRow(selected.left, selected.right, width);
           const changes = gitFileChanges ? formatGitFileChanges(gitFileChanges, theme) : "";
           const branchLabel = branch
             ? `${theme.fg("dim", branch)}${changes ? `${theme.fg("dim", " · ")}${changes}` : ""}`
@@ -501,4 +536,5 @@ export function registerFooter(pi: ExtensionAPI, goalRuntime: GoalRuntime): void
     activeTui = undefined;
     goalRuntime.requestRender = undefined;
   });
+  return updatePreference;
 }

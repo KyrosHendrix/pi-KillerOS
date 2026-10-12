@@ -35,6 +35,7 @@ export interface AutoCompactionDependencies {
   loadPreference?: (ctx: ExtensionContext) => AutoCompactionPreference;
   getCompactionSettings?: (ctx: ExtensionContext) => CompactionSettings;
   settingsStore?: KillerosSettingsStore;
+  onPreferenceChange?: (preference: AutoCompactionPreference | undefined) => void;
   goal?: AutoCompactionGoalHandlers;
 }
 
@@ -142,10 +143,12 @@ export function registerAutoCompaction(
       if (!argument || argument === "status") {
         try {
           const preference = readAutoCompactionPreference(settingsStore.load());
+          dependencies.onPreferenceChange?.(preference);
           ctx.ui.notify(preference.enabled
             ? `Automatic compaction: on at ${preference.percentRemaining}% remaining`
             : `Automatic compaction: off (threshold ${preference.percentRemaining}%)`, "info");
         } catch (error) {
+          dependencies.onPreferenceChange?.(undefined);
           ctx.ui.notify(`Automatic compaction setting could not be read: ${errorMessage(error)}`, "error");
         }
         return;
@@ -167,6 +170,7 @@ export function registerAutoCompaction(
           return { autoCompaction: updated };
         });
         if (!updated) throw new Error("Settings update did not apply the preference");
+        dependencies.onPreferenceChange?.(updated);
         ctx.ui.notify(percent === undefined
           ? updated.enabled
             ? `Automatic compaction: on at ${updated.percentRemaining}% remaining`
@@ -269,7 +273,9 @@ export function registerAutoCompaction(
     try {
       preference = loadPreference(ctx);
       compactionSettings = getCompactionSettings(ctx);
+      dependencies.onPreferenceChange?.(preference);
     } catch (error) {
+      dependencies.onPreferenceChange?.(undefined);
       if (!settingsErrorReported) {
         settingsErrorReported = true;
         ctx.ui.notify(`Automatic compaction settings could not be read: ${errorMessage(error)}`, "error");
