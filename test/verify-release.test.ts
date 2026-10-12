@@ -32,11 +32,25 @@ test("release verification passes only with complete matching metadata", () => {
   }
 });
 
+test("release verification accepts the README's npm and Git pinned release examples", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const manifest: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.ok(typeof manifest === "object" && manifest !== null && "version" in manifest && typeof manifest.version === "string");
+  const directory = fixture({ readme: readme.replaceAll(manifest.version, "2.1.31") });
+  try {
+    assert.equal(verify(directory).status, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("release verification rejects direct publication and incomplete release metadata", () => {
   const cases = [
     { label: "outside the release workflow", overrides: {}, env: process.env, error: /only the verified GitHub release workflow may publish/iu },
     { label: "mismatched lockfile", overrides: { lockVersion: "2.1.30" }, env: RELEASE_ENV, error: /versions do not match/iu },
     { label: "missing changelog section", overrides: { changelog: "## [Unreleased]\n" }, env: RELEASE_ENV, error: /CHANGELOG\.md has no section/iu },
+    { label: "stale npm pin", overrides: { readme: "To pin a release, use `npm:killeros@2.1.30` or append a Git tag such as `@v2.1.31` to the Git source.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
+    { label: "stale Git pin", overrides: { readme: "To pin a release, use `npm:killeros@2.1.31` or append a Git tag such as `@v2.1.30` to the Git source.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
     { label: "stale README tag", overrides: { readme: "Pin a release by appending its tag, for example `@v2.1.30`.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
     { label: "current version elsewhere but stale pinned example", overrides: { readme: "Current version @v2.1.31.\nPin a release by appending its tag, for example `@v2.1.30`.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
   ];

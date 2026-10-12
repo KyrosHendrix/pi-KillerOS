@@ -63,26 +63,35 @@ test("context telemetry shows the remaining percentage with urgency colors", () 
     fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
   });
   const cases: ReadonlyArray<readonly [tokens: number | null, window: number, expected: string]> = [
-    [0, 1_000_000, "<success>ctx 100%</success>"],
-    [300_000, 1_000_000, "<success>ctx 70%</success>"],
-    [50_000, 1_050_000, "<success>ctx 95%</success>"],
-    [500_000, 1_000_000, "<warning>ctx 50%</warning>"],
-    [700_000, 1_000_000, "<warning>ctx 30%</warning>"],
-    [800_000, 1_000_000, "<warning>ctx 20%</warning>"],
-    [810_000, 1_000_000, "<error>ctx 19%</error>"],
-    [850_000, 1_000_000, "<error>ctx 15% · /compact</error>"],
-    [860_000, 1_000_000, "<error>ctx 14% · /compact</error>"],
-    [1_000_000, 1_000_000, "<error>ctx 0% · /compact</error>"],
-    [1_100_000, 1_000_000, "<error>ctx 0% · /compact</error>"],
-    [-1, 1_000_000, "<success>ctx 100%</success>"],
-    [64_000, Number.NaN, "<warning>ctx 50%</warning>"],
-    [null, 1_000_000, "<dim>ctx —%</dim>"],
-    [Number.NaN, 1_000_000, "<dim>ctx —%</dim>"],
-    [Number.POSITIVE_INFINITY, 1_000_000, "<dim>ctx —%</dim>"],
+    [0, 1_000_000, "<success>ctx 100% (1M/1M)</success>"],
+    [151_000, 1_000_000, "<success>ctx 85% (849K/1M)</success>"],
+    [300_000, 1_000_000, "<success>ctx 70% (700K/1M)</success>"],
+    [50_000, 1_050_000, "<success>ctx 95% (1M/1.05M)</success>"],
+    [500_000, 1_000_000, "<warning>ctx 50% (500K/1M)</warning>"],
+    [700_000, 1_000_000, "<warning>ctx 30% (300K/1M)</warning>"],
+    [800_000, 1_000_000, "<warning>ctx 20% (200K/1M)</warning>"],
+    [810_000, 1_000_000, "<error>ctx 19% (190K/1M)</error>"],
+    [850_000, 1_000_000, "<error>ctx 15% (150K/1M)</error>"],
+    [860_000, 1_000_000, "<error>ctx 14% (140K/1M)</error>"],
+    [999_999.5, 1_000_000, "<error>ctx 0% (0/1M)</error>"],
+    [1_000_000, 1_000_000, "<error>ctx 0% (0/1M)</error>"],
+    [1_100_000, 1_000_000, "<error>ctx 0% (0/1M)</error>"],
+    [-1, 1_000_000, "<success>ctx 100% (1M/1M)</success>"],
+    [64_000, Number.NaN, "<dim>ctx —%</dim>"],
+    [0, 0, "<dim>ctx —%</dim>"],
+    [0, -1, "<dim>ctx —%</dim>"],
+    [0, Number.POSITIVE_INFINITY, "<dim>ctx —%</dim>"],
+    [null, 1_000_000, "<dim>ctx —% (1M)</dim>"],
+    [Number.NaN, 1_000_000, "<dim>ctx —% (1M)</dim>"],
+    [Number.POSITIVE_INFINITY, 1_000_000, "<dim>ctx —% (1M)</dim>"],
   ];
 
   for (const [tokens, window, expected] of cases) {
     assert.equal(formatContextProgress(tokens, window, semanticTheme), expected);
   }
+  assert.equal(formatContextProgress(845_001, 1_000_000, theme, true), "ctx 15% (154.99K/1M) · /compact");
+  assert.equal(formatContextProgress(844_999, 1_000_000, theme, true), "ctx 16% (155K/1M)");
+  assert.equal(formatContextProgress(850_000, 1_000_000, theme, true, "capacity"), "ctx 15% (1M) · /compact");
+  assert.equal(formatContextProgress(850_000, 1_000_000, theme, true, "percentage"), "ctx 15% · /compact");
   assert.doesNotMatch(formatContextProgress(50_000, 1_050_000, theme), /[█░]/u);
 });

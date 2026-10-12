@@ -20,6 +20,7 @@ import { registerCodexFastMode } from "./killeros/codex-fast.ts";
 import { registerPersonalInstructions } from "./killeros/personal-instructions.ts";
 import { registerQuestionTool } from "./killeros/question.ts";
 import { createGoalRuntime } from "./killeros/runtime.ts";
+import { createKillerosSettingsStore } from "./killeros/settings.ts";
 import { registerShellUi } from "./killeros/shell-ui.ts";
 import { registerWorkedFor } from "./killeros/worked-for.ts";
 
@@ -42,12 +43,13 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerAliases(pi);
   registerHandoff(pi, goalRuntime, options.handoffMaxTokens);
   registerSlashAutocomplete(pi, commandResolver);
-  registerFooter(pi, goalRuntime);
+  const settingsStore = createKillerosSettingsStore();
+  const updateFooterPreference = registerFooter(pi, goalRuntime, settingsStore);
   registerCodexFastMode(pi);
   registerLifecycleHooks(pi);
   registerWorkedFor(pi);
   const goalCompaction = registerGoalSettlement(pi, goalRuntime);
-  registerAutoCompaction(pi, { goal: goalCompaction });
+  registerAutoCompaction(pi, { goal: goalCompaction, settingsStore, onPreferenceChange: updateFooterPreference });
   registerRequestActivity(pi);
   registerCompletionNotifications(pi, options.completionNotifications);
 }

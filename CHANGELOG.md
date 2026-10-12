@@ -4,6 +4,30 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.6] - 2026-10-12
+
+### Changed
+
+- Rewrote the README with installation and onboarding steps, grouped usage and configuration guidance, development checks, and release and security expectations.
+- Raised the minimum supported Pi version to 1.1.0, pinned development packages to 1.1.0, and moved all CI Pi targets to that baseline or newer. Cancellation and retry coverage now runs without old-version gates.
+- Removed repository checks that required exact historical changelog wording while retaining current README, Pi compatibility, package, and release safeguards.
+
+### Added
+
+- Added remaining token counts and Pi's configured context capacity to the TUI footer, with capacity-only and percentage-only fallbacks at narrow widths and explicit unknown states.
+- Added real Pi TUI coverage for context budgets, model switching, automatic-compaction commands, settings failures, reload, and responsive footer output.
+- Added real-Pi cancellation coverage through the complete KillerOS entry point, checking paused goal state, stopped receipts, and suppressed completion sounds.
+- Added an installed-CLI goal workflow covering package loading, public command routing, model-issued completion, durable session restoration, and no unsolicited model work. Verified on Windows Node 22.19.0 with Pi 1.1.0; the exact Windows Node 24.19.0/Pi 1.1.0 combination is skipped after reproduced native RPC shutdown crashes.
+- Added a native-terminal installed-package pilot for question selection after resize, cancellation without partial answers, and multiline editor text across fullscreen transcript navigation. Kept focused question and editor tests, added terminal startup and assertion-failure cleanup controls, and added five-run no-forced-exit CI checks for the installed pilots and changed cancellation lifecycle before the normal-concurrency full suite. Terminal failure logs retain selected versions, sanitized launch arguments, and bounded screen and raw-output diagnostics.
+
+### Fixed
+
+- Fixed release validation for the README's rewritten npm and Git pin examples while retaining stale-version rejection. Made the executable-mode Git oracle refresh index metadata before comparing changes, preventing metadata-only CI failures without changing its assertions.
+- Show the footer's manual `/compact` hint at the existing rounded 15% warning threshold only when KillerOS automatic compaction is known to be off. Commands and turn-end settings reads refresh the hint, including external changes and read failures, without changing automatic triggers or Pi's independent compaction behavior.
+- Fixed unhandled RPC test-driver stdin errors when a child exits during a write. A real-process control now verifies write rejection, retained diagnostics, and orderly cleanup.
+- Fixed the native-terminal test driver's exit race by draining queued screen parsing before rejecting final-output waits or disposing the parser. Kept the native capability probe alive until its input confirmation is observed before orderly shutdown. Successful cleanup waits for queued parsing and tracked native callbacks to quiesce before disposing the parser; cleanup errors are surfaced and the observer is disabled on every close path.
+- Fixed RPC fixture cancellation checks before sending commands or returning cached records. Added subprocess controls that reject unauthorized writes and prevent PID-tree escalation after the parent exits but inherited pipes remain open.
+
 ## [3.0.5] - 2026-10-08
 
 ### Fixed

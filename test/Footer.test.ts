@@ -105,6 +105,7 @@ test("footer shows fast only for enabled eligible models at full and narrow widt
 test("footer survives unavailable context telemetry", () => {
   const { handlers } = createHarness();
   const { captured, ctx, tui } = createTuiContext();
+  ctx.model = { ...ctx.model, contextWindow: 200_000 };
   ctx.getContextUsage = () => { throw new Error("usage unavailable"); };
   for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
@@ -113,7 +114,13 @@ test("footer survives unavailable context telemetry", () => {
     onBranchChange: () => () => {},
   });
   assert.doesNotThrow(() => footer.render(80));
-  assert.match(footer.render(80).join("\n"), /ctx —%/u);
+  assert.match(footer.render(80).join("\n"), /ctx —% \(200K\)/u);
+  for (const capacity of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const handler of getHandlers(handlers, "model_select")) handler({ model: { ...ctx.model, contextWindow: capacity } });
+    const rendered = footer.render(120).join("\n");
+    assert.match(rendered, /ctx —%/u);
+    assert.doesNotMatch(rendered, /128K|\/compact|ctx —% \(/u);
+  }
   disposeTestComponent(footer);
 });
 
@@ -693,7 +700,11 @@ test("footer cuts down by priority while preserving model and context", () => {
     reasoning: true,
     contextWindow: 1_050_000,
   };
-  ctx.getContextUsage = () => ({ tokens: 50_000, contextWindow: 1_050_000 });
+  let usageReads = 0;
+  ctx.getContextUsage = () => {
+    usageReads += 1;
+    return { tokens: 50_000, contextWindow: 1_050_000 };
+  };
   for (const handler of getHandlers(handlers, "session_start")) handler({}, ctx);
 
   const quietTheme: { fg(color: string, text: string): string } = {
@@ -710,7 +721,9 @@ test("footer cuts down by priority while preserving model and context", () => {
   assert.equal(wideRender[0], `<borderMuted>${"─".repeat(160)}</borderMuted>`);
   const widePrimary = wideRender[1] ?? "";
   const wideSecondary = wideRender[2] ?? "";
-  assert.match(widePrimary, /gpt-5\.6-sol openai · high · ctx 95%/u);
+  assert.match(widePrimary, /gpt-5\.6-sol openai · high · ctx 95% \(1M\/1\.05M\)/u);
+  assert.match(footer.render(46)[1] ?? "", /ctx 95% \(1\.05M\)/u);
+  assert.doesNotMatch(footer.render(40)[1] ?? "", /1\.05M/u);
   assert.match(widePrimary, /\d+s · \$10\.00/u);
   assert.match(wideSecondary, /main/u);
   const normalizedHome = (process.env.HOME || process.env.USERPROFILE || os.homedir()).replace(/[\\/]+$/u, "");
@@ -742,7 +755,9 @@ test("footer cuts down by priority while preserving model and context", () => {
   assert.doesNotMatch(emergency, /openai/u);
 
   for (let width = 1; width <= 180; width += 1) {
+    const readsBeforeRender = usageReads;
     const lines = footer.render(width);
+    assert.equal(usageReads, readsBeforeRender + 1, "One usage snapshot per render");
     assert.equal(lines.length, 3, `footer rows at width ${width}`);
     assert.equal(lines[0], `<borderMuted>${"─".repeat(width)}</borderMuted>`);
     assert.ok(lines.slice(1).every((line) => [...line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "")].length === width), `footer width mismatch at ${width}`);
@@ -791,6 +806,13 @@ test("footer uses model metadata and formats unknown provider names", () => {
   }
   const deepSeek = (footer.render(120)[1] ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/gu, "");
   assert.match(deepSeek, /deepseek-v4-flash deepseek/u);
+  ctx.getContextUsage = () => ({ tokens: 151_000, contextWindow: Number.NaN });
+  for (const handler of getHandlers(handlers, "model_select")) {
+    handler({ model: { ...ctx.model, id: "new-budget", contextWindow: 1_000_000 } });
+  }
+  assert.match(footer.render(120)[1] ?? "", /ctx 85% \(849K\/1M\)/u);
+  ctx.getContextUsage = () => ({ tokens: 151_000, contextWindow: 1_050_000 });
+  assert.match(footer.render(120)[1] ?? "", /ctx 86% \(899K\/1\.05M\)/u);
   disposeTestComponent(footer);
 });
 
