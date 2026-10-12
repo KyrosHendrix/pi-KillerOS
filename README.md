@@ -19,7 +19,7 @@ A TypeScript extension for the [Pi coding agent](https://github.com/earendil-wor
 ## Requirements
 
 - Node.js 22.19.0+
-- Pi 1.0.4 or later below 2.0.0
+- Pi 1.1.0 or later below 2.0.0
 - An interactive TUI session for the custom header, editor, footer, and `question`
 
 Users on older Pi versions must upgrade.
@@ -63,7 +63,7 @@ The TUI footer's `fast` label means the enabled preference applies to the select
 
 ## Behavior by mode
 
-Pi 1.0 defaults to fullscreen. Use `--tui-mode regular` for one invocation or set `"tuiMode": "regular"` in Pi's [settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md#terminal-and-display) to restore terminal-owned scrollback. KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged.
+Pi defaults to fullscreen. Use `--tui-mode regular` for one invocation or set `"tuiMode": "regular"` in Pi's [settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md#terminal-and-display) to restore terminal-owned scrollback. KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged.
 
 | Mode | What works |
 | --- | --- |
@@ -71,11 +71,11 @@ Pi 1.0 defaults to fullscreen. Use `--tui-mode regular` for one invocation or se
 | RPC | Goals, proactive compaction; no TUI components, sounds, title indicator |
 | Print/JSON | No interactive questions, `/goal`, or proactive compaction |
 
-With Pi 1.0.3's default [keybindings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md#fullscreen), `Home` and `End` move within the current editor line. In fullscreen mode, `Ctrl+Home` and `Ctrl+End` scroll to the transcript's beginning or end without moving the editor cursor. KillerOS inherits these bindings; user overrides still apply.
+With Pi's default [keybindings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md#fullscreen), `Home` and `End` move within the current editor line. In fullscreen mode, `Ctrl+Home` and `Ctrl+End` scroll to the transcript's beginning or end without moving the editor cursor. KillerOS inherits these bindings; user overrides still apply.
 
 `question` and the active `killeros_goal_update` tool use Pi's `model-only` exposure. They stay directly declared to the model when codemode is disabled or enabled in `on` or `only` mode, but scripts and other tools cannot call them through `ctx.executeTool()`. The goal tool is active for active goals and, during a later ordinary request, for completion only of a saved blocked goal. It is inactive outside those cases. Questions still require TUI mode; a direct RPC call fails with `The question tool requires interactive TUI mode`. KillerOS does not enable or configure codemode.
 
-Pi 1.0.4's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns such as `"killeros_*"` so the shell does not expand them. An explicit allowlist must include `question` for interactive questions and permit `killeros_goal_update` for goals. Selection does not make questions usable outside TUI mode. Excluding the goal tool pauses goals that are active before any model request. A later ordinary request with a blocked goal still runs, but cannot record its completion when the tool is excluded. See Pi's [tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
+Pi's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns such as `"killeros_*"` so the shell does not expand them. An explicit allowlist must include `question` for interactive questions and permit `killeros_goal_update` for goals. Selection does not make questions usable outside TUI mode. Excluding the goal tool pauses goals that are active before any model request. A later ordinary request with a blocked goal still runs, but cannot record its completion when the tool is excluded. See Pi's [tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
 
 Pi 1.1.0 also accepts a list containing only exact `+name` and `-name` entries to change its default selection. For example, `pi --tools +codemode` adds codemode while retaining the default tools, and `pi --tools +codemode,-write` also removes `write` from that selection. Plain allowlists still replace the selection. Pi rejects mixed lists such as `read,+codemode` and modifier patterns such as `-killeros_*`. Use `--exclude-tools "killeros_*"` for wildcard exclusions.
 
@@ -139,11 +139,11 @@ Passive Git scans compare content without running repository filters. CRLF text 
 
 Completion sounds are off by default; change with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 
-On Pi 1.1.0, final request cancellation records `Stopped` and suppresses the completion sound even when the last assistant response ended normally. Recorded changes and checks remain in the receipt. Cancellation stops goal continuation and provider retry work; cancelling a pending compaction prevents its recovery. Pi 1.0.4 retains the assistant stop-reason fallback. Receipts and sounds still wait for final `agent_settled`, including across provider retries.
+On Pi 1.1.0, final request cancellation records `Stopped` and suppresses the completion sound even when the last assistant response ended normally. Recorded changes and checks remain in the receipt. Cancellation stops goal continuation and provider retry work; cancelling a pending compaction prevents its recovery. Receipts and sounds still wait for final `agent_settled`, including across provider retries.
 
 ### Pi model and MCP settings
 
-Use Pi's native `/thinking` selector for reasoning levels. Pi 1.0.2 can also apply different sampling parameters for each level through `samplingParamsByThinkingLevel` in `models.json`. For example, a model entry can contain:
+Use Pi's native `/thinking` selector for reasoning levels. Pi can also apply different sampling parameters for each level through `samplingParamsByThinkingLevel` in `models.json`. For example, a model entry can contain:
 
 ```json
 {
@@ -157,23 +157,35 @@ Use Pi's native `/thinking` selector for reasoning levels. Pi 1.0.2 can also app
 
 Only configure parameters the endpoint accepts. These settings apply to `openai-completions`, `openai-responses`, and `azure-openai-responses`, not legacy `openai-codex`. Missing levels inherit model defaults; request-level sampling parameters take precedence. `/codex-fast` preserves sampling parameters when it adds the priority service tier. See Pi's [sampling configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md#configure-sampling-by-thinking-level) for the full file format and merge rules.
 
-Pi 1.0.3 renames the Azure **provider** from `azure-openai-responses` to `azure` and adds Azure Foundry Chat Completions, including `azure/deepseek-v4-pro`. Rename the provider key in `auth.json` or run `/login azure` again, rename it in `models.json`, and update `defaultProvider`, `enabledModels` patterns, and `modelThinkingLevels` keys in `settings.json`. The Responses **API** identifier remains `azure-openai-responses`; Foundry Chat Completions uses `openai-completions`. The `AZURE_OPENAI_*` environment variables are unchanged. Old Azure sessions fall back to another model on resume and lose prompt-cache reuse. KillerOS does not migrate credentials or Pi settings. See Pi's [Azure configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md#azure-openai).
+Pi uses `azure` for the Azure **provider** and supports Azure Foundry Chat Completions, including `azure/deepseek-v4-pro`. If your configuration still uses the old `azure-openai-responses` provider key, rename it to `azure` in `auth.json` or run `/login azure` again. Apply the same rename in `models.json`, and update `defaultProvider`, `enabledModels` patterns, and `modelThinkingLevels` keys in `settings.json`. The Responses **API** identifier remains `azure-openai-responses`; Foundry Chat Completions uses `openai-completions`. The `AZURE_OPENAI_*` environment variables are unchanged. Old Azure sessions fall back to another model on resume and lose prompt-cache reuse. KillerOS does not migrate credentials or Pi settings. See Pi's [Azure configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md#azure-openai).
 
-In Pi 1.0.4 codemode, `tools.read()` on an image returns an image block that you can pass to native `image()`. See Pi's [codemode tool calls](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#call-tools).
+In Pi codemode, `tools.read()` on an image returns an image block that you can pass to native `image()`. See Pi's [codemode tool calls](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#call-tools).
 
-When codemode is enabled, Pi 1.0.3's `image()` also saves images to temporary files and includes their paths in the result, so later turns can copy or move them. Pi creates these output files with user-only permissions on POSIX systems; Windows access follows inherited filesystem ACLs. KillerOS uses Pi's native codemode behavior; see [image generation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#generate-images).
+When codemode is enabled, Pi's `image()` also saves images to temporary files and includes their paths in the result, so later turns can copy or move them. Pi creates these output files with user-only permissions on POSIX systems; Windows access follows inherited filesystem ACLs. KillerOS uses Pi's native codemode behavior; see [image generation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#generate-images).
 
 Use Pi's `/mcp` command and `.pi/mcp.json` to enable, disable, or change the exposure of a user-level MCP server for a trusted project without copying its credentials. See [project MCP overrides](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#configure-servers). KillerOS does not manage MCP configuration.
 
-In Pi 1.0.4, a nonempty `--tools` list with no `mcp__` entry preserves MCP tool availability according to each server's exposure. For example, `--tools codemode` does not disable MCP connections or remove their tools. Use `--no-mcp` to disable MCP connections through Pi's built-in MCP support for one run. Explicit MCP selection and exclusion remain Pi's responsibility; see [MCP tool exposure](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#control-tool-exposure).
+In Pi, a nonempty `--tools` list with no `mcp__` entry preserves MCP tool availability according to each server's exposure. For example, `--tools codemode` does not disable MCP connections or remove their tools. Use `--no-mcp` to disable MCP connections through Pi's built-in MCP support for one run. Explicit MCP selection and exclusion remain Pi's responsibility; see [MCP tool exposure](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md#control-tool-exposure).
 
 ## Development
 
 Strict TypeScript throughout. Tests run on Node's built-in test runner:
 
 ```bash
-npm ci && npm run check && npm test
+npm ci --ignore-scripts --no-audit --no-fund
+npm run check
+npm test
 ```
+
+Development dependencies pin Pi 1.1.0. CI checks that baseline and the latest compatible Pi release without changing the tracked manifest or lockfile. Both compatibility checks retain their required-check names. Required CI jobs repeat the installed CLI and terminal pilots five times without forced exit. The latest-Pi job also repeats the cancellation lifecycle checks five times. The complete default suite runs once per job.
+
+The default suite remains authoritative. To check the installed CLI and native-terminal scenarios without forced exit:
+
+```bash
+node --test --experimental-strip-types --test-name-pattern="installed Pi CLI|installed Pi terminal|terminal driver reports|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts
+```
+
+The RPC pilot has a reproduced native shutdown crash on Windows Node 24.19.0 with Pi 1.1.0. That exact combination is skipped, not certified. Use Node 22.19.0 on Windows to execute the RPC pilot. The terminal pilot and its cleanup controls still run on both Node versions.
 
 ### Release process
 

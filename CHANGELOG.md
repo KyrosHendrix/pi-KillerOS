@@ -4,6 +4,22 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the minimum supported Pi version to 1.1.0, pinned development packages to 1.1.0, and moved all CI Pi targets to that baseline or newer. Cancellation and retry coverage now runs without old-version gates.
+- Removed repository checks that required exact historical changelog wording while retaining current README, Pi compatibility, package, and release safeguards.
+
+### Added
+
+- Added real-Pi cancellation coverage through the complete KillerOS entry point, checking paused goal state, stopped receipts, and suppressed completion sounds.
+- Added an installed-CLI goal workflow covering package loading, public command routing, model-issued completion, durable session restoration, and no unsolicited model work. Verified on Windows Node 22.19.0 with Pi 1.1.0; the exact Windows Node 24.19.0/Pi 1.1.0 combination is skipped after reproduced native RPC shutdown crashes.
+- Added a native-terminal installed-package pilot for question selection after resize, cancellation without partial answers, and multiline editor text across fullscreen transcript navigation. Kept focused question and editor tests, added terminal startup and assertion-failure cleanup controls, and added five-run no-forced-exit CI checks for the installed pilots and changed cancellation lifecycle. Terminal failure logs retain selected versions, sanitized launch arguments, and bounded screen and raw-output diagnostics.
+
+### Fixed
+
+- Fixed the native-terminal test driver's exit race by draining queued screen parsing before rejecting final-output waits or disposing the parser.
+- Fixed RPC fixture cancellation checks before sending commands or returning cached records. Added subprocess controls that reject unauthorized writes and prevent PID-tree escalation after the parent exits but inherited pipes remain open.
+
 ## [3.0.5] - 2026-10-08
 
 ### Fixed
