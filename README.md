@@ -303,6 +303,8 @@ node --test --experimental-strip-types --test-name-pattern="installed Pi CLI|ins
 
 Development dependencies pin Pi 1.1.0. CI checks the Node.js floor, current LTS, Windows, and the minimum and latest compatible Pi releases. Compatibility installs leave the tracked manifest and lockfile unchanged. Required jobs repeat installed CLI and terminal pilots five times without forced exit. The latest-Pi job also repeats cancellation lifecycle checks five times. Each job runs the full default suite once.
 
+CLI, terminal, process-control, and Git branch-isolation failures include nested errors in the test output and save a bounded `failure.txt` in the retained fixture directory. Failed CI jobs upload only these reports as `test-failures-*` artifacts, retained for seven days. Successful scenarios create no reports. A passing rerun does not establish the cause of an intermittent failure.
+
 ## Contribution and release expectations
 
 Run `npm run check` and `npm test` before submitting code changes. Changes to commands, configuration, requirements, or mode behavior also need README updates. Record completed changes to shipped behavior, supported workflows, public documentation, or build, test, and release guarantees under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md). Do not bump the version unless preparing a release.

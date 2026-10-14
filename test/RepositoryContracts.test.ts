@@ -240,6 +240,15 @@ test("CI runs the full quality suite on Windows at the Node.js floor", () => {
   assert.match(windowsJob, /^          node-version: '22\.19\.0'$/mu);
   assert.match(windowsJob, /^        run: npm run check$/mu);
   assert.match(windowsJob, /^        run: npm test$/mu);
+  for (const job of ["quality", "windows", "pi-latest"]) {
+    const source = new RegExp(`^  ${job}:\\r?\\n(?:(?: {4,}.*)?\\r?\\n)*`, "mu").exec(ci)?.[0];
+    assert.ok(source);
+    assert.match(source, /- name: Upload test failure reports\s+if: failure\(\)\s+uses: actions\/upload-artifact@[a-f0-9]{40}/u);
+    assert.match(source, /^          path: node_modules\/\.killeros-\*\/failure\.txt$/mu);
+    assert.match(source, /^          include-hidden-files: true$/mu);
+    assert.match(source, /^          retention-days: 7$/mu);
+    assert.ok(source.indexOf("Upload test failure reports") > source.indexOf("run: npm test"));
+  }
 });
 
 test("CI checks locked Pi 1.1.0 and the latest matched Pi packages with stable required-check names", () => {

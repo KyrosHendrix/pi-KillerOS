@@ -40,6 +40,7 @@ import { createHarness, createTuiContext, removeDirectoryEventually, theme, wait
 import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
+import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const piManifest: unknown = JSON.parse(readFileSync(path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8"));
@@ -326,8 +327,10 @@ test("installed Pi terminal accepts resized questions, cancels partial selection
   if (requests.length !== 5) cleanupFailures.push(new Error(`Expected five terminal requests, received ${requests.length}`));
   if (sockets.size !== 0) cleanupFailures.push(new Error("Terminal provider retained connections"));
   if (failure || cleanupFailures.length) {
-    t.diagnostic(JSON.stringify({ scenario: "installed-terminal-pilot", failure: (failure instanceof Error ? failure.stack ?? failure.message : String(failure)).slice(0, 2_000), cleanupFailures: cleanupFailures.map((error) => (error instanceof Error ? error.message : String(error)).slice(0, 2_000)), directory, sourceRevision, platform: process.platform, node: process.version, npm: npmVersion, piVersions, packageIdentity, cliPath, sanitizedCliArgs: cliArgs, requests, faults, screens, terminal: terminal?.diagnostics(), capability: capability?.diagnostics(), cleanup, session: existsSync(sessionFile) ? readFileSync(sessionFile, "utf8").slice(-16_384) : "missing" }));
-    throw new AggregateError([...(failure ? [failure] : []), ...cleanupFailures], "Installed terminal pilot failed");
+    throwScenarioFailure({ directory, message: "Installed terminal pilot failed",
+      errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures],
+      diagnostics: JSON.stringify({ scenario: "installed-terminal-pilot", directory, sourceRevision, platform: process.platform, node: process.version, npm: npmVersion, piVersions, packageIdentity, cliPath, sanitizedCliArgs: cliArgs, requests, faults, screens, terminal: terminal?.diagnostics(), capability: capability?.diagnostics(), cleanup, session: existsSync(sessionFile) ? readFileSync(sessionFile, "utf8").slice(-16_384) : "missing" }),
+    });
   }
   t.diagnostic(JSON.stringify({ scenario: "installed-terminal-pilot", sourceRevision, platform: process.platform, node: process.version,
     npm: npmVersion, piVersions, packageIdentity, cliPath, sanitizedCliArgs: cliArgs, requestCount: requests.length, cleanup, navigationScreens: { editor: screens.editor, pageUp: screens.pageUp, customTop: screens.customTop, bottom: screens.bottom } }));
@@ -885,9 +888,9 @@ test("installed Pi CLI completes a goal and restores it without unsolicited mode
   if (unexpectedRequests.length > 0) cleanupFailures.push(new Error(`Unexpected local provider requests: ${unexpectedRequests.join("; ")}`));
   if (primaryFailure !== undefined || cleanupFailures.length > 0) {
     const details = failureDiagnostics();
-    t.diagnostic(details);
-    throw new AggregateError([...(primaryFailure === undefined ? [] : [primaryFailure]), ...cleanupFailures],
-      `Installed CLI goal/persistence pilot failed; fixture retained at ${directory}\n${details}`);
+    throwScenarioFailure({ directory, message: "Installed CLI goal/persistence pilot failed",
+      errors: [...(primaryFailure === undefined ? [] : [primaryFailure]), ...cleanupFailures], diagnostics: details,
+    });
   }
 
   await removeDirectoryEventually(directory);

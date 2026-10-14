@@ -4,8 +4,10 @@ import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { removeDirectoryEventually } from "./ExtensionTestHarness.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
+import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
@@ -152,8 +154,11 @@ test("installed Pi terminal updates context capacity and the settings-driven com
     }
   }
   if (failure !== undefined || cleanupFailures.length > 0 || faults.length > 0) {
-    t.diagnostic(JSON.stringify({ directory, platform: process.platform, node: process.version, screens, faults, requestCount, terminal: terminal?.diagnostics() }));
-    throw new AggregateError([...(failure === undefined ? [] : [failure]), ...cleanupFailures, ...faults.map((fault) => new Error(fault))], "Footer TUI scenario failed");
+    throwScenarioFailure({ directory, message: "Footer TUI scenario failed",
+      errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures, ...faults.map((fault) => new Error(fault))],
+      diagnostics: JSON.stringify({ directory, platform: process.platform, node: process.version, pi: PI_VERSION,
+        faults, requestCount, terminal: terminal?.diagnostics(), screens }),
+    });
   }
   await removeDirectoryEventually(directory);
 });

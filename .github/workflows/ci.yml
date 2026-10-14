@@ -95,6 +95,16 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Upload test failure reports
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-failures-quality-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: node_modules/.killeros-*/failure.txt
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   windows:
     name: Windows (Node 22.19.0)
     runs-on: windows-latest
@@ -137,6 +147,16 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Upload test failure reports
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-failures-windows-${{ github.run_attempt }}
+          path: node_modules/.killeros-*/failure.txt
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   pi-latest:
     name: Pi compatibility (${{ matrix.pi-channel }})
@@ -215,6 +235,16 @@ jobs:
 
       - name: Test against matched Pi
         run: npm test
+
+      - name: Upload test failure reports
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-failures-pi-${{ matrix.pi-channel }}-${{ github.run_attempt }}
+          path: node_modules/.killeros-*/failure.txt
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   package:
     name: Package smoke test

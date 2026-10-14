@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Added
+
+- Added bounded failure reports for CLI, terminal, process-control, and Git branch-isolation tests. Nested assertion and cleanup errors remain visible in test output with forced exit, and failed CI jobs retain report-only artifacts for seven days.
+
 ## [3.0.6] - 2026-10-12
 
 ### Changed
