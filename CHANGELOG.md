@@ -4,6 +4,15 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Changed
+
+- Batched the passive Git conversion matrix into three isolated repositories instead of thirty. All 5,940 real-Git comparisons and thirty attribute/configuration cases remain covered, with explicit per-case comparison counts and fewer Git process launches.
+- Removed unnecessary Pi runtime imports from process controls, footer end-to-end tests, failure-report checks, and bounded-text tests. Directory cleanup now lives in a lightweight shared helper with unchanged Windows lock retries.
+
+### Fixed
+
+- Isolated the real-Pi tool-exposure matrix from the parent checkout's Git state. CLI and SDK fixtures share a checked repository initializer, and the exposure matrix shuts down extensions before disposal so its watchers do not outlive the tests.
+
 ### Added
 
 - Added bounded failure reports for CLI, terminal, process-control, and Git branch-isolation tests. Nested assertion and cleanup errors remain visible in test output with forced exit, and failed CI jobs retain report-only artifacts for seven days.

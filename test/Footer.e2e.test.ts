@@ -4,12 +4,14 @@ import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
-import { removeDirectoryEventually } from "./ExtensionTestHarness.ts";
+import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const piManifest: unknown = JSON.parse(readFileSync(path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8"));
+assert.ok(typeof piManifest === "object" && piManifest !== null && "version" in piManifest && typeof piManifest.version === "string");
+const piVersion = piManifest.version;
 
 // Provider usage enters through Pi's real transport, not a replacement context API.
 test("installed Pi terminal updates context capacity and the settings-driven compact hint", { timeout: 90_000 }, async (t) => {
@@ -156,7 +158,7 @@ test("installed Pi terminal updates context capacity and the settings-driven com
   if (failure !== undefined || cleanupFailures.length > 0 || faults.length > 0) {
     throwScenarioFailure({ directory, message: "Footer TUI scenario failed",
       errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures, ...faults.map((fault) => new Error(fault))],
-      diagnostics: JSON.stringify({ directory, platform: process.platform, node: process.version, pi: PI_VERSION,
+      diagnostics: JSON.stringify({ directory, platform: process.platform, node: process.version, pi: piVersion,
         faults, requestCount, terminal: terminal?.diagnostics(), screens }),
     });
   }

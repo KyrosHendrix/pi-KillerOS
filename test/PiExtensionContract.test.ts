@@ -32,11 +32,12 @@ import { registerQuestionTool } from "../killeros/question.ts";
 import { registerGoalRuntime } from "../killeros/goal-runtime.ts";
 import { registerGoalSettlement } from "../killeros/goal-settlement.ts";
 import { registerHandoff } from "../killeros/handoff.ts";
-import { passiveGitCommand } from "../killeros/passive-git-status.ts";
+import { passiveGitCommand, passiveGitEnv } from "../killeros/passive-git-status.ts";
 import { registerFooter } from "../killeros/footer.ts";
 import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
-import { createHarness, createTuiContext, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
+import { createHarness, createTuiContext, theme, waitFor } from "./ExtensionTestHarness.ts";
+import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
@@ -102,6 +103,23 @@ function isolatedFixtureEnvironment(directory: string): NodeJS.ProcessEnv {
   mkdirSync(temporaryDirectory, { recursive: true });
   writeFileSync(emptyGitConfig, "");
   return env;
+}
+
+function initializeFixtureRepository(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  const git = passiveGitCommand(cwd, env);
+  assert.ok(git, "The fixture needs an absolute Git executable outside its repository");
+  const gitEnv = passiveGitEnv(env);
+  execFileSync(git, ["init", "--quiet"], { cwd, env: gitEnv, timeout: 15_000 });
+  const discoveredGit = passiveGitCommand(cwd, env);
+  assert.ok(discoveredGit, "The passive scanner must resolve Git after fixture initialization");
+  const discoveredRoot = realpathSync.native(execFileSync(discoveredGit, ["rev-parse", "--show-toplevel"], {
+    cwd, env: gitEnv, encoding: "utf8", timeout: 15_000,
+  }).trim());
+  const fixtureRoot = realpathSync.native(cwd);
+  assert.equal(process.platform === "win32" ? discoveredRoot.toLowerCase() : discoveredRoot,
+    process.platform === "win32" ? fixtureRoot.toLowerCase() : fixtureRoot,
+    "KillerOS passive Git scans must resolve to the disposable fixture root");
+  return discoveredGit;
 }
 
 function packageVersion(packageName: string): string {
@@ -212,12 +230,7 @@ test("installed Pi terminal accepts resized questions, cancels partial selection
   try {
     for (const location of [agentDirectory, project, consumer, pack]) mkdirSync(location, { recursive: true });
     writeFileSync(userConfig, "");
-    const git = passiveGitCommand(project, env);
-    assert.ok(git);
-    execFileSync(git, ["init", "--quiet", project], { env, timeout: 10_000 });
-    const root = realpathSync.native(execFileSync(git, ["-C", project, "rev-parse", "--show-toplevel"], { env, encoding: "utf8", timeout: 10_000 }).trim());
-    assert.equal(process.platform === "win32" ? root.toLowerCase() : root,
-      process.platform === "win32" ? realpathSync.native(project).toLowerCase() : realpathSync.native(project));
+    const git = initializeFixtureRepository(project, env);
     sourceRevision = execFileSync(git, ["-C", repositoryRoot, "rev-parse", "HEAD"], { env, encoding: "utf8", timeout: 10_000 }).trim();
     npmVersion = runNpm(["--version"], repositoryRoot, userConfig, env).trim();
     capability = new PiTerminalProcess({ file: process.execPath, args: ["-e", [
@@ -615,23 +628,11 @@ test("installed Pi CLI completes a goal and restores it without unsolicited mode
     assert.equal(existsSync(cliPath), true, "The selected Pi CLI bundle must exist in the installed test dependency set");
     assert.equal(realpathSync.native(cliPath), cliPath, "The CLI must not resolve through a global shim or another install");
 
-    const gitCommand = passiveGitCommand(projectDirectory, fixtureEnv);
-    assert.ok(gitCommand, "The fixture needs an absolute Git executable outside its repository");
+    const gitCommand = initializeFixtureRepository(projectDirectory, fixtureEnv);
     fixtureEnv.PATH = [...new Set([path.dirname(gitCommand), path.dirname(process.execPath)])].join(path.delimiter);
     sourceRevision = execFileSync(gitCommand, ["-C", repositoryRoot, "rev-parse", "HEAD"], {
       cwd: repositoryRoot, env: fixtureEnv, encoding: "utf8", timeout: 15_000,
     }).trim();
-    execFileSync(gitCommand, ["-C", projectDirectory, "init", "--quiet"], {
-      cwd: projectDirectory, env: fixtureEnv, encoding: "utf8", timeout: 15_000,
-    });
-    const discoveredRoot = realpathSync.native(execFileSync(gitCommand, ["-C", projectDirectory, "rev-parse", "--show-toplevel"], {
-      cwd: projectDirectory, env: fixtureEnv, encoding: "utf8", timeout: 15_000,
-    }).trim());
-    const fixtureRoot = realpathSync.native(projectDirectory);
-    assert.equal(process.platform === "win32" ? discoveredRoot.toLowerCase() : discoveredRoot,
-      process.platform === "win32" ? fixtureRoot.toLowerCase() : fixtureRoot,
-      "KillerOS passive Git scans must resolve to the disposable fixture root");
-
     writeFileSync(path.join(agentDirectory, "settings.json"), JSON.stringify({
       cacheWarming: "off",
       compaction: { enabled: false },
@@ -1504,6 +1505,7 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
           mkdirSync(cwd);
           mkdirSync(agentDir);
           process.env.PI_CODING_AGENT_DIR = agentDir;
+          initializeFixtureRepository(cwd);
           const provider = `killeros-exposure-${mode}-${codemode}`;
           const faux = fauxProvider({ provider, models: [{ id: "local", contextWindow: 100_000, maxTokens: 1_000 }] });
           const declarations: string[][] = [];
@@ -1763,7 +1765,12 @@ test("real Pi keeps KillerOS decisions declared and rejects nested calls with ev
             await runGoal(() => session.reload());
             assert.deepEqual(errors, []);
           } finally {
-            session.dispose();
+            try {
+              await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+              assert.deepEqual(errors, [], "Extension shutdown must not report errors");
+            } finally {
+              session.dispose();
+            }
           }
         } finally {
           if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -1913,18 +1920,7 @@ test("Pi 1.1 user cancellation stops goal work after a normal result, during ret
         const runtime = createGoalRuntime();
         if (stage === "production entrypoint") {
           process.env.PI_CODING_AGENT_DIR = agentDir;
-          const gitCommand = passiveGitCommand(cwd, process.env);
-          assert.ok(gitCommand, "the fixture needs an absolute Git executable outside the repository");
-          execFileSync(gitCommand, ["init", "--quiet"], { cwd, encoding: "utf8", timeout: 15_000 });
-          const discoveredGit = passiveGitCommand(cwd, process.env);
-          assert.ok(discoveredGit, "the passive scanner must resolve Git after fixture initialization");
-          const discoveredRoot = realpathSync.native(execFileSync(discoveredGit, ["rev-parse", "--show-toplevel"], {
-            cwd, env: process.env, encoding: "utf8", timeout: 15_000,
-          }).trim());
-          const fixtureRoot = realpathSync.native(cwd);
-          assert.equal(process.platform === "win32" ? discoveredRoot.toLowerCase() : discoveredRoot,
-            process.platform === "win32" ? fixtureRoot.toLowerCase() : fixtureRoot,
-            "the production receipt scan must stay inside its fixture repository");
+          initializeFixtureRepository(cwd);
         }
         const compacting = stage.endsWith("compaction");
         const ordinary = stage === "ordinary compaction";

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { removeDirectoryEventually } from "./ExtensionTestHarness.ts";
+import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const failureReporter = new URL("./support/ScenarioFailure.ts", import.meta.url).href;

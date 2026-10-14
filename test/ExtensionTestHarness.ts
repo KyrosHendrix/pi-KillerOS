@@ -4,7 +4,6 @@ import path from "node:path";
 import { initTheme, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import { extensionApiTestAdapter, themeTestAdapter } from "./PiTestAdapters.ts";
-import { rmSync } from "node:fs";
 
 type TestEvent = Record<string, unknown>;
 
@@ -393,19 +392,6 @@ export async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail("timed out waiting for asynchronous test state");
-}
-
-export async function removeDirectoryEventually(directory: string): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      rmSync(directory, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || !["EPERM", "EBUSY"].includes(String(error.code))) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-  rmSync(directory, { recursive: true, force: true });
 }
 
 export function createTuiContext(

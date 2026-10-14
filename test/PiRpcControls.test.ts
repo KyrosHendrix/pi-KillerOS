@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { removeDirectoryEventually } from "./ExtensionTestHarness.ts";
+import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 

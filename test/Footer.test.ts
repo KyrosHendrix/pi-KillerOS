@@ -11,7 +11,8 @@ import {
   type GitFileChanges,
 } from "../killeros/footer.ts";
 import { passiveGitCommand, passiveGitEnv } from "../killeros/passive-git-status.ts";
-import { createHarness, createTuiContext, disposeTestComponent, getCommand, getHandlers, removeDirectoryEventually, theme, waitFor } from "./ExtensionTestHarness.ts";
+import { createHarness, createTuiContext, disposeTestComponent, getCommand, getHandlers, theme, waitFor } from "./ExtensionTestHarness.ts";
+import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { isCodexFastEnabled, resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

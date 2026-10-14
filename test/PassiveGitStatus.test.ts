@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, readlink, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readlink, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
@@ -51,49 +51,61 @@ const attributes = [
 ];
 
 test("passive content comparison agrees with Git's conversion oracle", async (t) => {
-  for (const attribute of attributes) {
-    for (const autoCrlf of ["false", "true", "input"]) {
-      await t.test(JSON.stringify({ attribute, autoCrlf }), async (t) => {
-        const root = await fixture(t);
-        git(root, ["config", "core.autocrlf", autoCrlf]);
-        await writeFile(path.join(root, ".gitattributes"), `${attribute}\n`);
-        const cases: Array<{ file: string; indexed: string; working: string; content: string }> = [];
+  for (const autoCrlf of ["false", "true", "input"]) {
+    await t.test(`core.autocrlf=${autoCrlf}`, async (t) => {
+      const root = await fixture(t);
+      git(root, ["config", "core.autocrlf", autoCrlf]);
+      const cases: Array<{ attribute: string; file: string; indexed: string; working: string; content: string }> = [];
+      // Directory-local attributes keep every matrix row isolated while sharing Git setup and scans.
+      for (const [attributeIndex, attribute] of attributes.entries()) {
+        const directory = `attributes-${attributeIndex}`;
+        await mkdir(path.join(root, directory));
+        await writeFile(path.join(root, directory, ".gitattributes"), `${attribute}\n`);
         for (const [indexed, initialContent] of contents) {
           for (const [working, content] of new Map([["same", initialContent], ...rewrites])) {
             for (const prefix of ["default", "override"]) {
-              const file = `${prefix}-${indexed}-${working}.txt`;
-              cases.push({ file, indexed, working, content });
+              const file = `${directory}/${prefix}-${indexed}-${working}.txt`;
+              cases.push({ attribute, file, indexed, working, content });
               await writeFile(path.join(root, file), initialContent);
             }
           }
         }
-        git(root, ["add", "."]);
-        git(root, ["commit", "--quiet", "-m", "conversion matrix"]);
-        const indexIds = new Map(git(root, ["ls-files", "-s"]).toString().trim().split("\n").map((record) => {
-          const [metadata, file] = record.split("\t");
-          assert.ok(metadata && file);
-          return [file, metadata.split(" ")[1]];
-        }));
-        for (const { file, content } of cases) {
-          await writeFile(path.join(root, file), content);
-          // Force content comparison even on files with unchanged bytes and coarse timestamps.
-          await utimes(path.join(root, file), new Date(0), new Date(0));
-        }
-        // These isolated repositories have no filters. Batch hashing applies each file's attributes,
-        // just like hash-object --path=<file> <file>, without one Git process per matrix row.
-        const oracleIds = git(root, ["hash-object", "--stdin-paths"], cases.map(({ file }) => file).join("\n") + "\n")
-          .toString().trim().split("\n");
-        assert.equal(oracleIds.length, cases.length);
-        const snapshot = await inspectWorktreeWithoutFilters(root, async (args) => git(root, args));
-        for (const [position, { file, indexed, working }] of cases.entries()) {
-          const indexId = indexIds.get(file);
-          const oracleId = oracleIds[position];
-          assert.ok(indexId && oracleId);
-          assert.equal(snapshot.files.has(file), oracleId !== indexId,
-            JSON.stringify({ attribute, autoCrlf, file, indexed, working, indexId, oracleId }));
-        }
-      });
-    }
+      }
+      git(root, ["add", "."]);
+      git(root, ["commit", "--quiet", "-m", "conversion matrix"]);
+      const indexIds = new Map(git(root, ["ls-files", "-s"]).toString().trim().split("\n").map((record) => {
+        const [metadata, file] = record.split("\t");
+        assert.ok(metadata && file);
+        return [file, metadata.split(" ")[1]];
+      }));
+      for (const { file, content } of cases) {
+        await writeFile(path.join(root, file), content);
+        // Force content comparison even on files with unchanged bytes and coarse timestamps.
+        await utimes(path.join(root, file), new Date(0), new Date(0));
+      }
+      // These isolated repositories have no filters. Batch hashing applies each file's attributes,
+      // just like hash-object --path=<file> <file>, without one Git process per matrix row.
+      const oracleIds = git(root, ["hash-object", "--stdin-paths"], cases.map(({ file }) => file).join("\n") + "\n")
+        .toString().trim().split("\n");
+      assert.equal(oracleIds.length, cases.length);
+      const snapshot = await inspectWorktreeWithoutFilters(root, async (args) => git(root, args));
+      for (const attribute of attributes) {
+        await t.test(JSON.stringify({ attribute, autoCrlf }), () => {
+          let comparisons = 0;
+          for (const [position, row] of cases.entries()) {
+            if (row.attribute !== attribute) continue;
+            const { file, indexed, working } = row;
+            const indexId = indexIds.get(file);
+            const oracleId = oracleIds[position];
+            assert.ok(indexId && oracleId);
+            assert.equal(snapshot.files.has(file), oracleId !== indexId,
+              JSON.stringify({ attribute, autoCrlf, file, indexed, working, indexId, oracleId }));
+            comparisons++;
+          }
+          assert.equal(comparisons, contents.size * (rewrites.size + 1) * 2);
+        });
+      }
+    });
   }
 });
 
