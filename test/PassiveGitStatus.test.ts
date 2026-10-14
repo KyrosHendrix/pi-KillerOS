@@ -56,7 +56,6 @@ test("passive content comparison agrees with Git's conversion oracle", async (t)
       const root = await fixture(t);
       git(root, ["config", "core.autocrlf", autoCrlf]);
       const cases: Array<{ attribute: string; file: string; indexed: string; working: string; content: string }> = [];
-      // Directory-local attributes keep every matrix row isolated while sharing Git setup and scans.
       for (const [attributeIndex, attribute] of attributes.entries()) {
         const directory = `attributes-${attributeIndex}`;
         await mkdir(path.join(root, directory));
@@ -80,11 +79,8 @@ test("passive content comparison agrees with Git's conversion oracle", async (t)
       }));
       for (const { file, content } of cases) {
         await writeFile(path.join(root, file), content);
-        // Force content comparison even on files with unchanged bytes and coarse timestamps.
         await utimes(path.join(root, file), new Date(0), new Date(0));
       }
-      // These isolated repositories have no filters. Batch hashing applies each file's attributes,
-      // just like hash-object --path=<file> <file>, without one Git process per matrix row.
       const oracleIds = git(root, ["hash-object", "--stdin-paths"], cases.map(({ file }) => file).join("\n") + "\n")
         .toString().trim().split("\n");
       assert.equal(oracleIds.length, cases.length);

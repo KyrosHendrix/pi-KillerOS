@@ -2,7 +2,6 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { inspect } from "node:util";
 
-/** Keep nested failures in the thrown message; forced exit can drop deferred test diagnostics. */
 export function throwScenarioFailure(options: {
   directory: string;
   message: string;

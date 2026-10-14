@@ -97,7 +97,7 @@ jobs:
 
       - name: Upload test failure reports
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: test-failures-quality-${{ strategy.job-index }}-${{ github.run_attempt }}
           path: node_modules/.killeros-*/failure.txt
@@ -150,7 +150,7 @@ jobs:
 
       - name: Upload test failure reports
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: test-failures-windows-${{ github.run_attempt }}
           path: node_modules/.killeros-*/failure.txt
@@ -238,7 +238,7 @@ jobs:
 
       - name: Upload test failure reports
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: test-failures-pi-${{ matrix.pi-channel }}-${{ github.run_attempt }}
           path: node_modules/.killeros-*/failure.txt
