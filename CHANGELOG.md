@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.7] - 2026-10-15
+
 ### Changed
 
 - Raised the minimum supported Pi version to 1.2.0 and pinned development packages to that baseline. Removed the retired experimental server dependency and updated the packaged theme to Pi's published schema URL.
@@ -12,6 +14,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Excluded Git-ignored private `docs/` artifacts from linting while retaining checks for repository code, so local documentation helpers cannot block release validation.
+- Made footer terminal checks wait for a rendered footer before testing command results, preventing reload frames without a footer from satisfying absent-hint checks.
 - Made the cleanup-disabled process-tree control wait for the descendant's complete late write. Shell exit alone does not prove that a slowly started descendant has finished.
 - Removed the old personal-instruction copy from goal continuation messages. Pi 1.2.0 now applies the shared startup handler to custom runs, so the copy duplicated instructions on each goal turn and after startup cancellation.
 - Scoped the unsupported Windows RPC shutdown case to Node 24.19.0, including Pi 1.2.0, and documented Node's 24.20.0 fix. Kept the pilots active on other Node versions.
