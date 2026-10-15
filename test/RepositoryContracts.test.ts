@@ -125,11 +125,11 @@ test("real Pi fixtures use bounded cleanup for transient Windows directory locks
   assert.match(contracts, /removeDirectoryEventually/u);
 });
 
-test("peer ranges require Pi 1.1.0 and reject older versions and 2.x", () => {
+test("peer ranges require Pi 1.2.0 and reject older versions and 2.x", () => {
   assert.deepEqual(packageJson.peerDependencies, {
-    "@earendil-works/pi-ai": ">=1.1.0 <2",
-    "@earendil-works/pi-coding-agent": ">=1.1.0 <2",
-    "@earendil-works/pi-tui": ">=1.1.0 <2",
+    "@earendil-works/pi-ai": ">=1.2.0 <2",
+    "@earendil-works/pi-coding-agent": ">=1.2.0 <2",
+    "@earendil-works/pi-tui": ">=1.2.0 <2",
     typebox: ">=1.1.38 <2",
   });
   execFileSync(process.execPath, ["--input-type=module", "--eval", `
@@ -139,12 +139,12 @@ test("peer ranges require Pi 1.1.0 and reject older versions and 2.x", () => {
     const { peerDependencies } = JSON.parse(readFileSync("package.json", "utf8"));
     for (const name of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
       const range = peerDependencies["@earendil-works/" + name];
-      for (const [version, supported] of [["1.0.99", false], ["1.1.0-rc.1", false], ["1.1.0", true], ["1.99.0", true], ["2.0.0", false], ["2.1.0", false]]) {
+      for (const [version, supported] of [["1.0.99", false], ["1.1.0", false], ["1.1.99", false], ["1.2.0-rc.1", false], ["1.2.0", true], ["1.99.0", true], ["2.0.0", false], ["2.1.0", false]]) {
         assert.equal(semver.satisfies(version, range), supported, name + "@" + version);
       }
     }
   `], { cwd: repositoryRoot, stdio: "pipe" });
-  assert.match(readme, /Pi\s+`?1\.1\.0`? or later below 2\.0\.0/u);
+  assert.match(readme, /Pi\s+`?1\.2\.0`? or later below 2\.0\.0/u);
   assert.match(readme, /Users on older Pi versions must upgrade/u);
 });
 
@@ -164,7 +164,7 @@ test("public TUI guidance preserves Pi defaults and documents regular-mode scrol
   assert.match(readme, /KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged/u);
 });
 
-test("lockfile pins Pi 1.1.0 development packages", () => {
+test("lockfile pins Pi 1.2.0 development packages without retired experimental packages", () => {
   const lock: unknown = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
   assert.ok(isUnknownRecord(lock));
   assert.ok(isUnknownRecord(lock.packages));
@@ -172,11 +172,15 @@ test("lockfile pins Pi 1.1.0 development packages", () => {
   assert.ok(isUnknownRecord(root));
   assert.deepEqual(root.devDependencies, packageJson.devDependencies);
   assert.deepEqual(root.peerDependencies, packageJson.peerDependencies);
-  for (const name of ["pi-ai", "pi-coding-agent", "pi-server", "pi-tui"]) {
+  for (const name of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
     const lockedPackage: unknown = lock.packages[`node_modules/@earendil-works/${name}`];
     assert.ok(isUnknownRecord(lockedPackage));
-    assert.equal(packageJson.devDependencies[`@earendil-works/${name}`], "1.1.0", name);
-    assert.equal(lockedPackage.version, "1.1.0", name);
+    assert.equal(packageJson.devDependencies[`@earendil-works/${name}`], "1.2.0", name);
+    assert.equal(lockedPackage.version, "1.2.0", name);
+  }
+  for (const name of ["pi-server", "pi-client", "pi-protocol"]) {
+    assert.equal(packageJson.devDependencies[`@earendil-works/${name}`], undefined, name);
+    assert.equal(lock.packages[`node_modules/@earendil-works/${name}`], undefined, name);
   }
 });
 
@@ -216,9 +220,10 @@ test("public compaction documentation states the configurable default", () => {
   assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
 });
 
-test("lint ignores private Pi artifacts without excluding repository code", async () => {
+test("lint ignores private Pi artifacts and docs without excluding repository code", async () => {
   const eslint = new ESLint({ cwd: repositoryRoot });
   assert.equal(await eslint.isPathIgnored(".pi/verification/release-prompt.test.mjs"), true);
+  assert.equal(await eslint.isPathIgnored("docs/killeros-launch/film.mjs"), true);
   for (const file of ["Killeros.ts", "killeros/hooks.ts", "scripts/verify-release.ts", "test/RepositoryContracts.test.ts"]) {
     assert.equal(await eslint.isPathIgnored(file), false, file);
   }
@@ -231,24 +236,38 @@ test("CI blocks moderate dependency advisories without running lifecycle scripts
   assert.doesNotMatch(ci, /uses: [^\s]+@(?![a-f0-9]{40}(?:\s|$))/u);
 });
 
-test("CI runs the full quality suite on Windows at the Node.js floor", () => {
+test("CI runs the full quality suite on Windows at the Node.js floor and current LTS", () => {
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
   const windowsJob = /^  windows:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
   assert.ok(windowsJob);
   assert.match(windowsJob, /^    runs-on: windows-latest$/mu);
-  assert.match(windowsJob, /^          node-version: '22\.19\.0'$/mu);
+  assert.match(windowsJob, /^    name: Windows \(Node \$\{\{ matrix\.node-version \}\}\)$/mu);
+  assert.match(windowsJob, /node-version:\s*\n\s*- '22\.19\.0'\s*\n\s*- 'lts\/\*'/u);
+  assert.match(windowsJob, /^          node-version: \$\{\{ matrix\.node-version \}\}$/mu);
+  assert.match(windowsJob, /name: test-failures-windows-\$\{\{ strategy\.job-index \}\}-/u);
   assert.match(windowsJob, /^        run: npm run check$/mu);
   assert.match(windowsJob, /^        run: npm test$/mu);
+  for (const job of ["quality", "windows", "pi-latest"]) {
+    const source = new RegExp(`^  ${job}:\\r?\\n(?:(?: {4,}.*)?\\r?\\n)*`, "mu").exec(ci)?.[0];
+    assert.ok(source);
+    assert.match(source, /- name: Upload test failure reports\s+if: failure\(\)\s+uses: actions\/upload-artifact@[a-f0-9]{40}/u);
+    assert.match(source, /^          path: node_modules\/\.killeros-\*\/failure\.txt$/mu);
+    assert.match(source, /^          include-hidden-files: true$/mu);
+    assert.match(source, /^          retention-days: 7$/mu);
+    assert.ok(source.indexOf("Upload test failure reports") > source.indexOf("run: npm test"));
+    assert.match(source, /- name: Repeat Pi startup lifecycle without forced exit/u);
+    assert.match(source, /node --test --experimental-strip-types test\/PiStartup\.test\.ts \|\| exit \$\?/u);
+  }
 });
 
-test("CI checks locked Pi 1.1.0 and the latest matched Pi packages with stable required-check names", () => {
+test("CI checks minimum and latest Pi with matched runtime packages and stable required-check names", () => {
   assert.match(ci, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- dev/u);
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   const compatibilityJob = /^  pi-latest:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
   assert.ok(compatibilityJob);
   assert.match(compatibilityJob, /^    name: Pi compatibility \(\$\{\{ matrix\.pi-channel \}\}\)$/mu);
-  assert.match(compatibilityJob, /include:\s*\n\s*- pi-channel: minimum\s*\n\s*pi-target: '1\.1\.0'\s*\n\s*- pi-channel: latest\s*\n\s*pi-target: '>=1\.1\.0 <2'/u);
+  assert.match(compatibilityJob, /include:\s*\n\s*- pi-channel: minimum\s*\n\s*pi-target: '1\.2\.0'\s*\n\s*- pi-channel: latest\s*\n\s*pi-target: '>=1\.2\.0 <2'/u);
   assert.match(compatibilityJob, /PI_TARGET: \$\{\{ matrix\.pi-target \}\}/u);
   assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version/u);
   assert.match(compatibilityJob, /npm ci --ignore-scripts --no-audit --no-fund/u);
@@ -260,13 +279,12 @@ test("CI checks locked Pi 1.1.0 and the latest matched Pi packages with stable r
   assert.match(ci, /dependencies\.@earendil-works\/pi-tui/u);
   assert.match(ci, /@earendil-works\/pi-ai@\$PI_AI_RANGE/u);
   assert.match(ci, /@earendil-works\/pi-coding-agent@\$PI_VERSION/u);
-  assert.match(ci, /@earendil-works\/pi-server@\$PI_VERSION/u);
+  assert.doesNotMatch(ci, /@earendil-works\/pi-(?:server|client|protocol)/u);
   assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
   assert.match(ci, /--package-lock=false/u);
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "1.1.0");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "1.1.0");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-server"], "1.1.0");
-  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "1.1.0");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-ai"], "1.2.0");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-coding-agent"], "1.2.0");
+  assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "1.2.0");
 });
 
 test("Node-floor quality validates current metadata and tests the release-pinned npm lifecycle before the full suite", () => {

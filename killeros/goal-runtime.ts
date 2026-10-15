@@ -10,7 +10,6 @@ import {
   transitionGoalState,
   type GoalTransitionOptions,
 } from "./goal-state.ts";
-import { resolvePersonalInstructions } from "./personal-instructions.ts";
 import type { GoalRuntime, GoalState, GoalStatus } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
@@ -284,7 +283,7 @@ function sendGoalTurn(
   try {
     pi.sendMessage({
       customType: GOAL_CONTINUATION_TYPE,
-      content: goalContinuationMessage(state, ctx),
+      content: goalContinuationMessage(state),
       display: false,
     }, { triggerTurn: true, deliverAs: "followUp" });
     return true;
@@ -396,13 +395,8 @@ function goalSystemPrompt(state: GoalState): string {
   return goalInstructions(state, "Active KillerOS goal");
 }
 
-function goalContinuationMessage(state: GoalState, ctx: ExtensionContext): string {
-  const sections = [goalInstructions(state, "KillerOS long-running goal turn")];
-  if (ctx.isProjectTrusted()) {
-    const personal = resolvePersonalInstructions(ctx.cwd);
-    if (personal) sections.push(personal);
-  }
-  return sections.join("\n\n");
+function goalContinuationMessage(state: GoalState): string {
+  return goalInstructions(state, "KillerOS long-running goal turn");
 }
 
 export function isGoalModeSupported(ctx: ExtensionContext): boolean {

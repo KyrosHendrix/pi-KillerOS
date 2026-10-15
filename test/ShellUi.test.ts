@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createHarness, createTuiContext, disposeTestComponent, getHandlers, last, requireEditor, requiredFactory, theme } from "./ExtensionTestHarness.ts";
+import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { getKeybindings } from "@earendil-works/pi-tui";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { passiveGitCommand } from "../killeros/passive-git-status.ts";
+import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 import { resolveGitBranch } from "../killeros/shell-ui.ts";
 import { themeTestAdapter } from "./PiTestAdapters.ts";
 
@@ -51,6 +55,10 @@ test("Git branch resolution ignores inherited repository selectors", async () =>
   const inherited = path.join(parent, "inherited");
   const outside = path.join(parent, "outside");
   const previousGitDirectory = process.env.GIT_DIR;
+  let succeeded = false;
+  let branch: string | undefined;
+  let elapsedMs: number | undefined;
+  let gitCommand: string | undefined;
   try {
     for (const [repository, branch] of [[requested, "branch-a"], [inherited, "branch-b"]]) {
       mkdirSync(repository);
@@ -63,12 +71,23 @@ test("Git branch resolution ignores inherited repository selectors", async () =>
     mkdirSync(outside);
     process.env.GIT_DIR = path.join(inherited, ".git");
 
-    assert.equal(await resolveGitBranch(requested), "branch-a");
+    gitCommand = passiveGitCommand(requested);
+    const started = performance.now();
+    branch = await resolveGitBranch(requested);
+    elapsedMs = performance.now() - started;
+    assert.equal(branch, "branch-a");
     assert.equal(await resolveGitBranch(outside), undefined);
+    succeeded = true;
+  } catch (error) {
+    const reportDirectory = mkdtempSync(fileURLToPath(new URL("../node_modules/.killeros-shell-git-env-", import.meta.url)));
+    throwScenarioFailure({ directory: reportDirectory, message: "Git branch selector isolation failed", errors: [error],
+      diagnostics: JSON.stringify({ directory: parent, platform: process.platform, node: process.version,
+        gitCommand, branch, elapsedMs, inheritedGitDirectory: process.env.GIT_DIR }),
+    });
   } finally {
     if (previousGitDirectory === undefined) delete process.env.GIT_DIR;
     else process.env.GIT_DIR = previousGitDirectory;
-    rmSync(parent, { recursive: true, force: true });
+    if (succeeded) await removeDirectoryEventually(parent);
   }
 });
 

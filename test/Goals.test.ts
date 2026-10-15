@@ -371,7 +371,7 @@ test("goal panel actions match paused, blocked, and complete states", async () =
   }
 });
 
-test("/goal custom-message continuations enter goal turns without before_agent_start", async () => {
+test("/goal custom-message continuations enter goal turns before before_agent_start", async () => {
   const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();
 

@@ -3,8 +3,9 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { removeDirectoryEventually } from "./ExtensionTestHarness.ts";
+import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
+import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const terminalDriver = new URL("./support/PiTerminalProcess.ts", import.meta.url).href;
@@ -167,9 +168,11 @@ process.exitCode = fault === 'kill-throws' && cleanupFailure === undefined && fa
       } catch (error) { cleanupFailures.push(error); }
     }
     if (!succeeded || cleanupFailures.length) {
-      t.diagnostic(JSON.stringify({ scenario: `terminal-${fault}`, directory, platform: process.platform, node: process.version,
-        driverVersions, executable: process.execPath, sanitizedCliArgs: [script], terminalResult, process: processOwner.diagnostics() }));
-      throw new AggregateError([...(primaryFailure === undefined ? [] : [primaryFailure]), ...cleanupFailures], "Terminal fault control failed");
+      throwScenarioFailure({ directory, message: "Terminal fault control failed",
+        errors: [...(primaryFailure === undefined ? [] : [primaryFailure]), ...cleanupFailures],
+        diagnostics: JSON.stringify({ scenario: `terminal-${fault}`, directory, platform: process.platform, node: process.version,
+          driverVersions, executable: process.execPath, sanitizedCliArgs: [script], terminalResult, process: processOwner.diagnostics() }),
+      });
     }
     await removeDirectoryEventually(directory);
   });

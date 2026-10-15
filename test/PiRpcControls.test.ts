@@ -3,8 +3,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { removeDirectoryEventually } from "./ExtensionTestHarness.ts";
+import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
+import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const driver = new URL("./support/PiRpcProcess.ts", import.meta.url).href;
@@ -110,9 +111,11 @@ process.exitCode = failure ? 1 : 0;
       } catch (error) { cleanupFailures.push(error); }
     }
     if (failure || cleanupFailures.length) {
-      t.diagnostic(JSON.stringify({ scenario: `rpc-${fault}`, directory, node: process.version, platform: process.platform,
-        executable: process.execPath, sanitizedCliArgs: [script], result, diagnostics: owner.diagnostics() }));
-      throw new AggregateError([...(failure ? [failure] : []), ...cleanupFailures], "RPC subprocess control failed");
+      throwScenarioFailure({ directory, message: "RPC subprocess control failed",
+        errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures],
+        diagnostics: JSON.stringify({ scenario: `rpc-${fault}`, directory, node: process.version, platform: process.platform,
+          executable: process.execPath, sanitizedCliArgs: [script], result, diagnostics: owner.diagnostics() }),
+      });
     }
     await removeDirectoryEventually(directory);
   });

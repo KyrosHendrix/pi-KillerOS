@@ -21,7 +21,7 @@ The UI has a dark theme with coral accents, a multiline editor with slash-comman
 ### Requirements
 
 - Node.js 22.19.0+
-- Pi 1.1.0 or later below 2.0.0
+- Pi 1.2.0 or later below 2.0.0
 - An interactive TUI session for the custom header, editor, footer, and questions
 
 KillerOS supports Windows and Linux. Users on older Pi versions must upgrade.
@@ -55,7 +55,7 @@ You can also install from GitHub:
 pi install git:github.com/KyrosHendrix/pi-KillerOS
 ```
 
-To pin a release, use `npm:killeros@3.0.6` or append a Git tag such as `@v3.0.6` to the Git source. Add `-l` to install only for the current project. Pi loads project packages only after you grant project trust.
+To pin a release, use `npm:killeros@3.0.7` or append a Git tag such as `@v3.0.7` to the Git source. Add `-l` to install only for the current project. Pi loads project packages only after you grant project trust.
 
 ### Commands
 
@@ -163,7 +163,7 @@ The summary output limit is 8192 tokens by default. Raise `handoffMaxTokens` if 
 
 Receipts and completion sounds wait for final `agent_settled`, including across provider retries. Sounds are off by default. Configure them with `/notification` in TUI mode. The tab-title indicator requires a Nerd Font.
 
-On Pi 1.1.0, final request cancellation records `Stopped` and suppresses the sound even if the last assistant response ended normally. The receipt retains recorded changes and checks. Cancellation stops goal continuation and provider retry work. Cancelling pending compaction prevents its recovery.
+Final request cancellation records `Stopped` and suppresses the sound even if the last assistant response ended normally. The receipt retains recorded changes and checks. Cancellation stops goal continuation and provider retry work. Cancelling pending compaction prevents its recovery.
 
 Session replacement, reload, and committed tree navigation discard unfinished receipts. Late results cannot write or notify through the old session context or attach to another branch. Cancelled navigation preserves pending receipts.
 
@@ -189,6 +189,8 @@ Concurrent `/auto-compact` commands preserve independent changes to the enabled 
 
 Trusted projects can use lifecycle hooks for `tool_call`, `tool_result`, and `agent_settled` in `.pi/killeros-hooks.json`. KillerOS also loads `AGENTS.local.md` for trusted projects. Review these files before granting trust.
 
+Pi 1.2.0 runs `before_agent_start` for user prompts and extension-triggered requests. KillerOS applies trusted personal instructions through that shared setup, including goal and compaction continuations, without copying them into each continuation message.
+
 ### Supported modes and navigation
 
 Pi defaults to fullscreen. Use `--tui-mode regular` for one invocation or set `"tuiMode": "regular"` in [Pi settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md#terminal-and-display) to restore terminal-owned scrollback. KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged.
@@ -201,7 +203,7 @@ Pi defaults to fullscreen. Use `--tui-mode regular` for one invocation or set `"
 
 With Pi's default [keybindings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md#fullscreen), `Home` and `End` move within the current editor line. In fullscreen mode, `Ctrl+Home` and `Ctrl+End` scroll to the transcript's beginning or end without moving the editor cursor. KillerOS inherits these bindings and preserves user overrides.
 
-Pi 1.1.0 reports program status through OSC 7501 in supported terminals. Each question step reports `blocked` and restores the previous status after an answer, cancellation, or abort. Native confirmation dialogs do the same. `PI_PROGRAM_STATUS=1` forces reporting and `PI_PROGRAM_STATUS=0` disables it. KillerOS preserves the preference and uses Pi's native reporting. See [program status](https://github.com/earendil-works/pi/blob/v1.1.0/packages/coding-agent/docs/terminal-setup.md#program-status).
+Pi reports program status through OSC 7501 in supported terminals. Each question step reports `blocked` and restores the previous status after an answer, cancellation, or abort. Native confirmation dialogs do the same. `PI_PROGRAM_STATUS=1` forces reporting and `PI_PROGRAM_STATUS=0` disables it. KillerOS preserves the preference and uses Pi's native reporting. See [program status](https://github.com/earendil-works/pi/blob/v1.2.0/packages/coding-agent/docs/terminal-setup.md#program-status).
 
 ### Tool selection and codemode
 
@@ -213,7 +215,7 @@ Pi's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns
 
 Excluding the goal tool pauses goals that are active before any model request. A later ordinary request with a blocked goal still runs, but cannot record completion if the tool is excluded. See [Pi tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
 
-Pi 1.1.0 accepts lists containing only exact `+name` and `-name` entries to change the default selection:
+Pi accepts lists containing only exact `+name` and `-name` entries to change the default selection:
 
 ```bash
 pi --tools +codemode
@@ -222,7 +224,7 @@ pi --tools +codemode,-write
 
 Plain allowlists replace the selection. Pi rejects mixed lists such as `read,+codemode` and modifier patterns such as `-killeros_*`. Use `--exclude-tools "killeros_*"` for wildcard exclusions.
 
-On Pi 1.1.0, a `-name` modifier does not reliably prevent an extension tool from activating on registration or reload. To exclude the goal tool, use:
+A `-name` modifier does not reliably prevent an extension tool from activating on registration or reload. To exclude the goal tool, use:
 
 ```bash
 pi --exclude-tools killeros_goal_update
@@ -299,9 +301,12 @@ The default suite is authoritative. To run the installed CLI and native-terminal
 
 ```bash
 node --test --experimental-strip-types --test-name-pattern="installed Pi CLI|installed Pi terminal|terminal driver reports|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts
+node --test --experimental-strip-types test/PiStartup.test.ts
 ```
 
-Development dependencies pin Pi 1.1.0. CI checks the Node.js floor, current LTS, Windows, and the minimum and latest compatible Pi releases. Compatibility installs leave the tracked manifest and lockfile unchanged. Required jobs repeat installed CLI and terminal pilots five times without forced exit. The latest-Pi job also repeats cancellation lifecycle checks five times. Each job runs the full default suite once.
+Development dependencies and the minimum supported Pi version are 1.2.0. CI checks the Node.js floor and current LTS on Linux and Windows, plus the minimum and latest compatible Pi releases. Compatibility installs leave the tracked manifest and lockfile unchanged. Required jobs repeat startup lifecycle checks and installed CLI and terminal pilots five times without forced exit. The latest-Pi job also repeats cancellation lifecycle checks five times. Each job runs the full default suite once.
+
+CLI, terminal, process-control, and Git branch-isolation failures include nested errors in the test output and save a bounded `failure.txt` in the retained fixture directory. Failed CI jobs upload only these reports as `test-failures-*` artifacts, retained for seven days. Successful scenarios create no reports. A passing rerun does not establish the cause of an intermittent failure.
 
 ## Contribution and release expectations
 
@@ -339,8 +344,8 @@ Keep the job if those prerequisites are unmet.
 
 ## Known issues and limits
 
-- The RPC pilot reproduces a native shutdown crash on Windows Node 24.19.0 with Pi 1.1.0. That exact combination is skipped, not certified. Use Node 22.19.0 on Windows to run the pilot. Terminal pilots and cleanup controls still run on both Node versions.
-- Pi 1.1.0's `-name` tool modifiers do not reliably exclude extension tools. Use `--exclude-tools`, as described in [Tool selection and codemode](#tool-selection-and-codemode).
+- Windows Node 24.19.0 can crash during native RPC shutdown with Pi 1.2.0. RPC pilots skip that exact Node version, not other Windows versions. Use Node 22.19.0 or 24.20.0+, which includes [Node's shutdown fix](https://github.com/nodejs/node/pull/61999). Terminal pilots and cleanup controls still run on 24.19.0.
+- Pi's `-name` tool modifiers do not reliably exclude extension tools. Use `--exclude-tools`, as described in [Tool selection and codemode](#tool-selection-and-codemode).
 - Passive Git scans treat CRLF text as unchanged when it normalizes to the indexed LF content, including with `text=auto eol=lf` or bare `eol=lf`. After a size-changing rewrite, Git's index stat cache can still make `git status` report a modification even when `git diff` is empty.
 - Questions require TUI mode. Print and JSON modes do not support goals or proactive compaction. See [Supported modes and navigation](#supported-modes-and-navigation).
 
