@@ -6,15 +6,21 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Changed
 
+- Raised the minimum supported Pi version to 1.2.0 and pinned development packages to that baseline. Removed the retired experimental server dependency and updated the packaged theme to Pi's published schema URL.
 - Batched the passive Git conversion matrix into three isolated repositories instead of thirty. All 5,940 real-Git comparisons and thirty attribute/configuration cases remain covered, with explicit per-case comparison counts and fewer Git process launches.
 - Removed unnecessary Pi runtime imports from process controls, footer end-to-end tests, failure-report checks, and bounded-text tests. Directory cleanup now lives in a lightweight shared helper with unchanged Windows lock retries.
 
 ### Fixed
 
+- Made the cleanup-disabled process-tree control wait for the descendant's complete late write. Shell exit alone does not prove that a slowly started descendant has finished.
+- Removed the old personal-instruction copy from goal continuation messages. Pi 1.2.0 now applies the shared startup handler to custom runs, so the copy duplicated instructions on each goal turn and after startup cancellation.
+- Scoped the unsupported Windows RPC shutdown case to Node 24.19.0, including Pi 1.2.0, and documented Node's 24.20.0 fix. Kept the pilots active on other Node versions.
+- Restored latest-Pi compatibility installs after Pi 1.2.0 stopped publishing the experimental server package. CI now installs only the matched runtime packages, and test diagnostics no longer require the retired server.
 - Isolated the real-Pi tool-exposure matrix from the parent checkout's Git state. CLI and SDK fixtures share a checked repository initializer, and the exposure matrix shuts down extensions before disposal so its watchers do not outlive the tests.
 
 ### Added
 
+- Added real-CLI Pi 1.2.0 startup checks for single-copy personal instructions, custom and user events, queued next-turn messages, startup cancellation, goal turn accounting, reload, and ordinary compaction recovery. CI repeats them five times without forced exit and now checks Windows at both the Node floor and current LTS.
 - Added bounded failure reports for CLI, terminal, process-control, and Git branch-isolation tests. Nested assertion and cleanup errors remain visible in test output with forced exit, and failed CI jobs retain report-only artifacts for seven days.
 
 ## [3.0.6] - 2026-10-12

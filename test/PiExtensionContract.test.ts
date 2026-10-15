@@ -38,17 +38,13 @@ import { createGoalRuntime } from "../killeros/runtime.ts";
 import { createNewGoalState, parseGoalState, transitionGoalState } from "../killeros/goal-state.ts";
 import { createHarness, createTuiContext, theme, waitFor } from "./ExtensionTestHarness.ts";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
+import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { extensionContextTestAdapter } from "./PiTestAdapters.ts";
 import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const piManifest: unknown = JSON.parse(readFileSync(path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8"));
-assert.ok(isUnknownRecord(piManifest) && typeof piManifest.version === "string");
-const piCliShutdownIncompatibility = process.platform === "win32"
-  && process.versions.node === "24.19.0"
-  && piManifest.version === "1.1.0";
 
 /** Runs npm with isolated config and no implicit shell when npm exposes its entry point. */
 function runNpm(args: string[], cwd: string, userConfig: string, processEnv: NodeJS.ProcessEnv = process.env): string {
@@ -153,7 +149,7 @@ test("installed Pi terminal accepts resized questions, cancels partial selection
   let sourceRevision = "unavailable";
   let npmVersion = "unavailable";
   const piVersions = { ai: packageVersion("@earendil-works/pi-ai"), codingAgent: packageVersion("@earendil-works/pi-coding-agent"),
-    server: packageVersion("@earendil-works/pi-server"), tui: packageVersion("@earendil-works/pi-tui") };
+    tui: packageVersion("@earendil-works/pi-tui") };
   let packageIdentity = "unavailable";
   let cliPath = "unavailable";
   let cliArgs: string[] = [];
@@ -352,9 +348,7 @@ test("installed Pi terminal accepts resized questions, cancels partial selection
 
 test("installed Pi CLI completes a goal and restores it without unsolicited model work", {
   timeout: 120_000,
-  skip: piCliShutdownIncompatibility
-    ? `Pi ${piManifest.version} CLI crashes during Windows graceful shutdown on Node 24.19.0; this pilot is verified on Windows Node 22.19.0`
-    : false,
+  skip: piRpcShutdownSkip,
 }, async (t) => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-installed-cli-"));
   const packDirectory = path.join(directory, "pack");
@@ -621,7 +615,6 @@ test("installed Pi CLI completes a goal and restores it without unsolicited mode
     piVersions = {
       ai: packageVersion("@earendil-works/pi-ai"),
       codingAgent: packageVersion("@earendil-works/pi-coding-agent"),
-      server: packageVersion("@earendil-works/pi-server"),
       tui: packageVersion("@earendil-works/pi-tui"),
     };
     cliPath = path.join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
@@ -1908,7 +1901,7 @@ test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codem
   }
 });
 
-test("Pi 1.1 user cancellation stops goal work after a normal result, during retry, and during pending compaction", { timeout: 30_000 }, async (t) => {
+test("Pi 1.2 user cancellation stops goal work after a normal result, during retry, and during pending compaction", { timeout: 30_000 }, async (t) => {
   for (const stage of ["normal result", "retry", "goal compaction", "ordinary compaction", "production entrypoint"] as const) {
     await t.test(stage, async () => {
       const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-cancellation-"));
@@ -2019,7 +2012,7 @@ test("Pi 1.1 user cancellation stops goal work after a normal result, during ret
   }
 });
 
-test("Pi 1.1 native CLI rejects mixed modifiers and wildcard modifiers", () => {
+test("Pi 1.2 native CLI rejects mixed modifiers and wildcard modifiers", () => {
   for (const selection of ["read,+codemode", "+codemode,-killeros_*"]) {
     const args = parseArgs(["--tools", selection]);
     assert.equal(args.diagnostics.some((diagnostic) => diagnostic.type === "error"), true, selection);
@@ -2032,7 +2025,7 @@ test("Pi 1.1 native CLI rejects mixed modifiers and wildcard modifiers", () => {
   }
 });
 
-test("Pi 1.1 +codemode retains native defaults through goal activation and reload", { timeout: 30_000 }, async () => {
+test("Pi 1.2 +codemode retains native defaults through goal activation and reload", { timeout: 30_000 }, async () => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-tool-modifiers-"));
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   try {

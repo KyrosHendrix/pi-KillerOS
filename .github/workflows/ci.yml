@@ -76,6 +76,14 @@ jobs:
           KILLEROS_TEST_NPM_CLI: ${{ runner.temp }}/killeros-publishing-npm/node_modules/npm/bin/npm-cli.js
         run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test/verify-release.test.ts
 
+      - name: Repeat Pi startup lifecycle without forced exit
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            echo "Pi startup lifecycle run $attempt/5"
+            node --test --experimental-strip-types test/PiStartup.test.ts || exit $?
+          done
+
       - name: Repeat installed CLI pilot without forced exit
         shell: bash
         run: |
@@ -106,9 +114,15 @@ jobs:
           retention-days: 7
 
   windows:
-    name: Windows (Node 22.19.0)
+    name: Windows (Node ${{ matrix.node-version }})
     runs-on: windows-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - '22.19.0'
+          - 'lts/*'
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -119,7 +133,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.19.0'
+          node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -128,6 +142,14 @@ jobs:
 
       - name: Check
         run: npm run check
+
+      - name: Repeat Pi startup lifecycle without forced exit
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            echo "Pi startup lifecycle run $attempt/5"
+            node --test --experimental-strip-types test/PiStartup.test.ts || exit $?
+          done
 
       - name: Repeat installed CLI pilot without forced exit
         shell: bash
@@ -152,7 +174,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: test-failures-windows-${{ github.run_attempt }}
+          name: test-failures-windows-${{ strategy.job-index }}-${{ github.run_attempt }}
           path: node_modules/.killeros-*/failure.txt
           include-hidden-files: true
           if-no-files-found: ignore
@@ -168,9 +190,9 @@ jobs:
         # Keep required-check names stable when the supported Pi versions change.
         include:
           - pi-channel: minimum
-            pi-target: '1.1.0'
+            pi-target: '1.2.0'
           - pi-channel: latest
-            pi-target: '>=1.1.0 <2'
+            pi-target: '>=1.2.0 <2'
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -199,7 +221,6 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false \
             "@earendil-works/pi-ai@$PI_AI_RANGE" \
             "@earendil-works/pi-coding-agent@$PI_VERSION" \
-            "@earendil-works/pi-server@$PI_VERSION" \
             "@earendil-works/pi-tui@$PI_TUI_RANGE"
 
       - name: Verify package files are unchanged
@@ -207,6 +228,14 @@ jobs:
 
       - name: Type-check against matched Pi
         run: npm run check
+
+      - name: Repeat Pi startup lifecycle without forced exit
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            echo "Pi startup lifecycle run $attempt/5"
+            node --test --experimental-strip-types test/PiStartup.test.ts || exit $?
+          done
 
       - name: Repeat installed CLI pilot without forced exit
         shell: bash
@@ -230,7 +259,7 @@ jobs:
         run: |
           for attempt in 1 2 3 4 5; do
             echo "Pi cancellation lifecycle run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="Pi 1.1 user cancellation stops goal work after a normal result, during retry, and during pending compaction" test/PiExtensionContract.test.ts || exit $?
+            node --test --experimental-strip-types --test-name-pattern="Pi 1.2 user cancellation stops goal work after a normal result, during retry, and during pending compaction" test/PiExtensionContract.test.ts || exit $?
           done
 
       - name: Test against matched Pi

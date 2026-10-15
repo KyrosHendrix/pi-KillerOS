@@ -904,6 +904,12 @@ test("the process-tree fixture detects a late survivor when cleanup is disabled"
     assert.equal(result.exitUnconfirmed, true, "a surviving tree must never be reported confirmed stopped");
     assert.equal(existsSync(tree.marker), false, "the descendant must write after the cleanup window");
     await closed;
+    // The shell's deadline can expire before a slowly started descendant writes.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (existsSync(tree.marker) && readFileSync(tree.marker, "utf8") === "late") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     assert.equal(readFileSync(tree.marker, "utf8"), "late");
     assert.equal(readFileSync(tree.script, "utf8"), tree.source);
   } finally {
