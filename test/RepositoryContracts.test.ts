@@ -220,9 +220,10 @@ test("public compaction documentation states the configurable default", () => {
   assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
 });
 
-test("lint ignores private Pi artifacts without excluding repository code", async () => {
+test("lint ignores private Pi artifacts and docs without excluding repository code", async () => {
   const eslint = new ESLint({ cwd: repositoryRoot });
   assert.equal(await eslint.isPathIgnored(".pi/verification/release-prompt.test.mjs"), true);
+  assert.equal(await eslint.isPathIgnored("docs/killeros-launch/film.mjs"), true);
   for (const file of ["Killeros.ts", "killeros/hooks.ts", "scripts/verify-release.ts", "test/RepositoryContracts.test.ts"]) {
     assert.equal(await eslint.isPathIgnored(file), false, file);
   }

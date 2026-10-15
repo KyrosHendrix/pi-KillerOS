@@ -89,7 +89,7 @@ test("installed Pi terminal updates context capacity and the settings-driven com
       assert.ok(terminal);
       const after = terminal.sequence;
       terminal.write(`${text}\r`);
-      return await terminal.waitForScreen(predicate, { signal: t.signal, after });
+      return await terminal.waitForScreen((screen) => footerLine(screen) !== "" && predicate(screen), { signal: t.signal, after });
     };
     screens.startup = await terminal.waitForScreen((screen) => footerLine(screen).includes("(1M/1M)"), { signal: t.signal });
     screens.default = await command("low budget", (screen) => footerLine(screen).includes("ctx 15% (150K/1M)"));
