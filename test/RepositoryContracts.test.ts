@@ -374,10 +374,11 @@ test("public README documents current requirements and commands", () => {
   assert.match(readme, new RegExp(`@v${escapedVersion}`, "u"));
   assert.match(readme, /Node\.js\s+`?22\.19\.0`?(?:\+| or later)/u);
   assert.match(readme, /\/goal <objective>/u);
+  assert.match(readme, /^\/goal edit/mu);
   assert.match(readme, /^\/goal pause/mu);
   assert.match(readme, /^\/goal resume/mu);
   assert.match(readme, /^\/goal clear/mu);
-  assert.doesNotMatch(readme, /\/goal (start|check|checks|limit|history|edit)/u);
+  assert.doesNotMatch(readme, /\/goal (start|check|checks|limit|history)/u);
   for (const command of ["codex-fast", "notification", "handoff", "clear", "exit"] as const) {
     assert.match(readme, new RegExp(`^/${command}(?:\\s|$)`, "mu"));
   }

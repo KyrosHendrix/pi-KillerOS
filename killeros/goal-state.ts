@@ -665,6 +665,35 @@ export function recordGoalDecision(
   };
 }
 
+/** Replaces the objective in place for an editable goal; pending decisions and audits belong to the previous objective. */
+export function editGoalState(
+  current: GoalState,
+  objective: string,
+  verification: GoalFileVerification | undefined,
+  now: number,
+): GoalState {
+  if (current.status !== "active" && current.status !== "paused") {
+    throw new Error("Only an active or paused goal can be edited");
+  }
+  const common: GoalStateCommon = {
+    version: current.version,
+    revision: nextRevision(current),
+    objective,
+    createdAt: current.createdAt,
+    updatedAt: now,
+    activeMilliseconds: current.activeMilliseconds,
+    turns: current.turns,
+    blockedAuditStartTurn: current.turns,
+    baselineTokens: current.baselineTokens,
+    turnPhase: "ready",
+    ...(current.maxTurns === undefined ? {} : { maxTurns: current.maxTurns }),
+    ...(verification === undefined ? {} : { verification }),
+  };
+  return current.status === "active"
+    ? { ...common, status: "active", activeStartedAt: current.activeStartedAt, ...(current.result === undefined ? {} : { result: current.result }) }
+    : { ...common, status: "paused", ...(current.result === undefined ? {} : { result: current.result }) };
+}
+
 export function transitionGoalState(
   current: GoalState,
   status: GoalStatus,

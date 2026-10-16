@@ -223,6 +223,7 @@ test("goal history shows only lifecycle changes with event wording and no status
   const visible: Array<[string, Record<string, unknown> | null, string, string]> = [
     ["set", goalLifecycleState({}), "Goal started", "customMessageLabel"],
     ["replace", goalLifecycleState({}), "Goal replaced", "customMessageLabel"],
+    ["edit", goalLifecycleState({}), "Goal objective edited", "customMessageLabel"],
     ["resume", goalLifecycleState({}), "Goal resumed", "customMessageLabel"],
     ["pause", goalLifecycleState({ status: "paused", activeStartedAt: undefined }), "Goal paused", "warning"],
     ["limit", goalLifecycleState({ status: "paused", activeStartedAt: undefined, result: "Turn limit reached (20/20)." }), "Goal paused", "warning"],

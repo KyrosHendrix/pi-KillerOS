@@ -63,6 +63,74 @@ test("/goal restores only the current branch and resumes active saved work", asy
   assert.match(last(notifications).message, /Finish the saved task/u);
 });
 
+test("an edited objective restores and resumes under the new text", async () => {
+  const now = Date.now();
+  const oldObjective = "Finish the original saved task";
+  const newObjective = "Finish the edited saved task";
+  const identity = {
+    version: 1,
+    createdAt: now - 60_000,
+    activeMilliseconds: 20_000,
+    turns: 2,
+    baselineTokens: 0,
+    maxTurns: 4,
+    turnPhase: "ready",
+  };
+  const branchEntries = [
+    {
+      type: "custom",
+      customType: "killeros-goal",
+      data: {
+        version: 1,
+        event: "set",
+        state: {
+          ...identity,
+          revision: 1,
+          objective: oldObjective,
+          status: "active",
+          updatedAt: now - 50_000,
+          activeStartedAt: now - 50_000,
+          blockedAuditStartTurn: 0,
+        },
+      },
+    },
+    {
+      type: "custom",
+      customType: "killeros-goal",
+      data: {
+        version: 1,
+        event: "edit",
+        state: {
+          ...identity,
+          revision: 2,
+          objective: newObjective,
+          status: "active",
+          updatedAt: now - 10_000,
+          activeStartedAt: now - 10_000,
+          blockedAuditStartTurn: 2,
+        },
+      },
+    },
+  ];
+  const { appendedEntries, handlers, sentMessages } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext(branchEntries);
+  for (const handler of getHandlers(handlers, "session_start")) await handler({ reason: "resume" }, ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(sentMessages.length, 1);
+  const continuation = last(sentMessages).message.content;
+  assert.match(continuation, /Finish the edited saved task/u);
+  assert.doesNotMatch(continuation, /Finish the original saved task/u);
+
+  const restored = last(appendedEntries).data;
+  assert.equal(restored.event, "turn");
+  assert.equal(restored.state.status, "active");
+  assert.equal(restored.state.objective, newObjective);
+  assert.equal(restored.state.turns, 3);
+  assert.equal(restored.state.maxTurns, 4);
+  assert.equal(restored.state.createdAt, now - 60_000);
+});
+
 test("resume and later transitions do not retain an old pause reason", async () => {
   const { appendedEntries, commands, handlers, tools } = createHarness<GoalEntryData>();
   const { ctx } = createTuiContext();

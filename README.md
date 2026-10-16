@@ -62,6 +62,7 @@ To pin a release, use `npm:killeros@3.0.7` or append a Git tag such as `@v3.0.7`
 ```text
 /goal                     View the current goal
 /goal <objective>         Set an objective
+/goal edit <objective>    Update the objective without resetting the goal
 /goal pause               Stop automatic continuation
 /goal resume              Resume automatic continuation
 /goal clear               Remove the current goal
@@ -87,6 +88,8 @@ Include the result you want and how the agent can verify it:
 KillerOS cannot independently prove arbitrary objectives from prose. The assistant must check the whole objective before reporting completion.
 
 A directly quoted, path-shaped file target adds silent file proof. KillerOS captures its baseline at goal start and accepts completion only after the file is created or changed. For an extensionless relative file, use an explicit path such as `./summary` or `.\summary`. Bare quoted prose uses model-reported completion. File proof verifies the deliverable, not every acceptance criterion in the objective.
+
+Editing a goal updates it in place without resetting its turn count, active clock, or token accounting. The change applies from the next turn while an in-flight turn finishes under the old text, so every later goal turn and ordinary request uses the new objective. A quoted file target is re-baselined for the new objective, and completion proof then measures change since the edit. `edit` is a command only for an active or paused goal; otherwise the text is an ordinary objective, so `/goal Edit the file` still starts a goal.
 
 Each goal turn must record a decision through `killeros_goal_update`:
 

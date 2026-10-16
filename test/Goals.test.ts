@@ -734,3 +734,157 @@ test("pending replacements retain goal ownership across confirmation, idle, and 
     });
   }
 });
+
+test("goal edit updates an active objective in place and keeps working", async () => {
+  const { appendedEntries, commands, handlers, sentMessages, tools } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  await getCommand(commands, "goal").handler("Original objective", ctx);
+  await getTool(tools, "killeros_goal_update").execute(
+    "continue-original",
+    { status: "continue", evidence: "First step passed", nextAction: "Run the next step" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+  await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
+
+  const before = last(appendedEntries).data.state;
+  assert.equal(before.turns, 2);
+  assert.ok(before.lastDecision);
+  assert.ok(before.lastContinueReport);
+  const sentBeforeEdit = sentMessages.length;
+
+  ctx.waitForIdle = async () => {
+    await getTool(tools, "killeros_goal_update").execute(
+      "continue-before-edit",
+      { status: "continue", evidence: "Second step passed", nextAction: "Finish the old objective" },
+      new AbortController().signal,
+      () => {},
+      ctx,
+    );
+    await emitSequentially(getHandlers(handlers, "agent_end"), { messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+    await emitSequentially(getHandlers(handlers, "agent_settled"), {}, ctx);
+  };
+  await getCommand(commands, "goal").handler("edit Revised objective", ctx);
+
+  const edited = last(appendedEntries.filter((entry) => entry.data.event === "edit"));
+  assert.equal(edited.data.state.objective, "Revised objective");
+  assert.equal(edited.data.state.status, "active");
+  assert.equal(edited.data.state.turns, before.turns);
+  assert.equal(edited.data.state.createdAt, before.createdAt);
+  assert.equal(edited.data.state.maxTurns, before.maxTurns);
+  assert.ok(Number(edited.data.state.revision) > Number(before.revision), "an edit advances the revision");
+  assert.equal(edited.data.state.turnDecision, undefined);
+  assert.equal(edited.data.state.lastDecision, undefined);
+  assert.equal(edited.data.state.lastContinueReport, undefined);
+  assert.equal(edited.data.state.turnPhase, "ready");
+
+  assert.equal(sentMessages.length, sentBeforeEdit + 1);
+  assert.match(sentMessages[sentBeforeEdit].message.content, /Revised objective/u);
+});
+
+test("goal edit keeps a paused goal paused and clears blocker audits", async () => {
+  const { appendedEntries, commands, sentMessages, tools } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  await getCommand(commands, "goal").handler("Original objective", ctx);
+  const audit = await getTool(tools, "killeros_goal_update").execute(
+    "audit-original",
+    { status: "blocked", blockerKey: "missing-credential", evidence: "The credential is still unavailable" },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  assert.equal(audit.details.streak, 1);
+  await getCommand(commands, "goal").handler("pause", ctx);
+  assert.equal(last(appendedEntries).data.state.status, "paused");
+  assert.ok(last(appendedEntries).data.state.blockerAudit);
+  const sentBeforeEdit = sentMessages.length;
+
+  await getCommand(commands, "goal").handler("edit Revised objective", ctx);
+  const edited = last(appendedEntries);
+  assert.equal(edited.data.event, "edit");
+  assert.equal(edited.data.state.status, "paused");
+  assert.equal(edited.data.state.objective, "Revised objective");
+  assert.equal(edited.data.state.blockerAudit, undefined);
+  assert.equal(edited.data.state.blockedAuditStartTurn, edited.data.state.turns);
+  assert.equal(sentMessages.length, sentBeforeEdit, "a paused goal must not continue after an edit");
+});
+
+test("goal edit falls back to an ordinary objective without an editable goal", async () => {
+  const fallback = createHarness<GoalEntryData>();
+  await getCommand(fallback.commands, "goal").handler("edit the file", createTuiContext().ctx);
+  const started = last(fallback.appendedEntries.filter((entry) => entry.data.event === "set"));
+  assert.equal(started.data.state.objective, "edit the file");
+
+  const bare = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await getCommand(bare.commands, "goal").handler("edit", ctx);
+  assert.equal(bare.appendedEntries.length, 0);
+  assert.equal(last(notifications).message, "Provide the new objective: /goal edit <objective>");
+  assert.equal(last(notifications).level, "error");
+});
+
+test("pending goal edits cannot replace newer state", async (t) => {
+  for (const stage of ["idle", "baseline"] as const) {
+    await t.test(stage, async (t) => {
+      const harness = createHarness<GoalEntryData>();
+      const { ctx } = createTuiContext();
+      ctx.hasPendingMessages = () => true;
+      ctx.ui.confirm = async () => true;
+      const command = getCommand(harness, "goal");
+      await command.handler("Original objective", ctx);
+      let release = (): void => { throw new Error("gate was not initialized"); };
+      let signalEntered = (): void => { throw new Error("barrier was not initialized"); };
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { signalEntered = resolve; });
+      let objective = "Older edit objective";
+      if (stage === "idle") ctx.waitForIdle = async () => { signalEntered(); await gate; };
+      if (stage === "baseline") {
+        const directory = await fsPromises.mkdtemp(path.join(os.tmpdir(), "killeros-goal-edit-baseline-"));
+        t.after(() => fsPromises.rm(directory, { recursive: true, force: true }));
+        const target = path.join(directory, "proof.txt");
+        await fsPromises.writeFile(target, "original");
+        objective = `Fix \`${target}\``;
+        const original = fsPromises.lstat;
+        const intercepted = t.mock.method(fsPromises, "lstat", async (...args: Parameters<typeof original>) => {
+          if (args[0] === target) { signalEntered(); await gate; }
+          return original(...args);
+        });
+        syncBuiltinESMExports();
+        t.after(() => { intercepted.mock.restore(); syncBuiltinESMExports(); });
+      }
+      const pending = command.handler(`edit ${objective}`, ctx);
+      await entered;
+      await command.handler("Newer objective", { ...ctx, ui: { ...ctx.ui, confirm: async () => true }, waitForIdle: async () => {} });
+      const before = harness.appendedEntries.length;
+      release();
+      await pending;
+      assert.equal(harness.appendedEntries.length, before, "a stale edit must append nothing");
+      assert.equal(last(harness.appendedEntries).data.state.objective, "Newer objective");
+    });
+  }
+});
+
+test("a failed goal edit pauses the active goal and keeps the previous objective", async () => {
+  const { api, appendedEntries, commands } = createHarness<GoalEntryData>();
+  const { ctx } = createTuiContext();
+  const notifications: TestNotification[] = [];
+  ctx.ui.notify = (message, level) => notifications.push({ message, level });
+  await getCommand(commands, "goal").handler("Original objective", ctx);
+
+  api.appendEntry = () => { throw new Error("edit write failed"); };
+  await getCommand(commands, "goal").handler("edit Revised objective", ctx);
+  assert.equal(appendedEntries.some((entry) => entry.data.event === "edit"), false);
+  assert.equal(last(appendedEntries).data.state.objective, "Original objective");
+  assert.equal(last(notifications).level, "error");
+  assert.match(last(notifications).message, /Goal paused: Goal objective could not be updated: edit write failed/u);
+
+  ctx.mode = "rpc";
+  await getCommand(commands, "goal").handler("", ctx);
+  assert.match(last(notifications).message, /Goal paused/u);
+  assert.match(last(notifications).message, /Original objective/u);
+  assert.match(last(notifications).message, /Reason · Goal objective could not be updated: edit write failed/u);
+});

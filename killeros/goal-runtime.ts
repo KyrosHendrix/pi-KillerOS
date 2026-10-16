@@ -17,7 +17,7 @@ export const GOAL_ENTRY_TYPE = "killeros-goal";
 export const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
 export const GOAL_UPDATE_TOOL = "killeros_goal_update";
 
-export type GoalEntryEvent = "set" | "replace" | "limit" | "turn" | "continue" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
+export type GoalEntryEvent = "set" | "replace" | "edit" | "limit" | "turn" | "continue" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
 export interface GoalEntryData {
   version: 1;
   event: GoalEntryEvent;
@@ -122,6 +122,8 @@ export function persistGoalState(
   const data: GoalEntryData = { version: GOAL_VERSION, event, state: state ?? null };
   pi.appendEntry(GOAL_ENTRY_TYPE, data);
   runtime.state = state;
+  // Accepted progress must not invalidate an edit waiting for the current turn.
+  if (event !== "continue" && event !== "blocker-audit") runtime.mutation = Symbol();
   runtime.blockedCompletion = undefined;
   if (event === "clear") {
     runtime.lifecycleGeneration += 1;
@@ -359,6 +361,7 @@ function goalInstructions(state: GoalState, heading: string): string {
     state.objective,
     "",
     "Treat the exact objective above from /goal as authoritative; a compaction summary may describe it but does not replace it.",
+    "If earlier messages contain a different objective, the objective above replaces them.",
     "If the current context contains a compaction summary, take its first concrete next step after checking the current repository state.",
     ...continuation,
     "Continue making concrete progress toward this unchanged objective. Re-check repository state and prior results instead of repeating work.",

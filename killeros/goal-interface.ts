@@ -5,9 +5,9 @@ import { Type } from "typebox";
 import { BoundedText } from "./bounded-text.ts";
 import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
-import { parseGoalCommand } from "./goal-command.ts";
+import { parseGoalCommand, parseGoalObjectiveText } from "./goal-command.ts";
 import { GOAL_ENTRY_TYPE, GOAL_UPDATE_TOOL, isGoalModeSupported, isSavedSession, pauseGoalAfterFailure, persistGoalState, scheduleGoalContinuation, stopGoalRun, sumGoalTokens, syncGoalUpdateTool, transitionGoal, type GoalEntryData } from "./goal-runtime.ts";
-import { checkpointPausedGoalState, createNewGoalState, DEFAULT_GOAL_MAX_TURNS, GOAL_EVIDENCE_LIMIT, GOAL_MAX_TURNS, goalElapsedMilliseconds, GOAL_VERSION, inferGoalVerification, normalizeGoalText, parseGoalState, recordGoalDecision, transitionGoalState, verifyGoalDeliverable } from "./goal-state.ts";
+import { checkpointPausedGoalState, createNewGoalState, DEFAULT_GOAL_MAX_TURNS, editGoalState, GOAL_EVIDENCE_LIMIT, GOAL_MAX_TURNS, goalElapsedMilliseconds, GOAL_VERSION, inferGoalVerification, normalizeGoalText, parseGoalState, recordGoalDecision, transitionGoalState, verifyGoalDeliverable } from "./goal-state.ts";
 import type { GoalRuntime, GoalState, GoalStatus } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
@@ -95,7 +95,7 @@ export function registerGoalInterface(
     if (!data || data.version !== GOAL_VERSION) return undefined;
     if (data.event === "clear" || data.state === null) return new Text(theme.fg("dim", "Goal cleared"), 0, 0);
     const event = data.event;
-    if (event !== "set" && event !== "replace" && event !== "pause" && event !== "resume" && event !== "limit" && event !== "error") return undefined;
+    if (event !== "set" && event !== "replace" && event !== "edit" && event !== "pause" && event !== "resume" && event !== "limit" && event !== "error") return undefined;
     const state = parseGoalState(data.state);
     if (!state) return undefined;
     const reason = state.stopReason ?? state.result;
@@ -111,6 +111,11 @@ export function registerGoalInterface(
         break;
       case "replace":
         label = "Goal replaced";
+        detail = objective;
+        color = "customMessageLabel";
+        break;
+      case "edit":
+        label = "Goal objective edited";
         detail = objective;
         color = "customMessageLabel";
         break;
@@ -309,7 +314,7 @@ export function registerGoalInterface(
   });
   syncGoalUpdateTool(pi, runtime);
   const handleGoalCommand = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
-      const command = parseGoalCommand(args);
+      let command = parseGoalCommand(args);
       if (ctx.mode === "print" || ctx.mode === "json") {
         ctx.ui.notify("/goal requires TUI or RPC mode", "error");
         return;
@@ -325,6 +330,15 @@ export function registerGoalInterface(
       const generation = runtime.lifecycleGeneration;
       const initiatingState = runtime.state;
       const ownsGoal = (): boolean => runtime.lifecycleGeneration === generation && runtime.state === initiatingState;
+
+      if (command.kind === "edit" && initiatingState?.status !== "active" && initiatingState?.status !== "paused") {
+        const fallback = parseGoalObjectiveText(args.trim());
+        if (fallback.kind === "invalid") {
+          ctx.ui.notify(fallback.message, "error");
+          return;
+        }
+        command = fallback;
+      }
 
       if (command.kind === "status") {
         if (!runtime.state) {
@@ -486,6 +500,72 @@ export function registerGoalInterface(
         return;
       }
 
+      if (command.kind === "edit") {
+        const mutation = runtime.mutation;
+        const ownsEdit = (): boolean => runtime.lifecycleGeneration === generation
+          && runtime.mutation === mutation
+          && runtime.state?.status === initiatingState?.status;
+        const objective = command.objective;
+        const hold = Symbol();
+        runtime.continuationHeld = hold;
+        let waitError: unknown;
+        try {
+          await ctx.waitForIdle();
+        } catch (error) {
+          waitError = error;
+        } finally {
+          if (runtime.continuationHeld === hold) runtime.continuationHeld = undefined;
+        }
+        if (!ownsEdit()) {
+          // Settlement may have authorized a turn while this command held continuation.
+          if (runtime.lifecycleGeneration === generation) scheduleGoalContinuation(pi, runtime, ctx);
+          return;
+        }
+        if (waitError) {
+          reportError(ctx, "Goal objective could not be updated", waitError);
+          scheduleGoalContinuation(pi, runtime, ctx);
+          return;
+        }
+        const state = runtime.state;
+        let verification: Awaited<ReturnType<typeof inferGoalVerification>>;
+        try {
+          verification = await inferGoalVerification(objective, ctx.cwd);
+        } catch (error) {
+          if (!ownsEdit() || runtime.state !== state) return;
+          reportError(ctx, "Goal objective could not be updated", error);
+          scheduleGoalContinuation(pi, runtime, ctx);
+          return;
+        }
+        if (!ownsEdit() || runtime.state !== state) return;
+        if (!state || state.status !== "active" && state.status !== "paused") return;
+        try {
+          const next = editGoalState(state, objective, verification, Date.now());
+          persistGoalState(pi, runtime, "edit", next);
+          runtime.goalTurn = undefined;
+          runtime.goalTurnInFlight = false;
+          runtime.agentEndObserved = false;
+          runtime.continuationScheduled = false;
+          if (next.status === "paused") {
+            if (ctx.mode !== "tui") ctx.ui.notify("Goal objective updated. The goal is paused; run /goal resume to continue.", "info");
+          } else if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") {
+            ctx.ui.notify("Goal objective updated.", "info");
+          }
+        } catch (error) {
+          if (runtime.state?.status === "active") {
+            pauseGoalAfterFailure(
+              pi,
+              runtime,
+              ctx,
+              `Goal objective could not be updated: ${error instanceof Error ? error.message : String(error)}`,
+              "Automatic continuation is stopped. Retry /goal edit after session storage recovers.",
+            );
+          } else {
+            reportError(ctx, "Goal objective could not be updated", error);
+          }
+        }
+        return;
+      }
+
       switch (command.kind) {
         case "objective":
           break;
@@ -573,6 +653,7 @@ export function registerGoalInterface(
       const normalized = prefix.trimStart().toLowerCase();
       const actions = [
         { value: "clear", description: "Remove the current goal" },
+        { value: "edit", description: "Update the objective without resetting the goal" },
         { value: "pause", description: "Stop automatic continuation" },
         { value: "resume", description: "Resume automatic continuation" },
       ];
