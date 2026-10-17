@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [3.0.8] - 2026-10-18
+
 ### Added
 
 - Added `/goal edit <objective>` to update an active or paused goal in place without resetting its turn count, active clock, or token baseline. A quoted file target is re-baselined for the new objective, and blocked or complete goals keep their existing replace or new-objective paths.
