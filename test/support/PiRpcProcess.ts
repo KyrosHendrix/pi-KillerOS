@@ -171,22 +171,14 @@ export class PiRpcProcess {
     let treeCleanupError: string | undefined;
     let forced = false;
     const pid = this.child.pid;
-    // `close` waits for inherited pipes; native exit may already have released the PID.
-    if (pid === undefined || this.child.exitCode !== null || this.child.signalCode !== null) {
+    // Pipes and exit notifications can lag native exit; probe the owned handle before PID escalation.
+    if (pid === undefined || this.child.exitCode !== null || this.child.signalCode !== null || !this.child.kill(0)) {
       treeCleanupError = "Pi CLI ownership could not be confirmed for forced cleanup";
-    } else if (process.platform === "win32") {
+    } else {
       forced = true;
       const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
       try {
         execFileSync(taskkill, ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", timeout: 3_000, windowsHide: true });
-      } catch (error) {
-        treeCleanupError = errorText(error);
-        this.child.kill("SIGKILL");
-      }
-    } else {
-      forced = true;
-      try {
-        process.kill(-pid, "SIGKILL");
       } catch (error) {
         treeCleanupError = errorText(error);
         this.child.kill("SIGKILL");

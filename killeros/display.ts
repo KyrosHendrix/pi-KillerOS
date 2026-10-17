@@ -9,8 +9,8 @@ export function formatCwd(cwd: string): string {
   if (!home) return safeCwd;
   const normalizedHome = home.replace(/[\\/]+$/, "");
   const normalizedCwd = safeCwd.replace(/[\\/]+$/, "");
-  const comparedHome = process.platform === "win32" ? normalizedHome.toLowerCase() : normalizedHome;
-  const comparedCwd = process.platform === "win32" ? normalizedCwd.toLowerCase() : normalizedCwd;
+  const comparedHome = normalizedHome.toLowerCase();
+  const comparedCwd = normalizedCwd.toLowerCase();
   if (comparedCwd === comparedHome) return "~";
   const separator = normalizedCwd.slice(normalizedHome.length, normalizedHome.length + 1);
   return comparedCwd.startsWith(comparedHome) && (separator === "/" || separator === "\\")

@@ -34,9 +34,6 @@ test("display formatters contain non-finite telemetry and honor Windows path cas
     "/__killeros_terminal_test__/reponame",
   );
 
-  const platform = Object.getOwnPropertyDescriptor(process, "platform");
-  assert.ok(platform);
-  Object.defineProperty(process, "platform", { value: "win32" });
   const previousHome = process.env.HOME;
   const previousProfile = process.env.USERPROFILE;
   delete process.env.HOME;
@@ -44,7 +41,6 @@ test("display formatters contain non-finite telemetry and honor Windows path cas
   try {
     assert.equal(formatCwd("c:\\users\\example\\repo"), "~\\repo");
   } finally {
-    Object.defineProperty(process, "platform", platform);
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
     if (previousProfile === undefined) delete process.env.USERPROFILE;

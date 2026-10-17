@@ -230,6 +230,72 @@ test("pre-existing file goals require a changed deliverable after restore", asyn
   assert.equal(result.details.verification, "file");
 });
 
+test("editing a goal re-baselines file proof for the new objective", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-edit-rebaseline-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const deliverableA = path.join(directory, "A.md");
+  const targetY = path.join(directory, "Y.md");
+  writeFileSync(deliverableA, "original A");
+  writeFileSync(targetY, "original");
+  const harness = createHarness();
+  const ctx = createContext();
+  ctx.cwd = directory;
+
+  const active = await startGoal(harness, ctx, `Write the Markdown file to \`${deliverableA}\``);
+  const initialVerification = active.verification;
+  assert.ok(isUnknownRecord(initialVerification));
+  assert.equal(initialVerification.path, deliverableA);
+  // The original objective's proof would pass now if it still governed completion.
+  writeFileSync(deliverableA, "changed A");
+
+  await requiredMapValue(harness.commands, "goal").handler(`edit Update \`${targetY}\``, ctx);
+  const edited = requiredState(last(harness.appendedEntries.filter((entry) => entry.data.event === "edit")));
+  const editedVerification = edited.verification;
+  assert.ok(isUnknownRecord(editedVerification));
+  assert.equal(editedVerification.kind, "file");
+  assert.equal(editedVerification.path, targetY);
+
+  await assert.rejects(complete(harness, ctx), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /has not changed since the goal started/u);
+    assert.ok(error.message.includes(targetY), error.message);
+    assert.equal(error.message.includes(deliverableA), false);
+    return true;
+  });
+  assert.equal(requiredState(last(harness.appendedEntries)).status, "active");
+
+  writeFileSync(targetY, "re-baselined deliverable");
+  const result = await complete(harness, ctx);
+  assert.equal(result.details.status, "complete");
+  assert.equal(result.details.verification, "file");
+  const completed = requiredState(last(harness.appendedEntries));
+  assert.equal(completed.status, "complete");
+  const completedVerification = completed.verification;
+  assert.ok(isUnknownRecord(completedVerification));
+  assert.equal(completedVerification.path, targetY);
+});
+
+test("editing to an objective without a file target drops file proof", async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-edit-prose-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const requested = path.join(directory, "requested.md");
+  const harness = createHarness();
+  const ctx = createContext();
+  ctx.cwd = directory;
+  const active = await startGoal(harness, ctx, `Write the Markdown file to \`${requested}\``);
+  assert.ok(isUnknownRecord(active.verification));
+
+  await requiredMapValue(harness.commands, "goal").handler("edit Improve the error messages", ctx);
+  const edited = requiredState(last(harness.appendedEntries.filter((entry) => entry.data.event === "edit")));
+  assert.equal(edited.objective, "Improve the error messages");
+  assert.equal(edited.verification, undefined);
+
+  const result = await complete(harness, ctx);
+  assert.equal(result.details.status, "complete");
+  assert.equal(result.details.verification, "model-reported");
+  assert.equal(requiredState(last(harness.appendedEntries)).verification, undefined);
+});
+
 test("pre-existing file goals compare content instead of file metadata", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-content-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -529,19 +595,6 @@ test("relative parent traversal cannot collapse distinct goal targets", async (t
     'Fix "a.ts" and "link/../a.ts"',
     'Fix "a.ts" and link/../a.ts',
   ]) assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
-});
-
-test("relative goal proof preserves parent traversal through directory links", { skip: process.platform === "win32" }, async (t) => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-relative-link-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  mkdirSync(path.join(directory, "target", "child"), { recursive: true });
-  symlinkSync(path.join(directory, "target", "child"), path.join(directory, "link"), "dir");
-  writeFileSync(path.join(directory, "target", "a.ts"), "actual target");
-  writeFileSync(path.join(directory, "a.ts"), "different file");
-  const verification = await inferGoalVerification('Fix "link/../a.ts"', directory);
-  assert.ok(verification);
-  assert.deepEqual(verification.baseline, await captureGoalFileBaseline(path.join(directory, "target", "a.ts")));
-  assert.equal(readFileSync(verification.path, "utf8"), "actual target");
 });
 
 test("recognized operand scope is independent of clause order and file existence", async (t) => {

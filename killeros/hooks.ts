@@ -66,9 +66,7 @@ const HOOK_TIMEOUT_MAX_MS = 300_000;
 function readHookConfig(configPath: string, projectRoot: string): string {
   const actualPath = realpathSync(configPath);
   const expectedPath = path.join(realpathSync(projectRoot), CONFIG_DIR_NAME, "killeros-hooks.json");
-  const samePath = process.platform === "win32"
-    ? actualPath.toLowerCase() === expectedPath.toLowerCase()
-    : actualPath === expectedPath;
+  const samePath = actualPath.toLowerCase() === expectedPath.toLowerCase();
   if (!samePath) {
     throw new Error("Hook config must be stored in the real project .pi directory");
   }
@@ -221,29 +219,10 @@ function terminateWindowsHookTree(child: HookChildProcess): Promise<boolean> {
 }
 
 function terminateHookProcess(child: HookChildProcess, force: boolean): void {
-  if (process.platform !== "win32" && child.pid) {
-    try {
-      process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
-      return;
-    } catch {
-      // Fall back to the shell itself when a custom child has no process group.
-    }
-  }
   try {
     child.kill(force ? "SIGKILL" : "SIGTERM");
   } catch {
     // The hook may have already exited.
-  }
-}
-
-function hookProcessGroupExited(child: HookChildProcess): boolean {
-  if (!child.pid) return false;
-  try {
-    process.kill(-child.pid, 0);
-    return false;
-  } catch (error) {
-    // Permission and other failures are uncertainty, not proof of exit.
-    return error instanceof Error && "code" in error && error.code === "ESRCH";
   }
 }
 
@@ -291,7 +270,6 @@ export function executeHook(
     child = spawnProcess(command, {
       cwd,
       env: { ...process.env, ...environment },
-      detached: process.platform !== "win32",
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -308,8 +286,6 @@ export function executeHook(
     let forceTimer: NodeJS.Timeout | undefined;
     let settleTimer: NodeJS.Timeout | undefined;
     let windowsCleanupPending = false;
-    let posixCleanupPending = false;
-    let shellClosed = false;
     const finish = (code: number, exitUnconfirmed = false): void => {
       if (completed) return;
       completed = true;
@@ -332,7 +308,7 @@ export function executeHook(
     const beginTermination = (reason: "timeout" | "cancelled"): void => {
       if (completed || termination) return;
       termination = reason;
-      if (process.platform === "win32" && child.pid) {
+      if (child.pid) {
         windowsCleanupPending = true;
         void terminateWindowsHookTree(child).then((confirmed) => {
           if (completed) return;
@@ -347,14 +323,12 @@ export function executeHook(
         }, 2_000);
         return;
       }
-      posixCleanupPending = process.platform !== "win32" && child.pid !== undefined;
       forceTimer = setTimeout(() => {
         if (completed) return;
         terminateHookProcess(child, true);
         if (completed) return;
         settleTimer = setTimeout(() => {
-          const confirmed = posixCleanupPending && shellClosed && hookProcessGroupExited(child);
-          finish(terminationCode(), !confirmed);
+          finish(terminationCode(), true);
         }, 1_000);
       }, 1_000);
       terminateHookProcess(child, false);
@@ -367,11 +341,10 @@ export function executeHook(
     if (child.stderr instanceof EventEmitter) child.stderr.on("error", captureStreamError);
     child.on("error", (error) => {
       appendBounded(stderr, error.message);
-      if (!windowsCleanupPending && !posixCleanupPending) finish(termination ? terminationCode() : 1);
+      if (!windowsCleanupPending) finish(termination ? terminationCode() : 1);
     });
     child.once("close", (code) => {
-      shellClosed = true;
-      if (!windowsCleanupPending && (!posixCleanupPending || hookProcessGroupExited(child))) {
+      if (!windowsCleanupPending) {
         finish(termination ? terminationCode() : code ?? 1);
       }
     });

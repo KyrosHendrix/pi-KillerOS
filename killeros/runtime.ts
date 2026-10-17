@@ -127,6 +127,7 @@ export type BlockedGoalCompletion =
 
 export interface GoalRuntime {
   state?: GoalState;
+  mutation?: symbol;
   continuationScheduled: boolean;
   continuationHeld?: symbol;
   goalTurnInFlight: boolean;

@@ -482,22 +482,6 @@ test("receipts refresh cached Git settings between responses", async (t) => {
   });
 });
 
-test("passive scans respect core.filemode=false", { skip: process.platform === "win32" }, async (t) => {
-  const root = await fixture();
-  t.after(async () => {
-    disposeChangeReceipts();
-    await rm(root, { recursive: true, force: true });
-  });
-  git(root, "config", "core.filemode", "false");
-  const collection = await beginChangeReceipt(root);
-  await chmod(path.join(root, "clean.txt"), 0o755);
-  assert.equal(git(root, "status", "--porcelain").toString(), "");
-  assert.deepEqual(await resolveGitFileChanges(root), { modified: 0, added: 0, deleted: 0 });
-  assert.deepEqual(await collection.finish(), {
-    state: "available", totalFiles: 0, additions: 0, deletions: 0, files: [], omittedFiles: 0,
-  });
-});
-
 test("a HEAD update without worktree events invalidates the response receipt", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -1003,35 +987,10 @@ test("line-ending-only edits remain visible with normalized line counts", async 
   });
 });
 
-test("mode-only changes carry no line count", { skip: process.platform === "win32" }, async (t) => {
-  const root = await fixture();
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const collection = await beginChangeReceipt(root);
-  await chmod(path.join(root, "clean.txt"), 0o755);
-  assert.deepEqual(await collection.finish(), {
-    state: "available",
-    totalFiles: 1,
-    additions: 0,
-    deletions: 0,
-    files: [{ kind: "modified", path: "clean.txt", additions: 0, deletions: 0, detail: "mode" }],
-    omittedFiles: 0,
-  });
-});
-
 async function writeReceiptShims(repository: string, sentinel: string): Promise<void> {
   const portable = sentinel.replaceAll("\\", "/").replaceAll('"', '\\"');
-  const shell = `#!/bin/sh\nprintf executed > "${portable}"\n`;
-  for (const name of ["where", "which", "git"]) {
-    const shim = path.join(repository, name);
-    await writeFile(shim, shell);
-    try {
-      await chmod(shim, 0o755);
-    } catch {
-      // Windows repositories do not need the executable bit.
-    }
-  }
   const batch = `@echo off\r\necho executed> "${portable}"\r\n`;
-  for (const name of ["where.cmd", "where.bat", "which.cmd", "which.bat", "git.cmd", "git.bat"]) {
+  for (const name of ["where", "which", "git", "where.cmd", "where.bat", "which.cmd", "which.bat", "git.cmd", "git.bat"]) {
     await writeFile(path.join(repository, name), batch);
   }
 }
@@ -1040,7 +999,7 @@ async function sentinelAbsent(filePath: string): Promise<void> {
   await assert.rejects(readFile(filePath), { code: "ENOENT" });
 }
 
-test("passive Git rejects repository-local shims through Windows short-path aliases", { skip: process.platform !== "win32" }, async (t) => {
+test("passive Git rejects repository-local shims through Windows short-path aliases", async (t) => {
   const root = await fixture();
   const probe = await mkdtemp(path.join(os.tmpdir(), "killeros-short-path-probe-"));
   const sentinel = path.join(probe, "sentinel");
@@ -1111,7 +1070,7 @@ test("change receipt rejects Git through a repository-local directory link", asy
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeReceiptShims(external, sentinel);
   try {
-    await symlink(external, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
+    await symlink(external, linkedDirectory, "junction");
   } catch (error) {
     t.skip(`directory links unavailable: ${String(error)}`);
     return;

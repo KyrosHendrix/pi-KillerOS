@@ -257,7 +257,7 @@ test("goal completions include only lifecycle controls", () => {
   assert.ok(goal.getArgumentCompletions);
   assert.deepEqual(
     goal.getArgumentCompletions("")?.map(({ value }) => value),
-    ["clear", "pause", "resume"],
+    ["clear", "edit", "pause", "resume"],
   );
 });
 

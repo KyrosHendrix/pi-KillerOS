@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
 
@@ -131,18 +131,9 @@ function inspectedRoot(cwd: string): string | undefined {
 }
 
 function insideInspected(candidate: string, root: string): boolean {
-  if (process.platform === "win32") {
-    const normalizedCandidate = path.win32.normalize(candidate).toLowerCase();
-    const normalizedRoot = path.win32.normalize(root).toLowerCase();
-    const trimmed = normalizedRoot.length > 3 && normalizedRoot.endsWith(path.win32.sep)
-      ? normalizedRoot.slice(0, -1)
-      : normalizedRoot;
-    if (normalizedCandidate === trimmed) return true;
-    return normalizedCandidate.startsWith(`${trimmed}${path.win32.sep}`);
-  }
-  const normalizedCandidate = path.normalize(candidate);
-  const normalizedRoot = path.normalize(root);
-  const trimmed = normalizedRoot.length > 1 && normalizedRoot.endsWith(path.sep)
+  const normalizedCandidate = path.normalize(candidate).toLowerCase();
+  const normalizedRoot = path.normalize(root).toLowerCase();
+  const trimmed = normalizedRoot.length > 3 && normalizedRoot.endsWith(path.sep)
     ? normalizedRoot.slice(0, -1)
     : normalizedRoot;
   if (normalizedCandidate === trimmed) return true;
@@ -169,8 +160,7 @@ export function passiveGitCommand(cwd: string, env: NodeJS.ProcessEnv = process.
   if (!root) return undefined;
   const entries = searchPathEntries(env);
   if (entries.length === 0) return undefined;
-  const windows = process.platform === "win32";
-  const baseNames = windows ? ["git", ...pathExtensionEntries(env).map((extension) => `git${extension}`)] : ["git"];
+  const baseNames = ["git", ...pathExtensionEntries(env).map((extension) => `git${extension}`)];
   for (const raw of entries) {
     if (raw === "" || raw.trim() === "") continue;
     const directory = unquoted(raw);
@@ -182,13 +172,6 @@ export function passiveGitCommand(cwd: string, env: NodeJS.ProcessEnv = process.
         if (!statSync(candidate).isFile()) continue;
       } catch {
         continue;
-      }
-      if (!windows) {
-        try {
-          accessSync(candidate, constants.X_OK);
-        } catch {
-          continue;
-        }
       }
       let resolved: string;
       try {

@@ -139,7 +139,7 @@ process.exitCode = fault === 'kill-throws' && cleanupFailure === undefined && fa
         assert.ok(isRecord(result.cleanup));
         assert.equal(diagnostics.exitCode, result.cleanup.code);
       } else assert.equal(diagnostics.exitCode, fault === "missing-cli" ? 1 : 0);
-      assert.equal(diagnostics.nativeResourcesCreated, process.platform === "win32" ? 2 : 1,
+      assert.equal(diagnostics.nativeResourcesCreated, 2,
         "Cleanup must track the owned native callbacks, not pass with an empty tracker");
       assert.equal(diagnostics.nativeResources, 0, "Native callbacks must be destroyed before cleanup returns");
       assert.ok(typeof diagnostics.rawBase64 === "string" && diagnostics.rawBase64.length > 0);

@@ -127,41 +127,6 @@ test("does not load lifecycle hooks for untrusted projects", async () => {
   }
 });
 
-test("hook config warnings sanitize project paths", {
-  skip: process.platform === "win32" ? "control-byte paths are unavailable on Windows" : false,
-}, async () => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-path-\x1b]2;owned\x07\nspoof"));
-  try {
-    const configDirectory = path.join(directory, ".pi");
-    mkdirSync(configDirectory);
-    const configPath = path.join(configDirectory, "killeros-hooks.json");
-    writeFileSync(configPath, JSON.stringify({ hooks: { tool_call: [{ command: "exit 0" }] } }));
-
-    const untrusted = createHarness();
-    const untrustedContext = createTuiContext().ctx;
-    const untrustedNotifications: TestNotification[] = [];
-    untrustedContext.cwd = directory;
-    untrustedContext.isProjectTrusted = () => false;
-    untrustedContext.ui.notify = (message, level) => untrustedNotifications.push({ message, level });
-    for (const handler of getHandlers(untrusted, "session_start")) await handler({}, untrustedContext);
-
-    writeFileSync(configPath, JSON.stringify({ hooks: { tool_call: [{}] } }));
-    const invalid = createHarness();
-    const invalidContext = createTuiContext().ctx;
-    const invalidNotifications: TestNotification[] = [];
-    invalidContext.cwd = directory;
-    invalidContext.ui.notify = (message, level) => invalidNotifications.push({ message, level });
-    for (const handler of getHandlers(invalid, "session_start")) await handler({}, invalidContext);
-
-    assert.match(last(untrustedNotifications)?.message ?? "", /Ignored untrusted project hooks/u);
-    assert.match(last(invalidNotifications)?.message ?? "", /Ignored invalid tool_call hook/u);
-    assert.doesNotMatch(last(untrustedNotifications)?.message ?? "", /\x1b|\x07|\n/u);
-    assert.doesNotMatch(last(invalidNotifications)?.message ?? "", /\x1b|\x07|\n/u);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
 test("rejects linked lifecycle hook configs before executing them", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-linked-"));
   try {
@@ -524,61 +489,6 @@ test("NaN hook timeouts use the default instead of firing immediately", async ()
   assert.deepEqual(child.signals, []);
 });
 
-test("POSIX cleanup keeps escalation after shell close for timeout and cancellation", async (t) => {
-  for (const [reason, outcome] of [
-    ["timeout", "exited"], ["cancelled", "exited"], ["timeout", "survived"],
-    ["cancelled", "permission denied"], ["timeout", "graceful"],
-  ] as const) {
-    await t.test(`${reason}/${outcome}`, async (t) => {
-      const platform = Object.getOwnPropertyDescriptor(process, "platform");
-      assert.ok(platform);
-      Object.defineProperty(process, "platform", { ...platform, value: "linux" });
-      t.after(() => Object.defineProperty(process, "platform", platform));
-      t.mock.timers.enable({ apis: ["setTimeout"] });
-      class ClosingShell extends EventEmitter {
-        pid = 987654321;
-        stdout = new PassThrough();
-        stderr = new PassThrough();
-        kill(): never { assert.fail("must terminate the process group, not only the shell"); }
-      }
-      const shell = new ClosingShell();
-      const signals: Array<NodeJS.Signals | number | undefined> = [];
-      let groupAlive = true;
-      t.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => {
-        assert.equal(pid, -shell.pid);
-        if (signal === 0) {
-          if (outcome === "permission denied") throw Object.assign(new Error("cannot inspect group"), { code: "EPERM" });
-          if (!groupAlive) throw Object.assign(new Error("group exited"), { code: "ESRCH" });
-          return true;
-        }
-        signals.push(signal);
-        if (signal === "SIGTERM") {
-          if (outcome === "graceful") groupAlive = false;
-          shell.emit("close", null);
-        }
-        if (signal === "SIGKILL" && outcome !== "survived") groupAlive = false;
-        return true;
-      });
-      const controller = new AbortController();
-      const pending = executeHook({
-        command: "ignored", cwd: process.cwd(), environment: {}, timeoutMs: 10,
-        spawnProcess: () => shell, signal: controller.signal,
-      });
-      if (reason === "cancelled") controller.abort();
-      else t.mock.timers.tick(10);
-      t.mock.timers.tick(1_000);
-      t.mock.timers.tick(1_000);
-      const result = await pending;
-      assert.deepEqual(signals, outcome === "graceful" ? ["SIGTERM"] : ["SIGTERM", "SIGKILL"]);
-      assert.equal(groupAlive, outcome === "survived");
-      assert.equal(result.code, reason === "timeout" ? 124 : 130);
-      assert.equal(result.timedOut, reason === "timeout");
-      assert.equal(result.cancelled, reason === "cancelled");
-      assert.equal(result.exitUnconfirmed, outcome === "survived" || outcome === "permission denied");
-    });
-  }
-});
-
 test("never-closing hooks report unconfirmed exit after bounded cleanup", async () => {
   class NeverClosingHook extends EventEmitter {
     stdout = new PassThrough();
@@ -711,7 +621,7 @@ test("abort cleanup observes a synchronous close from custom process adapters", 
   assert.equal(process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length, baselineTimeouts);
 });
 
-test("Windows hook cleanup survives the shell exiting before tree termination", { skip: process.platform !== "win32" }, async () => {
+test("Windows hook cleanup survives the shell exiting before tree termination", async () => {
   class ClosingShell extends EventEmitter {
     stdout = new PassThrough();
     stderr = new PassThrough();
@@ -756,7 +666,7 @@ test("Windows hook cleanup survives the shell exiting before tree termination", 
   }
 });
 
-test("Windows hook cleanup kills the shell and its child without taskkill in PATH", { skip: process.platform !== "win32" }, async () => {
+test("Windows hook cleanup kills the shell and its child without taskkill in PATH", async () => {
   const originalPath = process.env.PATH;
   const command = `"${process.execPath}" -e "console.log(process.pid);setInterval(() => {}, 1000)"`;
   const shell = spawn(command, { shell: true, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -814,28 +724,23 @@ async function startHookTree(directory: string) {
     "const fs = require('node:fs');",
     "const marker = process.argv[2];",
     "const ready = process.argv[3];",
-    // The descendant ignores TERM and does not retain the shell's output pipes.
-    "spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {});require('node:fs').writeFileSync(process.argv[2], String(process.pid) + '\\\\n');setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late'), 4000);setTimeout(() => process.exit(), 5000);\", marker, ready], { stdio: 'ignore' });",
+    // The descendant does not retain the shell's output pipes.
+    "spawn(process.execPath, ['-e', \"require('node:fs').writeFileSync(process.argv[2], String(process.pid) + '\\\\n');setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late'), 4000);setTimeout(() => process.exit(), 5000);\", marker, ready], { stdio: 'ignore' });",
     // A newline marks the complete PID; file creation alone can expose an empty or partial write.
     "const poll = setInterval(() => { if (!fs.existsSync(ready)) return; const pid = fs.readFileSync(ready, 'utf8'); if (!pid.endsWith('\\n')) return; clearInterval(poll); console.log(JSON.stringify([process.pid, Number(pid)])); }, 10);",
     "setTimeout(() => process.exit(), 6000);",
   ].join("\n");
   writeFileSync(script, source);
   const command = `"${process.execPath}" "${script}" "${marker}" "${ready}"`;
-  const shell = spawn(command, { detached: process.platform !== "win32", shell: true, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const shell = spawn(command, { shell: true, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const pids: number[] = [];
   if (shell.pid) pids.push(shell.pid);
   const cleanup = async (): Promise<void> => {
-    if (process.platform !== "win32" && shell.pid) {
-      try { process.kill(-shell.pid, "SIGKILL"); } catch { /* Already exited. */ }
-    }
     if (existsSync(ready)) pids.push(Number(readFileSync(ready, "utf8")));
     for (const pid of pids) {
       if (!Number.isSafeInteger(pid) || pid <= 0) continue;
       try {
-        if (process.platform === "win32") {
-          execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
-        } else process.kill(pid, "SIGKILL");
+        execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
       } catch { /* Already exited. */ }
     }
     await removeDirectoryEventually(directory);
@@ -912,25 +817,6 @@ test("the process-tree fixture detects a late survivor when cleanup is disabled"
     }
     assert.equal(readFileSync(tree.marker, "utf8"), "late");
     assert.equal(readFileSync(tree.script, "utf8"), tree.source);
-  } finally {
-    await tree.cleanup();
-  }
-});
-
-test("POSIX cancellation stops a TERM-resistant descendant after the shell exits", {
-  skip: process.platform === "win32", timeout: 15_000,
-}, async () => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-hooks-tree-abort-"));
-  const tree = await startHookTree(directory);
-  try {
-    const controller = new AbortController();
-    const pending = executeHook({ command: tree.command, cwd: directory, environment: {}, spawnProcess: () => tree.shell, signal: controller.signal });
-    controller.abort();
-    const result = await pending;
-    assert.equal(result.code, 130);
-    assert.equal(result.cancelled, true);
-    await new Promise((resolve) => setTimeout(resolve, 4_200));
-    assert.equal(existsSync(tree.marker), false, "SIGKILL must stop the TERM-resistant descendant");
   } finally {
     await tree.cleanup();
   }

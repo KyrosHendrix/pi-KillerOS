@@ -33,6 +33,7 @@ export interface KillerosOptions {
 }
 
 export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}): void {
+  if (process.platform !== "win32") throw new Error("KillerOS supports Windows only.");
   const goalRuntime = createGoalRuntime();
   const commandResolver = createSlashCommandResolver(pi);
   registerShellUi(pi, commandResolver);

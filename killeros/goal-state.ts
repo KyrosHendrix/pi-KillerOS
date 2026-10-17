@@ -377,15 +377,15 @@ function isPathShapedGoalCandidate(raw: string): boolean {
 }
 
 function goalPathIdentity(filePath: string): string {
-  const nativePath = process.platform === "win32" ? filePath.replaceAll("/", "\\") : filePath;
+  const nativePath = filePath.replaceAll("/", "\\");
   // Parent segments may traverse symlinks; keep them distinct without filesystem proof.
   const normalized = nativePath.split(path.sep).includes("..") ? nativePath : path.normalize(nativePath);
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  return normalized.toLowerCase();
 }
 
 function absoluteGoalFilePath(value: string, cwd: string): string {
   if (path.isAbsolute(value) || path.win32.isAbsolute(value)) return value;
-  const nativePath = process.platform === "win32" ? value.replaceAll("/", "\\") : value;
+  const nativePath = value.replaceAll("/", "\\");
   // Resolving parent segments lexically can select a different file across a directory symlink.
   return nativePath.split(path.sep).includes("..")
     ? `${path.resolve(cwd)}${path.sep}${nativePath}`
@@ -663,6 +663,35 @@ export function recordGoalDecision(
       ? { lastContinueReport: { turn: decision.turn, evidence: decision.evidence, nextAction: decision.nextAction } }
       : {}),
   };
+}
+
+/** Replaces the objective in place for an editable goal; pending decisions and audits belong to the previous objective. */
+export function editGoalState(
+  current: GoalState,
+  objective: string,
+  verification: GoalFileVerification | undefined,
+  now: number,
+): GoalState {
+  if (current.status !== "active" && current.status !== "paused") {
+    throw new Error("Only an active or paused goal can be edited");
+  }
+  const common: GoalStateCommon = {
+    version: current.version,
+    revision: nextRevision(current),
+    objective,
+    createdAt: current.createdAt,
+    updatedAt: now,
+    activeMilliseconds: current.activeMilliseconds,
+    turns: current.turns,
+    blockedAuditStartTurn: current.turns,
+    baselineTokens: current.baselineTokens,
+    turnPhase: "ready",
+    ...(current.maxTurns === undefined ? {} : { maxTurns: current.maxTurns }),
+    ...(verification === undefined ? {} : { verification }),
+  };
+  return current.status === "active"
+    ? { ...common, status: "active", activeStartedAt: current.activeStartedAt, ...(current.result === undefined ? {} : { result: current.result }) }
+    : { ...common, status: "paused", ...(current.result === undefined ? {} : { result: current.result }) };
 }
 
 export function transitionGoalState(
