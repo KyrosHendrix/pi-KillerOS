@@ -47,9 +47,12 @@ import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
-/** Runs npm with isolated config and no implicit shell when npm exposes its entry point. */
+/** Runs npm with isolated config and no shell interpretation of paths. */
 function runNpm(args: string[], cwd: string, userConfig: string, processEnv: NodeJS.ProcessEnv = process.env): string {
-  const npmCli = process.env.npm_execpath;
+  const npmCli = process.env.npm_execpath ?? [path.dirname(process.execPath), ...(process.env.PATH ?? process.env.Path ?? "").split(path.delimiter)]
+    .map((directory) => path.join(directory, "node_modules/npm/bin/npm-cli.js"))
+    .find((candidate) => existsSync(candidate));
+  assert.ok(npmCli && existsSync(npmCli), "Cannot locate npm-cli.js without a shell");
   const env = { ...processEnv };
   const globalConfig = `${userConfig}.global`;
   writeFileSync(globalConfig, "");
@@ -57,8 +60,7 @@ function runNpm(args: string[], cwd: string, userConfig: string, processEnv: Nod
   delete env.NPM_CONFIG_ALLOW_SCRIPTS;
   const npmArgs = ["--userconfig", userConfig, "--globalconfig", globalConfig, "--loglevel", "error", ...args];
   const options = { cwd, encoding: "utf8" as const, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 };
-  if (npmCli) return execFileSync(process.execPath, [npmCli, ...npmArgs], options);
-  return execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "npm", ...npmArgs], options);
+  return execFileSync(process.execPath, [npmCli, ...npmArgs], options);
 }
 
 function assertInstalledPackage(directory: string, expectedVersion: string): void {
@@ -132,6 +134,27 @@ function rpcData(response: PiRpcRecord): Record<string, unknown> {
 function isUnknownArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
 }
+
+test("npm package fixtures preserve shell-special paths without npm_execpath", { timeout: 90_000 }, (t) => {
+  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-npm&literal-"));
+  t.after(() => removeDirectoryEventually(directory));
+  const userConfig = path.join(directory, "empty&literal.npmrc");
+  writeFileSync(userConfig, "");
+  const previous = process.env.npm_execpath;
+  delete process.env.npm_execpath;
+  try {
+    const output = runNpm(["pack", "--dry-run", "--ignore-scripts", "--json"], repositoryRoot, userConfig,
+      isolatedFixtureEnvironment(directory));
+    const packed: unknown = JSON.parse(output);
+    assert.ok(isUnknownArray(packed) && isUnknownRecord(packed[0]));
+    const manifest: unknown = JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
+    assert.ok(isUnknownRecord(manifest));
+    assert.equal(packed[0].id, `killeros@${String(manifest.version)}`);
+  } finally {
+    if (previous === undefined) delete process.env.npm_execpath;
+    else process.env.npm_execpath = previous;
+  }
+});
 
 test("installed Pi CLI rejects KillerOS activation on unsupported operating systems", { timeout: 90_000 }, async (t) => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-platform-"));

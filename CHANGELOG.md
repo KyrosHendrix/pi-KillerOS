@@ -22,6 +22,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Removed the package-test npm shell fallback so Windows paths with shell metacharacters remain literal, including direct Node test runs without `npm_execpath`.
 - Made RPC test cleanup probe its owned native process handle before PID-based escalation, so delayed exit notifications cannot trigger cleanup of an already exited child.
 
 ## [3.0.7] - 2026-10-15
