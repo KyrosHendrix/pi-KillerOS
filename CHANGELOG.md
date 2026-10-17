@@ -18,6 +18,10 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 - Derived Pi requirement checks from the current development pins and peer ranges instead of historical versions. Removed version numbers from cancellation test selection so CI keeps selecting the scenario after a Pi update.
 - Matched TypeBox to the selected Pi release during compatibility CI installs, alongside Pi AI and TUI, without changing the tracked package files.
 
+### Fixed
+
+- Made RPC test cleanup probe its owned native process handle before PID-based escalation, so delayed exit notifications cannot trigger cleanup of an already exited child.
+
 ## [3.0.7] - 2026-10-15
 
 ### Changed

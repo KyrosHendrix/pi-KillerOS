@@ -171,8 +171,8 @@ export class PiRpcProcess {
     let treeCleanupError: string | undefined;
     let forced = false;
     const pid = this.child.pid;
-    // `close` waits for inherited pipes; native exit may already have released the PID.
-    if (pid === undefined || this.child.exitCode !== null || this.child.signalCode !== null) {
+    // Pipes and exit notifications can lag native exit; probe the owned handle before PID escalation.
+    if (pid === undefined || this.child.exitCode !== null || this.child.signalCode !== null || !this.child.kill(0)) {
       treeCleanupError = "Pi CLI ownership could not be confirmed for forced cleanup";
     } else {
       forced = true;
