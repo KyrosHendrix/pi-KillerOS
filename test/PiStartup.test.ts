@@ -37,8 +37,11 @@ function goalState(entries: Record<string, unknown>[]): Record<string, unknown> 
   return record(record(entry.data).state);
 }
 
-for (const scenario of ["continuation", "startup abort"] as const) {
-  test(`installed Pi startup preserves ${scenario}, instructions, and reload`, {
+for (const [scenario, trusted] of [
+  ["continuation", true], ["startup abort", true],
+  ["continuation", false], ["startup abort", false],
+] as const) {
+  test(`installed Pi startup preserves ${scenario}, ${trusted ? "trusted" : "untrusted"} instructions, and reload`, {
     timeout: 60_000, skip: piRpcShutdownSkip,
   }, async (t) => {
     const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-startup-"));
@@ -115,7 +118,8 @@ export default function (pi) {
         const step = requests.length;
         const personalCount = text.split(personalMarker).length - 1;
         requests.push({ ordinary, roles: messages.map((message) => message.role), personalCount });
-        assert.equal(personalCount, 1, "Trusted personal instructions must appear once per request, including after tool calls");
+        assert.equal(personalCount, trusted ? 1 : 0,
+          "Personal instructions must appear once in trusted projects and never in untrusted projects, including after tool calls");
         assert.equal(text.split(setupMarker).length - 1, 1, "Custom-run system setup must survive tool follow-ups");
         if (step === 0 && scenario === "continuation") assert.ok(text.includes(queuedMarker), "The custom run must receive pending nextTurn messages");
         assert.ok(rpc);
@@ -170,7 +174,7 @@ export default function (pi) {
       const owner = rpc = new PiRpcProcess({
         cliPath: path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), cwd, env,
         args: ["--mode", "rpc", "--model", "startup-local/local", "--thinking", "off", "--tools", "killeros_goal_update",
-          "--session", session, "--offline", "--approve", "--no-context-files", "--no-skills", "--no-prompt-templates",
+          "--session", session, "--offline", trusted ? "--approve" : "--no-approve", "--no-context-files", "--no-skills", "--no-prompt-templates",
           "--no-themes", "--no-mcp", "--no-extensions", "--extension", repositoryRoot, "--extension", probe],
       });
       const data = (response: PiRpcRecord): Record<string, unknown> => record(response.data);
@@ -234,9 +238,9 @@ export default function (pi) {
       await new Promise<void>((resolve) => { server.close(() => resolve()); });
     }
     if (failure !== undefined || cleanupFailures.length) {
-      throwScenarioFailure({ directory, message: `Pi startup ${scenario} failed`,
+      throwScenarioFailure({ directory, message: `Pi startup ${scenario} failed with project trust ${trusted}`,
         errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures],
-        diagnostics: JSON.stringify({ scenario, node: process.version, piVersion, requests, faults, rpc: rpc?.diagnostics() }),
+        diagnostics: JSON.stringify({ scenario, trusted, node: process.version, piVersion, requests, faults, rpc: rpc?.diagnostics() }),
       });
     }
     await removeDirectoryEventually(directory);

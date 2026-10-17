@@ -597,19 +597,6 @@ test("relative parent traversal cannot collapse distinct goal targets", async (t
   ]) assert.equal(await inferGoalVerification(objective, directory), undefined, objective);
 });
 
-test("relative goal proof preserves parent traversal through directory links", { skip: process.platform === "win32" }, async (t) => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-relative-link-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  mkdirSync(path.join(directory, "target", "child"), { recursive: true });
-  symlinkSync(path.join(directory, "target", "child"), path.join(directory, "link"), "dir");
-  writeFileSync(path.join(directory, "target", "a.ts"), "actual target");
-  writeFileSync(path.join(directory, "a.ts"), "different file");
-  const verification = await inferGoalVerification('Fix "link/../a.ts"', directory);
-  assert.ok(verification);
-  assert.deepEqual(verification.baseline, await captureGoalFileBaseline(path.join(directory, "target", "a.ts")));
-  assert.equal(readFileSync(verification.path, "utf8"), "actual target");
-});
-
 test("recognized operand scope is independent of clause order and file existence", async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-extensionless-order-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

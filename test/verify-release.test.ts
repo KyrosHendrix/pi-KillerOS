@@ -75,10 +75,8 @@ function npmCliPath(): string {
   }
   const directories = [path.dirname(process.execPath), ...(process.env.PATH ?? process.env.Path ?? "").split(path.delimiter)];
   for (const directory of directories) {
-    for (const relative of ["node_modules/npm/bin/npm-cli.js", "../lib/node_modules/npm/bin/npm-cli.js"]) {
-      const candidate = path.resolve(directory, relative);
-      if (existsSync(candidate)) return candidate;
-    }
+    const candidate = path.resolve(directory, "node_modules/npm/bin/npm-cli.js");
+    if (existsSync(candidate)) return candidate;
   }
   throw new Error("Cannot locate npm CLI. Set KILLEROS_TEST_NPM_CLI to its npm-cli.js path.");
 }

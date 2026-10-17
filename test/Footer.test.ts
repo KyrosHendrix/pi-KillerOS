@@ -15,7 +15,7 @@ import { createHarness, createTuiContext, disposeTestComponent, getCommand, getH
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { isCodexFastEnabled, resetCodexFastState } from "../killeros/codex-fast-state.ts";
 import { execFile, execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { themeTestAdapter } from "./PiTestAdapters.ts";
 
 type TestStyle = {
@@ -819,18 +819,8 @@ test("footer uses model metadata and formats unknown provider names", () => {
 
 function writeRepositoryShims(repository: string, sentinel: string): void {
   const portable = sentinel.replaceAll("\\", "/").replaceAll('"', '\\"');
-  const shell = `#!/bin/sh\nprintf executed > "${portable}"\n`;
-  for (const name of ["where", "which", "git"]) {
-    const shim = path.join(repository, name);
-    writeFileSync(shim, shell);
-    try {
-      chmodSync(shim, 0o755);
-    } catch {
-      // Windows repositories do not need the executable bit.
-    }
-  }
   const batch = `@echo off\r\necho executed> "${portable}"\r\n`;
-  for (const name of ["where.cmd", "where.bat", "which.cmd", "which.bat", "git.cmd", "git.bat"]) {
+  for (const name of ["where", "which", "git", "where.cmd", "where.bat", "which.cmd", "which.bat", "git.cmd", "git.bat"]) {
     writeFileSync(path.join(repository, name), batch);
   }
 }
@@ -860,8 +850,8 @@ test("footer passive scan never runs repository-local locator or Git shims", asy
     const discovered = passiveGitCommand(repository);
     assert.ok(typeof discovered === "string" && discovered.length > 0, "expected a safe system Git");
     assert.ok(path.isAbsolute(discovered));
-    const normalizedDiscovered = process.platform === "win32" ? discovered.toLowerCase() : discovered;
-    const normalizedRepository = process.platform === "win32" ? repository.toLowerCase() : repository;
+    const normalizedDiscovered = discovered.toLowerCase();
+    const normalizedRepository = repository.toLowerCase();
     assert.ok(!normalizedDiscovered.startsWith(`${normalizedRepository}${path.sep}`));
     assert.notEqual(normalizedDiscovered, normalizedRepository);
 
@@ -887,8 +877,8 @@ test("footer passive scan rejects Git through a repository-local directory link"
     execFileSync("git", ["init", "-q"], { cwd: repository });
     writeRepositoryShims(external, sentinel);
     try {
-      symlinkSync(external, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
-      symlinkSync(repository, repositoryAlias, process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(external, linkedDirectory, "junction");
+      symlinkSync(repository, repositoryAlias, "junction");
     } catch (error) {
       t.skip(`directory links unavailable: ${String(error)}`);
       return;

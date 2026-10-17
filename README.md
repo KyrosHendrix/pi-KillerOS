@@ -20,11 +20,12 @@ The UI has a dark theme with coral accents, a multiline editor with slash-comman
 
 ### Requirements
 
+- Windows with native Windows Node.js
 - Node.js 22.19.0+
-- Pi 1.2.0 or later below 2.0.0
+- Pi 1.3.0 or later below 2.0.0
 - An interactive TUI session for the custom header, editor, footer, and questions
 
-KillerOS supports Windows and Linux. Users on older Pi versions must upgrade.
+KillerOS supports Windows only. Linux, macOS, and WSL running Linux Node.js are not supported. npm rejects installation on other operating systems, and KillerOS rejects activation outside Windows. Users on older Pi versions must upgrade.
 
 Pi extensions run with your user permissions. Review the source before installing globally. See [Security](#security) before trusting project hooks. Goal work sends model requests and can incur provider charges.
 
@@ -176,7 +177,7 @@ Failed Git reads retain the footer's last successful file counts and mark task c
 
 ### KillerOS settings
 
-KillerOS activates its packaged `killeros` theme on TUI start. It stores settings in `killeros.json` in Pi's global agent directory, normally `~/.pi/agent/killeros.json`:
+KillerOS activates its packaged `killeros` theme on TUI start. It stores settings in `killeros.json` in Pi's global agent directory, normally `%USERPROFILE%\.pi\agent\killeros.json`:
 
 ```json
 {
@@ -192,7 +193,7 @@ Concurrent `/auto-compact` commands preserve independent changes to the enabled 
 
 Trusted projects can use lifecycle hooks for `tool_call`, `tool_result`, and `agent_settled` in `.pi/killeros-hooks.json`. KillerOS also loads `AGENTS.local.md` for trusted projects. Review these files before granting trust.
 
-Pi 1.2.0 runs `before_agent_start` for user prompts and extension-triggered requests. KillerOS applies trusted personal instructions through that shared setup, including goal and compaction continuations, without copying them into each continuation message.
+Pi runs `before_agent_start` for user prompts and extension-triggered requests. KillerOS applies trusted personal instructions through that shared setup, including goal and compaction continuations, without copying them into each continuation message.
 
 ### Supported modes and navigation
 
@@ -237,7 +238,7 @@ KillerOS delegates selection to Pi. It does not parse or repair native CLI filte
 
 In Pi codemode, `tools.read()` on an image returns an image block that you can pass to native `image()`. See [codemode tool calls](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#call-tools).
 
-Pi's `image()` also saves images to temporary files and returns their paths for later turns to copy or move. On POSIX systems, Pi creates these files with user-only permissions. Windows access follows inherited filesystem ACLs. See [image generation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#generate-images).
+Pi's `image()` also saves images to temporary files and returns their paths for later turns to copy or move. On Windows, access follows inherited filesystem ACLs. See [image generation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#generate-images).
 
 ### Reasoning, sampling, and Azure
 
@@ -307,13 +308,26 @@ node --test --experimental-strip-types --test-name-pattern="installed Pi CLI|ins
 node --test --experimental-strip-types test/PiStartup.test.ts
 ```
 
-Development dependencies and the minimum supported Pi version are 1.2.0. CI checks the Node.js floor and current LTS on Linux and Windows, plus the minimum and latest compatible Pi releases. Compatibility installs leave the tracked manifest and lockfile unchanged. Required jobs repeat startup lifecycle checks and installed CLI and terminal pilots five times without forced exit. The latest-Pi job also repeats cancellation lifecycle checks five times. Each job runs the full default suite once.
+Development dependencies and the minimum supported Pi version are 1.3.0. All CI and release jobs run on Windows. CI checks the Node.js floor and current LTS, plus the minimum and latest compatible Pi releases. Compatibility installs match Pi's AI, TUI, and TypeBox dependencies and leave the tracked manifest and lockfile unchanged. Repository contracts derive Pi version expectations from the current package requirements. Required jobs repeat startup lifecycle checks and installed CLI and terminal pilots five times without forced exit. Startup checks cover both trusted and untrusted projects through goal requests, cancellation, reload, and ordinary compaction continuations. Both Pi compatibility jobs repeat saved-tool restoration five times. The latest-Pi job also repeats cancellation lifecycle checks five times. Each job runs the full default suite once.
+
+Real-CLI print and JSON scenarios verify question and goal rejection, project trust, and the absence of proactive compaction. Saved-tool restoration checks resume with native tool modifiers, completed goals, reload, explicit exclusions, and model-only decisions.
 
 CLI, terminal, process-control, and Git branch-isolation failures include nested errors in the test output and save a bounded `failure.txt` in the retained fixture directory. Failed CI jobs upload only these reports as `test-failures-*` artifacts, retained for seven days. Successful scenarios create no reports. A passing rerun does not establish the cause of an intermittent failure.
 
 ## Contribution and release expectations
 
 Run `npm run check` and `npm test` before submitting code changes. Changes to commands, configuration, requirements, or mode behavior also need README updates. Record completed changes to shipped behavior, supported workflows, public documentation, or build, test, and release guarantees under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md). Do not bump the version unless preparing a release.
+
+### Adopt a Pi update
+
+Check every stable Pi release, including patches, before adopting it:
+
+1. Review its release notes, installed documentation, exported APIs, and the KillerOS behavior it affects.
+2. Install the exact candidate with its matching AI, TUI, and TypeBox dependencies without changing tracked package files. Run the checks above on Windows at the Node.js floor and current LTS, including the lifecycle repetitions without forced exit.
+3. If verification succeeds, make that release the new minimum. Update the Pi peer minimums, exact development pins, lockfile, README requirements, CI targets, and Unreleased notes together. Run a fresh `npm ci`, then repeat verification on the final change.
+4. Confirm the required CI matrix on the final commit. Record the source revision, exact resolved package versions, operating system, Node version, commands, results, and skips. Leave a failed or incompletely checked candidate unadopted.
+
+A peer range accepting a version is not executed verification. Report expected API compatibility separately from exact-version checks that ran. Do not add older-Pi compatibility branches or describe untested future releases as verified. Adoption does not bump KillerOS's release version or authorize publication.
 
 ### Release process
 
@@ -333,7 +347,7 @@ The prepublish guard rejects ordinary direct publication, but does not prove Git
 
 Pi compatibility checks have stable names, `Pi compatibility (minimum)` and `Pi compatibility (latest)`, independent of tested versions. When adopting those names, confirm both passed on the release PR's exact head commit. Replace only the old versioned Pi requirements. Preserve their GitHub Actions app bindings and every other protection.
 
-`Quality (Node 22.19.0)` validates release metadata before the full suite and tests the publication lifecycle with the release workflow's pinned npm CLI in an isolated installation. The packed-package Pi test checks the archive's entry point, README, changelog, theme, package name, and current version before activation and reload. Those assertions run across the Node, Windows, and Pi compatibility matrix.
+`Quality (Node 22.19.0)` validates release metadata before the full suite and tests the publication lifecycle with the release workflow's pinned npm CLI in an isolated installation. The packed-package Pi test checks the archive's entry point, README, changelog, theme, package name, and current version before activation and reload. Those assertions run across the Windows Node and Pi compatibility matrix.
 
 `Package smoke test` remains during the required-check migration. Before removing its requirement:
 
@@ -347,7 +361,7 @@ Keep the job if those prerequisites are unmet.
 
 ## Known issues and limits
 
-- Windows Node 24.19.0 can crash during native RPC shutdown with Pi 1.2.0. RPC pilots skip that exact Node version, not other Windows versions. Use Node 22.19.0 or 24.20.0+, which includes [Node's shutdown fix](https://github.com/nodejs/node/pull/61999). Terminal pilots and cleanup controls still run on 24.19.0.
+- Windows Node 24.19.0 can crash during native RPC shutdown, including with Pi 1.3.0. RPC pilots skip that exact Node version, not other Windows versions. Use Node 22.19.0 or 24.20.0+, which includes [Node's shutdown fix](https://github.com/nodejs/node/pull/61999). Terminal pilots and cleanup controls still run on 24.19.0.
 - Pi's `-name` tool modifiers do not reliably exclude extension tools. Use `--exclude-tools`, as described in [Tool selection and codemode](#tool-selection-and-codemode).
 - Passive Git scans treat CRLF text as unchanged when it normalizes to the indexed LF content, including with `text=auto eol=lf` or bare `eol=lf`. After a size-changing rewrite, Git's index stat cache can still make `git status` report a modification even when `git diff` is empty.
 - Questions require TUI mode. Print and JSON modes do not support goals or proactive compaction. See [Supported modes and navigation](#supported-modes-and-navigation).
@@ -358,7 +372,7 @@ Report bugs through the [issue tracker](https://github.com/KyrosHendrix/pi-Kille
 
 KillerOS hooks run only in projects Pi marks as trusted. Check `.pi/killeros-hooks.json` before granting trust. KillerOS accepts hook configuration only as a regular, non-linked file of at most 64 KiB in the project's real `.pi` directory.
 
-On POSIX systems, timed-out or cancelled hooks receive `SIGTERM`, then `SIGKILL` if cleanup remains pending. Shell exit alone does not confirm that the original process group stopped. Cleanup has a two-second window and reports uncertainty if it cannot confirm group exit.
+On timeout or cancellation, Windows hooks use `taskkill.exe` to terminate the shell and its descendants. KillerOS resolves it through the Windows system directory rather than the project's `PATH`. Shell exit alone does not confirm that descendants stopped. Cleanup has a two-second window and reports uncertainty if it cannot confirm tree termination.
 
 Handoff validation rejects recognized credential assignments in plain text, Markdown lists, bold labels, and inline-code labels before creating a destination session. Rejected values do not appear in the error notification. This pattern check cannot detect every secret or personally identifying value. Review context before carrying it into another session.
 

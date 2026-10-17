@@ -37,10 +37,10 @@ function readBoundedText(filePath: string, limit = PERSONAL_INSTRUCTIONS_LIMIT):
   }
 }
 
-/** Checks path containment using host filesystem casing rules. */
+/** Checks path containment using Windows filesystem casing rules. */
 function pathInside(root: string, candidate: string): boolean {
-  const normalizedRoot = process.platform === "win32" ? root.toLowerCase() : root;
-  const normalizedCandidate = process.platform === "win32" ? candidate.toLowerCase() : candidate;
+  const normalizedRoot = root.toLowerCase();
+  const normalizedCandidate = candidate.toLowerCase();
   const relative = path.relative(normalizedRoot, normalizedCandidate);
   return Boolean(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }

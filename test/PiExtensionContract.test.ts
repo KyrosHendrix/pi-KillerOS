@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type Provider } from "@earendil-works/pi-ai";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { mistralProvider } from "@earendil-works/pi-ai/providers/mistral";
@@ -57,10 +58,7 @@ function runNpm(args: string[], cwd: string, userConfig: string, processEnv: Nod
   const npmArgs = ["--userconfig", userConfig, "--globalconfig", globalConfig, "--loglevel", "error", ...args];
   const options = { cwd, encoding: "utf8" as const, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 };
   if (npmCli) return execFileSync(process.execPath, [npmCli, ...npmArgs], options);
-  if (process.platform === "win32") {
-    return execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "npm", ...npmArgs], options);
-  }
-  return execFileSync("npm", npmArgs, options);
+  return execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "npm", ...npmArgs], options);
 }
 
 function assertInstalledPackage(directory: string, expectedVersion: string): void {
@@ -71,6 +69,7 @@ function assertInstalledPackage(directory: string, expectedVersion: string): voi
   assert.ok(isUnknownRecord(identity));
   assert.equal(identity.name, "killeros", "Unexpected package name");
   assert.equal(identity.version, expectedVersion, "Unexpected package version");
+  assert.deepEqual(identity.os, ["win32"], "Package must restrict installation to Windows");
 }
 
 function isolatedFixtureEnvironment(directory: string): NodeJS.ProcessEnv {
@@ -112,8 +111,7 @@ function initializeFixtureRepository(cwd: string, env: NodeJS.ProcessEnv = proce
     cwd, env: gitEnv, encoding: "utf8", timeout: 15_000,
   }).trim());
   const fixtureRoot = realpathSync.native(cwd);
-  assert.equal(process.platform === "win32" ? discoveredRoot.toLowerCase() : discoveredRoot,
-    process.platform === "win32" ? fixtureRoot.toLowerCase() : fixtureRoot,
+  assert.equal(discoveredRoot.toLowerCase(), fixtureRoot.toLowerCase(),
     "KillerOS passive Git scans must resolve to the disposable fixture root");
   return discoveredGit;
 }
@@ -134,6 +132,37 @@ function rpcData(response: PiRpcRecord): Record<string, unknown> {
 function isUnknownArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
 }
+
+test("installed Pi CLI rejects KillerOS activation on unsupported operating systems", { timeout: 90_000 }, async (t) => {
+  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-platform-"));
+  t.after(() => removeDirectoryEventually(directory));
+  const env = isolatedFixtureEnvironment(directory);
+  const agentDirectory = path.join(directory, "agent");
+  mkdirSync(agentDirectory);
+  const cliPath = path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
+  for (const platform of ["linux", "darwin"]) {
+    await t.test(platform, async () => {
+      const extension = path.join(directory, `${platform}.ts`);
+      writeFileSync(extension, `
+        import Killeros from ${JSON.stringify(new URL("../Killeros.ts", import.meta.url).href)};
+        export default function (pi) {
+          const original = Object.getOwnPropertyDescriptor(process, "platform");
+          Object.defineProperty(process, "platform", { ...original, value: ${JSON.stringify(platform)} });
+          try { Killeros(pi); }
+          finally { Object.defineProperty(process, "platform", original); }
+        }
+      `);
+      const cli = new PiRpcProcess({ cliPath, cwd: directory,
+        args: ["--mode", "rpc", "--offline", "--approve", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp", "--extension", extension],
+        env: { ...env, PI_CODING_AGENT_DIR: agentDirectory, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" },
+      });
+      const result = await cli.close(30_000);
+      assert.equal(result.forced, false, cli.diagnostics());
+      assert.equal(result.exit.code, 1, cli.diagnostics());
+      assert.match(cli.diagnostics(), /KillerOS supports Windows only\./u);
+    });
+  }
+});
 
 test("installed Pi terminal accepts resized questions, cancels partial selections, and preserves editor navigation", { timeout: 120_000 }, async (t) => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-terminal-"));
@@ -903,26 +932,131 @@ test("installed Pi CLI completes a goal and restores it without unsolicited mode
   }));
 });
 
-test("installed archive assertions reject every missing required file and incorrect package identity", async () => {
+test("installed archive assertions reject missing files, incorrect identity, and non-Windows metadata", async () => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-package-assertions-"));
   try {
     for (const file of ["Killeros.ts", "README.md", "CHANGELOG.md", "themes/killeros.json"]) {
       mkdirSync(path.dirname(path.join(directory, file)), { recursive: true });
       writeFileSync(path.join(directory, file), "fixture");
     }
-    writeFileSync(path.join(directory, "package.json"), JSON.stringify({ name: "killeros", version: "3.0.3" }));
+    writeFileSync(path.join(directory, "package.json"), JSON.stringify({ name: "killeros", version: "3.0.3", os: ["win32"] }));
     assertInstalledPackage(directory, "3.0.3");
     for (const file of ["Killeros.ts", "README.md", "CHANGELOG.md", "themes/killeros.json"]) {
       unlinkSync(path.join(directory, file));
       assert.throws(() => assertInstalledPackage(directory, "3.0.3"), { message: new RegExp(file.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u") });
       writeFileSync(path.join(directory, file), "fixture");
     }
-    for (const identity of [{ name: "not-killeros", version: "3.0.3" }, { name: "killeros", version: "3.0.2" }]) {
+    for (const identity of [
+      { name: "not-killeros", version: "3.0.3", os: ["win32"] },
+      { name: "killeros", version: "3.0.2", os: ["win32"] },
+      { name: "killeros", version: "3.0.3" },
+      { name: "killeros", version: "3.0.3", os: ["linux"] },
+      { name: "killeros", version: "3.0.3", os: ["win32", "linux"] },
+    ]) {
       writeFileSync(path.join(directory, "package.json"), JSON.stringify(identity));
       assert.throws(() => assertInstalledPackage(directory, "3.0.3"));
     }
   } finally {
     await removeDirectoryEventually(directory);
+  }
+});
+
+test("installed Pi print and JSON preserve trust and reject interactive workflows", { timeout: 60_000 }, async (t) => {
+  for (const mode of ["print", "json"] as const) {
+    for (const trusted of [true, false]) {
+      await t.test(`${mode}/${trusted ? "trusted" : "untrusted"}`, async () => {
+        const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-noninteractive-"));
+        const project = path.join(directory, "project"), agentDir = path.join(directory, "agent");
+        mkdirSync(project); mkdirSync(agentDir);
+        const session = path.join(directory, "session.jsonl");
+        const probe = path.join(directory, "probe.ts");
+        const personal = "KILLEROS_NONINTERACTIVE_PERSONAL";
+        writeFileSync(path.join(project, "AGENTS.local.md"), personal);
+        writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false },
+          compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 } }));
+        writeFileSync(path.join(agentDir, "killeros.json"), JSON.stringify({ autoCompaction: { enabled: true, percentRemaining: 100 } }));
+        writeFileSync(probe, `export default function(pi) { pi.on("session_before_compact", () => {
+          pi.appendEntry("unexpected-noninteractive-compaction", {}); return {cancel:true};
+        }); }`);
+        let requests = 0;
+        const faults: string[] = [];
+        const server = createServer((request, response) => {
+          void (async () => {
+            assert.equal(request.method, "POST");
+            assert.equal(request.url, "/v1/chat/completions");
+            assert.equal(request.headers.authorization, "Bearer noninteractive-local-key");
+            const chunks: Buffer[] = [];
+            let size = 0;
+            for await (const chunk of request) {
+              assert.ok(chunk instanceof Uint8Array); size += chunk.length; assert.ok(size <= 1_048_576); chunks.push(Buffer.from(chunk));
+            }
+            const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            assert.ok(isUnknownRecord(body) && isUnknownArray(body.messages) && isUnknownArray(body.tools));
+            assert.equal(JSON.stringify(body.messages).split(personal).length - 1, trusted ? 1 : 0);
+            const names = body.tools.map((tool) => { assert.ok(isUnknownRecord(tool) && isUnknownRecord(tool.function)); return tool.function.name; });
+            assert.deepEqual(names, ["question"], "No goal tool may activate in print or JSON mode");
+            const last = body.messages.at(-1); assert.ok(isUnknownRecord(last));
+            const step = requests++;
+            assert.ok(step < 2, "Noninteractive modes must not start compaction continuations");
+            if (step === 0) assert.equal(last.role, "user");
+            else {
+              assert.equal(last.role, "tool");
+              assert.match(JSON.stringify(last.content), /The question tool requires interactive TUI mode/u);
+            }
+            const delta = step === 0 ? { tool_calls: [{ index: 0, id: "noninteractive-question", type: "function", function: {
+              name: "question", arguments: JSON.stringify({ question: "Choose", options: [{ label: "Alpha" }] }),
+            } }] } : { content: "Noninteractive workflow verified" };
+            response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
+            response.end(`data: ${JSON.stringify({ id: `noninteractive-${step}`, model: "local", choices: [{ index: 0, delta,
+              finish_reason: step === 0 ? "tool_calls" : "stop" }], usage: { prompt_tokens: 2_000, completion_tokens: 20, total_tokens: 2_020 } })}\n\ndata: [DONE]\n\n`);
+          })().catch((error: unknown) => {
+            faults.push(error instanceof Error ? error.message : String(error));
+            if (!response.destroyed) { response.writeHead(500, { connection: "close" }); response.end("Rejected noninteractive fixture request"); }
+          });
+        });
+        let failure: unknown;
+        try {
+          await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
+          const address = server.address(); assert.ok(address && typeof address !== "string");
+          writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { "noninteractive-local": {
+            baseUrl: `http://127.0.0.1:${address.port}/v1`, api: "openai-completions", apiKey: "noninteractive-local-key",
+            models: [{ id: "local", name: "Noninteractive local", reasoning: false, input: ["text"], contextWindow: 100_000,
+              maxTokens: 1_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+          } } }));
+          const env = { ...isolatedFixtureEnvironment(directory), PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1" };
+          initializeFixtureRepository(project, env);
+          const args = ["--print", ...(mode === "json" ? ["--mode", "json"] : []), "--model", "noninteractive-local/local", "--thinking", "off",
+            "--tools", "question,killeros_*", "--session", session, trusted ? "--approve" : "--no-approve", "--offline", "--no-context-files",
+            "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp", "--no-extensions", "--extension", repositoryRoot, "--extension", probe];
+          const cli = path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
+          const options = { cwd: project, env, timeout: 15_000, maxBuffer: 1_048_576, signal: t.signal };
+          const run = async (prompt: string) => {
+            const invocation = promisify(execFile)(process.execPath, [cli, ...args, prompt], options);
+            invocation.child.stdin?.end();
+            return await invocation;
+          };
+          await run("/goal Unsupported noninteractive goal");
+          assert.equal(requests, 0, "/goal must not start provider work in print or JSON mode");
+          const result = await run("Verify noninteractive restrictions");
+          assert.match(result.stdout, /Noninteractive workflow verified/u);
+          assert.equal(requests, 2);
+          assert.deepEqual(faults, []);
+          const entries = readFileSync(session, "utf8").trim().split("\n").map((line) => { const value: unknown = JSON.parse(line); return value; });
+          assert.equal(entries.some((entry) => isUnknownRecord(entry)
+            && (entry.customType === "killeros-goal" || entry.customType === "unexpected-noninteractive-compaction")), false);
+          if (mode === "json") {
+            const events = result.stdout.trim().split("\n").map((line) => { const value: unknown = JSON.parse(line); return value; });
+            assert.ok(events.some((event) => isUnknownRecord(event) && event.type === "agent_settled" && event.aborted === false));
+          }
+        } catch (error) { failure = error; }
+        finally {
+          server.closeAllConnections(); await new Promise<void>((resolve) => { server.close(() => resolve()); });
+        }
+        if (failure !== undefined) throwScenarioFailure({ directory, message: `Pi ${mode} with trust ${trusted} failed`, errors: [failure],
+          diagnostics: JSON.stringify({ node: process.version, mode, trusted, requests, faults }) });
+        await removeDirectoryEventually(directory);
+      });
+    }
   }
 });
 
@@ -1901,7 +2035,7 @@ test("real Pi exclusions cannot be bypassed by KillerOS goal activation or codem
   }
 });
 
-test("Pi 1.2 user cancellation stops goal work after a normal result, during retry, and during pending compaction", { timeout: 30_000 }, async (t) => {
+test("Pi user cancellation stops goal work after a normal result, during retry, and during pending compaction", { timeout: 30_000 }, async (t) => {
   for (const stage of ["normal result", "retry", "goal compaction", "ordinary compaction", "production entrypoint"] as const) {
     await t.test(stage, async () => {
       const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-cancellation-"));
@@ -2012,7 +2146,7 @@ test("Pi 1.2 user cancellation stops goal work after a normal result, during ret
   }
 });
 
-test("Pi 1.2 native CLI rejects mixed modifiers and wildcard modifiers", () => {
+test("Pi native CLI rejects mixed modifiers and wildcard modifiers", () => {
   for (const selection of ["read,+codemode", "+codemode,-killeros_*"]) {
     const args = parseArgs(["--tools", selection]);
     assert.equal(args.diagnostics.some((diagnostic) => diagnostic.type === "error"), true, selection);
@@ -2025,7 +2159,7 @@ test("Pi 1.2 native CLI rejects mixed modifiers and wildcard modifiers", () => {
   }
 });
 
-test("Pi 1.2 +codemode retains native defaults through goal activation and reload", { timeout: 30_000 }, async () => {
+test("Pi +codemode retains native defaults through goal activation and reload", { timeout: 30_000 }, async () => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-tool-modifiers-"));
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   try {

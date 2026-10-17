@@ -8,7 +8,7 @@ KillerOS is a strict TypeScript extension for the Pi coding agent. It replaces t
 
 Read `README.md` before changing commands, configuration, requirements, or mode behavior. It owns user guidance and the release process. For Pi integration changes, consult the installed docs and API types in `node_modules/@earendil-works/pi-coding-agent/`.
 
-Use npm. `package.json` defines supported engine and peer ranges; `package-lock.json` pins development packages. Keep Windows and Linux support.
+Use npm. `package.json` defines supported engine and peer ranges; `package-lock.json` pins development packages. KillerOS supports Windows only.
 
 Before finishing, check each applicable mode and entry point:
 
@@ -103,7 +103,7 @@ node --test --test-force-exit --experimental-strip-types test/verify-release.tes
 
 For guidance-only changes in `AGENTS.md` or `docs/`, verify referenced paths, headings, and commands directly. Prose alone does not require the runtime suite.
 
-CI checks the Node.js floor, current LTS, Windows, and minimum and latest compatible Pi packages. Compatibility installs must not change the tracked manifest or lockfile. Local checks do not establish that the whole matrix passes. Report what ran and what remains unverified.
+CI runs on Windows and checks the Node.js floor, current LTS, and minimum and latest compatible Pi packages. Compatibility installs must not change the tracked manifest or lockfile. Local checks do not establish that the whole matrix passes. Report what ran and what remains unverified.
 
 ## Update docs and release metadata when needed
 

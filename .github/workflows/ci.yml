@@ -24,6 +24,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 env:
   CI: 'true'
   NPM_CONFIG_FUND: 'false'
@@ -31,7 +35,7 @@ env:
 jobs:
   quality:
     name: Quality (Node ${{ matrix.node-version }})
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -182,7 +186,7 @@ jobs:
 
   pi-latest:
     name: Pi compatibility (${{ matrix.pi-channel }})
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -190,9 +194,9 @@ jobs:
         # Keep required-check names stable when the supported Pi versions change.
         include:
           - pi-channel: minimum
-            pi-target: '1.2.0'
+            pi-target: '1.3.0'
           - pi-channel: latest
-            pi-target: '>=1.2.0 <2'
+            pi-target: '>=1.3.0 <2'
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -217,11 +221,13 @@ jobs:
           PI_VERSION=$(npm view "@earendil-works/pi-coding-agent@$PI_TARGET" version --json | node -e 'const value=JSON.parse(require("node:fs").readFileSync(0)); console.log(Array.isArray(value) ? value.at(-1) : value)')
           PI_AI_RANGE=$(npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies.@earendil-works/pi-ai)
           PI_TUI_RANGE=$(npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies.@earendil-works/pi-tui)
-          test -n "$PI_AI_RANGE" && test -n "$PI_TUI_RANGE"
+          PI_TYPEBOX_RANGE=$(npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies.typebox)
+          test -n "$PI_AI_RANGE" && test -n "$PI_TUI_RANGE" && test -n "$PI_TYPEBOX_RANGE"
           npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false \
             "@earendil-works/pi-ai@$PI_AI_RANGE" \
             "@earendil-works/pi-coding-agent@$PI_VERSION" \
-            "@earendil-works/pi-tui@$PI_TUI_RANGE"
+            "@earendil-works/pi-tui@$PI_TUI_RANGE" \
+            "typebox@$PI_TYPEBOX_RANGE"
 
       - name: Verify package files are unchanged
         run: git diff --exit-code -- package.json package-lock.json
@@ -259,7 +265,14 @@ jobs:
         run: |
           for attempt in 1 2 3 4 5; do
             echo "Pi cancellation lifecycle run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="Pi 1.2 user cancellation stops goal work after a normal result, during retry, and during pending compaction" test/PiExtensionContract.test.ts || exit $?
+            node --test --experimental-strip-types --test-name-pattern="Pi user cancellation stops goal work after a normal result, during retry, and during pending compaction" test/PiExtensionContract.test.ts || exit $?
+          done
+
+      - name: Repeat saved tool restoration without forced exit
+        run: |
+          for attempt in 1 2 3 4 5; do
+            echo "Saved tool restoration run $attempt/5"
+            node --test --experimental-strip-types test/PiToolRestoration.e2e.test.ts || exit $?
           done
 
       - name: Test against matched Pi
@@ -277,7 +290,7 @@ jobs:
 
   package:
     name: Package smoke test
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - name: Check out source
@@ -313,7 +326,7 @@ jobs:
 
   audit:
     name: Dependency audit
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - name: Check out source
@@ -333,7 +346,7 @@ jobs:
   dependency-review:
     name: Dependency review
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 10
     permissions:
       contents: read
@@ -358,7 +371,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 20
     permissions:
       actions: read

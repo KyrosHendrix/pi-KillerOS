@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readlink, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readlink, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
@@ -10,7 +10,7 @@ const gitCommand = passiveGitCommand(process.cwd()) ?? assert.fail("expected a s
 const env = {
   ...passiveGitEnv(),
   GIT_CONFIG_NOSYSTEM: "1",
-  GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : os.devNull,
+  GIT_CONFIG_GLOBAL: "NUL",
   GIT_ATTR_NOSYSTEM: "1",
 };
 
@@ -102,23 +102,6 @@ test("passive content comparison agrees with Git's conversion oracle", async (t)
         });
       }
     });
-  }
-});
-
-test("passive mode comparison agrees with Git for executable changes", { skip: process.platform === "win32" }, async (t) => {
-  const root = await fixture(t);
-  await writeFile(path.join(root, "file"), "one\n");
-  git(root, ["add", "."]);
-  git(root, ["commit", "--quiet", "-m", "mode fixture"]);
-  await chmod(path.join(root, "file"), 0o755);
-  await utimes(path.join(root, "file"), new Date(0), new Date(0));
-  for (const fileMode of ["true", "false"]) {
-    git(root, ["config", "core.filemode", fileMode]);
-    // diff refreshes stale index stat data; diff-files alone can report a metadata-only change.
-    const oracleChanged = git(root, ["diff", "--name-only"]).toString().trim() === "file";
-    assert.equal(oracleChanged, fileMode === "true");
-    const snapshot = await inspectWorktreeWithoutFilters(root, async (args) => git(root, args));
-    assert.equal(snapshot.files.has("file"), oracleChanged);
   }
 });
 

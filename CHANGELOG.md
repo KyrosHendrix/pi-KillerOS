@@ -7,6 +7,16 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 ### Added
 
 - Added `/goal edit <objective>` to update an active or paused goal in place without resetting its turn count, active clock, or token baseline. A quoted file target is re-baselined for the new objective, and blocked or complete goals keep their existing replace or new-objective paths.
+- Added real-CLI startup scenarios that reject personal instructions in untrusted projects across goal requests, startup cancellation, reload, and ordinary compaction continuations.
+- Added real-CLI print and JSON scenarios for question and goal rejection, trusted instructions, protocol output, and prevention of proactive compaction.
+- Added real-CLI saved-tool restoration coverage for native tool modifiers, completed goals, reload, explicit exclusions, and model-only decisions.
+
+### Changed
+
+- Raised the minimum supported Pi version to 1.3.0 and aligned the exact development pins, lockfile, CI targets, and TypeBox development dependency. Documented verification and minimum-version updates for each adopted stable Pi release.
+- Restricted KillerOS to Windows. npm metadata and extension activation reject other operating systems. Removed Linux-only runtime branches and tests, and moved all CI and release jobs to Windows while retaining required-check names and publication safeguards.
+- Derived Pi requirement checks from the current development pins and peer ranges instead of historical versions. Removed version numbers from cancellation test selection so CI keeps selecting the scenario after a Pi update.
+- Matched TypeBox to the selected Pi release during compatibility CI installs, alongside Pi AI and TUI, without changing the tracked package files.
 
 ## [3.0.7] - 2026-10-15
 
