@@ -136,9 +136,12 @@ test("a delayed stale-lock observer cannot remove a new writer's lock", async (t
     stdio: ["ignore", "pipe", "pipe"],
   });
   t.after(() => child.kill("SIGKILL"));
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => { stderr += chunk; });
   const completed = new Promise<void>((resolve, reject) => {
     child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`writer exited with ${code}`)));
+    child.once("close", (code, signal) => code === 0 ? resolve() : reject(new Error(`writer exited with ${String(code ?? signal)}: ${stderr}`)));
   });
   await Promise.race([
     new Promise<void>((resolve) => child.stdout.once("data", () => resolve())),

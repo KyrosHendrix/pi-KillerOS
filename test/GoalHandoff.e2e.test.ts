@@ -392,9 +392,27 @@ test("saved turn-17 work stops at 20 and explicit resume finishes at 22", option
 
 test("three blocker audits stop work and later completion grants no new turns", options, async t => {
   let decisions = 0;
+  let audits = 0;
   let complete = false;
   const f = await fixture(t, body => {
-    if (records(body.messages).at(-1)?.role === "tool") return { text: "Decision recorded." };
+    if (records(body.messages).at(-1)?.role === "tool") {
+      if (!complete) {
+        // This exchange holds Pi before settlement can advance to the next goal turn.
+        const saved = f.lastGoal();
+        audits++;
+        assert.equal(audits, decisions);
+        assert.equal(saved.status, audits < 3 ? "active" : "blocked");
+        assert.equal(saved.turns, audits);
+        const evidence = `Service still unavailable on audit ${audits}`;
+        assert.deepEqual(saved.blockerAudit, { key: "external-service", streak: audits, lastTurn: audits, evidence });
+        assert.deepEqual(saved.turnDecision ?? saved.lastDecision, {
+          kind: audits < 3 ? "blocker-audit" : "blocked", turn: audits, blockerKey: "external-service", streak: audits, evidence,
+        });
+        assert.equal(records(body.messages).at(-1)?.content, audits < 3
+          ? `Blocker audit ${audits}/3 recorded; the goal remains active: ${evidence}` : `Goal marked blocked: ${evidence}`);
+      }
+      return { text: "Decision recorded." };
+    }
     decisions++;
     return decision(complete ? { status: "complete", evidence: "Verified the whole unchanged objective." }
       : { status: "blocked", blockerKey: "external-service", evidence: `Service still unavailable on audit ${decisions}` }, `audit-${decisions}`);
@@ -404,11 +422,17 @@ test("three blocker audits stop work and later completion grants no new turns", 
   await until(async () => (await f.state()).isStreaming === false);
   assert.equal(f.lastGoal().turns, 3);
   assert.equal(decisions, 3);
+  assert.equal(audits, 3);
+  assert.equal(f.bodies.length, 6);
   complete = true;
   await f.run("Verify completion of the saved blocked objective");
   assert.equal(f.lastGoal().status, "complete");
   assert.equal(f.lastGoal().turns, 3);
   assert.equal(decisions, 4);
+  assert.equal(f.bodies.length, 8);
+  assert.deepEqual(f.lastGoal().lastDecision, {
+    kind: "complete", turn: 3, evidence: "Verified the whole unchanged objective.", verification: "model-reported",
+  });
 });
 
 test("direct quoted Update rejects unchanged content and pauses without a decision", options, async t => {

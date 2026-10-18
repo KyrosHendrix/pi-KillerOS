@@ -164,29 +164,6 @@ test("only an accepted complete decision can finish a general goal", async () =>
   assert.equal(harness.sentMessages.length, 2);
 });
 
-test("blocker audits still require three consecutive accepted decisions", async () => {
-  const harness = createHarness<GoalData>();
-  const { ctx, tool } = await start(harness);
-  const record = async (turn: number) => {
-    const result = await tool.execute(
-      `blocked-${turn}`,
-      { status: "blocked", blockerKey: "external", evidence: `Evidence ${turn}` },
-      new AbortController().signal,
-      () => {},
-      ctx,
-    );
-    return result.details.status;
-  };
-
-  assert.equal(await record(1), "blocker-audit");
-  await settle(harness, ctx);
-  assert.equal(await record(2), "blocker-audit");
-  await settle(harness, ctx);
-  assert.equal(await record(3), "blocked");
-  assert.equal(state(harness).status, "blocked");
-  assert.equal(harness.sentMessages.length, 3);
-});
-
 test("a persisted continue authorization is consumed once and an unresolved turn restores paused", async () => {
   const original = createHarness<GoalData>();
   const { ctx, tool } = await start(original);
