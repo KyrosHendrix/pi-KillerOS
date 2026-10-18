@@ -4,6 +4,13 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Fixed
+
+- Apply file proof to directly quoted `Create` goals, including the README example and edited objectives, so a missing deliverable cannot complete the goal.
+- Include the current saved goal in handoff generation and reject summaries that omit or change its objective or status. The child receives context only, without an active goal.
+- Reject stale handoff results after committed navigation, including navigation away and back, goal changes, reload, and session replacement. Cancelled and no-op navigation still preserve valid work.
+- Reject recognized password assignments in Markdown blockquotes and tables before creating a handoff session, without echoing credential values.
+
 ## [3.0.8] - 2026-10-18
 
 ### Added

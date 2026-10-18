@@ -50,7 +50,9 @@ Prefer GitHub? Use `pi install git:github.com/KyrosHendrix/pi-KillerOS`. Pin wit
 
 ## Worth knowing
 
-Goals send model requests and can incur charges. Include a checkable result in your objective. KillerOS checks changes to directly quoted file targets, but cannot independently prove every completion claim. Review the result.
+Goals send model requests and can incur charges. Include a checkable result in your objective. For supported single-file objectives such as the quoted `Create` example above, KillerOS requires the file to exist, or its content to change if it already existed. Multiple distinct file targets do not receive single-file proof. This does not prove every natural-language requirement. Review the result. Saved goals without file proof keep that contract until you edit or replace the objective.
+
+`/handoff` requires an idle saved session with no active goal. It carries the current saved objective and status into an idle linked child as context, without resuming the goal. Missing or changed goal details, committed navigation, reload, or session replacement invalidate a pending handoff. Cancelled and no-op navigation preserve valid work. Handoff rejects recognized credentials in generated output, including password assignments in Markdown blockquotes and tables. These checks do not detect every secret or redact source context before it reaches your configured provider.
 
 Compaction triggers by default at 15% tokens remaining. Turning KillerOS compaction off doesn't disable Pi's own compaction. Fast mode requests eligible OpenAI priority service and can cost more. Its footer label doesn't confirm OpenAI accepted the tier.
 

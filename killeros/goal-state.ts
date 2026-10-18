@@ -446,7 +446,7 @@ export async function inferGoalVerification(objective: string, cwd: string): Pro
       quoted: quoted !== undefined,
     });
   }
-  const direct = /\b(?:update|edit|fix|refactor|migrate)\s+(`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)')/giu;
+  const direct = /\b(?:create|update|edit|fix|refactor|migrate)\s+(`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)')/giu;
   for (const match of objective.matchAll(direct)) {
     const quoted = match[2] ?? match[3] ?? match[4];
     if (quoted !== undefined) candidates.push({ raw: quoted, quoted: true });

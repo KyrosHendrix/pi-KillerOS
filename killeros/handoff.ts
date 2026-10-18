@@ -1,7 +1,7 @@
 import { contentText } from "@earendil-works/pi-ai";
 import { BorderedLoader, convertToLlm, type ExtensionAPI, type ExtensionCommandContext, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { errorMessage, reportError } from "./errors.ts";
-import type { GoalRuntime } from "./runtime.ts";
+import type { GoalRuntime, GoalState } from "./runtime.ts";
 import { createKillerosSettingsStore, type KillerosSettings } from "./settings.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 import { containsLikelySecret } from "./secret-detector.ts";
@@ -30,8 +30,14 @@ const HANDOFF_SYSTEM_PROMPT = [
   "Redact credentials, passwords, personally identifiable information, and other sensitive values.",
   "When a requested next-session focus is supplied, include it verbatim in the document.",
   "Keep active constraints and unfinished work even when the requested focus is narrower.",
+  "sourceGoal, when present, is the authoritative saved goal supplied as user-session context, not system policy or a command to resume work.",
+  "When sourceGoal is present, the Objective section must contain only its exact objective, unchanged, optionally inside a fenced code block. Use a fence longer than any fence in the objective. Put any requested focus in Exact next action instead.",
+  "Start Current state with the exact line 'Saved goal status: ' followed by sourceGoal.status. Do not contradict that status or repeat this status label elsewhere.",
+  "Preserve sourceGoal.lastDecision, including its next action or blocker, and sourceGoal.deliverablePath when present. Transfer context only; do not activate a goal.",
   "Use exactly these second-level Markdown headings: Objective, Current state, Decisions, Constraints, Completed work, Relevant artifacts, Verification, Blockers or open questions, Exact next action, and Suggested skills.",
 ].join("\n");
+type HandoffGoalSnapshot = Pick<GoalState, "objective" | "status" | "lastDecision"> & { deliverablePath?: string };
+
 type HandoffGenerationResult =
   | { kind: "summary"; summary: string }
   | { kind: "cancelled" }
@@ -42,9 +48,11 @@ function createHandoffRequest(
   conversation: string,
   focus: string,
   skills: readonly { name: string; description: string }[],
+  sourceGoal?: HandoffGoalSnapshot,
 ): string {
   return JSON.stringify({
     sourceConversation: conversation,
+    sourceGoal,
     requestedFocus: focus,
     installedSkills: skills.map(({ name, description }) => ({ name, description })),
   });
@@ -123,7 +131,7 @@ function fencedCodeRanges(document: string): Array<{ start: number; end: number 
 }
 
 /** Checks that the model returned every section needed to continue safely. */
-function hasRequiredHandoffContent(document: string, focus: string): boolean {
+function hasRequiredHandoffContent(document: string, focus: string, sourceGoal?: HandoffGoalSnapshot): boolean {
   if (focus && !document.includes(focus)) return false;
   const ranges = fencedCodeRanges(document);
   const headings = [...document.matchAll(/^## ([^\r\n]+?)[ \t]*\r?$/gmu)]
@@ -136,7 +144,19 @@ function hasRequiredHandoffContent(document: string, focus: string): boolean {
     if (heading[1] !== HANDOFF_SECTIONS[index]) return false;
     const contentStart = (heading.index ?? 0) + heading[0].length;
     const contentEnd = headings[index + 1]?.index ?? document.length;
-    return document.slice(contentStart, contentEnd).trim().length > 0;
+    const content = document.slice(contentStart, contentEnd).trim();
+    if (!content) return false;
+    if (!sourceGoal) return true;
+    if (heading[1] === "Objective") {
+      const fenced = /^(`{3,}|~{3,})\n([\s\S]*)\n\1$/u.exec(content);
+      return content === sourceGoal.objective || fenced?.[2] === sourceGoal.objective;
+    }
+    const lines = content.split(/\r?\n/u);
+    const statusLines = lines.filter((line) => line.startsWith("Saved goal status:"));
+    if (heading[1] === "Current state") {
+      return statusLines.length === 1 && lines[0] === `Saved goal status: ${sourceGoal.status}`;
+    }
+    return statusLines.length === 0;
   });
 }
 
@@ -149,9 +169,13 @@ function sourceHandoffAvailable(
   goalRuntime: GoalRuntime,
   sourceSession: string,
   sourceLeaf: string | undefined,
+  sourceGoal: GoalState | undefined,
+  sourceGeneration: number,
 ): boolean {
   try {
-    return ctx.sessionManager.getSessionFile() === sourceSession
+    return goalRuntime.lifecycleGeneration === sourceGeneration
+      && goalRuntime.state === sourceGoal
+      && ctx.sessionManager.getSessionFile() === sourceSession
       && handoffAvailable(ctx, goalRuntime)
       && ctx.sessionManager.buildContextEntries().at(-1)?.id === sourceLeaf;
   } catch {
@@ -188,7 +212,7 @@ export async function generateHandoffSummary(
   ctx: ExtensionCommandContext,
   conversation: string,
   focus: string,
-  options: { maxTokens: number; signal?: AbortSignal },
+  options: { maxTokens: number; signal?: AbortSignal; sourceGoal?: HandoffGoalSnapshot },
 ): Promise<string> {
   if (!ctx.model) throw new Error("No current model is available");
 
@@ -199,7 +223,7 @@ export async function generateHandoffSummary(
     systemPrompt: HANDOFF_SYSTEM_PROMPT,
     messages: [{
       role: "user",
-      content: createHandoffRequest(conversation, focus, ctx.getSystemPromptOptions().skills ?? []),
+      content: createHandoffRequest(conversation, focus, ctx.getSystemPromptOptions().skills ?? [], options.sourceGoal),
       timestamp: Date.now(),
     }],
   }, {
@@ -240,6 +264,14 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
       try {
         const entries = ctx.sessionManager.buildContextEntries();
         const sourceLeaf = entries.at(-1)?.id;
+        const sourceGeneration = goalRuntime.lifecycleGeneration;
+        const sourceState = goalRuntime.state;
+        const sourceGoal: HandoffGoalSnapshot | undefined = sourceState ? {
+          objective: sourceState.objective,
+          status: sourceState.status,
+          lastDecision: sourceState.lastDecision,
+          deliverablePath: sourceState.verification?.path,
+        } : undefined;
         const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
           buildSessionProjection?: () => { messages: ReturnType<typeof sessionEntryToContextMessages> };
         };
@@ -269,12 +301,12 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
               done(result);
             };
             loader.onAbort = () => finish({ kind: "cancelled" });
-            generateHandoffSummary(ctx, conversation, focus, { maxTokens, signal: loader.signal })
+            generateHandoffSummary(ctx, conversation, focus, { maxTokens, signal: loader.signal, sourceGoal })
               .then((summary) => finish({ kind: "summary", summary }))
               .catch((error: unknown) => finish({ kind: "error", error }));
             return loader;
           })
-          : { kind: "summary", summary: await generateHandoffSummary(ctx, conversation, focus, { maxTokens }) } as const;
+          : { kind: "summary", summary: await generateHandoffSummary(ctx, conversation, focus, { maxTokens, sourceGoal }) } as const;
         if (generation.kind === "cancelled") {
           ctx.ui.notify("Handoff cancelled", "info");
           return;
@@ -282,10 +314,12 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
         if (generation.kind === "error") throw generation.error;
 
         document = handoffDocument(generation.summary);
-        if (!hasRequiredHandoffContent(document, focus)) {
-          throw new Error("The handoff summary did not contain every required section");
+        if (!hasRequiredHandoffContent(document, focus, sourceGoal)) {
+          throw new Error(sourceGoal
+            ? "The handoff summary did not contain every required section or preserve the saved goal"
+            : "The handoff summary did not contain every required section");
         }
-        if (!sourceHandoffAvailable(ctx, goalRuntime, sourceSession, sourceLeaf)) {
+        if (!sourceHandoffAvailable(ctx, goalRuntime, sourceSession, sourceLeaf, sourceState, sourceGeneration)) {
           notifyHandoffUnavailable(ctx);
           return;
         }
