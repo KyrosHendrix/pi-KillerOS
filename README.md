@@ -77,6 +77,8 @@ A nonempty `--tools` list with no `mcp__` entry preserves MCP tool availability.
 
 Install dependencies with `npm ci --ignore-scripts --no-audit --no-fund`. Run the checkout with `npx pi -e .`, with any installed copy disabled. Check changes with `npm run check` and `npm test`. There is no build step.
 
+Automatic pre-merge CI requires a pull request, including a draft pull request. Open a draft PR for feedback before requesting review, or run the CI workflow manually. Standalone pushes to `dev` do not start automatic CI. Keep running the local checks before pushing. CI also runs on pushes to `main` and on the weekly schedule.
+
 ### Release process
 
 Prepare releases on `dev`, update package versions and changelog, and open a PR into `main`. Wait for required checks and review, then use a merge commit. Releases go through CI on `main`; do not push version tags manually. Wait for the automated sync back to `dev` before advancing it.

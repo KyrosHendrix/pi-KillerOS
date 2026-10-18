@@ -259,16 +259,20 @@ test("CI blocks moderate dependency advisories without running lifecycle scripts
 test("CI runs the full quality suite on Windows at the Node.js floor and current LTS", () => {
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
-  const windowsJob = /^  windows:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
-  assert.ok(windowsJob);
-  assert.match(windowsJob, /^    runs-on: windows-latest$/mu);
-  assert.match(windowsJob, /^    name: Windows \(Node \$\{\{ matrix\.node-version \}\}\)$/mu);
-  assert.match(windowsJob, /node-version:\s*\n\s*- '22\.19\.0'\s*\n\s*- 'lts\/\*'/u);
-  assert.match(windowsJob, /^          node-version: \$\{\{ matrix\.node-version \}\}$/mu);
-  assert.match(windowsJob, /name: test-failures-windows-\$\{\{ strategy\.job-index \}\}-/u);
-  assert.match(windowsJob, /^        run: npm run check$/mu);
-  assert.match(windowsJob, /^        run: npm test$/mu);
-  for (const job of ["quality", "windows", "pi-latest"]) {
+  const jobs = ci.slice(jobsStart);
+  assert.deepEqual([...jobs.matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
+    ["quality", "pi-latest", "package", "audit", "dependency-review", "codeql"]);
+  const qualityJob = /^  quality:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(jobs)?.[0];
+  assert.ok(qualityJob);
+  assert.match(qualityJob, /^    name: Quality \(Node \$\{\{ matrix\.node-version \}\}\)$/mu);
+  assert.match(qualityJob, /^    timeout-minutes: 15$/mu);
+  assert.match(qualityJob, /node-version:\s*\n\s*- '22\.19\.0'\s*\n\s*- 'lts\/\*'/u);
+  assert.match(qualityJob, /^          node-version: \$\{\{ matrix\.node-version \}\}$/mu);
+  assert.match(qualityJob, /name: test-failures-quality-\$\{\{ strategy\.job-index \}\}-/u);
+  assert.match(qualityJob, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
+  assert.match(qualityJob, /^        run: npm run check$/mu);
+  assert.match(qualityJob, /^        run: npm test$/mu);
+  for (const job of ["quality", "pi-latest"]) {
     const source = new RegExp(`^  ${job}:\\r?\\n(?:(?: {4,}.*)?\\r?\\n)*`, "mu").exec(ci)?.[0];
     assert.ok(source);
     assert.match(source, /^    runs-on: windows-latest$/mu);
@@ -279,11 +283,32 @@ test("CI runs the full quality suite on Windows at the Node.js floor and current
     assert.ok(source.indexOf("Upload test failure reports") > source.indexOf("run: npm test"));
     assert.match(source, /- name: Repeat Pi startup lifecycle without forced exit/u);
     assert.match(source, /node --test --experimental-strip-types test\/PiStartup\.test\.ts \|\| exit \$\?/u);
+    for (const step of [
+      "Repeat Pi startup lifecycle without forced exit",
+      "Repeat installed CLI pilot without forced exit",
+      "Test terminal pilot and fault controls without forced exit",
+    ]) {
+      const start = source.indexOf(`      - name: ${step}`);
+      assert.notEqual(start, -1);
+      const end = source.indexOf("      - name:", start + 1);
+      const lifecycle = source.slice(start, end === -1 ? undefined : end);
+      assert.match(lifecycle, /for attempt in 1 2 3 4 5; do/u);
+      assert.match(lifecycle, /node --test --experimental-strip-types .* \|\| exit \$\?/u);
+      assert.doesNotMatch(lifecycle, /--test-force-exit/u);
+    }
   }
 });
 
 test("CI checks minimum and latest Pi with matched runtime packages and stable required-check names", () => {
-  assert.match(ci, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- dev/u);
+  const triggers = ci.slice(ci.indexOf("\non:"), ci.indexOf("\n# Keep the default token"));
+  assert.match(triggers, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n  pull_request:/u);
+  assert.match(triggers, /pull_request:\s*\n\s*types:\s*\n\s*- opened\s*\n\s*- synchronize\s*\n\s*- reopened\s*\n\s*- ready_for_review\s*\n  schedule:/u);
+  assert.match(triggers, /cron: '17 3 \* \* 1'/u);
+  assert.match(triggers, /^  workflow_dispatch:/mu);
+  assert.doesNotMatch(ci, /pull_request_target|paths-ignore:|paths:|github\.event\.pull_request\.draft/u);
+  assert.match(readme, /Automatic pre-merge CI requires a pull request, including a draft pull request/u);
+  assert.match(readme, /run the CI workflow manually/u);
+  assert.match(readme, /Standalone pushes to `dev` do not start automatic CI/u);
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   const compatibilityJob = /^  pi-latest:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
   assert.ok(compatibilityJob);
@@ -368,7 +393,8 @@ test("CI retains package smoke coverage until required-check migration", () => {
 test("GitHub releases require green current main and consistent package provenance", () => {
   assert.match(release, /workflow_run:/u);
   assert.match(release, /workflows:\s*\n\s*- CI/u);
-  assert.match(release, /github\.event\.workflow_run\.conclusion == 'success'/u);
+  assert.match(release, /if: github\.event\.workflow_run\.event == 'push' && github\.event\.workflow_run\.conclusion == 'success'/u);
+  assert.match(release, /branches:\s*\n\s*- main/u);
   assert.match(release, /github\.event\.workflow_run\.head_sha/u);
   assert.match(release, /git fetch --no-tags origin main/u);
   assert.match(release, /CURRENT_MAIN=.*origin\/main/u);

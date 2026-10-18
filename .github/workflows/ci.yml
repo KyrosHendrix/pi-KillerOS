@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - dev
   pull_request:
     types:
       - opened
@@ -112,73 +111,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: test-failures-quality-${{ strategy.job-index }}-${{ github.run_attempt }}
-          path: node_modules/.killeros-*/failure.txt
-          include-hidden-files: true
-          if-no-files-found: ignore
-          retention-days: 7
-
-  windows:
-    name: Windows (Node ${{ matrix.node-version }})
-    runs-on: windows-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version:
-          - '22.19.0'
-          - 'lts/*'
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Check
-        run: npm run check
-
-      - name: Repeat Pi startup lifecycle without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Pi startup lifecycle run $attempt/5"
-            node --test --experimental-strip-types test/PiStartup.test.ts || exit $?
-          done
-
-      - name: Repeat installed CLI pilot without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Installed CLI pilot run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi CLI completes a goal and restores it without unsolicited model work" test/PiExtensionContract.test.ts || exit $?
-          done
-
-      - name: Test terminal pilot and fault controls without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Terminal pilot and fault controls run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver reports|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
-          done
-
-      - name: Test
-        run: npm test
-
-      - name: Upload test failure reports
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: test-failures-windows-${{ strategy.job-index }}-${{ github.run_attempt }}
           path: node_modules/.killeros-*/failure.txt
           include-hidden-files: true
           if-no-files-found: ignore
