@@ -109,7 +109,7 @@ CI runs on Windows and checks the Node.js floor, current LTS, and minimum and la
 
 - Update `README.md` when commands, configuration, requirements, or mode behavior change. Keep detailed user guidance there.
 - After implementing and verifying a spec, move it from `docs/spec/` to `docs/implemented-spec/`. Leave unfinished and unrelated specs in place.
-- Add entries under `CHANGELOG.md`'s `[Unreleased]` for completed, tracked changes to shipped behavior, supported workflows, public documentation, or build, test, and release guarantees. Exclude plans, specs, local or ignored files, repository instructions, and changelog policy.
+- Add entries under `CHANGELOG.md`'s `[Unreleased]` only for changes a package user can notice or must act on: new capabilities, behavior changes, fixes, requirement or setup changes, and security fixes. Skip internal upkeep with no user-visible effect: tests, CI and release tooling, lint rules, refactors, documentation edits, repository instructions, plans, specs, and changelog policy.
 - Bump versions only when asked. Follow [the README release process](README.md#release-process). `.github/workflows/release.yml` implements publication; `scripts/verify-release.ts` validates it. Do not bypass the publish guard or push version tags manually.
 
 ## Keep this guidance useful

@@ -36,8 +36,10 @@ try {
     throw new Error(`CHANGELOG.md has no section for version ${version}`);
   }
   const readme = readFileSync("README.md", "utf8");
-  if (!readme.includes(`Pin a release by appending its tag, for example \`@v${version}\`.`)
-    && !readme.includes(`To pin a release, use \`npm:killeros@${version}\` or append a Git tag such as \`@v${version}\` to the Git source.`)) {
+  // Check all version pins, including examples wrapped onto another line.
+  const pinnedVersions = [...readme.matchAll(/@v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/gu)]
+    .map((match) => match[1]);
+  if (pinnedVersions.length === 0 || pinnedVersions.some((pinned) => pinned !== version)) {
     throw new Error(`README.md does not reference @v${version} in the pinned release example`);
   }
 } catch (error) {

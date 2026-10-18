@@ -44,6 +44,15 @@ test("release verification accepts the README's npm and Git pinned release examp
   }
 });
 
+test("release verification accepts current pins wrapped onto separate lines", () => {
+  const directory = fixture({ readme: "Pin with\n`npm:killeros@2.1.31` or\n`git:github.com/KyrosHendrix/pi-KillerOS@v2.1.31`.\n" });
+  try {
+    assert.equal(verify(directory).status, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("release verification rejects direct publication and incomplete release metadata", () => {
   const cases = [
     { label: "outside the release workflow", overrides: {}, env: process.env, error: /only the verified GitHub release workflow may publish/iu },
@@ -51,6 +60,11 @@ test("release verification rejects direct publication and incomplete release met
     { label: "missing changelog section", overrides: { changelog: "## [Unreleased]\n" }, env: RELEASE_ENV, error: /CHANGELOG\.md has no section/iu },
     { label: "stale npm pin", overrides: { readme: "To pin a release, use `npm:killeros@2.1.30` or append a Git tag such as `@v2.1.31` to the Git source.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
     { label: "stale Git pin", overrides: { readme: "To pin a release, use `npm:killeros@2.1.31` or append a Git tag such as `@v2.1.30` to the Git source.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
+    { label: "Git pin with different build metadata", overrides: { readme: "Pin with `npm:killeros@2.1.31` or `git:github.com/KyrosHendrix/pi-KillerOS@v2.1.31+old`.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
+    { label: "npm pin with different build metadata", overrides: { readme: "Pin with `npm:killeros@2.1.31+old` or `@v2.1.31`.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
+    { label: "stale wrapped Git pin", overrides: { readme: "Pin with\n`npm:killeros@2.1.31` or\n`git:github.com/KyrosHendrix/pi-KillerOS@v2.1.30`.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
+    { label: "stale wrapped npm pin", overrides: { readme: "Pin with\n`npm:killeros@2.1.30` or\n`git:github.com/KyrosHendrix/pi-KillerOS@v2.1.31`.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
+    { label: "missing pins", overrides: { readme: "Install with `pi install npm:killeros`.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
     { label: "stale README tag", overrides: { readme: "Pin a release by appending its tag, for example `@v2.1.30`.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
     { label: "current version elsewhere but stale pinned example", overrides: { readme: "Current version @v2.1.31.\nPin a release by appending its tag, for example `@v2.1.30`.\n" }, env: RELEASE_ENV, error: /README\.md does not reference/iu },
   ];
