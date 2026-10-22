@@ -20,7 +20,7 @@ The footer keeps your model, remaining context, and goal status visible. Complet
 
 ## Install
 
-KillerOS supports Windows only, with native Windows Node.js 22.19.0+ and Pi 1.3.0 or later below 2.0.0. Users on older Pi versions must upgrade.
+KillerOS supports Windows only, with native Windows Node.js 22.19.0+ and Pi 1.4.0 or later below 2.0.0. Users on older Pi versions must upgrade.
 
 ```bash
 pi install npm:killeros

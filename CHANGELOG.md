@@ -4,6 +4,10 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the minimum supported Pi version to 1.4.0 and aligned the exact development pins, lockfile, and CI compatibility targets.
+
 ### Fixed
 
 - Apply file proof to directly quoted `Create` goals, including the README example and edited objectives, so a missing deliverable cannot complete the goal.
