@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,10 @@ import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const terminalDriver = new URL("./support/PiTerminalProcess.ts", import.meta.url).href;
+const scenarioId = "runtime.system-terminal-controls";
+const scenarioTitle = "terminal driver controls report faults with orderly owned cleanup";
+const faults = ["missing-cli", "early-assertion", "kill-throws"] as const;
+type TerminalFault = (typeof faults)[number];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -20,11 +24,39 @@ const driverVersions = Object.fromEntries(["zigpty", "@xterm/headless"].map((nam
   return [name, manifest.version];
 }));
 
-for (const fault of ["missing-cli", "early-assertion", "kill-throws"] as const) {
-  test(fault === "kill-throws"
-    ? "terminal driver reports kill-throws and confirms owned fallback cleanup"
-    : `terminal driver reports ${fault} and confirms orderly owned cleanup`, { timeout: 40_000 }, async (t) => {
-    const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-terminal-control-"));
+function saveFailureEvidence(fault: TerminalFault, errors: unknown[], diagnostics: string): unknown {
+  let directory: string | undefined;
+  try {
+    directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-terminal-failure-"));
+    throwScenarioFailure({
+      directory,
+      message: `Terminal control fault ${fault} failed`,
+      errors,
+      diagnostics,
+    });
+  } catch (error) {
+    if (directory !== undefined) {
+      const report = path.join(directory, "failure.txt");
+      try {
+        if (existsSync(report) && statSync(report).size === 0) unlinkSync(report);
+        if (!existsSync(report)) rmdirSync(directory);
+      } catch (cleanupError) {
+        return new AggregateError([error, cleanupError], "Could not clean up an incomplete terminal failure report");
+      }
+    }
+    return error;
+  }
+}
+
+async function runTerminalFault(fault: TerminalFault, signal: AbortSignal): Promise<void> {
+  let directory: string | undefined;
+  let script: string | undefined;
+  let processOwner: PiRpcProcess | undefined;
+  let terminalResult: PiRpcRecord | undefined;
+  const failures: unknown[] = [];
+
+  try {
+    directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-terminal-control-"));
     const temporaryDirectory = path.join(directory, "tmp");
     mkdirSync(temporaryDirectory);
     const env: NodeJS.ProcessEnv = { HOME: directory, USERPROFILE: directory, TEMP: temporaryDirectory, TMP: temporaryDirectory };
@@ -33,7 +65,7 @@ for (const fault of ["missing-cli", "early-assertion", "kill-throws"] as const) 
       if (value !== undefined) env[key] = value;
     }
     env.PATH = path.dirname(process.execPath);
-    const script = path.join(directory, "control.mjs");
+    script = path.join(directory, "control.mjs");
     const childSource = [
       "if (!process.stdin.isTTY || !process.stdout.isTTY) process.exit(2);",
       "process.stdin.setRawMode(true); process.stdin.setEncoding('utf8');",
@@ -100,80 +132,116 @@ console.log(JSON.stringify({ type: 'terminal_control_result', fault, primaryFail
   killCalls, ownedCloseCallsBeforeFallback: closeCallsBeforeFallback, liveBeforeFallback, fallbackExit, diagnostics: terminal.diagnostics() }));
 process.exitCode = fault === 'kill-throws' && cleanupFailure === undefined && fallbackFailure === undefined ? 0 : 1;
 `);
+
     // Reuse the existing bounded subprocess owner, not a second process supervisor.
-    const processOwner = new PiRpcProcess({ cliPath: script, args: [], cwd: directory, env });
-    let succeeded = false;
-    let primaryFailure: unknown;
-    let terminalResult: PiRpcRecord | undefined;
-    const cleanupFailures: unknown[] = [];
-    try {
-      const result = await processOwner.waitFor((record) => record.type === "terminal_control_result", { signal: t.signal, timeoutMs: 25_000 });
-      terminalResult = result;
-      const exit = await processOwner.close();
-      assert.equal(exit.exit.code, fault === "kill-throws" ? 0 : 1, "The control fixture must report its expected outcome");
-      assert.equal(exit.exit.signal, null);
-      assert.equal(exit.forced, false, "The control subprocess must exit without forced cleanup");
-      assert.equal(result.fault, fault);
-      if (fault === "kill-throws") {
-        assert.equal(result.cleanupFailure, undefined);
-        assert.equal(result.fallbackFailure, undefined);
-        assert.equal(result.killCalls, 1);
-        assert.equal(result.ownedCloseCallsBeforeFallback, 1, "The driver must use zigpty's owned close fallback");
-        assert.equal(result.liveBeforeFallback, false, "The fallback must confirm exit before fixture teardown");
-        assert.equal(typeof result.fallbackExit, "number");
-        assert.ok(isRecord(result.cleanup));
-        assert.equal(result.cleanup.forced, true, "Failed SIGKILL must count as forced cleanup");
-        assert.match(String(result.cleanup.failure), /injected terminal SIGKILL failure/u);
-      } else {
-        assert.equal(result.cleanupFailure, undefined);
-        assert.ok(isRecord(result.cleanup));
-        assert.equal(result.cleanup.forced, false, "The owned terminal child must exit normally");
-        assert.equal(result.cleanup.code, fault === "missing-cli" ? 1 : 0);
-        assert.equal(result.cleanup.failure, undefined);
-        assert.ok(typeof result.primaryFailure === "string");
-      }
-      assert.ok(typeof result.diagnostics === "string" && result.diagnostics.length <= 65_536);
-      const diagnostics: unknown = JSON.parse(result.diagnostics);
-      assert.ok(isRecord(diagnostics));
-      if (fault === "kill-throws") {
-        assert.ok(isRecord(result.cleanup));
-        assert.equal(diagnostics.exitCode, result.cleanup.code);
-      } else assert.equal(diagnostics.exitCode, fault === "missing-cli" ? 1 : 0);
-      assert.equal(diagnostics.nativeResourcesCreated, 2,
-        "Cleanup must track the owned native callbacks, not pass with an empty tracker");
-      assert.equal(diagnostics.nativeResources, 0, "Native callbacks must be destroyed before cleanup returns");
-      assert.ok(typeof diagnostics.rawBase64 === "string" && diagnostics.rawBase64.length > 0);
-      const raw = Buffer.from(diagnostics.rawBase64, "base64").toString("utf8");
-      if (fault === "missing-cli") {
-        assert.ok(typeof result.primaryFailure === "string");
-        assert.match(result.primaryFailure, /Terminal exited before expected screen/u);
-        assert.match(raw, /missing-pi-cli\.js/u);
-      } else if (fault === "early-assertion") {
-        assert.ok(typeof result.primaryFailure === "string");
-        assert.match(result.primaryFailure, /intentional early terminal assertion failure/u);
-        assert.ok(typeof result.activeScreen === "string" && result.activeScreen.includes("CONTROL_READY"));
-        assert.match(raw, /CONTROL_READY/u);
-        assert.ok(typeof diagnostics.screen === "string" && diagnostics.screen.includes("CONTROL_CLOSED"),
-          "Cleanup must drain the child's final output into the parsed screen before disposal");
-      } else {
-        assert.ok(typeof result.activeScreen === "string" && result.activeScreen.includes("CONTROL_READY"));
-        assert.match(raw, /CONTROL_IGNORED/u);
-      }
-      succeeded = true;
-    } catch (error) { primaryFailure = error; }
-    finally {
+    processOwner = new PiRpcProcess({ cliPath: script, args: [], cwd: directory, env });
+    const result = await processOwner.waitFor((record) => record.type === "terminal_control_result", { signal, timeoutMs: 25_000 });
+    terminalResult = result;
+    const exit = await processOwner.close();
+    assert.equal(exit.exit.code, fault === "kill-throws" ? 0 : 1, "The control fixture must report its expected outcome");
+    assert.equal(exit.exit.signal, null);
+    assert.equal(exit.forced, false, "The control subprocess must exit without forced cleanup");
+    assert.equal(result.fault, fault);
+    if (fault === "kill-throws") {
+      assert.equal(result.cleanupFailure, undefined);
+      assert.equal(result.fallbackFailure, undefined);
+      assert.equal(result.killCalls, 1);
+      assert.equal(result.ownedCloseCallsBeforeFallback, 1, "The driver must use zigpty's owned close fallback");
+      assert.equal(result.liveBeforeFallback, false, "The fallback must confirm exit before fixture teardown");
+      assert.equal(typeof result.fallbackExit, "number");
+      assert.ok(isRecord(result.cleanup));
+      assert.equal(result.cleanup.forced, true, "Failed SIGKILL must count as forced cleanup");
+      assert.match(String(result.cleanup.failure), /injected terminal SIGKILL failure/u);
+    } else {
+      assert.equal(result.cleanupFailure, undefined);
+      assert.ok(isRecord(result.cleanup));
+      assert.equal(result.cleanup.forced, false, "The owned terminal child must exit normally");
+      assert.equal(result.cleanup.code, fault === "missing-cli" ? 1 : 0);
+      assert.equal(result.cleanup.failure, undefined);
+      assert.ok(typeof result.primaryFailure === "string");
+    }
+    assert.ok(typeof result.diagnostics === "string" && result.diagnostics.length <= 65_536);
+    const diagnostics: unknown = JSON.parse(result.diagnostics);
+    assert.ok(isRecord(diagnostics));
+    if (fault === "kill-throws") {
+      assert.ok(isRecord(result.cleanup));
+      assert.equal(diagnostics.exitCode, result.cleanup.code);
+    } else assert.equal(diagnostics.exitCode, fault === "missing-cli" ? 1 : 0);
+    assert.equal(diagnostics.nativeResourcesCreated, 2,
+      "Cleanup must track the owned native callbacks, not pass with an empty tracker");
+    assert.equal(diagnostics.nativeResources, 0, "Native callbacks must be destroyed before cleanup returns");
+    assert.ok(typeof diagnostics.rawBase64 === "string" && diagnostics.rawBase64.length > 0);
+    const raw = Buffer.from(diagnostics.rawBase64, "base64").toString("utf8");
+    if (fault === "missing-cli") {
+      assert.ok(typeof result.primaryFailure === "string");
+      assert.match(result.primaryFailure, /Terminal exited before expected screen/u);
+      assert.match(raw, /missing-pi-cli\.js/u);
+    } else if (fault === "early-assertion") {
+      assert.ok(typeof result.primaryFailure === "string");
+      assert.match(result.primaryFailure, /intentional early terminal assertion failure/u);
+      assert.ok(typeof result.activeScreen === "string" && result.activeScreen.includes("CONTROL_READY"));
+      assert.match(raw, /CONTROL_READY/u);
+      assert.ok(typeof diagnostics.screen === "string" && diagnostics.screen.includes("CONTROL_CLOSED"),
+        "Cleanup must drain the child's final output into the parsed screen before disposal");
+    } else {
+      assert.ok(typeof result.activeScreen === "string" && result.activeScreen.includes("CONTROL_READY"));
+      assert.match(raw, /CONTROL_IGNORED/u);
+    }
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    if (processOwner !== undefined) {
       try {
         const result = await processOwner.close();
-        if (result.forced || result.treeCleanupError) cleanupFailures.push(new Error(`Control cleanup was forced or uncertain: ${JSON.stringify(result)}`));
-      } catch (error) { cleanupFailures.push(error); }
+        if (result.forced || result.treeCleanupError) failures.push(new Error(`Control cleanup was forced or uncertain: ${JSON.stringify(result)}`));
+      } catch (error) {
+        failures.push(error);
+      }
     }
-    if (!succeeded || cleanupFailures.length) {
-      throwScenarioFailure({ directory, message: "Terminal fault control failed",
-        errors: [...(primaryFailure === undefined ? [] : [primaryFailure]), ...cleanupFailures],
-        diagnostics: JSON.stringify({ scenario: `terminal-${fault}`, directory, platform: process.platform, node: process.version,
-          driverVersions, executable: process.execPath, sanitizedCliArgs: [script], terminalResult, process: processOwner.diagnostics() }),
-      });
-    }
-    await removeDirectoryEventually(directory);
+  }
+
+  const diagnostics = JSON.stringify({
+    scenarioId,
+    fault,
+    directory,
+    platform: process.platform,
+    node: process.version,
+    driverVersions,
+    executable: process.execPath,
+    sanitizedCliArgs: script === undefined ? [] : [script],
+    terminalResult,
+    process: processOwner?.diagnostics(),
   });
+  let reportFailure: unknown;
+  if (failures.length > 0) reportFailure = saveFailureEvidence(fault, failures, diagnostics);
+
+  if (directory !== undefined) {
+    try {
+      await removeDirectoryEventually(directory);
+    } catch (error) {
+      failures.push(error);
+      const cleanupReport = saveFailureEvidence(fault, failures, diagnostics);
+      if (reportFailure === undefined) reportFailure = cleanupReport;
+      else failures.push(cleanupReport);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      [...failures, ...(reportFailure === undefined ? [] : [reportFailure])],
+      `Terminal control fault ${fault} failed`,
+    );
+  }
 }
+
+test(scenarioTitle, { timeout: 120_000 }, async (t) => {
+  t.diagnostic(`catalog scenario: ${scenarioId}`);
+  const failures: unknown[] = [];
+  for (const fault of faults) {
+    try {
+      await runTerminalFault(fault, t.signal);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, `${scenarioId} failed`);
+});

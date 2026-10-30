@@ -1,13 +1,19 @@
 {
   "name": "killeros",
   "version": "3.0.8",
-  "description": "Windows TUI, goals, and workflow automation for the Pi coding agent",
+  "description": "A Windows terminal UI for the Pi coding agent with session handoff, configurable auto-compaction, OpenAI fast mode, and persistent goals.",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension",
+    "pi-coding-agent",
     "coding-agent",
-    "tui"
+    "ai-coding",
+    "tui",
+    "terminal-ui",
+    "context-management",
+    "session-management",
+    "windows"
   ],
   "author": "KyrosHendrix",
   "license": "MIT",
@@ -30,14 +36,14 @@
     "win32"
   ],
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=26.13.0 <27"
   },
   "scripts": {
     "benchmark:change-receipt": "node --test --experimental-strip-types test/ChangeReceipt.bench.ts",
     "check": "tsc --noEmit && eslint .",
     "lint": "eslint .",
     "prepublishOnly": "node --experimental-strip-types scripts/verify-release.ts",
-    "test": "node --test --test-force-exit --experimental-strip-types test/*.test.*"
+    "test": "node --test --test-concurrency=4 --test-force-exit --experimental-strip-types test/*.test.*"
   },
   "pi": {
     "extensions": [

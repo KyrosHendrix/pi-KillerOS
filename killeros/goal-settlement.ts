@@ -85,14 +85,14 @@ function recoverGoalAfterManualCompaction(
   return true;
 }
 
-/** Resumes the paused revision only after compaction and the interrupted turn have both settled. */
-function finalizeAutomaticCompaction(
+/** Resumes the paused revision after compaction, settlement, and any owning command's continuation hold. */
+export function finalizeAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   ctx: ExtensionContext,
 ): void {
   const recovery = runtime.automaticCompaction;
-  if (!recovery || recovery.outcome === "pending" || !recovery.turnSettled) return;
+  if (!recovery || recovery.outcome === "pending" || !recovery.turnSettled || runtime.continuationHeld) return;
   if (runtime.state?.status !== "paused"
     || runtime.state.revision !== recovery.pausedRevision) {
     runtime.automaticCompaction = undefined;

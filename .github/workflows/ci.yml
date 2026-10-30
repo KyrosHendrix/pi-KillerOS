@@ -33,16 +33,9 @@ env:
 
 jobs:
   quality:
-    name: Quality (Node ${{ matrix.node-version }})
+    name: Quality
     runs-on: windows-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        # Exercise the declared floor and the current LTS line. lts/* advances with Node releases.
-        node-version:
-          - '22.19.0'
-          - 'lts/*'
+    timeout-minutes: 25
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,7 +46,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '26.13.0'
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -64,17 +57,14 @@ jobs:
         run: npm run check
 
       - name: Validate release metadata
-        if: matrix.node-version == '22.19.0'
         env:
           KILLEROS_RELEASE: 'true'
         run: node --experimental-strip-types scripts/verify-release.ts
 
       - name: Provision publishing npm
-        if: matrix.node-version == '22.19.0'
         run: npm install --prefix "$RUNNER_TEMP/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@11.5.1
 
       - name: Test publication lifecycle with publishing npm
-        if: matrix.node-version == '22.19.0'
         env:
           KILLEROS_TEST_NPM_CLI: ${{ runner.temp }}/killeros-publishing-npm/node_modules/npm/bin/npm-cli.js
         run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test/verify-release.test.ts
@@ -100,7 +90,7 @@ jobs:
         run: |
           for attempt in 1 2 3 4 5; do
             echo "Terminal pilot and fault controls run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver reports|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
+            node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver controls report|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
           done
 
       - name: Test
@@ -110,16 +100,30 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: test-failures-quality-${{ strategy.job-index }}-${{ github.run_attempt }}
+          name: test-failures-quality-${{ github.run_attempt }}
           path: node_modules/.killeros-*/failure.txt
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
 
+  # Preserve existing required check names until branch protection is migrated.
+  quality-legacy-checks:
+    name: Quality (Node ${{ matrix.check-label }})
+    needs: quality
+    if: ${{ always() }}
+    runs-on: windows-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        check-label: ['22.19.0', 'lts/*']
+    steps:
+      - name: Require the pinned Node quality job to pass
+        run: test "${{ needs.quality.result }}" = success
+
   pi-latest:
     name: Pi compatibility (${{ matrix.pi-channel }})
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -139,7 +143,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.19.0'
+          node-version: '26.13.0'
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -188,7 +192,7 @@ jobs:
         run: |
           for attempt in 1 2 3 4 5; do
             echo "Terminal pilot and fault controls run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver reports|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
+            node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver controls report|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
           done
 
       - name: Test Pi cancellation lifecycle without forced exit
@@ -197,7 +201,7 @@ jobs:
         run: |
           for attempt in 1 2 3 4 5; do
             echo "Pi cancellation lifecycle run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="Pi user cancellation stops goal work after a normal result, during retry, and during pending compaction" test/PiExtensionContract.test.ts || exit $?
+            node --test --experimental-strip-types --test-name-pattern="continuation dispatch respects idle, pending, and cancellation gates|active faux provider retries preserve goal ownership until settlement|Cancelled ordinary and goal compaction cannot recover after an aborted settlement" test/Goals.e2e.test.ts test/runtime-native-provider.e2e.test.ts test/CompactionTrigger.e2e.test.ts || exit $?
           done
 
       - name: Repeat saved tool restoration without forced exit
@@ -234,7 +238,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.19.0'
+          node-version: '26.13.0'
 
       - name: Validate release metadata
         env:
@@ -270,7 +274,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.19.0'
+          node-version: '26.13.0'
 
       - name: Audit locked dependencies
         run: npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund

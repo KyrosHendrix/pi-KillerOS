@@ -1,20 +1,8 @@
-import { type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
-async function confirmNewSession(ctx: ExtensionCommandContext): Promise<boolean> {
-  if (!ctx.hasUI) return true;
-  return ctx.ui.confirm("Start new session", "Start a new session and leave the current history?");
-}
-
 export function registerAliases(pi: ExtensionAPI): void {
-  const startNewSession = async (_args: string, ctx: ExtensionCommandContext): Promise<void> => {
-    if (!await confirmNewSession(ctx)) return;
-    if (!ctx.isIdle()) ctx.abort();
-    await ctx.waitForIdle();
-    await ctx.newSession();
-  };
-  pi.registerCommand("clear", { description: "Start a new session after confirmation", handler: startNewSession });
   pi.registerCommand("exit", {
     description: "Quit Pi gracefully",
     handler: async (_args, ctx) => {

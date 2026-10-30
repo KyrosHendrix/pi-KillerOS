@@ -50,7 +50,7 @@ const STARTUP_TIPS = [
   "Run /goal <objective> to keep long-running work moving across turns.",
   "Run /handoff [focus] to continue work in a fresh linked session.",
   "Run /codex-fast to toggle priority requests for Codex models.",
-  "Run /clear to start a fresh session after confirmation.",
+  "Run /new to start a fresh session.",
   "Ask the agent to show a short choice list when you need to decide.",
 ] as const;
 

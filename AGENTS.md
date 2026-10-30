@@ -36,7 +36,7 @@ Start with `killeros/goal-runtime.ts`, `killeros/goal-command.ts`, `killeros/goa
 - Keep `question` and `killeros_goal_update` sequential and `model-only`. Codemode must neither hide them from the model nor expose them to scripts.
 - Activate the goal tool for active goals. An eligible later ordinary TUI or RPC request may complete only the same saved blocked goal. That permission is transient, tied to the captured goal snapshot, and grants no automatic turns.
 
-Check `test/HonestGoalContinuation.test.ts`, `test/AutoCompaction.test.ts`, `test/GoalLifecycle.test.ts`, and `test/BlockedGoalCompletion.test.ts`.
+Check `test/Goals.e2e.test.ts`, `test/CompactionGoals.e2e.test.ts`, `test/GoalLifecycle.e2e.test.ts`, and `test/BlockedGoalCompletion.e2e.test.ts`.
 
 ### Receipts, notifications, and Git metadata
 
@@ -47,7 +47,7 @@ Request activity and settled receipts live in `killeros/activity.ts` and `killer
 - `killeros/passive-git-status.ts` owns Git scanning for the footer and `killeros/change-receipt.ts`. Fix Git correctness and executable safety there.
 - Passive scans must not execute repository filters or repository-owned Git shims. A failed scan means unavailable metadata, not an empty repository.
 
-Check `test/WorkedFor.test.ts`, `test/Notifications.test.ts`, and `test/ChangeReceipt.test.ts`.
+Check `test/runtime-receipts.e2e.test.ts`, `test/Notifications.e2e.test.ts`, and `test/runtime-receipt-git.e2e.test.ts`.
 
 ### Settings and fast mode
 
@@ -56,7 +56,7 @@ Check `test/WorkedFor.test.ts`, `test/Notifications.test.ts`, and `test/ChangeRe
 - Fast mode changes only eligible requests' service tier. Preserve sampling, other payload fields, exact native model matching, endpoint restrictions, and Pi's provider retry behavior.
 - A footer label does not prove OpenAI accepted priority service. Azure's provider is `azure`; its Responses API is `azure-openai-responses`. Do not apply OpenAI priority service to Azure.
 
-Check `test/Settings.test.ts` and `test/CodexFast.test.ts`.
+Check `test/Settings.e2e.test.ts` and `test/runtime-fast.e2e.test.ts`.
 
 ### Hooks, trust, and handoff
 
@@ -66,7 +66,7 @@ Check `test/Settings.test.ts` and `test/CodexFast.test.ts`.
 - Process-tree tests must wait for complete PID contents, not just readiness-file creation.
 - Reject recognized credentials before creating a handoff destination session. Save validated context before reporting success, without starting an agent turn.
 
-Check `test/Hooks.test.ts` and `test/Handoff.test.ts`.
+Check `test/Hooks.e2e.test.ts`, `test/Hooks.system.test.ts`, and `test/Handoff.e2e.test.ts`.
 
 ## Verify the change
 
@@ -82,9 +82,9 @@ Run an affected test file while working:
 node --test --test-force-exit --experimental-strip-types test/RepositoryContracts.test.ts
 ```
 
-Legacy extension tests still use `test/ExtensionTestHarness.ts` during migration. New application scenarios must use the real Pi CLI through `test/support/`, not simulated hosts or private helpers.
+Application scenarios use the real Pi CLI through `test/support/`, not simulated hosts or private helpers.
 
-For host integration, use `test/PiExtensionContract.test.ts`. It covers packed-package activation, reload, tool exposure, provider transport, sampling, Azure, and capacity retries. Use `test/Editor.test.ts` for inherited navigation and `test/Hooks.test.ts` for trust boundaries and process cleanup.
+For host integration, use `test/PiExtensionContract.test.ts` for packed-package activation and reload, `test/runtime-tools.e2e.test.ts` for tool exposure, and `test/runtime-native-provider.e2e.test.ts` for provider transport, sampling, Azure, and capacity retries. Use `test/Editor.e2e.test.ts` for inherited navigation, `test/Hooks.e2e.test.ts` for trust boundaries, and `test/Hooks.system.test.ts` for public hook process cleanup.
 
 Before finishing a code change:
 
@@ -103,7 +103,7 @@ node --test --test-force-exit --experimental-strip-types test/verify-release.tes
 
 For guidance-only changes in `AGENTS.md` or `docs/`, verify referenced paths, headings, and commands directly. Prose alone does not require the runtime suite.
 
-CI runs on Windows and checks the Node.js floor, current LTS, and minimum and latest compatible Pi packages. Compatibility installs must not change the tracked manifest or lockfile. Local checks do not establish that the whole matrix passes. Report what ran and what remains unverified.
+CI runs on Windows using Node.js 26.13.0, pinned in `.node-version`, and checks minimum and latest compatible Pi packages. Compatibility installs must not change the tracked manifest or lockfile. Local checks do not establish that the whole matrix passes. Report what ran and what remains unverified.
 
 ## Update docs and release metadata when needed
 
