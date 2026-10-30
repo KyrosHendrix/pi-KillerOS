@@ -1871,7 +1871,7 @@ test("Cancelled ordinary and goal compaction cannot recover after an aborted set
       await waitForTerminalScreen(tui, (screen) => screen.includes("Completion sound") && screen.includes("↑↓ navigate"),
         `${stage.name} completion sound dialog`, soundDialogAfter);
       const soundEnabledAfter = tui.terminal.sequence;
-      tui.terminal.write("\r");
+      tui.terminal.write("\x1b[13u");
       await waitForTerminalScreen(tui, (screen) => screen.includes("Completion sound: On"),
         `${stage.name} completion sound enabled`, soundEnabledAfter);
       assert.ok(parser.titles.some((title) => title.includes("󰂚")), `${stage.name}: completion sound preference appears in the parsed title`);
