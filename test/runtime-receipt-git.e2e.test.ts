@@ -1650,7 +1650,8 @@ const original=cp.spawn;
 cp.spawn=function(file,args,...rest){
  const child=original.call(this,file,args,...rest);
  if(new Error().stack?.includes("change-receipt"))child.once("exit",(code,signal)=>{
-  if(signal)fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({code,signal,pid:child.pid}));
+   if(signal){fs.writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({code,signal,pid:child.pid}));
+    fs.renameSync(${JSON.stringify(marker + ".tmp")},${JSON.stringify(marker)});}
  });
  return child;
 };syncBuiltinESMExports();

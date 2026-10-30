@@ -149,7 +149,7 @@ type Family = {
 };
 
 function createFamily(name: string): Family {
-  const directory = realpathSync(mkdtempSync(path.join(realpathSync(os.tmpdir()), `killeros-receipts-${name}-`)));
+  const directory = realpathSync.native(mkdtempSync(path.join(realpathSync.native(os.tmpdir()), `killeros-receipts-${name}-`)));
   for (let ancestor = directory; ; ancestor = path.dirname(ancestor)) {
     assert.equal(existsSync(path.join(ancestor, ".git")), false, "Fixture discovery cannot reach a parent repository");
     if (path.dirname(ancestor) === ancestor) break;
@@ -1232,6 +1232,8 @@ test("real Pi receipt lifecycle settles, discards, and survives navigation at th
     const family = createFamily("untrusted");
     directories.push(family.directory);
     initRepository(family.project);
+    mkdirSync(path.join(family.project, ".pi"));
+    writeFileSync(path.join(family.project, ".pi/settings.json"), "{}");
     const provider = new ReceiptProvider();
     let terminal: PiTerminalProcess | undefined;
     const screens: RecordValue = {};

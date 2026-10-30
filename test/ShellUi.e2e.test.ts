@@ -20,6 +20,8 @@ function fixture() {
   const project = path.join(directory, "pi-KillerOS");
   const temporary = path.join(directory, "tmp");
   for (const item of [agent, project, temporary]) mkdirSync(item);
+  mkdirSync(path.join(project, ".pi"));
+  writeFileSync(path.join(project, ".pi/settings.json"), "{}");
   writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ cacheWarming: "off", compaction: { enabled: false }, retry: { enabled: false } }));
   writeFileSync(path.join(agent, "models.json"), JSON.stringify({ providers: { "shell-fixture": {
     api: "openai-completions", apiKey: "unused", baseUrl: "http://127.0.0.1:1/v1",

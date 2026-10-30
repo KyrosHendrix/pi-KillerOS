@@ -361,7 +361,7 @@ test("CI and releases use the pinned Node.js version with one Windows quality jo
   assert.notEqual(jobsStart, -1);
   const jobs = ci.slice(jobsStart);
   assert.deepEqual([...jobs.matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
-    ["quality", "quality-legacy-checks", "pi-latest", "package", "audit", "dependency-review", "codeql"]);
+    ["quality", "pi-latest", "package", "audit", "dependency-review", "codeql"]);
   const qualityJob = /^  quality:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(jobs)?.[0];
   assert.ok(qualityJob);
   assert.match(qualityJob, /^    name: Quality$/mu);
@@ -371,13 +371,6 @@ test("CI and releases use the pinned Node.js version with one Windows quality jo
   assert.match(qualityJob, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
   assert.match(qualityJob, /^        run: npm run check$/mu);
   assert.match(qualityJob, /^        run: npm test$/mu);
-  const legacyChecks = /^  quality-legacy-checks:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(jobs)?.[0];
-  assert.ok(legacyChecks);
-  assert.match(legacyChecks, /^    name: Quality \(Node \$\{\{ matrix\.check-label \}\}\)$/mu);
-  assert.match(legacyChecks, /^    needs: quality$/mu);
-  assert.match(legacyChecks, /^    if: \$\{\{ always\(\) \}\}$/mu);
-  assert.match(legacyChecks, /^        check-label: \['22\.19\.0', 'lts\/\*'\]$/mu);
-  assert.match(legacyChecks, /^        run: test "\$\{\{ needs\.quality\.result \}\}" = success$/mu);
   for (const job of ["quality", "pi-latest"]) {
     const source = new RegExp(`^  ${job}:\\r?\\n(?:(?: {4,}.*)?\\r?\\n)*`, "mu").exec(ci)?.[0];
     assert.ok(source);

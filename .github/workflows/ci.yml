@@ -106,20 +106,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Preserve existing required check names until branch protection is migrated.
-  quality-legacy-checks:
-    name: Quality (Node ${{ matrix.check-label }})
-    needs: quality
-    if: ${{ always() }}
-    runs-on: windows-latest
-    timeout-minutes: 5
-    strategy:
-      matrix:
-        check-label: ['22.19.0', 'lts/*']
-    steps:
-      - name: Require the pinned Node quality job to pass
-        run: test "${{ needs.quality.result }}" = success
-
   pi-latest:
     name: Pi compatibility (${{ matrix.pi-channel }})
     runs-on: windows-latest

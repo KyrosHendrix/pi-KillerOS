@@ -1342,7 +1342,7 @@ async function runTuiBlockedCompletion(
     const gitOptions = { cwd: project, env: buildFixtureEnvironment(directory, agent, temporary), windowsHide: true, timeout: 10_000 };
     execFileSync("git", ["init", "-q", "--template="], gitOptions);
     const gitRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], gitOptions).toString("utf8").trim();
-    assert.equal(path.resolve(gitRoot).toLowerCase(), path.resolve(project).toLowerCase(), "the TUI fixture must own its Git root");
+    assert.equal(realpathSync.native(gitRoot).toLowerCase(), realpathSync.native(project).toLowerCase(), "the TUI fixture must own its Git root");
     provider = new LocalProvider();
     await provider.listen();
     writeProviderCatalog(agent, provider);

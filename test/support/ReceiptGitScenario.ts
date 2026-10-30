@@ -155,7 +155,9 @@ function initRepository(project: string): void {
 }
 
 function writeProviderConfig(agent: string, port: number, tuiMode: "fullscreen" | "regular" = "fullscreen"): void {
+  const gitExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8", windowsHide: true }).trim();
   writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ tuiMode, cacheWarming: "off",
+    shellPath: path.resolve(gitExecPath, "../../..", "bin/bash.exe"),
     compaction: { enabled: false }, retry: { enabled: false }, defaultThinkingLevel: "off" }));
   writeFileSync(path.join(agent, "models.json"), JSON.stringify({ providers: { "receipt-git-local": {
     baseUrl: `http://127.0.0.1:${port}/v1`, api: "openai-completions", apiKey: "receipt-git-fixture-only",
