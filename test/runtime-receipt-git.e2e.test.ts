@@ -1622,10 +1622,7 @@ test("native receipt timeouts stay quiet and denied timing saves recover", { tim
   const marker = path.join(family.directory, "timeout-exit.json");
   const extension = path.join(family.directory, "external-faults.mjs");
   const session = path.join(family.directory, "session.jsonl");
-  const windows = process.env.SystemRoot ?? "C:\\Windows";
-  const icacls = path.join(windows, "System32", "icacls.exe");
   let denied = false;
-  let sid = "";
   let connections = 0;
   server.on("connection", () => { connections++; });
   const closePipe = async (): Promise<void> => {
@@ -1638,10 +1635,6 @@ test("native receipt timeouts stay quiet and denied timing saves recover", { tim
     initRepository(family.project);
     const config = path.join(family.project, ".git/config");
     const originalConfig = readFileSync(config, "utf8");
-    const identity = execFileSync(path.join(windows, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"],
-      { encoding: "utf8", windowsHide: true, timeout: 10_000 });
-    sid = /S-1-[0-9-]+/u.exec(identity)?.[0] ?? "";
-    assert.notEqual(sid, "");
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(pipe, resolve); });
     writeFileSync(extension, `import cp from "node:child_process";
 import fs from "node:fs";
@@ -1657,8 +1650,7 @@ cp.spawn=function(file,args,...rest){
 };syncBuiltinESMExports();
 export default function(pi){
  let prompt="";pi.on("before_agent_start",event=>{prompt=event.prompt;});
- pi.on("agent_before_settle",()=>{if(prompt==="Deny timing save")cp.execFileSync(${JSON.stringify(icacls)},
-  [${JSON.stringify(session)},"/deny",${JSON.stringify(`*${sid}:(W)`)}],{windowsHide:true,timeout:10000});});
+  pi.on("agent_before_settle",()=>{if(prompt==="Deny timing save")fs.chmodSync(${JSON.stringify(session)},0o444);});
  pi.on("session_shutdown",()=>{cp.spawn=original;syncBuiltinESMExports();});
 }`);
     const port = await provider.listen();
@@ -1697,7 +1689,7 @@ export default function(pi){
         doneWhen: screen => screen.includes("Denied save response."),
         mutate: () => { denied = true; },
         afterSettlement: () => {
-          execFileSync(icacls, [session, "/remove:d", `*${sid}`], { windowsHide: true, timeout: 10_000 });
+          chmodSync(session, 0o666);
           denied = false;
         },
         verify: (_receipt, screen) => {
@@ -1718,10 +1710,10 @@ export default function(pi){
     assert.equal(provider.requests.length, 4);
   } finally {
     await closePipe();
-    if (denied && existsSync(session)) execFileSync(icacls, [session, "/remove:d", `*${sid}`], { windowsHide: true, timeout: 10_000 });
+    if (denied && existsSync(session)) chmodSync(session, 0o666);
     await provider.close();
     await removeDirectoryEventually(family.directory);
   }
   t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-timeout-save", piLaunches: 1, providerRequests: 4,
-    blockedGitConnections: connections, nativeTimeout: true, aclRestored: true, cleanup: "natural" }));
+    blockedGitConnections: connections, nativeTimeout: true, writableRestored: true, cleanup: "natural" }));
 });

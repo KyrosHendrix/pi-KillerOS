@@ -45,7 +45,7 @@ export function formatNotificationTitle(
 export function registerCompletionNotifications(
   pi: ExtensionAPI,
   dependencies?: CompletionNotificationDependencies,
-): void {
+): (ctx: ExtensionContext) => void {
   const runtime = dependencies ?? {
     store: createNotificationPreferenceStore(),
     ring: () => { process.stdout.write("\x07"); },
@@ -132,4 +132,5 @@ export function registerCompletionNotifications(
     requestPending = false;
     lastStopReason = undefined;
   });
+  return applyTitle;
 }

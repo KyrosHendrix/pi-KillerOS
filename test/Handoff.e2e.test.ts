@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { createServer } from "node:http";
@@ -63,7 +62,7 @@ async function until(predicate: () => boolean | Promise<boolean>): Promise<void>
 }
 
 /** Runs the real installed CLI with isolated settings and a loopback-only scripted provider. */
-async function fixture(t: TestContext, respond: (body: RecordValue, count: number) => Reply | Promise<Reply>, sources: Array<{ label: string; goal?: GoalState; noContext?: boolean; omitProjection?: boolean; projectedContext?: boolean; name?: string; usage?: typeof usage }>, options: { contextWindow?: number; handoffMaxTokens?: number; noSession?: boolean; noModel?: boolean; withSkill?: boolean; cancelSessionSwitch?: boolean; abortedProvider?: boolean; settledHandoffProbe?: boolean; unsavedGoalProbe?: boolean } = {}) {
+async function fixture(t: TestContext, respond: (body: RecordValue, count: number) => Reply | Promise<Reply>, sources: Array<{ label: string; goal?: GoalState; noContext?: boolean; omitProjection?: boolean; projectedContext?: boolean; name?: string; usage?: typeof usage }>, options: { contextWindow?: number; handoffMaxTokens?: number; noSession?: boolean; noModel?: boolean; withSkill?: boolean; cancelSessionSwitch?: boolean; denyDestinationWrite?: boolean; abortedProvider?: boolean; settledHandoffProbe?: boolean; unsavedGoalProbe?: boolean } = {}) {
   const directory = realpathSync(mkdtempSync(path.join(realpathSync(os.tmpdir()), ".killeros-handoff-")));
   for (let ancestor = directory; ; ancestor = path.dirname(ancestor)) {
     assert.equal(existsSync(path.join(ancestor, ".git")), false, "Handoff fixtures must not discover an ancestor repository");
@@ -203,7 +202,24 @@ async function fixture(t: TestContext, respond: (body: RecordValue, count: numbe
         return stream;
       }});
     }`);
-  writeFileSync(extension, `export default function(pi) {
+  writeFileSync(extension, `import fs from "node:fs";
+import path from "node:path";
+import { syncBuiltinESMExports } from "node:module";
+const originalOpen = fs.openSync;
+export default function(pi) {
+    ${options.denyDestinationWrite ? `
+    // Adapt only destination creation at the external filesystem boundary.
+    fs.openSync = function(file, flags, ...rest) {
+      if (typeof file === "string" && path.dirname(file) === ${JSON.stringify(sessions)}
+          && file.endsWith(".jsonl") && flags === "wx") {
+        fs.appendFileSync(${JSON.stringify(path.join(directory, "denied-writes.jsonl"))}, JSON.stringify({path:file,flags,pid:process.pid}) + "\\n");
+        throw Object.assign(new Error("EPERM: destination creation denied"), {code:"EPERM"});
+      }
+      return originalOpen.call(this, file, flags, ...rest);
+    };
+    syncBuiltinESMExports();
+    pi.on("session_shutdown", () => { fs.openSync = originalOpen; syncBuiltinESMExports(); });
+    ` : ""}
     let cancel=false;
     pi.on('session_before_switch',()=>${options.cancelSessionSwitch === true ? "({cancel:true})" : "undefined"});
     pi.on('session_before_tree',()=>cancel?{cancel:true}:undefined);
@@ -326,7 +342,7 @@ async function fixture(t: TestContext, respond: (body: RecordValue, count: numbe
     await reopened.command("get_state", {}, { signal: t.signal });
     return reopened;
   };
-  return { cli: rpc, bodies, notifications, sessions, seeded, project, agent, providerObservation, reopen, lastGoal, prompt, run, state, switchTo, waitForNotice, assertSourceOnly, assertChild };
+  return { cli: rpc, bodies, notifications, directory, sessions, seeded, project, agent, providerObservation, reopen, lastGoal, prompt, run, state, switchTo, waitForNotice, assertSourceOnly, assertChild };
 }
 
 test("handoff transfers latest paused, blocked, and complete goal truth as idle context", { timeout: 180_000, skip: piRpcShutdownSkip }, async t => {
@@ -874,23 +890,12 @@ test("handoff persists one idle linked child with projected context and survives
 
 test("handoff reports replacement cancellation or destination write failure without a false success", { timeout: 120_000, skip: piRpcShutdownSkip }, async t => {
   for (const mode of ["cancel", "deny-write"] as const) {
-    const f = await fixture(t, () => ({ text: summary() }), [{ label: `destination-${mode}` }], { cancelSessionSwitch: mode === "cancel" });
+    const f = await fixture(t, () => ({ text: summary() }), [{ label: `destination-${mode}` }], {
+      cancelSessionSwitch: mode === "cancel", denyDestinationWrite: mode === "deny-write",
+    });
     const source = f.seeded[0];
     assert.ok(source);
     const before = SessionManager.open(source.file).getEntries();
-    const windows = Object.entries(process.env).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
-    assert.ok(windows);
-    const icacls = path.join(windows, "System32", "icacls.exe");
-    let sid: string | undefined;
-    const failures: unknown[] = [];
-    if (mode === "deny-write") {
-      const identity = execFileSync(path.join(windows, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"],
-        { encoding: "utf8", windowsHide: true, timeout: 10_000 });
-      sid = /S-1-[0-9-]+/u.exec(identity)?.[0];
-      assert.ok(sid, "Resolve the actual owned process SID before denying file creation");
-    }
-    try {
-      if (sid) execFileSync(icacls, [f.sessions, "/deny", `*${sid}:(WD)`], { windowsHide: true, timeout: 10_000 });
       const after = f.cli.currentSequence;
       await f.prompt("/handoff");
       if (mode === "cancel") await f.assertSourceOnly(source.file);
@@ -914,20 +919,17 @@ test("handoff reports replacement cancellation or destination write failure with
         const destination = String(state.sessionFile);
         assert.equal(path.dirname(destination), f.sessions);
         assert.equal(existsSync(destination), false, "The selected destination was not persisted after the denied write");
+        const attempts = readFileSync(path.join(f.directory, "denied-writes.jsonl"), "utf8").trim().split("\n")
+          .map(line => record(JSON.parse(line)));
+        assert.equal(attempts.length, 1, "Exactly one owned destination write reaches the fault boundary");
+        assert.equal(attempts[0]?.path, destination);
+        assert.equal(attempts[0]?.flags, "wx");
       }
       assert.equal(state.isStreaming, false);
       assert.equal(state.isCompacting, false);
       assert.equal(state.pendingMessageCount, 0);
-    } catch (error) {
-      failures.push(error);
-    } finally {
-      try {
-        if (sid) execFileSync(icacls, [f.sessions, "/remove:d", `*${sid}`], { windowsHide: true, timeout: 10_000 });
-      } catch (error) { failures.push(error); }
-    }
-    if (failures.length > 0) throw new AggregateError(failures, `Handoff destination ${mode} failed`);
   }
-  t.diagnostic(JSON.stringify({ piLaunches: 2, providerRequests: 2, identityLaunches: 1, aclLaunches: 2, aclRestored: true }));
+  t.diagnostic(JSON.stringify({ piLaunches: 2, providerRequests: 2, deniedDestinationWrites: 1 }));
 });
 
 test("handoff rejects summaries that omit or contradict saved goal truth before destination creation", { timeout: 180_000, skip: piRpcShutdownSkip }, async t => {

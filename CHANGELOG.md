@@ -12,6 +12,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Fixed
 
+- Preserve the completion-sound title indicator when Pi resets the terminal title after session replacement or reload.
 - Allow the startup header's asynchronous Git lookup five seconds to finish so brief system load does not hide the branch for the session.
 - Keep confirmed goal replacement pending through compaction so recovery cannot resume the old objective or invalidate the replacement.
 - Keep the footer's last successful file-change counts visible when a transient Git failure makes the branch label unavailable.
