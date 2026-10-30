@@ -1877,7 +1877,7 @@ test("the goal tool is model-only, schema-bounded, and sequential", { timeout: 2
       }
       shapeBarriers[index].release();
       const followUp = await ordinary.provider.waitForRequest(requestIndex + 1, t.signal);
-      assert.match(JSON.stringify(followUp.body.messages), new RegExp(shape.resultText.replace(/[()[\]/]/gu, "\\$&"), "u"),
+      assert.ok(JSON.stringify(followUp.body.messages).includes(shape.resultText),
         `${shape.label}: the decision must execute through the goal tool`);
       await ordinary.rpc.waitFor((entry) => entry.type === "agent_settled", { after: cursor, signal: t.signal });
       acknowledgeBatch(ordinary, shape.label);
