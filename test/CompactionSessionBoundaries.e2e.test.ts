@@ -1199,9 +1199,9 @@ async function forkRpcCancelled(fixture: RpcFixture, entryId: string, keepFile: 
   assert.equal(state.pendingMessageCount, 0, "a cancelled fork leaves no queued messages");
 }
 
-/** Small TUI commands cannot use the editor path cleanly while output streams; CompactionTrigger precedent uses writes. */
-function writeTuiCommand(fixture: TuiFixture, command: string): void {
-  fixture.terminal.write(`${command}\r`);
+/** Observe the pasted command before sending Enter, including while compaction is pending. */
+async function writeTuiCommand(fixture: TuiFixture, command: string): Promise<void> {
+  await fixture.terminal.submitEditorText(command, { signal: fixture.signal });
 }
 
 /** Same as prompt() for the TUI editor path, anchored on the pre-submission probe cursor. */
@@ -1217,11 +1217,11 @@ async function armProbeCancel(fixture: RpcFixture, mode: "switch" | "fork" | "tr
 
 /** Navigation rides a small TUI command so it still executes while a compaction is held. */
 async function probeNavigate(fixture: TuiFixture, targetId: string): Promise<void> {
-  writeTuiCommand(fixture, `/boundary-navigate ${targetId}`);
+  await writeTuiCommand(fixture, `/boundary-navigate ${targetId}`);
 }
 
 async function probeAbort(fixture: TuiFixture): Promise<void> {
-  writeTuiCommand(fixture, "/boundary-abort");
+  await writeTuiCommand(fixture, "/boundary-abort");
 }
 
 function goalDecision(status: "continue", turn: number): Json {
@@ -1545,7 +1545,7 @@ test("TUI ordinary and goal continuations survive reload and committed tree boun
     await waitForProvider(tui, 4);
     await settle(tui, pB, 1, "reload-pending interrupted request settlement");
     const reloadCursor = probeCursor(tui);
-    writeTuiCommand(tui, "/reload");
+    await writeTuiCommand(tui, "/reload");
     await tui.terminal.waitForScreen((screen) => screen.includes("Wait for compaction to finish before reloading."),
       { signal: tui.signal, timeoutMs: waitTimeoutMs });
     reloadBarrier.release();
@@ -1553,7 +1553,7 @@ test("TUI ordinary and goal continuations survive reload and committed tree boun
       "reload-pending: the refused reload leaves native summary failure observable", tui.signal, reloadCursor);
     assert.equal(probeEvents(tui).filter((event) => event.sequence > reloadCursor && event.type === "session_shutdown").length, 0,
       "reload-pending: refused reload must not commit a session boundary");
-    writeTuiCommand(tui, "/reload");
+    await writeTuiCommand(tui, "/reload");
     await tui.terminal.waitForScreen((screen) => screen.includes("Reloaded"), { signal: tui.signal, timeoutMs: waitTimeoutMs });
     const reloadShutdown = await waitForProbe(tui.probeFile, (event) => event.type === "session_shutdown" && event.reason === "reload",
       "reload-pending: the reload tears the pre-reload runtime down as a reload", tui.signal, reloadCursor);
@@ -1804,7 +1804,7 @@ test("Tree navigation evaluates only the destination branch and cannot revive an
 
     // Phase (b): native refusal while compacting preserves the live marker.
     // Recover the same turn, then abandon it through a legal idle navigation.
-    writeTuiCommand(liveTui, "/compact");
+    await writeTuiCommand(liveTui, "/compact");
     const heldB = await waitForPreparation(liveTui, 1, "held manual summary for the abandoned marker", pA);
     await probeNavigate(liveTui, liveTarget.firstUserId);
     const refusedB = await waitForProbe(liveTui.probeFile,
@@ -1852,10 +1852,10 @@ test("Tree navigation evaluates only the destination branch and cannot revive an
     assert.equal(liveTui.provider.requests.length, 3, "second-marker: exactly one provider POST for the fresh goal start");
 
     // Phase (d): Pi refuses navigation while compacting; recovery completes before the later idle cancellation.
-    writeTuiCommand(liveTui, "/boundary-armed-cancel tree");
+    await writeTuiCommand(liveTui, "/boundary-armed-cancel tree");
     const armed = await waitForProbe(liveTui.probeFile, (event) => event.type === "cancel_armed", "the cancel toggle armed", liveTui.signal, compactB.sequence);
     void armed;
-    writeTuiCommand(liveTui, "/compact");
+    await writeTuiCommand(liveTui, "/compact");
     const heldD = await waitForPreparation(liveTui, 2, "held manual summary for the preserved marker", compactB.sequence);
     await probeNavigate(liveTui, liveTarget.firstUserId);
     const cancelled = await waitForProbe(liveTui.probeFile,
@@ -1888,7 +1888,7 @@ test("Tree navigation evaluates only the destination branch and cannot revive an
     const resumeTargets = flatEntries(liveTarget.file).filter((entry) => entry.type === "custom"
       && entry.customType === "killeros-goal" && record(entry.data, "goal data").event === "resume");
     assert.equal(resumeTargets.length, 2, "preserved-marker: each manual recovery appends exactly one resume entry");
-    writeTuiCommand(liveTui, "/boundary-armed-cancel off");
+    await writeTuiCommand(liveTui, "/boundary-armed-cancel off");
     await liveTui.terminal.waitForScreen((screen) => screen.includes("❯"), { signal: liveTui.signal, timeoutMs: waitTimeoutMs });
     secondBarrier.release();
     await closeChildFixture(liveTui);

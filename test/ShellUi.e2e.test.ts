@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import path from "node:path";
 import os from "node:os";
 import test from "node:test";
@@ -58,6 +59,7 @@ cp.execFile = function(file, args, options, callback) {
   const call = { ready: new Promise(resolve => { ready = resolve; }),
     delivered: new Promise(resolve => { delivered = resolve; }), release: undefined, done: false };
   calls.push(call);
+  if (process.env.SHELL_GIT_CONFIG) options = { ...options, env: { ...options.env, GIT_CONFIG_GLOBAL: process.env.SHELL_GIT_CONFIG } };
   return original(file, args, options, (...result) => {
     const deliver = () => { callback(...result); call.done = true; delivered(); };
     if (process.env.SHELL_GIT_HOLD === "1" && calls.indexOf(call) === 0) call.release = deliver;
@@ -97,9 +99,21 @@ test("Git branch resolution is asynchronous, selector-safe, trusted, and disposa
   const screens: Record<string, string> = {};
   const errors: unknown[] = [];
   const diagnostics: string[] = [];
+  const sockets = new Set<Socket>();
+  const pipe = `\\\\.\\pipe\\${path.basename(setup.directory)}-slow-git`;
+  let slowReads = 0;
+  const server = createServer(socket => {
+    sockets.add(socket);
+    slowReads++;
+    // Keep real Git reading past the former 500 ms header deadline.
+    const timer = setTimeout(() => socket.end(), 750);
+    socket.on("error", error => errors.push(error));
+    socket.once("close", () => { clearTimeout(timer); sockets.delete(socket); });
+  });
   let gitLaunches = 0;
   const git = (cwd: string, args: string[]): void => { gitLaunches++; execFileSync("git", args, { cwd, windowsHide: true, timeout: 5_000 }); };
   try {
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(pipe, resolve); });
     const inherited = path.join(setup.directory, "inherited");
     const outside = path.join(setup.directory, "outside");
     mkdirSync(inherited);
@@ -115,12 +129,14 @@ test("Git branch resolution is asynchronous, selector-safe, trusted, and disposa
     for (const vector of [
       { name: "normal", cwd: setup.project, branch: "branch-a", untrusted: false },
       { name: "selector", cwd: setup.project, branch: "branch-a", untrusted: false },
+      { name: "slow", cwd: setup.project, branch: "branch-a", untrusted: false },
       { name: "outside", cwd: outside, branch: undefined, untrusted: false },
       { name: "untrusted", cwd: setup.project, branch: undefined, untrusted: true },
       { name: "detached", cwd: setup.project, branch: "detached", untrusted: false },
     ]) {
       if (vector.name === "detached") git(setup.project, ["checkout", "--detach", "-q"]);
       const terminal = setup.start(vector.cwd, { GIT_DIR: vector.name === "normal" ? undefined : path.join(inherited, ".git"), SHELL_UNTRUSTED: vector.untrusted ? "1" : "0",
+        SHELL_GIT_CONFIG: vector.name === "slow" ? pipe : undefined,
         NODE_OPTIONS: `--require="${setup.adapter.replaceAll("\\", "/")}"`, SHELL_GIT_ADAPTER: setup.adapter, SHELL_GIT_CWD: vector.cwd });
       terminals.push(terminal);
       await terminal.waitForScreen(screen => screen.includes("Tip:") && screen.includes("❯"), { signal: t.signal });
@@ -138,6 +154,7 @@ test("Git branch resolution is asynchronous, selector-safe, trusted, and disposa
       assert.doesNotMatch(header, /branch-b/u);
       if (vector.branch !== undefined) assert.ok(header.endsWith(` ${vector.branch}`), `${vector.name}: exact completed branch`);
       else assert.equal(header, `░░░░░░   directory: ~\\${path.basename(vector.cwd)}`, `${vector.name}: no branch in the directory row`);
+      if (vector.name === "slow") assert.ok(slowReads > 0, "Real Git read the delayed configuration pipe");
       diagnostics.push(terminal.diagnostics());
       assert.deepEqual(await terminal.close(), { code: 0, forced: false });
     }
@@ -167,10 +184,12 @@ test("Git branch resolution is asynchronous, selector-safe, trusted, and disposa
   for (const terminal of terminals) {
     try { assert.deepEqual(await terminal.close(), { code: 0, forced: false }); } catch (error) { errors.push(error); }
   }
+  for (const socket of sockets) socket.destroy();
+  if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   try { await removeDirectoryEventually(setup.directory); assert.equal(existsSync(setup.directory), false); } catch (error) { errors.push(error); }
   if (errors.length) throwScenarioFailure({ directory: mkdtempSync(path.join(root, "node_modules", ".killeros-SH-01-failure-")),
     message: "SH-01 failed", errors, diagnostics: JSON.stringify({ screens, terminals: diagnostics, gitLaunches }) });
-  t.diagnostic(JSON.stringify({ scenarioId: "SH-01", piLaunches: terminals.length, fixtureGitLaunches: gitLaunches, providerRequests: 0, cleanup: "natural" }));
+  t.diagnostic(JSON.stringify({ scenarioId: "SH-01", piLaunches: terminals.length, fixtureGitLaunches: gitLaunches, slowConfigReads: slowReads, providerRequests: 0, cleanup: "natural" }));
 });
 
 // Catalog ID: SH-02. Native terminals have positive columns; width zero needs a separate reachability disposition.

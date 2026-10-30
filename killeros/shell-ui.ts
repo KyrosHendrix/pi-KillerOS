@@ -84,7 +84,7 @@ export function resolveGitBranch(cwd: string, trusted = true): Promise<string | 
         encoding: "utf8",
         env: passiveGitEnv(),
         maxBuffer: 64 * 1024,
-        timeout: 500,
+        timeout: 5_000,
         windowsHide: true,
       },
       (error, stdout) => {
