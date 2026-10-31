@@ -47,7 +47,7 @@ Request activity and settled receipts live in `killeros/activity.ts` and `killer
 - `killeros/passive-git-status.ts` owns Git scanning for the footer and `killeros/change-receipt.ts`. Fix Git correctness and executable safety there.
 - Passive scans must not execute repository filters or repository-owned Git shims. A failed scan means unavailable metadata, not an empty repository.
 
-Check `test/runtime-receipts.e2e.test.ts`, `test/Notifications.e2e.test.ts`, and `test/runtime-receipt-git.e2e.test.ts`.
+Check `test/runtime-receipts.e2e.test.ts`, `test/Notifications.e2e.test.ts`, `test/runtime-receipt-git.e2e.test.ts`, and `test/runtime-receipt-conversion.e2e.test.ts`.
 
 ### Settings and fast mode
 

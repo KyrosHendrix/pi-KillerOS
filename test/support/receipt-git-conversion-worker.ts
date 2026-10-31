@@ -34,8 +34,11 @@ const result = await (async () => {
         const directory = `attributes-${index}`;
         mkdirSync(path.join(family.project, directory));
         writeFileSync(path.join(family.project, directory, ".gitattributes"), attribute + "\n");
+        // Only attribute sets with an override-* rule treat override-prefixed paths differently;
+        // elsewhere both prefixes match the same patterns, so a second copy would repeat the case.
+        const prefixes = attribute.includes("override-") ? ["default", "override"] : ["default"];
         for (const [indexed, initial] of contents) for (const [working, content] of new Map([["same", initial], ...rewrites])) {
-          for (const prefix of ["default", "override"]) {
+          for (const prefix of prefixes) {
             const file = `${directory}/${prefix}-${indexed}-${working}.txt`;
             cases.push({ file, initial, content });
             writeFileSync(path.join(family.project, file), initial);

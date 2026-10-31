@@ -7,7 +7,6 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { Worker } from "node:worker_threads";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
@@ -1510,35 +1509,6 @@ export default function(pi){
   }
   t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-scan-races", piLaunches: 1, providerRequests: 2,
     effectiveTripwire: true, watcherFault: "withheld real callbacks", lateWrite: "owned file open", cleanup: "natural" }));
-});
-
-test("native receipt paths agree with Git across the complete conversion matrix", { timeout: 420_000 }, async t => {
-  const runGroup = async (autoCrlf: "false" | "true" | "input"): Promise<{ inputs: number; turns: number }> => {
-    const worker = new Worker(new URL("./support/receipt-git-conversion-worker.ts", import.meta.url), {
-      workerData: autoCrlf, execArgv: ["--experimental-strip-types"],
-    });
-    const cancel = (): void => { worker.postMessage("abort"); };
-    t.signal.addEventListener("abort", cancel, { once: true });
-    if (t.signal.aborted) cancel();
-    let result: unknown;
-    let failure: unknown;
-    worker.once("message", value => { result = value; });
-    worker.once("error", error => { failure = error; });
-    const code = await new Promise<number>(resolve => worker.once("exit", resolve));
-    t.signal.removeEventListener("abort", cancel);
-    if (failure !== undefined || code !== 0) throw new Error(`Conversion group ${autoCrlf} failed (exit ${code})`, { cause: failure });
-    assert.ok(isRecord(result) && typeof result.inputs === "number" && typeof result.turns === "number");
-    return { inputs: result.inputs, turns: result.turns };
-  };
-  const results = await Promise.allSettled((["false", "true", "input"] as const).map(runGroup));
-  const failures = results.filter(result => result.status === "rejected").map(result => new Error("Conversion group failed", { cause: result.reason }));
-  if (failures.length) throw new AggregateError(failures, "Native conversion groups failed");
-  const completed = results.filter(result => result.status === "fulfilled").map(result => result.value);
-  const inputs = completed.reduce((sum, group) => sum + group.inputs, 0);
-  const turns = completed.reduce((sum, group) => sum + group.turns, 0);
-  assert.equal(inputs, 5940);
-  t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-conversion-matrix", piLaunches: 3, providerRequests: turns,
-    inputCases: inputs, oracle: "actual Git hash-object for every path", cleanup: "natural" }));
 });
 
 test("native receipts preserve Windows alias and symlink safety", { timeout: 60_000 }, async t => {
