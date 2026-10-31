@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { harvestJitiCache, seedJitiCache } from "./JitiCache.ts";
 
 export type PiRpcRecord = Record<string, unknown>;
 
@@ -45,6 +46,7 @@ export class PiRpcProcess {
   private closePromise: Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> | undefined;
 
   constructor(options: { cliPath: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) {
+    seedJitiCache(options.env);
     this.child = spawn(process.execPath, [options.cliPath, ...options.args], {
       cwd: options.cwd,
       env: options.env,
@@ -58,6 +60,7 @@ export class PiRpcProcess {
 
     this.closed = new Promise((resolve) => {
       this.child.once("close", (code, signal) => {
+        harvestJitiCache(options.env);
         this.exit = { code, signal };
         this.rejectWaiters(new Error(`Pi CLI exited (${code ?? "unknown"}/${signal ?? "no signal"})`));
         resolve(this.exit);
