@@ -7,6 +7,7 @@ import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { JsonObject } from "@earendil-works/pi-ai";
@@ -313,7 +314,7 @@ async function submitInputDialog(terminal: PiTerminalProcess, value: string, opt
   terminal.write(`\x1b[200~${value}${acknowledgement}\x1b[201~`);
   const control = value.length > 1000 ? options.controlDirectory : undefined;
   if (control) {
-    waitForControlFile(path.join(control, "paste-ack"), text => text === acknowledgement, "Native input paste");
+    await waitForPasteAck(control, acknowledgement);
   } else {
     await terminal.waitForScreen(screen => screen.includes(acknowledgement), { signal: options.signal, after: pasted });
   }
@@ -356,13 +357,37 @@ function readQuestionResults(sessionFile: string): QuestionResult[] {
   }
 }
 
-/** Bounded durability wait for a fixture control file whose content satisfies the predicate. */
-function waitForControlFile(file: string, accept: (content: string) => boolean, label: string, timeoutMs = 10_000): string {
+/**
+ * Waits for the fixture to see the complete paste. Under load, ConPTY can take longer than a fixed
+ * deadline to deliver a large paste, so this fails only when Pi's stdin stops receiving chunks.
+ */
+async function waitForPasteAck(control: string, acknowledgement: string, stallMs = 10_000, limitMs = 60_000): Promise<void> {
+  const ack = path.join(control, "paste-ack");
+  const progress = path.join(control, "input-progress");
+  const read = (file: string): string | undefined => existsSync(file) ? readFileSync(file, "utf8") : undefined;
+  const started = Date.now();
+  let lastProgress = read(progress);
+  let progressedAt = started;
+  for (;;) {
+    if (read(ack) === acknowledgement) return;
+    const now = Date.now();
+    const current = read(progress);
+    if (current !== lastProgress) { lastProgress = current; progressedAt = now; }
+    if (now - progressedAt > stallMs) {
+      throw new Error(`Native input paste: Pi's stdin received no input for ${stallMs}ms before ${acknowledgement}`);
+    }
+    if (now - started > limitMs) throw new Error(`Native input paste: ${acknowledgement} was not delivered within ${limitMs}ms`);
+    await delay(50);
+  }
+}
+
+/** Waits without blocking the test event loop, so terminal output and abort signals keep processing. */
+async function waitForControlFile(file: string, accept: (content: string) => boolean, label: string, timeoutMs = 10_000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (existsSync(file) && accept(readFileSync(file, "utf8"))) return readFileSync(file, "utf8");
     if (Date.now() > deadline) throw new Error(`${label}: timed out waiting for ${path.basename(file)}`);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    await delay(50);
   }
 }
 
@@ -371,7 +396,7 @@ async function renderQuestionFrame(terminal: PiTerminalProcess, control: string,
   const revision = existsSync(frame) ? Number(readFileSync(frame, "utf8")) : 0;
   const after = terminal.sequence;
   terminal.write(key + "\x1b[19~");
-  waitForControlFile(frame, text => Number(text) > revision, "Native question frame");
+  await waitForControlFile(frame, text => Number(text) > revision, "Native question frame");
   await terminal.waitForScreen(() => true, { signal, after });
 }
 
@@ -868,7 +893,7 @@ test("Native question selection, filtering, custom answers, and count limits", {
       assert.ok(terminal);
       const screen = await terminal.waitForScreen((candidate) => candidate.includes(marker), { signal: t.signal });
       const expected = ++settlements;
-      const content = waitForControlFile(path.join(control, "settled.json"), (text) => {
+      const content = await waitForControlFile(path.join(control, "settled.json"), (text) => {
         const event = record(JSON.parse(text), "native settlement");
         return event.count === expected;
       }, marker);
@@ -1298,7 +1323,7 @@ async function runHistoricalQuestionRendering(t: TestContext) {
           "Historical unsafe payload never emits an erase between safe and spoof");
       };
       await terminal.waitForScreen(screen => screen.includes(source.marker) && screen.includes("❯"), { signal: t.signal });
-      const loaded = record(JSON.parse(waitForControlFile(path.join(control, name), text => {
+      const loaded = record(JSON.parse(await waitForControlFile(path.join(control, name), text => {
         return record(JSON.parse(text), "native historical observation").file === source.file;
       }, source.marker)), "historical observation");
       assert.equal(loaded.file, source.file);
@@ -1339,7 +1364,7 @@ async function runHistoricalQuestionRendering(t: TestContext) {
     };
     await inspect(first, "loaded.json");
     await submitEditorText(terminal, "/fixture-render-source", { signal: t.signal });
-    const switched = record(JSON.parse(waitForControlFile(path.join(control, "switch-result.json"), text => {
+    const switched = record(JSON.parse(await waitForControlFile(path.join(control, "switch-result.json"), text => {
       const result = record(JSON.parse(text), "native switch result");
       return result.cancelled === false && result.file === second.file;
     }, "source192 switch")), "switch result");
@@ -1351,12 +1376,12 @@ async function runHistoricalQuestionRendering(t: TestContext) {
     const multiple = sources[2];
     assert.ok(multiple);
     await submitEditorText(terminal, "/fixture-render-source 2", { signal: t.signal });
-    const multiSwitch = record(JSON.parse(waitForControlFile(path.join(control, "switch-result.json"), text => {
+    const multiSwitch = record(JSON.parse(await waitForControlFile(path.join(control, "switch-result.json"), text => {
       const result = record(JSON.parse(text), "multiple history switch");
       return result.cancelled === false && result.file === multiple.file;
     }, "multiple history switch")), "multiple switch");
     assert.equal(multiSwitch.file, multiple.file);
-    const multiLoaded = record(JSON.parse(waitForControlFile(path.join(control, "replacement.json"), text => {
+    const multiLoaded = record(JSON.parse(await waitForControlFile(path.join(control, "replacement.json"), text => {
       return record(JSON.parse(text), "multiple history").file === multiple.file;
     }, "multiple history")), "multiple observation");
     assert.ok(Array.isArray(multiLoaded.branch));
@@ -1462,7 +1487,7 @@ test("Question transcript renderers strip controls, bound collapsed rows, and ex
       assert.ok(terminal);
       await terminal.waitForScreen((screen) => screen.includes(marker), { signal: t.signal });
       const expected = ++settlements;
-      const content = waitForControlFile(path.join(control, "settled.json"), (text) => {
+      const content = await waitForControlFile(path.join(control, "settled.json"), (text) => {
         const event = record(JSON.parse(text), "render settlement");
         return event.count === expected;
       }, marker);
@@ -1793,7 +1818,7 @@ test("Question history, preview paging, resize, and draft preservation", { timeo
         assert.ok(terminal);
         await terminal.waitForScreen((screen) => screen.includes(marker), { signal: t.signal });
         const expected = ++settlements;
-        const content = waitForControlFile(path.join(control, "settled.json"), (text) =>
+        const content = await waitForControlFile(path.join(control, "settled.json"), (text) =>
           record(JSON.parse(text), "native settlement").count === expected, marker);
         assert.deepEqual(record(JSON.parse(content), "native settlement"),
           { count: expected, idle: true, pending: false, aborted: false }, `${marker}: native final settlement`);
@@ -1947,7 +1972,7 @@ test("Question history, preview paging, resize, and draft preservation", { timeo
       const previousSessionFile = sessionFile;
       await submitEditorText(terminal, "/new", { signal: t.signal });
       await terminal.waitForScreen((screen) => screen.includes("New session started"), { signal: t.signal });
-      sessionFile = waitForControlFile(path.join(control, "session-file"),
+      sessionFile = await waitForControlFile(path.join(control, "session-file"),
         content => content !== previousSessionFile && content !== "none" && content.trim().length > 0, "history:session-clear");
       settlements = 0; // Pi reloads extension instances when replacing the session.
       assert.equal(readQuestionResults(previousSessionFile).length, 9, "Session replacement preserves the original nine results");
@@ -2073,7 +2098,7 @@ test("Question history retains the newest hundred distinct answers", { timeout: 
         assert.ok(terminal);
         await terminal.waitForScreen((screen) => screen.includes(marker), { signal: t.signal });
         const expected = ++settlements;
-        const content = waitForControlFile(path.join(control, "settled.json"), (text) =>
+        const content = await waitForControlFile(path.join(control, "settled.json"), (text) =>
           record(JSON.parse(text), "native settlement").count === expected, marker);
         assert.deepEqual(record(JSON.parse(content), "native settlement"),
           { count: expected, idle: true, pending: false, aborted: false }, `${marker}: native final settlement`);
@@ -2158,6 +2183,9 @@ import { matchesKey } from "@earendil-works/pi-tui";
 
 const control = ${JSON.stringify(controlDirectory)};
 const write = (name: string, data: string): void => { fs.writeFileSync(path.join(control, name), data); };
+// ConPTY delivers large pastes in ~512-character reads; the count lets the harness tell slow delivery from a stall.
+let inputChunks = 0;
+process.stdin.on("data", () => { write("input-progress", String(++inputChunks)); });
 
 export default function (pi: ExtensionAPI) {
   let commandContext: ExtensionCommandContext | undefined;
@@ -2287,7 +2315,7 @@ test("Question cancellation and invalidation never publish a late answer", { tim
         cwd: family.project, env: family.env, cols: 100, rows: 30 });
       piLaunches += 1;
       await terminal.waitForScreen((screen) => screen.includes("KillerOS") && screen.includes("❯"), { signal: t.signal });
-      waitForControlFile(path.join(control, "session-file"), (content) => content.trim().length > 0, "startup session file");
+      await waitForControlFile(path.join(control, "session-file"), (content) => content.trim().length > 0, "startup session file");
 
       // Vector cancel:esc-selector: Escape discards the pending multi-select answer.
       await submitEditorText(terminal, "q5 a1", { signal: t.signal });
@@ -2358,7 +2386,7 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       const raceCursor = terminal.sequence;
       terminal.write(dialogConfirm);
       await terminal.waitForScreen((screen) => readChoices(screen).selected === undefined && nativeAbortNotice.test(screen), { signal: t.signal, after: raceCursor });
-      waitForControlFile(path.join(control, "race-fired"), (content) => content === "yes", "race:late-answer");
+      await waitForControlFile(path.join(control, "race-fired"), (content) => content === "yes", "race:late-answer");
       assert.equal(provider.requests.length, requestsBefore + 1,
         "race:late-answer: no follow-up provider request may consume the late answer");
       waitForResultCount(sessionFile, 5 + index, "race:late-answer");
@@ -2474,7 +2502,7 @@ test("Question cancellation and invalidation never publish a late answer", { tim
         cwd: family.project, env: family.env, cols: 100, rows: 30 });
       piLaunches += 1;
       await terminal.waitForScreen((screen) => screen.includes("KillerOS") && screen.includes("❯"), { signal: t.signal });
-      const firstSessionFile = waitForControlFile(path.join(control, "session-file"), (content) => content.trim().length > 0, "startup session file");
+      const firstSessionFile = await waitForControlFile(path.join(control, "session-file"), (content) => content.trim().length > 0, "startup session file");
       assert.equal(firstSessionFile.trim(), sessionFile, "startup: the fixture observes the initial session file");
 
       // Vector invalidate:session-start: a public new-session request closes the open dialog.
@@ -2486,8 +2514,8 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       terminal.write(fixtureNew);
       await terminal.waitForScreen(screen => readChoices(screen).selected === undefined && screen.includes("❯") && !screen.includes("Invalidate question"),
         { signal: t.signal, after: newCursor });
-      waitForControlFile(path.join(control, "new-result"), (content) => content.includes("\"cancelled\":false"), "invalidate:session-start");
-      const secondSessionFile = waitForControlFile(path.join(control, "session-file"),
+      await waitForControlFile(path.join(control, "new-result"), (content) => content.includes("\"cancelled\":false"), "invalidate:session-start");
+      const secondSessionFile = await waitForControlFile(path.join(control, "session-file"),
         (content) => content.trim().length > 0 && content.trim() !== sessionFile, "invalidate:session-start");
       assert.notEqual(secondSessionFile.trim(), sessionFile, "invalidate:session-start: the runtime replaced the session file");
       waitForResultCount(sessionFile, 1, "invalidate:session-start");
@@ -2561,7 +2589,7 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       screens.treeDialogOpen = await waitForSelector(terminal, "Navigation question", { signal: t.signal });
       const refusedCursor = terminal.sequence;
       terminal.write(fixtureNavigate);
-      const refusal = waitForControlFile(path.join(control, "nav-refused"),
+      const refusal = await waitForControlFile(path.join(control, "nav-refused"),
         (content) => content.includes("finish before navigating"), "invalidate:tree-refused");
       screens.treeDialogAfterRefusal = await waitForSelector(terminal, "Navigation question", { signal: t.signal, after: refusedCursor });
       assert.match(refusal, /Wait for the current response to finish before navigating/u,
@@ -2577,7 +2605,7 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       const commitCursor = terminal.sequence;
       terminal.write(fixtureNavigate);
       await terminal.waitForScreen((screen) => screen.includes("Navigated to selected point"), { signal: t.signal, after: commitCursor });
-      waitForControlFile(path.join(control, "nav-result"), (content) => content.includes("\"cancelled\":false"), "invalidate:tree-commit");
+      await waitForControlFile(path.join(control, "nav-result"), (content) => content.includes("\"cancelled\":false"), "invalidate:tree-commit");
 
       // A fresh question works after the committed navigation.
       await submitEditorText(terminal, "q5 t2", { signal: t.signal });
@@ -2638,7 +2666,7 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       await submitEditorText(terminal, "q5 s1", { signal: t.signal });
       screens.shutdownDialogOpen = await waitForSelector(terminal, "Deferred shutdown question", { signal: t.signal });
       terminal.write(fixtureShutdown);
-      waitForControlFile(path.join(control, "shutdown-requested"), (content) => content === "yes", "shutdown:deferred");
+      await waitForControlFile(path.join(control, "shutdown-requested"), (content) => content === "yes", "shutdown:deferred");
       screens.shutdownStillOpen = await terminal.waitForScreen((screen) => screen.includes("Deferred shutdown question")
         && readChoices(screen).selected !== undefined, { signal: t.signal });
       assert.match(String(screens.shutdownStillOpen), /1\. Settled/u,
@@ -2652,7 +2680,7 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       assert.deepEqual([shutdownClose.code, shutdownClose.forced], [0, false],
         "shutdown:deferred: the deferred request exits gracefully after settlement");
       terminal = undefined;
-      waitForControlFile(path.join(control, "session-shutdown-seen"), (content) => content === "yes", "shutdown:deferred");
+      await waitForControlFile(path.join(control, "session-shutdown-seen"), (content) => content === "yes", "shutdown:deferred");
       await provider.close();
       observations.push({ family: "shutdown", providerRequests: 2 });
     } catch (error) {
