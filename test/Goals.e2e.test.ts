@@ -2643,12 +2643,14 @@ test("continuation dispatch respects idle, pending, and cancellation gates", { t
     let cursor = gates.rpc.currentSequence;
     await submitCommand(gates, `/goal ${gatesObjective}`, "gates start");
     await waitForNotification(gates, cursor, startNotice, "info", "gates start");
-    await gates.provider.waitForRequest(1, t.signal);
-    g1.release();
+    const gatesFirst = await gates.provider.waitForRequest(1, t.signal);
+    // Pause while turn 1 is still held; releasing first lets a fast reply settle and auto-pause the goal.
     const pauseCommandCursor = gates.rpc.currentSequence;
     await submitCommand(gates, "/goal pause", "gates pause");
     await waitForNotification(gates, pauseCommandCursor, pauseNotice, "info", "gates pause");
     await waitForSettled(gates, cursor, "gates pause");
+    g1.release();
+    assert.equal(await gatesFirst.completion, "closed", "gates pause: pause must cancel the held provider request");
     acknowledgeBatch(gates, "gates pause");
     cursor = gates.rpc.currentSequence;
     await submitCommand(gates, "/goal resume", "gates resume");
