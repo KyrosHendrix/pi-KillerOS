@@ -1634,7 +1634,7 @@ test("saved goals stay inactive outside TUI and RPC or without a saved session",
         fixture.provider.enqueue({ kind: "stop" });
         const before = sessionGoalEntries(fixture.sessionFile);
         const result = await runGoalScenarioOneShot(fixture, mode, "Attempt blocked goal completion", t.signal);
-        assert.equal(fixture.provider.requests.length, 2);
+        assert.equal(fixture.provider.requests.length, 2, `${mode}/${sessionKind}: ${JSON.stringify(result)}`);
         assert.ok(!scenarioToolNames(rejected.body).includes("killeros_goal_update"));
         assert.doesNotMatch(scenarioMessageText(rejected.body), /Active KillerOS goal|Blocked KillerOS goal/u);
         assert.match(scenarioMessageText(fixture.provider.requests[1]), /not found|not available|no active|unknown tool/iu);
