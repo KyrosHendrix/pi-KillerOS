@@ -659,7 +659,7 @@ test("real Pi persists and renders complete worked-for receipt data", { timeout:
     assert.equal(liveEntry?.outputTokens, 400, "Throughput counts the provider's complete output usage");
     assert.ok(typeof liveEntry?.responseMilliseconds === "number" && liveEntry.responseMilliseconds >= 2_000, "Held stream duration is measured from assistant start");
     assert.equal(liveEntry?.model, "receipt-model", "Single-model runs attribute the concrete model id");
-    const assertMeasuredIntervals = (entry: RecordValue, run: number, calls: number): void => {
+    const assertMeasuredIntervals = (entry: RecordValue, run: number, calls: number): number[] => {
       const observations = readFileSync(observer.timings, "utf8").trim().split(/\r?\n/u)
         .map((line) => record(JSON.parse(line), "native receipt timing"));
       const starts = observations.flatMap((event, index) => event.event === "agent_start" ? [index] : []);
@@ -669,16 +669,19 @@ test("real Pi persists and renders complete worked-for receipt data", { timeout:
       assert.equal(assistantStarts.length, calls);
       assert.equal(assistantEnds.length, calls);
       let elapsed = 0;
+      const intervals: number[] = [];
       for (const [index, start] of assistantStarts.entries()) {
         const end = assistantEnds[index];
         assert.ok(typeof start.at === "number" && typeof end?.at === "number");
         elapsed += end.at - start.at;
+        intervals.push(end.at - start.at);
       }
       assert.ok(typeof entry.responseMilliseconds === "number");
       assert.ok(Math.abs(entry.responseMilliseconds - elapsed) <= 50,
         `Saved assistant interval ${entry.responseMilliseconds} agrees with independently observed ${elapsed}`);
       assert.ok(typeof entry.milliseconds === "number" && entry.milliseconds >= elapsed + 300,
         "Task duration includes the real pre-settlement delay while response duration excludes it");
+      return intervals;
     };
     assertMeasuredIntervals(liveEntry, 1, 1);
     const changes = liveEntry?.changes as RecordValue | undefined;
@@ -775,8 +778,11 @@ test("real Pi persists and renders complete worked-for receipt data", { timeout:
     ]);
     assert.equal(weighted.outputTokens, 100);
     assert.equal(weighted.model, "wire-stable", "Stable concrete response id overrides the requested model id");
-    assertMeasuredIntervals(weighted, 3, 2);
-    assert.ok(typeof weighted.responseMilliseconds === "number" && weighted.responseMilliseconds >= 600,
+    const weightedIntervals = assertMeasuredIntervals(weighted, 3, 2);
+    // Server holds begin before Pi observes the first chunk. Compare native intervals instead.
+    assert.ok(weightedIntervals.every(interval => interval > 0)
+      && typeof weighted.responseMilliseconds === "number"
+      && weighted.responseMilliseconds > Math.max(...weightedIntervals),
       "The zero-output call contributes its assistant duration to the positive-output task");
     assert.ok(typeof weighted.milliseconds === "number" && weighted.milliseconds >= weighted.responseMilliseconds + 850,
       "Native tool execution and pre-settlement delay stay outside the summed assistant intervals");
