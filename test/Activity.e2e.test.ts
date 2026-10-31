@@ -812,7 +812,7 @@ function eventsOf(events: ProbeEvent[], type: string): ProbeEvent[] {
 
 function activityLine(screen: string): string | undefined {
   const lines = screen.split("\n").filter((line) => visibleActivityWords.some((word) => line.includes(word)));
-  return lines.at(-1);
+  return lines.at(-1)?.trimEnd();
 }
 
 async function waitForActivity(

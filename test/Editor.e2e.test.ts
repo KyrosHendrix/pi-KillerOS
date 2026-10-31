@@ -227,7 +227,9 @@ export default function(pi) {
         const value = readPhysical();
         return typeof value === "object" && value !== null && "text" in value && value.text === draft;
       }, { signal: t.signal });
-      for (let width = 1; width <= 180; width++) {
+      // ConPTY clamps physical terminals to at least two columns on supported Windows versions.
+      // The observer's direct renderer checks above still cover one-column output.
+      for (let width = 2; width <= 180; width++) {
         const after = terminal.sequence;
         terminal.resize(width, 40);
         await terminal.waitForScreen((screen) => {
@@ -370,7 +372,7 @@ export default function(pi) {
   await removeDirectoryEventually(directory);
   assert.equal(existsSync(directory), false);
   t.diagnostic(JSON.stringify({ scenarioId: "ED-01", piLaunches: terminals.length, providerRequests: requests.length,
-    physicalResizes: 720, nativeCompletionCases: 1, navigationEncodings: 2, cleanup: "natural",
+    physicalResizes: 716, nativeCompletionCases: 1, navigationEncodings: 2, cleanup: "natural",
     retiredByStaticReview: ["test/Editor.test.ts:43#1:45-46 source-shape regexes"],
     unproved: ["test/PiExtensionContract.test.ts:190#1 questions and packed-package allocations remain in their original registration"] }));
 });

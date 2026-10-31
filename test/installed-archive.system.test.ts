@@ -85,7 +85,8 @@ test("installed archive assertions reject missing files, identity drift, and non
       childLaunches++;
       const packed = await run(process.execPath, [npmCli, "--userconfig", userConfig, "--globalconfig", globalConfig,
         "--loglevel", "error", "pack", "--ignore-scripts", "--offline", "--json"], options);
-      const packages: unknown = JSON.parse(packed.stdout);
+      const parsed: unknown = JSON.parse(packed.stdout);
+      const packages: unknown = Array.isArray(parsed) ? parsed : Object.values(record(parsed));
       assert.ok(Array.isArray(packages) && packages.length === 1);
       const archive = record(packages[0]);
       assert.ok(typeof archive.filename === "string" && path.basename(archive.filename) === archive.filename);

@@ -125,7 +125,9 @@ export class PiTerminalProcess {
       const check = (): void => {
         try {
           const screen = this.screen();
-          if (this.sequence > (options.after ?? -1) && predicate(screen)) { clean(); resolve(screen); }
+          // ConPTY can split a synchronized frame across callbacks. Do not act on its partial screen.
+          if (this.pendingWrites === 0 && !this.terminal.modes.synchronizedOutputMode
+            && this.sequence > (options.after ?? -1) && predicate(screen)) { clean(); resolve(screen); }
           else if (this.exitCode !== undefined && this.pendingWrites === 0) { clean(); reject(new Error(`Terminal exited before expected screen: ${this.diagnostics()}`)); }
         } catch (error) { clean(); reject(error instanceof Error ? error : new Error(String(error))); }
       };
@@ -174,7 +176,9 @@ export class PiTerminalProcess {
           catch (error) { writeFailure = error; }
         }
       }
-      let code = await this.waitForExit(5_000);
+      // Windows may finish Pi's shutdown output before the native process and PTY close.
+      // Keep a bounded grace period before classifying that cleanup as forced.
+      let code = await this.waitForExit(force ? 5_000 : 15_000);
       const forced = force || (code === undefined && this.pty.exitCode === null);
       if (code === undefined && this.pty.exitCode !== null) code = this.pty.exitCode ?? undefined;
       if (forced) {

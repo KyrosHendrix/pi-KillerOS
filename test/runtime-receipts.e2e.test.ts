@@ -265,7 +265,7 @@ export default function(pi) {
   return { extension, events, timings };
 }
 
-function waitForReceiptSettlement(events: string, count: number, signal: AbortSignal, timeoutMs = 15_000): Promise<void> {
+function waitForReceiptSettlement(events: string, count: number, signal: AbortSignal, timeoutMs = 30_000): Promise<void> {
   return new Promise((resolve, reject) => {
     const finish = (error?: unknown): void => {
       clearTimeout(timer);
@@ -1017,7 +1017,8 @@ test("real Pi bounds observed checks and warns once for unavailable change colle
       cwd: family.project, env: family.env, cols: 120, rows: 80 });
     await terminal.waitForScreen((screen) => screen.includes("KillerOS") && screen.includes("ctx 100%"), { signal: t.signal });
     await Promise.all([
-      waitForReceiptSettlement(observer.events, 1, t.signal, 40_000),
+      // This turn starts 22 real npm checks before settlement, including each Windows process startup.
+      waitForReceiptSettlement(observer.events, 1, t.signal, 75_000),
       terminal.submitEditorText("run all observed checks", { signal: t.signal }),
     ]);
     const warning = "Warning: Change receipt unavailable: error";

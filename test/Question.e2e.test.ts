@@ -306,13 +306,21 @@ async function waitForSelector(terminal: PiTerminalProcess, title: string | RegE
 }
 
 /** Pastes a literal value into the focused input dialog, waits for the echo, and submits it. */
-async function submitInputDialog(terminal: PiTerminalProcess, value: string, options: { signal: AbortSignal }): Promise<{ echo: string; after: number }> {
+async function submitInputDialog(terminal: PiTerminalProcess, value: string, options: { signal: AbortSignal; controlDirectory?: string }): Promise<{ echo: string; after: number }> {
   const pasted = terminal.sequence;
-  terminal.write(`\x1b[200~${value}\x1b[201~`);
-  // CSI in native Input can erase the prompt; observe the pasted tail before confirming.
-  const tail = [...value.replace(/[\u0000-\u001f\u007f]/gu, "")].slice(-6).join("");
-  const echo = await terminal.waitForScreen((screen) => screen.split("\n").some((line) => (line.trimStart().startsWith(">") || value.includes("\x1b[2J")) && line.includes(tail)),
-    { signal: options.signal, after: pasted });
+  // A unique removable suffix proves the complete paste arrived, even for spaces or repeated Unicode.
+  const acknowledgement = `__input_${pasted}__`;
+  terminal.write(`\x1b[200~${value}${acknowledgement}\x1b[201~`);
+  const control = value.length > 1000 ? options.controlDirectory : undefined;
+  if (control) {
+    waitForControlFile(path.join(control, "paste-ack"), text => text === acknowledgement, "Native input paste");
+  } else {
+    await terminal.waitForScreen(screen => screen.includes(acknowledgement), { signal: options.signal, after: pasted });
+  }
+  const removing = terminal.sequence;
+  terminal.write("\x7f".repeat(acknowledgement.length));
+  if (control) await renderQuestionFrame(terminal, control, options.signal);
+  const echo = await terminal.waitForScreen(screen => !screen.includes(acknowledgement), { signal: options.signal, after: removing });
   const after = terminal.sequence;
   terminal.write(dialogConfirm);
   return { echo, after };
@@ -358,6 +366,15 @@ function waitForControlFile(file: string, accept: (content: string) => boolean, 
   }
 }
 
+async function renderQuestionFrame(terminal: PiTerminalProcess, control: string, signal: AbortSignal, key = ""): Promise<void> {
+  const frame = path.join(control, "native-frame");
+  const revision = existsSync(frame) ? Number(readFileSync(frame, "utf8")) : 0;
+  const after = terminal.sequence;
+  terminal.write(key + "\x1b[19~");
+  waitForControlFile(frame, text => Number(text) > revision, "Native question frame");
+  await terminal.waitForScreen(() => true, { signal, after });
+}
+
 /** Bounded durability wait until the session file persists the expected number of question results. */
 function waitForResultCount(sessionFile: string, expected: number, label: string, timeoutMs = 10_000): void {
   const deadline = Date.now() + timeoutMs;
@@ -393,7 +410,7 @@ function messageText(body: RecordValue): string {
 }
 
 function rowCountsWith(screen: string, pattern: RegExp): number {
-  return screen.split("\n").filter((line) => pattern.test(line.trimStart())).length;
+  return screen.split("\n").filter((line) => pattern.test(line.trim())).length;
 }
 
 /** Requires the actual collapsed call before checking its single-selection presentation. */
@@ -806,7 +823,7 @@ test("Native question selection, filtering, custom answers, and count limits", {
   const control = path.join(family.directory, "control");
   mkdirSync(control);
   const extension = path.join(family.directory, "question-observer.ts");
-  writeFileSync(extension, questionControlExtensionSource(control));
+  writeFileSync(extension, questionControlExtensionSource(control, true));
   const provider = new QuestionProvider();
   let terminal: PiTerminalProcess | undefined;
   const screens: RecordValue = {};
@@ -1033,7 +1050,7 @@ test("Native question selection, filtering, custom answers, and count limits", {
       { value: "\x1b[2J" + "𐐀".repeat(4_000), message: "Error: Custom answers are limited to 4,000 characters", count: 3 },
     ]) {
       await reopenInput();
-      const { echo, after } = await submitInputDialog(terminal, value, { signal: t.signal });
+      const { echo, after } = await submitInputDialog(terminal, value, { signal: t.signal, controlDirectory: control });
       const previousNotices = echo.split(message).length - 1;
       await terminal.waitForScreen(screen => readChoices(screen).selected !== undefined
         && screen.split(message).length - 1 >= Math.max(count, previousNotices + 1), { signal: t.signal, after });
@@ -1041,7 +1058,7 @@ test("Native question selection, filtering, custom answers, and count limits", {
       assert.equal(provider.requests.length, pendingRequests, "custom:unicode-limits: rejected input does not advance the provider");
     }
     await reopenInput();
-    await submitInputDialog(terminal, "𐐀".repeat(4_000), { signal: t.signal });
+    await submitInputDialog(terminal, "𐐀".repeat(4_000), { signal: t.signal, controlDirectory: control });
     await settle("Q2T7 DONE");
     result = singleResult(sessionFile, 6, "custom:4-000-astral");
     const astralAnswer = result.details?.answer;
@@ -1140,12 +1157,12 @@ test("Native question selection, filtering, custom answers, and count limits", {
     await chooseOffered(terminal, /1\. \[ \] Alpha/u, "filter:oversized", { signal: t.signal });
     await waitForSelector(terminal, "Oversized filter", { signal: t.signal, entry: mainSelectorEntry });
     await openFilterInput();
-    await submitInputDialog(terminal, "𐐀".repeat(4_001), { signal: t.signal });
+    await submitInputDialog(terminal, "𐐀".repeat(4_001), { signal: t.signal, controlDirectory: control });
     screens.t11Rejected = await terminal.waitForScreen(
       (screen) => screen.includes("Error: Question filters are limited to 4,000 characters and 16,000 bytes"), { signal: t.signal });
     assert.match(String(screens.t11Rejected), /\[x\] Alpha/u, "filter:oversized: the rejected filter preserves checked options");
     await openFilterInput();
-    await submitInputDialog(terminal, "𐐀".repeat(4_000), { signal: t.signal });
+    await submitInputDialog(terminal, "𐐀".repeat(4_000), { signal: t.signal, controlDirectory: control });
     screens.t11Applied = await waitForSelector(terminal, "Oversized filter", { signal: t.signal, entry: mainSelectorEntry });
     assert.match(String(screens.t11Applied), /Selected 1/u, "filter:oversized: the applied astral filter keeps the hidden selection counted");
     await chooseOffered(terminal, /Submit answers/u, "filter:oversized", { signal: t.signal });
@@ -1302,7 +1319,8 @@ async function runHistoricalQuestionRendering(t: TestContext) {
         },
           { signal: t.signal, after: before });
       }
-      const screen = terminal.screen();
+      const screen = await terminal.waitForScreen(value => rowCountsWith(value, /safespoof/u) === 5
+        && rowCountsWith(value, /^next$/u) === 5, { signal: t.signal });
       assert.equal(rowCountsWith(screen, /safespoof/u), 5, "All four call fields and the custom result render sanitized");
       assert.equal(rowCountsWith(screen, /^next$/u), 5, "All original call/result line breaks remain separate rows");
       for (const pattern of [/question safespoof\s*$/u, /\(wrote\) safespoof\s*$/u]) {
@@ -1400,7 +1418,7 @@ test("Question transcript renderers strip controls, bound collapsed rows, and ex
   const control = path.join(family.directory, "control");
   mkdirSync(control);
   const extension = path.join(family.directory, "render-observer.ts");
-  writeFileSync(extension, questionControlExtensionSource(control));
+  writeFileSync(extension, questionControlExtensionSource(control, true));
   const provider = new QuestionProvider();
   let terminal: PiTerminalProcess | undefined;
   const screens: Record<string, string> = {};
@@ -1484,18 +1502,28 @@ test("Question transcript renderers strip controls, bound collapsed rows, and ex
     };
     const expandUntilVisible = async (needle: RegExp, label: string): Promise<string> => {
       assert.ok(terminal);
+      const observedPages: string[] = [];
+      const navigate = async (key: string): Promise<void> => {
+        assert.ok(terminal);
+        await renderQuestionFrame(terminal, control, t.signal, key);
+      };
+      // A resize preserves transcript position. Start at the bottom before searching upward.
+      await navigate(jumpLatest);
+      await terminal.waitForScreen(screen => screen.includes("❯") && !screen.includes("Jump to latest"), { signal: t.signal });
       for (let attempt = 0; attempt < 30; attempt++) {
+        observedPages.push(terminal.screen());
         if (needle.test(terminal.screen())) return terminal.screen();
         const before = terminal.sequence;
         const frame = terminal.screen();
-        terminal.write(pageUp);
+        await navigate(pageUp);
         try {
           await terminal.waitForScreen((candidate) => candidate !== frame, { signal: t.signal, after: before, timeoutMs: 4_000 });
         } catch {
           // A page-up at the transcript top may not produce a new frame; keep the bounded search going.
         }
       }
-      throw new Error(`${label}: ${String(needle)} never became visible while paging the expanded transcript`);
+      t.diagnostic(JSON.stringify({ label, observedPages }));
+      throw new Error(`${label}: ${String(needle)} never became visible while paging the expanded transcript: ${JSON.stringify(terminal.screen())}`);
     };
 
     // Vector controls:stripped: unsafe question text is sanitized in dialog and transcript, with no parsed bells or titles.
@@ -1728,7 +1756,7 @@ test("Question history, preview paging, resize, and draft preservation", { timeo
     const control = path.join(family.directory, "control");
     mkdirSync(control);
     const extension = path.join(family.directory, "session-observer.ts");
-    writeFileSync(extension, questionControlExtensionSource(control));
+    writeFileSync(extension, questionControlExtensionSource(control, true));
     const provider = new QuestionProvider();
     let terminal: PiTerminalProcess | undefined;
     const screens: RecordValue = {};
@@ -1776,7 +1804,7 @@ test("Question history, preview paging, resize, and draft preservation", { timeo
         await waitForSelector(terminal, question, { signal: t.signal });
         await chooseOffered(terminal, /Custom answer/u, label, { signal: t.signal });
         await waitForInputDialog(terminal, "Custom answer", { signal: t.signal });
-        await submitInputDialog(terminal, value, { signal: t.signal });
+        await submitInputDialog(terminal, value, { signal: t.signal, controlDirectory: control });
       };
 
       // Vectors history:dedup: First, Second, First reuse complete answers without duplicates.
@@ -2122,7 +2150,7 @@ test("Question history retains the newest hundred distinct answers", { timeout: 
 });
 
 /** Fixture extension source: public marker input, armed behaviors, and session observation for Q-05. */
-function questionControlExtensionSource(controlDirectory: string): string {
+function questionControlExtensionSource(controlDirectory: string, observeFrames = false): string {
   return `import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -2137,6 +2165,10 @@ export default function (pi: ExtensionAPI) {
   let abortOnConfirm = "";
   let navigateTargetId: string | undefined;
   let settlements = 0;
+  ${observeFrames ? `
+  let renderNow: (() => void) | undefined;
+  let frameRevision = 0;
+  ` : ""}
   pi.on("agent_settled", (event, ctx) => {
     const destination = path.join(control, "settled.json");
     const temporary = destination + ".tmp";
@@ -2146,7 +2178,24 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("session_start", (_event, ctx) => {
     write("session-file", ctx.sessionManager.getSessionFile() ?? "none");
+    ${observeFrames ? `
+    const factory = ctx.ui.getEditorComponent();
+    if (!factory) throw new Error("Missing native editor factory");
+    ctx.ui.setEditorComponent((tui, theme, keys) => {
+      renderNow = () => tui.renderNow(true);
+      return factory(tui, theme, keys);
+    });` : ""}
     ctx.ui.onTerminalInput((data) => {
+      ${observeFrames ? `
+      if (matchesKey(data, "f8")) {
+        setImmediate(() => {
+          renderNow?.();
+          write("native-frame", String(++frameRevision));
+        });
+        return { consume: true };
+      }` : ""}
+      const acknowledgement = /__input_[0-9]+__/u.exec(data)?.[0];
+      if (acknowledgement) queueMicrotask(() => write("paste-ack", acknowledgement));
       if (questionDepth > 0 && abortOnConfirm && matchesKey(data, "enter")) {
         const mode = abortOnConfirm;
         abortOnConfirm = "";

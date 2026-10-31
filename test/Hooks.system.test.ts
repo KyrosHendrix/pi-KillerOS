@@ -201,7 +201,9 @@ test("Exported executeHook contains adapter stream errors and synchronous cleanu
       cwd: path.join(import.meta.dirname, ".."), timeout: 30_000, windowsHide: true,
       env: { ...process.env, npm_config_cache: path.join(root, "npm-cache"), npm_config_update_notifier: "false" },
     });
-    const archives: unknown = JSON.parse(result.stdout);
+    const parsed: unknown = JSON.parse(result.stdout);
+    assert.ok(typeof parsed === "object" && parsed !== null);
+    const archives: unknown = Array.isArray(parsed) ? parsed : Object.values(parsed);
     assert.ok(Array.isArray(archives) && archives.length === 1);
     const archive: unknown = archives[0];
     assert.ok(typeof archive === "object" && archive !== null && "filename" in archive && typeof archive.filename === "string");

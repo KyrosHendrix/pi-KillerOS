@@ -135,7 +135,7 @@ process.exitCode = fault === 'kill-throws' && cleanupFailure === undefined && fa
 
     // Reuse the existing bounded subprocess owner, not a second process supervisor.
     processOwner = new PiRpcProcess({ cliPath: script, args: [], cwd: directory, env });
-    const result = await processOwner.waitFor((record) => record.type === "terminal_control_result", { signal, timeoutMs: 25_000 });
+    const result = await processOwner.waitFor((record) => record.type === "terminal_control_result", { signal, timeoutMs: 40_000 });
     terminalResult = result;
     const exit = await processOwner.close();
     assert.equal(exit.exit.code, fault === "kill-throws" ? 0 : 1, "The control fixture must report its expected outcome");

@@ -225,7 +225,8 @@ export default function (pi) {
     const destination = process.env.KILLEROS_RECEIPT_SETTLEMENT;
     if (!destination) throw new Error("Missing receipt settlement destination");
     // ExtensionContext has no compaction getter; native agent_settled guarantees compaction has stopped.
-    const output = process.env.KILLEROS_RECEIPT_UNIQUE_SETTLEMENT === "1" ? destination + "." + ordinal : destination;
+    // Readers never open a path that a later settlement replaces on Windows.
+    const output = destination + "." + ordinal;
     writeFileSync(output + ".tmp", JSON.stringify({ ordinal, prompt,
       sessionFile: ctx.sessionManager.getSessionFile(), aborted: event.aborted,
       idle: ctx.isIdle(), pending: ctx.hasPendingMessages() }));
@@ -236,7 +237,7 @@ export default function (pi) {
 
 /** Launch a trusted TUI and run labeled mid-turn mutation families, verifying each settled receipt. */
 async function runTurns(options: { family: Family; provider: ReceiptGitProvider; turns: Turn[]; signal: AbortSignal;
-  extensions?: string[]; uniqueSettlement?: true }): Promise<void> {
+  extensions?: string[] }): Promise<void> {
   const sessionFile = path.join(options.family.directory, "session.jsonl");
   const settlementFile = path.join(options.family.directory, "settlement.json");
   const observerFile = path.join(options.family.directory, "settlement-observer.ts");
@@ -246,8 +247,7 @@ async function runTurns(options: { family: Family; provider: ReceiptGitProvider;
       "--session", sessionFile, "--offline", "--approve", "--no-context-files", "--no-skills", "--no-prompt-templates",
       "--no-themes", "--no-mcp", "--no-extensions", "--extension", path.join(repositoryRoot, "Killeros.ts"),
       "--extension", observerFile, ...(options.extensions ?? []).flatMap(extension => ["--extension", extension])],
-    cwd: options.family.project, env: { ...options.family.env, KILLEROS_RECEIPT_SETTLEMENT: settlementFile,
-      ...(options.uniqueSettlement ? { KILLEROS_RECEIPT_UNIQUE_SETTLEMENT: "1" } : {}) }, cols: 120, rows: 34 });
+    cwd: options.family.project, env: { ...options.family.env, KILLEROS_RECEIPT_SETTLEMENT: settlementFile }, cols: 120, rows: 34 });
   const failures: unknown[] = [];
   let settledTurns = 0;
   try {
@@ -269,7 +269,7 @@ async function runTurns(options: { family: Family; provider: ReceiptGitProvider;
         planned.release();
       }
       const deadline = Date.now() + 15_000;
-      const completedFile = options.uniqueSettlement ? settlementFile + "." + (settledTurns + 1) : settlementFile;
+      const completedFile = settlementFile + "." + (settledTurns + 1);
       let settlement: unknown;
       while (true) {
         if (existsSync(completedFile)) settlement = JSON.parse(readFileSync(completedFile, "utf8"));
@@ -305,7 +305,7 @@ async function runTurns(options: { family: Family; provider: ReceiptGitProvider;
       errors: [...failures, ...options.provider.errors.map((fault) => fault instanceof Error ? fault : new Error(String(fault)))],
       diagnostics: JSON.stringify({ directory: options.family.directory, pi: piVersion,
         requests: options.provider.requests.length, providerErrors: options.provider.errors, settledTurns,
-        settlement: existsSync(settlementFile) ? readFileSync(settlementFile, "utf8") : null,
+        settlement: settledTurns > 0 ? readFileSync(settlementFile + "." + settledTurns, "utf8") : null,
         terminal: terminal.diagnostics() }),
     });
   }

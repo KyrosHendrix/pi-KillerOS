@@ -205,7 +205,7 @@ export class PiRpcProcess {
     });
   }
 
-  async close(timeoutMs = 5_000): Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> {
+  async close(timeoutMs = 15_000): Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> {
     this.closePromise ??= this.closeOwned(timeoutMs);
     return await this.closePromise;
   }

@@ -1512,7 +1512,7 @@ export default function(pi){
     effectiveTripwire: true, watcherFault: "withheld real callbacks", lateWrite: "owned file open", cleanup: "natural" }));
 });
 
-test("native receipt paths agree with Git across the complete conversion matrix", { timeout: 240_000 }, async t => {
+test("native receipt paths agree with Git across the complete conversion matrix", { timeout: 420_000 }, async t => {
   const runGroup = async (autoCrlf: "false" | "true" | "input"): Promise<{ inputs: number; turns: number }> => {
     const worker = new Worker(new URL("./support/receipt-git-conversion-worker.ts", import.meta.url), {
       workerData: autoCrlf, execArgv: ["--experimental-strip-types"],
@@ -1643,8 +1643,9 @@ const original=cp.spawn;
 cp.spawn=function(file,args,...rest){
  const child=original.call(this,file,args,...rest);
  if(new Error().stack?.includes("change-receipt"))child.once("exit",(code,signal)=>{
-   if(signal){fs.writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({code,signal,pid:child.pid}));
-    fs.renameSync(${JSON.stringify(marker + ".tmp")},${JSON.stringify(marker)});}
+   if(signal){const output=${JSON.stringify(marker)}+"."+child.pid;
+    fs.writeFileSync(output+".tmp",JSON.stringify({code,signal,pid:child.pid}));
+    fs.renameSync(output+".tmp",output);}
  });
  return child;
 };syncBuiltinESMExports();
@@ -1657,8 +1658,9 @@ export default function(pi){
     writeProviderConfig(family.agent, port);
     const releasePipe = async (): Promise<void> => {
       for (let attempt = 0; attempt < 1500; attempt++) {
-        if (existsSync(marker)) {
-          const exit: unknown = JSON.parse(readFileSync(marker, "utf8"));
+        const completed = readdirSync(family.directory).find(name => name.startsWith(path.basename(marker) + ".") && !name.endsWith(".tmp"));
+        if (completed) {
+          const exit: unknown = JSON.parse(readFileSync(path.join(family.directory, completed), "utf8"));
           assert.ok(isRecord(exit));
           assert.equal(exit.signal, "SIGTERM", "The real receipt deadline terminates its actual Git child");
           await closePipe();

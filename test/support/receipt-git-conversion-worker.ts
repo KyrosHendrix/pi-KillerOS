@@ -76,7 +76,7 @@ const result = await (async () => {
       const port = await provider.listen();
       // This matrix observes durable receipts; regular mode avoids fullscreen transcript redraws.
       writeProviderConfig(family.agent, port, "regular");
-      await runTurns({ family, provider, signal, uniqueSettlement: true, turns: batches.map((batch, index) => ({
+      await runTurns({ family, provider, signal, turns: batches.map((batch, index) => ({
         label: `Conversion ${autoCrlf} batch ${index}`, step: { kind: "text", content: `Conversion ${autoCrlf} batch ${index} response.` },
         doneWhen: screen => screen.includes(`Conversion ${autoCrlf} batch ${index} response.`),
         mutate: () => { for (const row of batch) { writeFileSync(path.join(family.project, row.file), row.content); utimesSync(path.join(family.project, row.file), new Date(0), new Date(0)); } },

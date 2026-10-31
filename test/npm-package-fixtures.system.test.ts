@@ -207,8 +207,9 @@ test("npm package fixtures preserve shell-special paths without npm_execpath", {
     assert.equal(packRun.code, 0, `npm pack --dry-run did not exit with code 0: ${diagnostics()}`);
     assert.equal(packRun.signal, null, `npm pack --dry-run was terminated: ${diagnostics()}`);
 
-    const packed: unknown = JSON.parse(packRun.stdout);
-    assert.ok(isUnknownArray(packed), `npm pack --json must return an array: ${diagnostics()}`);
+    const parsed: unknown = JSON.parse(packRun.stdout);
+    assert.ok(isUnknownArray(parsed) || isRecord(parsed), `npm pack --json must return package metadata: ${diagnostics()}`);
+    const packed = isUnknownArray(parsed) ? parsed : Object.values(parsed);
     assert.equal(packed.length, 1, `npm pack --json must return exactly one package object: ${diagnostics()}`);
     const descriptor = packed[0];
     assert.ok(isRecord(descriptor), `npm pack --json must return a package record: ${diagnostics()}`);

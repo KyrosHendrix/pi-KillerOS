@@ -221,11 +221,14 @@ test("Header masthead and startup tips stay fixed per session and exhaust their 
     assert.doesNotMatch(raw.slice(raw.indexOf("██████"), raw.indexOf("▓▓▓▓▓▓")), /\x1b\[1m/u, "identity is not bold");
     assert.match(raw, /\x1b\[38;2;242;242;242mPi ?\x1b\[38;2;128;128;128m/u, "native text color for Pi");
     assert.ok(raw.includes("\x1b[38;2;128;128;128mmodel: \x1b[38;2;242;242;242m"), "native dim model label");
-    for (let width = 1; width <= 100; width++) {
+    // ConPTY's physical minimum is two columns.
+    for (let width = 2; width <= 100; width++) {
       const after = terminal.sequence;
       terminal.resize(width, 300);
       const screen = await terminal.waitForScreen(value => value.split("\n").some(line => line === "─".repeat(width))
-        && (width < 28 ? value.split("\n").some(line => line.trimEnd() === "KillerOS".slice(0, width)) : value.includes("██████")), { signal: t.signal, after });
+        && (width < 28
+          ? value.split("\n").find(line => line.trim().length > 0)?.trimEnd() === "KillerOS".slice(0, width)
+          : value.includes("██████")), { signal: t.signal, after });
       assert.ok(screen.split("\n").every(line => [...line].length <= width), `width ${width}: rows fit`);
       if (width < 28) {
         const firstVisibleLine = screen.split("\n").find(line => line.trim().length > 0);
@@ -265,5 +268,5 @@ test("Header masthead and startup tips stay fixed per session and exhaust their 
   try { await removeDirectoryEventually(setup.directory); assert.equal(existsSync(setup.directory), false); } catch (error) { errors.push(error); }
   if (errors.length) throwScenarioFailure({ directory: mkdtempSync(path.join(root, "node_modules", ".killeros-SH-02-failure-")),
     message: "SH-02 failed", errors, diagnostics: JSON.stringify({ screens, tips, suggestions, terminal: terminalDiagnostics }) });
-  t.diagnostic(JSON.stringify({ scenarioId: "SH-02", piLaunches: 1, sessions: 10, widths: 100, providerRequests: 0, cleanup: "natural" }));
+  t.diagnostic(JSON.stringify({ scenarioId: "SH-02", piLaunches: 1, sessions: 10, widths: 99, providerRequests: 0, cleanup: "natural" }));
 });

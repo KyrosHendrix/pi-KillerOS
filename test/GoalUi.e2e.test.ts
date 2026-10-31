@@ -166,6 +166,9 @@ test("Goal transcript and update renderers sanitize controls, stay compact, and 
     writeFileSync(extension, `export default function(pi) {
   let settlements = 0;
   pi.on("agent_settled", (_event, ctx) => ctx.ui.notify("gui-native-settled:" + (++settlements) + " idle=" + ctx.isIdle() + " pending=" + ctx.hasPendingMessages(), "info"));
+  pi.registerCommand("gui-frame", { description: "Acknowledge a physical terminal resize", handler: async (args, ctx) => {
+    ctx.ui.notify("gui-frame:" + args + ":" + process.stdout.columns, "info");
+  }});
   const files = ${JSON.stringify(files)};
   pi.registerCommand("gui-session", { description: "Open an exact historical rendering fixture", handler: async (args, ctx) => {
     const file = files[args.split(" ")[0]];
@@ -273,11 +276,14 @@ test("Goal transcript and update renderers sanitize controls, stay compact, and 
     for (const width of [120, 80, 40]) {
       const resizedAfter = terminal.sequence;
       terminal.resize(width, 220);
-      const collapsed = await terminal.waitForScreen(screen => screen.includes("gui-final-ended") && screen.split("\n").some(line => line === "─".repeat(width)), { signal: t.signal, after: resizedAfter });
+      await terminal.submitEditorText(`/gui-frame ${width}`, { signal: t.signal });
+      const collapsed = await terminal.waitForScreen(screen => screen.includes("gui-final-ended")
+        && screen.includes(`gui-frame:${width}:${width}`)
+        && screen.split("\n").some(line => line === "─".repeat(width)), { signal: t.signal, after: resizedAfter });
       screens[`live-${width}-collapsed`] = collapsed;
       const collapsedEvidence = section(collapsed, "Goal completed", "goal complete");
       assert.ok(collapsedEvidence.split("\n").filter(line => line.trim()).length <= 1,
-        "long goal evidence occupies at most one collapsed row");
+        `long goal evidence occupies at most one collapsed row: ${JSON.stringify(collapsedEvidence)}`);
       const errorEnd = collapsed.indexOf("gui-completion-ended");
       const collapsedError = collapsed.slice(collapsed.lastIndexOf("goal complete", errorEnd), errorEnd);
       if (width >= 80) {

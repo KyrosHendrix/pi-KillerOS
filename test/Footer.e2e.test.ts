@@ -506,7 +506,7 @@ function footerCliArgs(family: FooterFamily, model: string, extensionPath?: stri
 }
 
 function footerLine(screen: string): string {
-  return screen.split("\n").find((line) => /ctx (?:\d+|—)%/u.test(line)) ?? "";
+  return screen.split("\n").filter((line) => /ctx (?:\d+|—)%/u.test(line)).at(-1) ?? "";
 }
 
 async function submitFooterText(terminal: PiTerminalProcess, text: string, signal: AbortSignal): Promise<void> {
@@ -697,7 +697,8 @@ test("Footer preserves model, context, cost, goal, and priority information acro
       const beforeNarrow = terminal.sequence;
       terminal.resize(26, 34);
       screens[`fast-narrow-${item.id}`] = await terminal.waitForScreen((screen) => screen.split("\n").includes("─".repeat(26))
-        && footerLine(screen) !== "", { signal: t.signal, after: beforeNarrow });
+        && footerLine(screen).includes(item.label)
+        && /\bfast\b/u.test(footerLine(screen)) === item.eligible, { signal: t.signal, after: beforeNarrow });
       assert.equal(/\bfast\b/u.test(footerLine(screens[`fast-narrow-${item.id}`] ?? "")), item.eligible,
         `${item.provider}/${item.id} ${item.api}/${item.baseUrl} fast label at width 26`);
       if (item.eligible) assert.ok(footerLine(screens[`fast-narrow-${item.id}`] ?? "").includes(`${item.label} fast`));
@@ -788,23 +789,31 @@ test("Footer preserves model, context, cost, goal, and priority information acro
     const ctxDetail = ctxDetailMatch[0];
     const capacityToken = `${percentToken} (1M)`;
     const essentialModel = "local";
-    for (let width = 1; width <= 180; width += 1) {
+    // ConPTY clamps its physical size to at least two columns.
+    for (let width = 2; width <= 180; width += 1) {
       const after = terminal.sequence;
       terminal.resize(width, 34);
-      const screen: string = await terminal.waitForScreen((value) => value.split("\n").some((line) => line === "─".repeat(width)),
-        { signal: t.signal, after });
+      const expectedRow = (metaRow: string): string => {
+        const session = metaRow.match(/(?:\d+h )?(?:\d+m )?\d+s · \$\d+\.\d{2}/u)?.[0] ?? "";
+        const candidates = footerReplicaCandidates({
+          signature: "local footer local", level: "no reasoning", essentialModel,
+          contexts: [ctxDetail, capacityToken, percentToken], session,
+        });
+        const selected = candidates.find(({ left, right }) => footerReplicaFits(left, right, width))
+          ?? { left: essentialModel, right: percentToken };
+        return stripVTControlCharacters(footerReplicaRow(selected.left, selected.right, width)).trimEnd();
+      };
+      const screen: string = await terminal.waitForScreen((value) => {
+        const rows = value.split("\n");
+        const border = rows.lastIndexOf("─".repeat(width));
+        const meta = rows[border + 1] ?? "";
+        return border >= 0 && meta.trimEnd() === expectedRow(meta);
+      }, { signal: t.signal, after });
       const lines: string[] = screen.split("\n");
       assert.ok(lines.every((line: string) => visibleWidth(line) <= width), `screen clips to ${width} cells`);
       const borderIndex = lines.lastIndexOf("─".repeat(width));
       const metaRow = lines[borderIndex + 1] ?? "";
-      const session = metaRow.match(/(?:\d+h )?(?:\d+m )?\d+s · \$\d+\.\d{2}/u)?.[0] ?? "";
-      const candidates = footerReplicaCandidates({
-        signature: "local footer local", level: "no reasoning", essentialModel,
-        contexts: [ctxDetail, capacityToken, percentToken], session,
-      });
-      const selected = candidates.find(({ left, right }) => footerReplicaFits(left, right, width))
-        ?? { left: essentialModel, right: percentToken };
-      assert.equal(metaRow.trimEnd(), stripVTControlCharacters(footerReplicaRow(selected.left, selected.right, width)).trimEnd(),
+      assert.equal(metaRow.trimEnd(), expectedRow(metaRow),
         `footer meta row matches the production candidate ladder at width ${width}`);
       if (width >= 18) assert.ok(metaRow.includes("local"), `the essential model label survives at width ${width}`);
       if (width >= 12) assert.match(metaRow, /ctx \d+%/u, `the context percentage survives at width ${width}`);
@@ -1689,8 +1698,9 @@ test("Footer Git refresh timing, watch bursts, and file-count rendering stay bou
     assert.ok(fallbackElapsed >= 25_000 && fallbackElapsed <= 45_000,
       `The idle fallback scan arrived after ${fallbackElapsed} ms`);
     screens.idleFallback = terminal.screen();
-    assert.equal(screens.idleFallback, screens.idleBefore,
-      "An idle fallback scan runs without changing the rendered terminal or receiving input");
+      const withoutClock = (screen: string): string => screen.replace(/ +(?:\d+h )?(?:\d+m )?\d+s(?= · \$)/gu, " <elapsed>");
+      assert.equal(withoutClock(screens.idleFallback), withoutClock(screens.idleBefore),
+        "An idle fallback scan preserves the rendered terminal apart from its session clock");
     assert.equal(footerRenderedGitLine(screens.idleFallback), "");
 
     const burstBefore = events;
