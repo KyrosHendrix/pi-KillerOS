@@ -86,12 +86,14 @@ Application scenarios use the real Pi CLI through `test/support/`, not simulated
 
 For host integration, use `test/PiExtensionContract.test.ts` for packed-package activation and reload, `test/runtime-tools.e2e.test.ts` for tool exposure, and `test/runtime-native-provider.e2e.test.ts` for provider transport, sampling, Azure, and capacity retries. Use `test/Editor.e2e.test.ts` for inherited navigation, `test/Hooks.e2e.test.ts` for trust boundaries, and `test/Hooks.system.test.ts` for public hook process cleanup.
 
-Before finishing a code change:
+Before finishing a code change, run `npm run check` and the affected test files, then the full suite. Locally, the full suite is `npm test`. CI runs it in about 5 minutes, and a pull request's CI already includes it. To run it on a pushed branch without a pull request:
 
 ```bash
-npm run check
-npm test
+run=$(gh workflow run ci.yml --ref <branch> | grep -oE 'runs/[0-9]+' | cut -d/ -f2)
+gh run watch "$run" --exit-status
 ```
+
+CI tests the pushed commit, not uncommitted local changes. Push only when you're allowed to.
 
 `check` runs TypeScript without emitting files, then ESLint. Tests execute `.ts` files directly. There is no separate build step. Repository contracts scan untracked, non-ignored files too.
 
