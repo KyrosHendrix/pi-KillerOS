@@ -103,7 +103,7 @@ node --test --test-force-exit --experimental-strip-types test/verify-release.tes
 
 For guidance-only changes in `AGENTS.md` or `docs/`, verify referenced paths, headings, and commands directly. Prose alone does not require the runtime suite.
 
-CI runs on Windows using Node.js 26.13.0, pinned in `.node-version`, and checks the minimum Pi in Quality, because development pins equal the peer-range minimums, and the newest compatible Pi in `Pi compatibility (latest)`. Compatibility installs must not change the tracked manifest or lockfile. Local checks do not establish that CI passes. Report what ran and what remains unverified.
+CI runs on Windows using Node.js 26.13.0, pinned in `.node-version`, and checks the minimum Pi in Quality, because development pins equal the peer-range minimums, and the newest compatible Pi in `Pi compatibility (latest)`, which repeats the runtime suites only when that install differs from the lockfile. Quality splits `npm test` across four runners; keep the shard command in `ci.yml` in sync with the `test` script. Compatibility installs must not change the tracked manifest or lockfile. Local checks do not establish that CI passes. Report what ran and what remains unverified.
 
 ## Update docs and release metadata when needed
 

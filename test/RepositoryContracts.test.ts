@@ -346,7 +346,15 @@ test("CI blocks moderate dependency advisories without running lifecycle scripts
   assert.doesNotMatch(ci, /uses: [^\s]+@(?![a-f0-9]{40}(?:\s|$))/u);
 });
 
-test("CI and releases use the pinned Node.js version with one Windows quality job", () => {
+/** Returns one top-level job's YAML from the CI workflow. */
+function ciJob(name: string): string {
+  const jobs = ci.slice(ci.search(/^jobs:\s*$/mu));
+  const source = new RegExp(`^  ${name}:\\r?\\n(?:(?: {4,}.*)?\\r?\\n)*`, "mu").exec(jobs)?.[0];
+  assert.ok(source, `CI must define ${name}`);
+  return source;
+}
+
+test("CI and releases use the pinned Node.js version with one aggregated Windows quality check", () => {
   const nodeVersion = readFileSync(new URL("../.node-version", import.meta.url), "utf8").trim();
   assert.equal(nodeVersion, "26.13.0");
   assert.equal(packageJson.engines.node, `>=${nodeVersion} <27`);
@@ -358,33 +366,58 @@ test("CI and releases use the pinned Node.js version with one Windows quality jo
   }
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
-  const jobs = ci.slice(jobsStart);
-  assert.deepEqual([...jobs.matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
-    ["quality", "pi-latest", "package", "audit", "codeql"]);
-  const qualityJob = /^  quality:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(jobs)?.[0];
-  assert.ok(qualityJob);
-  assert.match(qualityJob, /^    name: Quality$/mu);
-  assert.match(qualityJob, /^    timeout-minutes: 25$/mu);
-  assert.doesNotMatch(qualityJob, /strategy:|matrix\./u);
-  assert.match(qualityJob, /name: test-failures-quality-\$\{\{ github\.run_attempt \}\}/u);
-  assert.match(qualityJob, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
-  assert.match(qualityJob, /^        run: npm run check$/mu);
-  assert.match(qualityJob, /^        run: npm test$/mu);
-  for (const job of ["quality", "pi-latest"]) {
-    const source = new RegExp(`^  ${job}:\\r?\\n(?:(?: {4,}.*)?\\r?\\n)*`, "mu").exec(ci)?.[0];
-    assert.ok(source);
+  assert.deepEqual([...ci.slice(jobsStart).matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
+    ["quality-checks", "quality-tests", "quality", "pi-latest", "package", "audit", "codeql"]);
+
+  // Branch protection requires "Quality"; it passes only when every quality job passed.
+  const quality = ciJob("quality");
+  assert.match(quality, /^    name: Quality$/mu);
+  assert.match(quality, /^    needs: \[quality-checks, quality-tests\]$/mu);
+  assert.match(quality, /^    if: always\(\)$/mu);
+  assert.match(quality, /test "\$\{\{ needs\.quality-checks\.result \}\}" = success/u);
+  assert.match(quality, /test "\$\{\{ needs\.quality-tests\.result \}\}" = success/u);
+
+  const checks = ciJob("quality-checks");
+  assert.match(checks, /^    name: Quality checks$/mu);
+  assert.doesNotMatch(checks, /strategy:|matrix\./u);
+  assert.match(checks, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
+  assert.match(checks, /^        run: npm run check$/mu);
+
+  // Shards run the npm test command with lower per-runner concurrency and a shard selector.
+  const tests = ciJob("quality-tests");
+  const shards = /^        shard: \[([\d, ]+)\]$/mu.exec(tests)?.[1].split(", ").map(Number);
+  assert.ok(shards);
+  assert.deepEqual(shards, shards.map((_, index) => index + 1));
+  assert.match(tests, /^      fail-fast: false$/mu);
+  assert.match(tests, new RegExp(`^    name: Quality tests \\(\\$\\{\\{ matrix\\.shard \\}\\}/${shards.length}\\)$`, "mu"));
+  assert.match(tests, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
+  const testScript = packageJson.scripts.test;
+  assert.match(testScript, /--test-concurrency=4 /u);
+  const shardCommand = testScript
+    .replace("--test-concurrency=4", "--test-concurrency=2")
+    .replace(/ (\S+)$/u, ` --test-shard=\${{ matrix.shard }}/${shards.length} $1`);
+  assert.ok(tests.split(/\r?\n/u).includes(`        run: ${shardCommand}`), `Shards must run: ${shardCommand}`);
+  assert.match(tests, /name: test-failures-quality-\$\{\{ matrix\.shard \}\}-\$\{\{ github\.run_attempt \}\}/u);
+
+  for (const [job, suite] of [["quality-checks", "--test-name-pattern=\"publication lifecycle\""], ["quality-tests", shardCommand], ["pi-latest", "run: npm test"]] as const) {
+    const source = ciJob(job);
     assert.match(source, /^    runs-on: windows-latest$/mu);
     assert.match(source, /- name: Upload test failure reports\s+if: failure\(\)\s+uses: actions\/upload-artifact@[a-f0-9]{40}/u);
     assert.match(source, /^          path: node_modules\/\.killeros-\*\/failure\.txt$/mu);
     assert.match(source, /^          include-hidden-files: true$/mu);
     assert.match(source, /^          retention-days: 7$/mu);
-    assert.ok(source.indexOf("Upload test failure reports") > source.indexOf("run: npm test"));
+    assert.ok(source.indexOf("Upload test failure reports") > source.indexOf(suite));
+  }
+  for (const job of ["quality-checks", "pi-latest"]) {
+    const source = ciJob(job);
     assert.match(source, /- name: Repeat Pi startup lifecycle without forced exit/u);
     assert.match(source, /node --test --experimental-strip-types test\/PiStartup\.test\.ts \|\| exit \$\?/u);
     for (const step of [
       "Repeat Pi startup lifecycle without forced exit",
       "Repeat installed CLI pilot without forced exit",
       "Test terminal pilot and fault controls without forced exit",
+      "Test Pi cancellation lifecycle without forced exit",
+      "Repeat saved tool restoration without forced exit",
     ]) {
       const start = source.indexOf(`      - name: ${step}`);
       assert.notEqual(start, -1);
@@ -407,10 +440,19 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   assert.match(readme, /Automatic pre-merge CI requires a pull request, including a draft pull request/u);
   assert.match(readme, /run the CI workflow manually/u);
   assert.match(readme, /Standalone pushes to `dev` do not start automatic CI/u);
-  const jobsStart = ci.search(/^jobs:\s*$/mu);
-  const compatibilityJob = /^  pi-latest:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
-  assert.ok(compatibilityJob);
+  const compatibilityJob = ciJob("pi-latest");
   assert.match(compatibilityJob, /^    name: Pi compatibility \(latest\)$/mu);
+  // Quality already tests the locked packages; repeat the runtime suites only for a newer Pi.
+  assert.match(compatibilityJob, /^        id: pi$/mu);
+  assert.match(compatibilityJob, /full-suite=/u);
+  assert.match(compatibilityJob, /package-lock\.json/u);
+  const guarded = compatibilityJob.slice(compatibilityJob.indexOf("- name: Type-check against matched Pi"));
+  const runtimeSteps = [...guarded.matchAll(/^      - name: (.+)\r?\n((?: {8,}.*\r?\n)*)/gmu)]
+    .filter(([, name]) => name !== "Type-check against matched Pi" && name !== "Upload test failure reports");
+  assert.ok(runtimeSteps.length >= 6);
+  for (const [, name, body] of runtimeSteps) {
+    assert.match(body, /^        if: steps\.pi\.outputs\.full-suite == 'true'$/mu, `${name} must run only for a newer Pi`);
+  }
   assert.doesNotMatch(compatibilityJob, /strategy:|matrix\./u);
   const target = /^          PI_TARGET: '([^']+)'$/mu.exec(compatibilityJob)?.[1];
   assert.equal(target, packageJson.peerDependencies["@earendil-works/pi-coding-agent"]);
@@ -445,11 +487,9 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   }
 });
 
-test("quality validates current metadata and tests the release-pinned npm lifecycle before the full suite", () => {
-  const qualityJob = /^  quality:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci)?.[0];
-  assert.ok(qualityJob);
+test("quality checks validate current metadata and test the release-pinned npm lifecycle", () => {
+  const qualityJob = ciJob("quality-checks");
   assert.match(qualityJob, /- name: Validate release metadata\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
-  assert.ok(qualityJob.indexOf("scripts/verify-release.ts") < qualityJob.indexOf("run: npm test"));
   assert.equal((qualityJob.match(/KILLEROS_RELEASE:/gu) ?? []).length, 1);
   assert.doesNotMatch(ci.split("jobs:")[0], /KILLEROS_RELEASE/u);
   assert.doesNotMatch(qualityJob.split("steps:")[0], /KILLEROS_RELEASE/u);
@@ -460,7 +500,6 @@ test("quality validates current metadata and tests the release-pinned npm lifecy
   assert.match(qualityJob, /- name: Provision publishing npm\s+run: npm install/u);
   assert.match(qualityJob, /npm install --prefix "\$RUNNER_TEMP\/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@/u);
   assert.match(qualityJob, /- name: Test publication lifecycle with publishing npm\s+env:\s+KILLEROS_TEST_NPM_CLI: \$\{\{ runner\.temp \}\}\/killeros-publishing-npm\/node_modules\/npm\/bin\/npm-cli\.js\s+run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test\/verify-release\.test\.ts/u);
-  assert.ok(qualityJob.indexOf('--test-name-pattern="publication lifecycle"') < qualityJob.indexOf("run: npm test"));
   assert.doesNotMatch(qualityJob, /npm install --global/u);
   const lifecycleTests = readFileSync(new URL("./verify-release.test.ts", import.meta.url), "utf8");
   assert.match(lifecycleTests, /test\("publication lifecycle /u, "The pinned-npm entry point must select a retained test");
@@ -484,9 +523,7 @@ test("publication boundary requires directory publication with lifecycle scripts
 });
 
 test("CI retains package smoke coverage until required-check migration", () => {
-  const jobsStart = ci.search(/^jobs:\s*$/mu);
-  const packageJob = /^  package:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
-  assert.ok(packageJob);
+  const packageJob = ciJob("package");
   assert.match(packageJob, /- name: Validate release metadata\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
   assert.ok(packageJob.indexOf("scripts/verify-release.ts") < packageJob.indexOf("npm pack"));
   assert.doesNotMatch(packageJob, /npm publish/u);
