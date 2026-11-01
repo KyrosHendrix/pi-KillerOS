@@ -498,9 +498,7 @@ export function registerFooter(
             ?? { left: essentialModel, right: contexts[2] ?? "" };
           const primaryRow = renderFooterRow(selected.left, selected.right, width);
           const changes = gitFileChanges ? formatGitFileChanges(gitFileChanges, theme) : "";
-          const branchLabel = branch
-            ? `${theme.fg("dim", branch)}${changes ? `${theme.fg("dim", " · ")}${changes}` : ""}`
-            : "";
+          const branchLabel = joinFooterParts([branch ? theme.fg("dim", branch) : "", changes], theme);
           const workspaceRight = goal || fullDirectory;
           const secondaryRow = footerRowFits(branchLabel, workspaceRight, width)
             ? renderFooterRow(branchLabel, workspaceRight, width)

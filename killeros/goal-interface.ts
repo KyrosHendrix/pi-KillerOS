@@ -7,6 +7,7 @@ import { formatTime, formatTokens } from "./display.ts";
 import { reportError } from "./errors.ts";
 import { parseGoalCommand, parseGoalObjectiveText } from "./goal-command.ts";
 import { GOAL_ENTRY_TYPE, GOAL_UPDATE_TOOL, isGoalModeSupported, isSavedSession, pauseGoalAfterFailure, persistGoalState, scheduleGoalContinuation, stopGoalRun, sumGoalTokens, syncGoalUpdateTool, transitionGoal, type GoalEntryData } from "./goal-runtime.ts";
+import { finalizeAutomaticCompaction } from "./goal-settlement.ts";
 import { checkpointPausedGoalState, createNewGoalState, DEFAULT_GOAL_MAX_TURNS, editGoalState, GOAL_EVIDENCE_LIMIT, GOAL_MAX_TURNS, goalElapsedMilliseconds, GOAL_VERSION, inferGoalVerification, normalizeGoalText, parseGoalState, recordGoalDecision, transitionGoalState, verifyGoalDeliverable } from "./goal-state.ts";
 import type { GoalRuntime, GoalState, GoalStatus } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -514,7 +515,10 @@ export function registerGoalInterface(
         } catch (error) {
           waitError = error;
         } finally {
-          if (runtime.continuationHeld === hold) runtime.continuationHeld = undefined;
+          if (runtime.continuationHeld === hold) {
+            runtime.continuationHeld = undefined;
+            finalizeAutomaticCompaction(pi, runtime, ctx);
+          }
         }
         if (!ownsEdit()) {
           // Settlement may have authorized a turn while this command held continuation.
@@ -586,63 +590,65 @@ export function registerGoalInterface(
         if (!replace || !ownsGoal()) return;
       }
 
+      // Recovery must not change the captured goal while replacement waits or infers file proof.
       const hold = Symbol();
       runtime.continuationHeld = hold;
-      let waitError: unknown;
       try {
-        await ctx.waitForIdle();
-      } catch (error) {
-        waitError = error;
-      } finally {
-        if (runtime.continuationHeld === hold) runtime.continuationHeld = undefined;
-      }
-      if (!ownsGoal()) {
-        // Settlement may have authorized a turn while this command held continuation.
-        if (runtime.lifecycleGeneration === generation) scheduleGoalContinuation(pi, runtime, ctx);
-        return;
-      }
-      if (waitError) {
-        reportError(ctx, "Goal could not wait for the active turn", waitError);
-        scheduleGoalContinuation(pi, runtime, ctx);
-        return;
-      }
-      let verification: Awaited<ReturnType<typeof inferGoalVerification>>;
-      try {
-        verification = await inferGoalVerification(objective, ctx.cwd);
-      } catch (error) {
+        let waitError: unknown;
+        try {
+          await ctx.waitForIdle();
+        } catch (error) {
+          waitError = error;
+        }
         if (!ownsGoal()) return;
-        if (!unfinished) {
-          reportError(ctx, "Goal could not be started", error);
-        } else {
-          reportError(ctx, "Goal could not be replaced", error);
-          scheduleGoalContinuation(pi, runtime, ctx);
+        if (waitError) {
+          reportError(ctx, "Goal could not wait for the active turn", waitError);
+          return;
         }
-        return;
-      }
-      if (!ownsGoal()) return;
-      try {
-        const state = createNewGoalState(objective, sumGoalTokens(ctx), verification, Date.now(), {
-          maxTurns: DEFAULT_GOAL_MAX_TURNS,
-        });
-        persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
-        // The replacement supersedes any recovery still parked after waitForIdle().
-        if (unfinished) runtime.automaticCompaction = undefined;
-        if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") {
-          ctx.ui.notify(`${unfinished ? "Goal replaced" : "Goal started"}. Each turn must record continue, complete, or a blocker decision before another turn starts.`, "info");
+        let verification: Awaited<ReturnType<typeof inferGoalVerification>>;
+        try {
+          verification = await inferGoalVerification(objective, ctx.cwd);
+        } catch (error) {
+          if (!ownsGoal()) return;
+          if (!unfinished) {
+            reportError(ctx, "Goal could not be started", error);
+          } else {
+            reportError(ctx, "Goal could not be replaced", error);
+          }
+          return;
         }
-      } catch (error) {
-        if (!unfinished) {
-          reportError(ctx, "Goal could not be started", error);
-        } else if (runtime.state?.status === "active") {
-          pauseGoalAfterFailure(
-            pi,
-            runtime,
-            ctx,
-            `Goal could not be replaced: ${error instanceof Error ? error.message : String(error)}`,
-            "Automatic continuation is stopped. Retry replacement after session storage recovers.",
-          );
-        } else {
-          reportError(ctx, "Goal could not be replaced", error);
+        if (!ownsGoal()) return;
+        try {
+          const state = createNewGoalState(objective, sumGoalTokens(ctx), verification, Date.now(), {
+            maxTurns: DEFAULT_GOAL_MAX_TURNS,
+          });
+          persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
+          // The replacement supersedes any recovery still parked after waitForIdle().
+          if (unfinished) runtime.automaticCompaction = undefined;
+          if (runtime.continuationHeld === hold) runtime.continuationHeld = undefined;
+          if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") {
+            ctx.ui.notify(`${unfinished ? "Goal replaced" : "Goal started"}. Each turn must record continue, complete, or a blocker decision before another turn starts.`, "info");
+          }
+        } catch (error) {
+          if (!unfinished) {
+            reportError(ctx, "Goal could not be started", error);
+          } else if (runtime.state?.status === "active") {
+            pauseGoalAfterFailure(
+              pi,
+              runtime,
+              ctx,
+              `Goal could not be replaced: ${error instanceof Error ? error.message : String(error)}`,
+              "Automatic continuation is stopped. Retry replacement after session storage recovers.",
+            );
+          } else {
+            reportError(ctx, "Goal could not be replaced", error);
+          }
+        }
+      } finally {
+        if (runtime.continuationHeld === hold) {
+          runtime.continuationHeld = undefined;
+          finalizeAutomaticCompaction(pi, runtime, ctx);
+          if (runtime.lifecycleGeneration === generation) scheduleGoalContinuation(pi, runtime, ctx);
         }
       }
   };

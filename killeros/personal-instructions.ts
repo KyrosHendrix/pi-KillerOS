@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { sameFileIdentity } from "./file-identity.ts";
 
 const PERSONAL_INSTRUCTIONS_FILE = "AGENTS.local.md";
 const PERSONAL_INSTRUCTIONS_LIMIT = 32 * 1024;
@@ -10,12 +11,11 @@ const PERSONAL_INSTRUCTIONS_LIMIT = 32 * 1024;
 function readBoundedText(filePath: string, limit = PERSONAL_INSTRUCTIONS_LIMIT): string | undefined {
   let descriptor: number | undefined;
   try {
-    const pathStat = lstatSync(filePath);
-    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1) return undefined;
+    const pathStat = lstatSync(filePath, { bigint: true });
+    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n) return undefined;
     descriptor = openSync(filePath, "r");
-    const openedStat = fstatSync(descriptor);
-    if (!openedStat.isFile() || openedStat.nlink !== 1
-      || openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) return undefined;
+    const openedStat = fstatSync(descriptor, { bigint: true });
+    if (!openedStat.isFile() || openedStat.nlink !== 1n || !sameFileIdentity(openedStat, pathStat)) return undefined;
     const buffer = Buffer.alloc(limit + 1);
     const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
     const decoder = new StringDecoder("utf8");
@@ -63,12 +63,11 @@ function readImportedText(filePath: string): string | undefined {
       if (lstatSync(current).isSymbolicLink()) return undefined;
     }
 
-    const pathStat = lstatSync(requestedPath);
-    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1) return undefined;
+    const pathStat = lstatSync(requestedPath, { bigint: true });
+    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n) return undefined;
     descriptor = openSync(requestedPath, "r");
-    const openedStat = fstatSync(descriptor);
-    if (!openedStat.isFile() || openedStat.nlink !== 1
-      || openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) return undefined;
+    const openedStat = fstatSync(descriptor, { bigint: true });
+    if (!openedStat.isFile() || openedStat.nlink !== 1n || !sameFileIdentity(openedStat, pathStat)) return undefined;
 
     const buffer = Buffer.alloc(PERSONAL_INSTRUCTIONS_LIMIT + 1);
     const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);

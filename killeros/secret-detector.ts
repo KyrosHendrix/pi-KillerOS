@@ -15,5 +15,8 @@ const SECRET_PATTERNS = [
 
 /** Detects high-confidence credential material without returning the matched value. */
 export function containsLikelySecret(text: string): boolean {
-  return SECRET_PATTERNS.some((pattern) => pattern.test(text));
+  // Inspect Markdown wrappers without changing the document that callers validate or save.
+  const assignments = text.replace(/^[\t ]*(?:>[\t ]*)+/gmu, "")
+    .replace(/^[\t ]*\|[\t ]*([^|\r\n]+)\|[\t ]*([^|\r\n]+)\|/gmu, "$1: $2");
+  return SECRET_PATTERNS.some((pattern) => pattern.test(text) || pattern.test(assignments));
 }

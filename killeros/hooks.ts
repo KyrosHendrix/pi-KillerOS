@@ -8,6 +8,7 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { errorMessage, reportError } from "./errors.ts";
+import { sameFileIdentity } from "./file-identity.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 type KillerosHookEvent = "tool_call" | "tool_result" | "agent_settled";
@@ -71,21 +72,21 @@ function readHookConfig(configPath: string, projectRoot: string): string {
     throw new Error("Hook config must be stored in the real project .pi directory");
   }
 
-  const linkedFile = lstatSync(configPath);
-  if (!linkedFile.isFile() || linkedFile.nlink !== 1) {
+  const linkedFile = lstatSync(configPath, { bigint: true });
+  if (!linkedFile.isFile() || linkedFile.nlink !== 1n) {
     throw new Error("Hook config must be a regular, non-linked file");
   }
-  if (linkedFile.size > HOOK_CONFIG_LIMIT) {
+  if (linkedFile.size > BigInt(HOOK_CONFIG_LIMIT)) {
     throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
   }
 
   const descriptor = openSync(configPath, "r");
   try {
-    const openedFile = fstatSync(descriptor);
-    if (!openedFile.isFile() || openedFile.nlink !== 1) {
+    const openedFile = fstatSync(descriptor, { bigint: true });
+    if (!openedFile.isFile() || openedFile.nlink !== 1n) {
       throw new Error("Hook config must be a regular, non-linked file");
     }
-    if (openedFile.dev !== linkedFile.dev || openedFile.ino !== linkedFile.ino) {
+    if (!sameFileIdentity(openedFile, linkedFile)) {
       throw new Error("Hook config changed while being opened");
     }
 

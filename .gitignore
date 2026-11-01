@@ -1,6 +1,7 @@
 node_modules/
 docs/
 .pi/
+/.agents/
 *.tgz
 *.log
 /.audit/

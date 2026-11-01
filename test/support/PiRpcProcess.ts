@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { harvestJitiCache, seedJitiCache } from "./JitiCache.ts";
 
 export type PiRpcRecord = Record<string, unknown>;
 
@@ -9,7 +10,7 @@ type ProcessExit = { code: number | null; signal: NodeJS.Signals | null };
 type RpcWaiter = {
   after: number;
   predicate: (record: PiRpcRecord) => boolean;
-  resolve: (record: PiRpcRecord) => void;
+  resolve: (record: StoredRecord) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   signal?: AbortSignal;
@@ -38,12 +39,14 @@ export class PiRpcProcess {
   private stdoutBuffer = "";
   private stderr = "";
   private sequence = 0;
+  private acknowledgedSequence = 0;
   private nextCommandId = 0;
   private failure: Error | undefined;
   private exit: ProcessExit | undefined;
   private closePromise: Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> | undefined;
 
   constructor(options: { cliPath: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) {
+    seedJitiCache(options.env);
     this.child = spawn(process.execPath, [options.cliPath, ...options.args], {
       cwd: options.cwd,
       env: options.env,
@@ -57,6 +60,7 @@ export class PiRpcProcess {
 
     this.closed = new Promise((resolve) => {
       this.child.once("close", (code, signal) => {
+        harvestJitiCache(options.env);
         this.exit = { code, signal };
         this.rejectWaiters(new Error(`Pi CLI exited (${code ?? "unknown"}/${signal ?? "no signal"})`));
         resolve(this.exit);
@@ -74,18 +78,54 @@ export class PiRpcProcess {
     return this.sequence;
   }
 
+  get retainedRecordCount(): number {
+    return this.records.length;
+  }
+
+  get firstSequence(): number {
+    return this.records[0]?.sequence ?? this.sequence + 1;
+  }
+
+  /** Release evidence only after the caller has finished all observations through this cursor. */
+  acknowledge(sequence: number): void {
+    if (!Number.isSafeInteger(sequence) || sequence < this.acknowledgedSequence || sequence > this.sequence) {
+      throw new Error(`Invalid Pi RPC acknowledgement ${sequence}`);
+    }
+    this.acknowledgedSequence = sequence;
+    while (this.records[0] && this.records[0].sequence <= sequence) this.records.shift();
+    for (const waiter of this.waiters) {
+      if (waiter.after < sequence) {
+        this.removeWaiter(waiter);
+        waiter.reject(this.cursorGap(waiter.after));
+      }
+    }
+  }
+
+  private cursorGap(after: number): Error {
+    return new Error(`Pi RPC cursor gap: after ${after}, acknowledged through ${this.acknowledgedSequence}`);
+  }
+
   diagnostics(): string {
     const records = this.records.slice(-32).map(({ sequence, value }) => ({
       sequence,
       record: JSON.stringify(value).slice(0, 2_000),
     }));
-    return JSON.stringify({
+    const snapshot = {
       pid: this.child.pid,
       exit: this.exit,
-      failure: this.failure?.message,
-      stderr: this.stderr,
+      failure: this.failure?.message.slice(0, 1_000),
+      stderr: this.stderr.slice(-4_000),
+      acknowledgedSequence: this.acknowledgedSequence,
+      currentSequence: this.sequence,
+      retainedRecordCount: this.records.length,
+      truncated: this.stderr.length > 4_000 || (this.failure?.message.length ?? 0) > 1_000,
       recentRecords: records,
-    }, null, 2).slice(-MAX_DIAGNOSTIC_CHARS);
+    };
+    while (JSON.stringify(snapshot, null, 2).length > MAX_DIAGNOSTIC_CHARS && records.length > 0) {
+      records.shift();
+      snapshot.truncated = true;
+    }
+    return JSON.stringify(snapshot, null, 2);
   }
 
   async send(value: PiRpcRecord): Promise<void> {
@@ -127,15 +167,25 @@ export class PiRpcProcess {
     predicate: (record: PiRpcRecord) => boolean,
     options: { after?: number; timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<PiRpcRecord> {
+    return (await this.waitForRecord(predicate, options)).value;
+  }
+
+  /** Observe the exact matching sequence so long workflows can acknowledge completed batches. */
+  async waitForRecord(
+    predicate: (record: PiRpcRecord) => boolean,
+    options: { after?: number; timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<StoredRecord> {
     if (options.signal?.aborted) throw options.signal.reason instanceof Error ? options.signal.reason : new Error("Pi CLI wait was cancelled");
     const after = options.after ?? 0;
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error(`Invalid Pi RPC cursor ${after}`);
+    if (after < this.acknowledgedSequence) throw this.cursorGap(after);
     for (const stored of this.records) {
-      if (stored.sequence > after && predicate(stored.value)) return stored.value;
+      if (stored.sequence > after && predicate(stored.value)) return stored;
     }
     if (this.failure) throw new Error(`${this.failure.message}\n${this.diagnostics()}`, { cause: this.failure });
     if (this.exit) throw new Error(`Pi CLI exited before the expected RPC record\n${this.diagnostics()}`);
 
-    return await new Promise<PiRpcRecord>((resolve, reject) => {
+    return await new Promise<StoredRecord>((resolve, reject) => {
       const waiter: RpcWaiter = {
         after,
         predicate,
@@ -158,7 +208,7 @@ export class PiRpcProcess {
     });
   }
 
-  async close(timeoutMs = 5_000): Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> {
+  async close(timeoutMs = 15_000): Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> {
     this.closePromise ??= this.closeOwned(timeoutMs);
     return await this.closePromise;
   }
@@ -249,7 +299,7 @@ export class PiRpcProcess {
       try {
         if (waiter.predicate(value)) {
           this.removeWaiter(waiter);
-          waiter.resolve(value);
+          waiter.resolve(stored);
         }
       } catch (error) {
         this.removeWaiter(waiter);

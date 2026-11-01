@@ -1,13 +1,19 @@
 {
   "name": "killeros",
   "version": "3.0.8",
-  "description": "Windows TUI, goals, and workflow automation for the Pi coding agent",
+  "description": "A Windows terminal UI for the Pi coding agent with session handoff, configurable auto-compaction, OpenAI fast mode, and persistent goals.",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension",
+    "pi-coding-agent",
     "coding-agent",
-    "tui"
+    "ai-coding",
+    "tui",
+    "terminal-ui",
+    "context-management",
+    "session-management",
+    "windows"
   ],
   "author": "KyrosHendrix",
   "license": "MIT",
@@ -30,14 +36,14 @@
     "win32"
   ],
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=26.13.0 <27"
   },
   "scripts": {
     "benchmark:change-receipt": "node --test --experimental-strip-types test/ChangeReceipt.bench.ts",
     "check": "tsc --noEmit && eslint .",
     "lint": "eslint .",
     "prepublishOnly": "node --experimental-strip-types scripts/verify-release.ts",
-    "test": "node --test --test-force-exit --experimental-strip-types test/*.test.*"
+    "test": "node --test --test-concurrency=4 --test-force-exit --experimental-strip-types test/*.test.*"
   },
   "pi": {
     "extensions": [
@@ -48,15 +54,15 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=1.3.0 <2",
-    "@earendil-works/pi-coding-agent": ">=1.3.0 <2",
-    "@earendil-works/pi-tui": ">=1.3.0 <2",
+    "@earendil-works/pi-ai": ">=1.4.0 <2",
+    "@earendil-works/pi-coding-agent": ">=1.4.0 <2",
+    "@earendil-works/pi-tui": ">=1.4.0 <2",
     "typebox": ">=1.1.38 <2"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.3.0",
-    "@earendil-works/pi-coding-agent": "1.3.0",
-    "@earendil-works/pi-tui": "1.3.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
     "@types/node": "24.12.4",
     "@xterm/headless": "6.0.0",
     "eslint": "^10.9.1",
@@ -66,6 +72,8 @@
     "zigpty": "0.2.1"
   },
   "overrides": {
-    "brace-expansion": "5.0.12"
+    "brace-expansion": "5.0.12",
+    "undici": "8.12.3",
+    "minimatch": "11.0.1"
   }
 }

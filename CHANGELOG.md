@@ -4,6 +4,24 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Changed
+
+- Require Node.js 26.13.0 or later within Node 26. Development, CI, and releases now use the pinned 26.13.0 version instead of a Node-version matrix.
+- Raised the minimum supported Pi version to 1.4.0 and aligned the exact development pins, lockfile, and CI compatibility targets.
+- Removed the redundant session-reset alias. Use Pi's native `/new` command.
+
+### Fixed
+
+- Preserve the completion-sound title indicator when Pi resets the terminal title after session replacement or reload.
+- Allow the startup header's asynchronous Git lookup five seconds to finish so brief system load does not hide the branch for the session.
+- Keep confirmed goal replacement pending through compaction so recovery cannot resume the old objective or invalidate the replacement.
+- Keep the footer's last successful file-change counts visible when a transient Git failure makes the branch label unavailable.
+- Apply file proof to directly quoted `Create` goals, including the README example and edited objectives, so a missing deliverable cannot complete the goal.
+- Include the current saved goal in handoff generation and reject summaries that omit or change its objective or status. The child receives context only, without an active goal.
+- Reject stale handoff results after committed navigation, including navigation away and back, goal changes, reload, and session replacement. Cancelled and no-op navigation still preserve valid work.
+- Reject recognized password assignments in Markdown blockquotes and tables before creating a handoff session, without echoing credential values.
+- Detect replaced goal deliverables, hook configuration, and personal instruction files by exact 64-bit file identity. Numeric file IDs from Node's default stats can collide for distinct files on Windows, so a swapped file could pass as the original.
+
 ## [3.0.8] - 2026-10-18
 
 ### Added
@@ -601,7 +619,6 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 - Prevented `/init` from reading Git-ignored files, known secrets, private keys, linked or non-regular files, other guidance, dependencies, and files outside its frozen evidence map.
 - Protected root `AGENTS.md` from concurrent replacement and reported incompatible policy conflicts without writing.
-- Made `/clear` confirm before aborting active work, wait for settlement, and then start the new session.
 - Preserved explicit Responses API verbosity and reasoning-summary settings while applying concise defaults only to absent fields.
 - Cancelled lifecycle hook process trees with bounded cleanup when Pi aborts the parent request.
 - Kept `/init` middleware from freezing shared tool input and preserved custom editors installed by other extensions.
@@ -719,7 +736,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 ### New Features
 
 - Claude Code-style `/init` that builds a bounded repository snapshot and generates a concise root `AGENTS.md` with one controlled write.
-- Codex-style `/goal` with durable branch-scoped state, automatic one-turn continuation, pause/resume/edit/clear controls, and explicit model-reported completion or blocking.
+- Codex-style `/goal` with durable branch-scoped state, automatic one-turn continuation, pause, resume, edit, and clear controls, and explicit model-reported completion or blocking.
 - Trusted `AGENTS.local.md` personal guidance and project lifecycle hooks for tool-call, tool-result, and settled-agent events.
 
 ### Added

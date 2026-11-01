@@ -50,7 +50,7 @@ const STARTUP_TIPS = [
   "Run /goal <objective> to keep long-running work moving across turns.",
   "Run /handoff [focus] to continue work in a fresh linked session.",
   "Run /codex-fast to toggle priority requests for Codex models.",
-  "Run /clear to start a fresh session after confirmation.",
+  "Run /new to start a fresh session.",
   "Ask the agent to show a short choice list when you need to decide.",
 ] as const;
 
@@ -84,7 +84,7 @@ export function resolveGitBranch(cwd: string, trusted = true): Promise<string | 
         encoding: "utf8",
         env: passiveGitEnv(),
         maxBuffer: 64 * 1024,
-        timeout: 500,
+        timeout: 5_000,
         windowsHide: true,
       },
       (error, stdout) => {
@@ -133,14 +133,16 @@ class PiStartupHeader {
   private readonly ctx: ExtensionContext;
   private readonly tip: string;
   private readonly tui: TUI;
+  private readonly refreshTitle: ((ctx: ExtensionContext) => void) | undefined;
   private branch: string | undefined;
   private disposed = false;
 
-  constructor(pi: ExtensionAPI, ctx: ExtensionContext, tip: string, tui: TUI) {
+  constructor(pi: ExtensionAPI, ctx: ExtensionContext, tip: string, tui: TUI, refreshTitle?: (ctx: ExtensionContext) => void) {
     this.pi = pi;
     this.ctx = ctx;
     this.tip = tip;
     this.tui = tui;
+    this.refreshTitle = refreshTitle;
     void resolveGitBranch(ctx.cwd, ctx.isProjectTrusted()).then((branch) => {
       if (this.disposed) return;
       this.branch = branch;
@@ -154,6 +156,8 @@ class PiStartupHeader {
   }
 
   render(width: number): string[] {
+    // Pi resets the terminal title after session binding, before the next render.
+    if (!this.disposed) this.refreshTitle?.(this.ctx);
     if (width <= 0) return [];
     const theme = this.ctx.ui.theme;
     if (width < 28) return [truncateToWidth(theme.fg("text", theme.bold("KillerOS")), width, "")];
@@ -381,6 +385,7 @@ let killerosEditorFactory: ReturnType<ExtensionContext["ui"]["getEditorComponent
 export function registerShellUi(
   pi: ExtensionAPI,
   commandResolver: SlashCommandResolver = createSlashCommandResolver(pi),
+  refreshTitle?: (ctx: ExtensionContext) => void,
 ): void {
   let activeHeader: PiStartupHeader | undefined;
 
@@ -391,7 +396,7 @@ export function registerShellUi(
       const startupTip = nextStartupTip();
       ctx.ui.setHeader((tui) => {
         activeHeader?.dispose();
-        activeHeader = new PiStartupHeader(pi, ctx, startupTip, tui);
+        activeHeader = new PiStartupHeader(pi, ctx, startupTip, tui, refreshTitle);
         return activeHeader;
       });
       ctx.ui.setWorkingIndicator({

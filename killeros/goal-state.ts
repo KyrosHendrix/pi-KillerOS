@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import type { Stats } from "node:fs";
+import type { BigIntStats, Stats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { sameFileIdentity } from "./file-identity.ts";
 import type { GoalBlockerAudit, GoalContinueReport, GoalFileBaseline, GoalFileVerification, GoalPendingDecision, GoalState, GoalStateCommon, GoalStatus, GoalTurnDecision, GoalTurnPhase } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
@@ -299,25 +300,36 @@ export function parseGoalState(value: unknown): GoalState | undefined {
   }
 }
 
-function sameFile(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev
-    && left.ino === right.ino
+function sameFile(left: BigIntStats, right: BigIntStats): boolean {
+  return sameFileIdentity(left, right)
     && left.size === right.size
-    && left.mtimeMs === right.mtimeMs;
+    && left.mtimeNs === right.mtimeNs;
 }
 
-async function hashFile(handle: FileHandle, inspected: Stats): Promise<string> {
+async function snapshotHandle(handle: FileHandle): Promise<BigIntStats> {
+  return handle.stat({ bigint: true });
+}
+
+/** Matches numeric Stats.mtimeMs without taking a second filesystem snapshot. */
+function legacyMtimeMs(snapshot: BigIntStats): number {
+  const seconds = snapshot.mtimeNs / 1_000_000_000n;
+  const nanoseconds = snapshot.mtimeNs % 1_000_000_000n;
+  return Number(seconds) * 1_000 + Number(nanoseconds) / 1_000_000;
+}
+
+async function hashFile(handle: FileHandle, inspected: BigIntStats): Promise<string> {
   const hash = createHash("sha256");
   const buffer = Buffer.allocUnsafe(FILE_HASH_CHUNK_SIZE);
+  const size = Number(inspected.size);
   let position = 0;
-  while (position < inspected.size) {
-    const length = Math.min(buffer.length, inspected.size - position);
+  while (position < size) {
+    const length = Math.min(buffer.length, size - position);
     const { bytesRead } = await handle.read(buffer, 0, length, position);
     if (bytesRead === 0) throw new Error("Goal deliverable changed while it was being inspected");
     hash.update(buffer.subarray(0, bytesRead));
     position += bytesRead;
   }
-  if (!sameFile(inspected, await handle.stat())) {
+  if (!sameFile(inspected, await snapshotHandle(handle))) {
     throw new Error("Goal deliverable changed while it was being inspected");
   }
   return hash.digest("hex");
@@ -328,20 +340,21 @@ export async function captureGoalFileBaseline(
   filePath: string,
   openFile: OpenGoalFile = openGoalFile,
 ): Promise<GoalFileBaseline> {
-  let inspected: Stats;
+  let inspected: BigIntStats;
   try {
-    inspected = await lstat(filePath);
+    inspected = await lstat(filePath, { bigint: true });
   } catch (error) {
     if (isUnknownRecord(error) && error.code === "ENOENT") return { exists: false };
     throw error;
   }
-  const baseline = { exists: true as const, size: inspected.size, mtimeMs: inspected.mtimeMs };
-  if (!inspected.isFile() || inspected.size > FILE_HASH_LIMIT) return baseline;
+  const size = Number(inspected.size);
+  const baseline = { exists: true as const, size, mtimeMs: legacyMtimeMs(inspected) };
+  if (!inspected.isFile() || size > FILE_HASH_LIMIT) return baseline;
 
   let handle: FileHandle | undefined;
   try {
     handle = await openFile(filePath);
-    if (!sameFile(inspected, await handle.stat())) {
+    if (!sameFile(inspected, await snapshotHandle(handle))) {
       throw new Error("Goal deliverable changed while it was being inspected");
     }
     return { ...baseline, contentHash: await hashFile(handle, inspected) };
@@ -446,7 +459,7 @@ export async function inferGoalVerification(objective: string, cwd: string): Pro
       quoted: quoted !== undefined,
     });
   }
-  const direct = /\b(?:update|edit|fix|refactor|migrate)\s+(`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)')/giu;
+  const direct = /\b(?:create|update|edit|fix|refactor|migrate)\s+(`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)')/giu;
   for (const match of objective.matchAll(direct)) {
     const quoted = match[2] ?? match[3] ?? match[4];
     if (quoted !== undefined) candidates.push({ raw: quoted, quoted: true });

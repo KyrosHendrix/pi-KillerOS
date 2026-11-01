@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -9,6 +9,7 @@ import { ESLint } from "eslint";
 type PackageJson = {
   version: string;
   os: string[];
+  engines: Record<string, string>;
   scripts: Record<string, string>;
   dependencies?: Record<string, unknown>;
   peerDependencies: Record<string, string>;
@@ -32,6 +33,7 @@ function isPackageJson(value: unknown): value is PackageJson {
   return isUnknownRecord(value)
     && typeof value.version === "string"
     && Array.isArray(value.os) && value.os.every((os) => typeof os === "string")
+    && isStringRecord(value.engines)
     && isStringRecord(value.scripts)
     && (value.dependencies === undefined || isUnknownRecord(value.dependencies))
     && isStringRecord(value.peerDependencies)
@@ -90,12 +92,69 @@ function repositoryContractFiles(): string[] {
 
 test("repository contract scan includes untracked non-ignored files", () => {
   const probePath = path.join(repositoryRoot, `.killeros-contract-probe-${process.pid}.txt`);
-  writeFileSync(probePath, "contract probe", { flag: "wx" });
+  const privateDirectory = path.join(repositoryRoot, ".pi");
+  const privateProbePath = path.join(privateDirectory, `.killeros-private-probe-${process.pid}.txt`);
+  const privateDirectoryExisted = existsSync(privateDirectory);
+  let privateDirectoryCreated = false;
+  let probeCreated = false;
+  let privateProbeCreated = false;
+  let operationFailed = false;
+  let operationError: unknown;
+  const cleanupErrors: unknown[] = [];
+
   try {
-    assert.ok(repositoryContractFiles().includes(probePath));
+    writeFileSync(probePath, "contract probe", { flag: "wx" });
+    probeCreated = true;
+    if (!privateDirectoryExisted) {
+      mkdirSync(privateDirectory);
+      privateDirectoryCreated = true;
+    }
+    writeFileSync(privateProbePath, "private contract probe", { flag: "wx" });
+    privateProbeCreated = true;
+
+    const scannedFiles = repositoryContractFiles();
+    assert.ok(scannedFiles.includes(path.join(repositoryRoot, "test", "RepositoryContracts.test.ts")));
+    assert.ok(scannedFiles.includes(probePath));
+    assert.ok(!scannedFiles.includes(privateProbePath));
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
   } finally {
-    unlinkSync(probePath);
+    if (probeCreated) {
+      try {
+        unlinkSync(probePath);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (privateProbeCreated) {
+      try {
+        unlinkSync(privateProbePath);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (privateDirectoryCreated && existsSync(privateDirectory)) {
+      try {
+        rmdirSync(privateDirectory);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
   }
+
+  if (operationFailed) {
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([operationError, ...cleanupErrors], "Repository scan and cleanup both failed");
+    }
+    throw operationError;
+  }
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "Repository scan cleanup failed");
+
+  assert.equal(existsSync(probePath), false);
+  assert.equal(existsSync(privateProbePath), false);
+  assert.equal(existsSync(privateDirectory), privateDirectoryExisted);
 });
 
 test("repository contains no retired feature references", () => {
@@ -125,6 +184,13 @@ test("real Pi fixtures use bounded cleanup for transient Windows directory locks
   const contracts = readFileSync(new URL("./PiExtensionContract.test.ts", import.meta.url), "utf8");
   assert.doesNotMatch(contracts, /\brmSync\(/u);
   assert.match(contracts, /removeDirectoryEventually/u);
+
+  const privateRunPath = /compact-implementation-[a-f\d]/u;
+  const testRoot = `${path.join(repositoryRoot, "test")}${path.sep}`;
+  const privateRunPathSources = repositoryContractFiles()
+    .filter((file) => file.startsWith(testRoot) && file.endsWith(".ts"))
+    .filter((file) => privateRunPath.test(readFileSync(file, "utf8")));
+  assert.deepEqual(privateRunPathSources, []);
 });
 
 test("peer ranges require the pinned Pi minimums and reject older and next-major versions", () => {
@@ -159,7 +225,7 @@ test("peer ranges require the pinned Pi minimums and reject older and next-major
   const minimum = packageJson.devDependencies["@earendil-works/pi-coding-agent"];
   const ceiling = Number(minimum.split(".")[0]) + 1;
   assert.ok(readme.includes(`Pi ${minimum} or later below ${ceiling}.0.0`));
-  assert.match(readme, /Users on older Pi versions must upgrade/u);
+  assert.match(readme, /Users on older Node or Pi versions must upgrade/u);
 });
 
 test("unreleased notes state only the current Pi minimum", () => {
@@ -199,11 +265,35 @@ test("lockfile matches the exact Pi development pins without retired experimenta
 });
 
 test("locked brace expansion bounds deeply nested patterns", () => {
-  execFileSync(process.execPath, ["--input-type=module", "--eval", `
+  const output = execFileSync(process.execPath, ["--max-old-space-size=64", "--input-type=module", "--eval", `
     import assert from "node:assert/strict";
+    import { readFileSync } from "node:fs";
     import { expand } from "brace-expansion";
-    assert.doesNotThrow(() => expand("{".repeat(10_000) + "a,b" + "}".repeat(10_000)));
-  `], { cwd: repositoryRoot, timeout: 5_000, stdio: "pipe" });
+    import braceExpansion from "brace-expansion/package.json" with { type: "json" };
+
+    const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+    assert.equal(braceExpansion.version, lock.packages["node_modules/brace-expansion"].version);
+
+    const shallow = expand("{a,b}");
+    assert.deepEqual(shallow, ["a", "b"]);
+
+    const deepPattern = "{".repeat(10_000) + "a,b" + "}".repeat(10_000);
+    const deep = expand(deepPattern);
+    assert.ok(deep.length <= 2);
+    assert.ok(deep.every((value) => value.length <= deepPattern.length));
+    assert.ok(deep.reduce((length, value) => length + value.length, 0) <= deepPattern.length);
+    process.stdout.write("ok");
+  `], {
+    cwd: repositoryRoot,
+    env: {
+      PATH: path.dirname(process.execPath),
+      SystemRoot: process.env.SystemRoot,
+    },
+    maxBuffer: 1_024,
+    timeout: 5_000,
+    stdio: "pipe",
+  }).toString();
+  assert.equal(output, "ok");
 });
 
 test("goal state and question UI stay separate from host wiring", () => {
@@ -234,7 +324,8 @@ test("public compaction documentation states the configurable default", () => {
   assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
 });
 
-test("lint ignores private Pi artifacts and docs without excluding repository code", async () => {
+// Catalog ID: runtime.system-eslint-ignore.
+test("ESLint configuration ignores private artifacts without excluding repository code", async () => {
   const eslint = new ESLint({ cwd: repositoryRoot });
   assert.equal(await eslint.isPathIgnored(".pi/verification/release-prompt.test.mjs"), true);
   assert.equal(await eslint.isPathIgnored("docs/killeros-launch/film.mjs"), true);
@@ -245,7 +336,6 @@ test("lint ignores private Pi artifacts and docs without excluding repository co
 
 test("CI blocks moderate dependency advisories without running lifecycle scripts", () => {
   assert.match(ci, /npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund/u);
-  assert.match(ci, /fail-on-severity: moderate/u);
   assert.match(ci, /npm ci --ignore-scripts/u);
   for (const workflow of [ci, release]) {
     const runners = [...workflow.matchAll(/^    runs-on: (.+)$/gmu)].map((match) => match[1]);
@@ -256,37 +346,78 @@ test("CI blocks moderate dependency advisories without running lifecycle scripts
   assert.doesNotMatch(ci, /uses: [^\s]+@(?![a-f0-9]{40}(?:\s|$))/u);
 });
 
-test("CI runs the full quality suite on Windows at the Node.js floor and current LTS", () => {
+/** Returns one top-level job's YAML from the CI workflow. */
+function ciJob(name: string): string {
+  const jobs = ci.slice(ci.search(/^jobs:\s*$/mu));
+  const source = new RegExp(`^  ${name}:\\r?\\n(?:(?: {4,}.*)?\\r?\\n)*`, "mu").exec(jobs)?.[0];
+  assert.ok(source, `CI must define ${name}`);
+  return source;
+}
+
+test("CI and releases use the pinned Node.js version with one aggregated Windows quality check", () => {
+  const nodeVersion = readFileSync(new URL("../.node-version", import.meta.url), "utf8").trim();
+  assert.equal(nodeVersion, "26.13.0");
+  assert.equal(packageJson.engines.node, `>=${nodeVersion} <27`);
+  for (const workflow of [ci, release]) {
+    const versions = [...workflow.matchAll(/^          node-version: (.+)$/gmu)].map((match) => match[1]);
+    assert.ok(versions.length > 0);
+    assert.ok(versions.every((version) => version === `'${nodeVersion}'`));
+    assert.doesNotMatch(workflow, /matrix\.node-version/u);
+  }
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
-  const jobs = ci.slice(jobsStart);
-  assert.deepEqual([...jobs.matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
-    ["quality", "pi-latest", "package", "audit", "dependency-review", "codeql"]);
-  const qualityJob = /^  quality:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(jobs)?.[0];
-  assert.ok(qualityJob);
-  assert.match(qualityJob, /^    name: Quality \(Node \$\{\{ matrix\.node-version \}\}\)$/mu);
-  assert.match(qualityJob, /^    timeout-minutes: 15$/mu);
-  assert.match(qualityJob, /node-version:\s*\n\s*- '22\.19\.0'\s*\n\s*- 'lts\/\*'/u);
-  assert.match(qualityJob, /^          node-version: \$\{\{ matrix\.node-version \}\}$/mu);
-  assert.match(qualityJob, /name: test-failures-quality-\$\{\{ strategy\.job-index \}\}-/u);
-  assert.match(qualityJob, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
-  assert.match(qualityJob, /^        run: npm run check$/mu);
-  assert.match(qualityJob, /^        run: npm test$/mu);
-  for (const job of ["quality", "pi-latest"]) {
-    const source = new RegExp(`^  ${job}:\\r?\\n(?:(?: {4,}.*)?\\r?\\n)*`, "mu").exec(ci)?.[0];
-    assert.ok(source);
+  assert.deepEqual([...ci.slice(jobsStart).matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
+    ["quality-checks", "quality-tests", "quality", "pi-latest", "package", "audit", "codeql"]);
+
+  // Branch protection requires "Quality"; it passes only when every quality job passed.
+  const quality = ciJob("quality");
+  assert.match(quality, /^    name: Quality$/mu);
+  assert.match(quality, /^    needs: \[quality-checks, quality-tests\]$/mu);
+  assert.match(quality, /^    if: always\(\)$/mu);
+  assert.match(quality, /test "\$\{\{ needs\.quality-checks\.result \}\}" = success/u);
+  assert.match(quality, /test "\$\{\{ needs\.quality-tests\.result \}\}" = success/u);
+
+  const checks = ciJob("quality-checks");
+  assert.match(checks, /^    name: Quality checks$/mu);
+  assert.doesNotMatch(checks, /strategy:|matrix\./u);
+  assert.match(checks, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
+  assert.match(checks, /^        run: npm run check$/mu);
+
+  // Shards run the npm test command with lower per-runner concurrency and a shard selector.
+  const tests = ciJob("quality-tests");
+  const shards = /^        shard: \[([\d, ]+)\]$/mu.exec(tests)?.[1].split(", ").map(Number);
+  assert.ok(shards);
+  assert.deepEqual(shards, shards.map((_, index) => index + 1));
+  assert.match(tests, /^      fail-fast: false$/mu);
+  assert.match(tests, new RegExp(`^    name: Quality tests \\(\\$\\{\\{ matrix\\.shard \\}\\}/${shards.length}\\)$`, "mu"));
+  assert.match(tests, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
+  const testScript = packageJson.scripts.test;
+  assert.match(testScript, /--test-concurrency=4 /u);
+  const shardCommand = testScript
+    .replace("--test-concurrency=4", "--test-concurrency=2")
+    .replace(/ (\S+)$/u, ` --test-shard=\${{ matrix.shard }}/${shards.length} $1`);
+  assert.ok(tests.split(/\r?\n/u).includes(`        run: ${shardCommand}`), `Shards must run: ${shardCommand}`);
+  assert.match(tests, /name: test-failures-quality-\$\{\{ matrix\.shard \}\}-\$\{\{ github\.run_attempt \}\}/u);
+
+  for (const [job, suite] of [["quality-checks", "--test-name-pattern=\"publication lifecycle\""], ["quality-tests", shardCommand], ["pi-latest", "run: npm test"]] as const) {
+    const source = ciJob(job);
     assert.match(source, /^    runs-on: windows-latest$/mu);
     assert.match(source, /- name: Upload test failure reports\s+if: failure\(\)\s+uses: actions\/upload-artifact@[a-f0-9]{40}/u);
     assert.match(source, /^          path: node_modules\/\.killeros-\*\/failure\.txt$/mu);
     assert.match(source, /^          include-hidden-files: true$/mu);
     assert.match(source, /^          retention-days: 7$/mu);
-    assert.ok(source.indexOf("Upload test failure reports") > source.indexOf("run: npm test"));
+    assert.ok(source.indexOf("Upload test failure reports") > source.indexOf(suite));
+  }
+  for (const job of ["quality-checks", "pi-latest"]) {
+    const source = ciJob(job);
     assert.match(source, /- name: Repeat Pi startup lifecycle without forced exit/u);
     assert.match(source, /node --test --experimental-strip-types test\/PiStartup\.test\.ts \|\| exit \$\?/u);
     for (const step of [
       "Repeat Pi startup lifecycle without forced exit",
       "Repeat installed CLI pilot without forced exit",
       "Test terminal pilot and fault controls without forced exit",
+      "Test Pi cancellation lifecycle without forced exit",
+      "Repeat saved tool restoration without forced exit",
     ]) {
       const start = source.indexOf(`      - name: ${step}`);
       assert.notEqual(start, -1);
@@ -299,7 +430,7 @@ test("CI runs the full quality suite on Windows at the Node.js floor and current
   }
 });
 
-test("CI checks minimum and latest Pi with matched runtime packages and stable required-check names", () => {
+test("CI checks the newest peer-range Pi with matched runtime packages and a stable required-check name", () => {
   const triggers = ci.slice(ci.indexOf("\non:"), ci.indexOf("\n# Keep the default token"));
   assert.match(triggers, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n  pull_request:/u);
   assert.match(triggers, /pull_request:\s*\n\s*types:\s*\n\s*- opened\s*\n\s*- synchronize\s*\n\s*- reopened\s*\n\s*- ready_for_review\s*\n  schedule:/u);
@@ -309,17 +440,22 @@ test("CI checks minimum and latest Pi with matched runtime packages and stable r
   assert.match(readme, /Automatic pre-merge CI requires a pull request, including a draft pull request/u);
   assert.match(readme, /run the CI workflow manually/u);
   assert.match(readme, /Standalone pushes to `dev` do not start automatic CI/u);
-  const jobsStart = ci.search(/^jobs:\s*$/mu);
-  const compatibilityJob = /^  pi-latest:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
-  assert.ok(compatibilityJob);
-  assert.match(compatibilityJob, /^    name: Pi compatibility \(\$\{\{ matrix\.pi-channel \}\}\)$/mu);
-  const targets = [...compatibilityJob.matchAll(/- pi-channel: (minimum|latest)\s*\n\s*pi-target: '([^']+)'/gu)]
-    .map((match) => [match[1], match[2]]);
-  assert.deepEqual(targets, [
-    ["minimum", packageJson.devDependencies["@earendil-works/pi-coding-agent"]],
-    ["latest", packageJson.peerDependencies["@earendil-works/pi-coding-agent"]],
-  ]);
-  assert.match(compatibilityJob, /PI_TARGET: \$\{\{ matrix\.pi-target \}\}/u);
+  const compatibilityJob = ciJob("pi-latest");
+  assert.match(compatibilityJob, /^    name: Pi compatibility \(latest\)$/mu);
+  // Quality already tests the locked packages; repeat the runtime suites only for a newer Pi.
+  assert.match(compatibilityJob, /^        id: pi$/mu);
+  assert.match(compatibilityJob, /full-suite=/u);
+  assert.match(compatibilityJob, /package-lock\.json/u);
+  const guarded = compatibilityJob.slice(compatibilityJob.indexOf("- name: Type-check against matched Pi"));
+  const runtimeSteps = [...guarded.matchAll(/^      - name: (.+)\r?\n((?: {8,}.*\r?\n)*)/gmu)]
+    .filter(([, name]) => name !== "Type-check against matched Pi" && name !== "Upload test failure reports");
+  assert.ok(runtimeSteps.length >= 6);
+  for (const [, name, body] of runtimeSteps) {
+    assert.match(body, /^        if: steps\.pi\.outputs\.full-suite == 'true'$/mu, `${name} must run only for a newer Pi`);
+  }
+  assert.doesNotMatch(compatibilityJob, /strategy:|matrix\./u);
+  const target = /^          PI_TARGET: '([^']+)'$/mu.exec(compatibilityJob)?.[1];
+  assert.equal(target, packageJson.peerDependencies["@earendil-works/pi-coding-agent"]);
   assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version/u);
   assert.match(compatibilityJob, /npm ci --ignore-scripts --no-audit --no-fund/u);
   assert.match(compatibilityJob, /^        run: npm run check$/mu);
@@ -336,18 +472,24 @@ test("CI checks minimum and latest Pi with matched runtime packages and stable r
   assert.doesNotMatch(ci, /@earendil-works\/pi-(?:server|client|protocol)/u);
   assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
   assert.match(ci, /--package-lock=false/u);
-  const cancellation = /--test-name-pattern="([^"]*user cancellation[^"]*)"/u.exec(compatibilityJob)?.[1];
+  const cancellationStep = compatibilityJob.slice(compatibilityJob.indexOf("- name: Test Pi cancellation lifecycle without forced exit"));
+  const cancellation = /--test-name-pattern="([^"]+)"/u.exec(cancellationStep)?.[1];
   assert.ok(cancellation);
-  const contracts = readFileSync(new URL("./PiExtensionContract.test.ts", import.meta.url), "utf8");
-  assert.ok(contracts.includes(`test("${cancellation}"`), "CI must select the retained cancellation scenario");
+  for (const [file, title] of [
+    ["Goals.e2e.test.ts", "continuation dispatch respects idle, pending, and cancellation gates"],
+    ["runtime-native-provider.e2e.test.ts", "active faux provider retries preserve goal ownership until settlement"],
+    ["CompactionTrigger.e2e.test.ts", "Cancelled ordinary and goal compaction cannot recover after an aborted settlement"],
+  ] as const) {
+    assert.ok(cancellation.split("|").includes(title), `CI must select ${title}`);
+    assert.ok(cancellationStep.includes(`test/${file}`));
+    assert.ok(readFileSync(new URL(`./${file}`, import.meta.url), "utf8").includes(`test("${title}"`),
+      "CI must select retained native cancellation scenarios");
+  }
 });
 
-test("Node-floor quality validates current metadata and tests the release-pinned npm lifecycle before the full suite", () => {
-  const qualityJob = /^  quality:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci)?.[0];
-  assert.ok(qualityJob);
-  assert.match(qualityJob, /node-version:\s*\n\s*- '22\.19\.0'\s*\n\s*- 'lts\/\*'/u);
-  assert.match(qualityJob, /- name: Validate release metadata\s+if: matrix\.node-version == '22\.19\.0'\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
-  assert.ok(qualityJob.indexOf("scripts/verify-release.ts") < qualityJob.indexOf("run: npm test"));
+test("quality checks validate current metadata and test the release-pinned npm lifecycle", () => {
+  const qualityJob = ciJob("quality-checks");
+  assert.match(qualityJob, /- name: Validate release metadata\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
   assert.equal((qualityJob.match(/KILLEROS_RELEASE:/gu) ?? []).length, 1);
   assert.doesNotMatch(ci.split("jobs:")[0], /KILLEROS_RELEASE/u);
   assert.doesNotMatch(qualityJob.split("steps:")[0], /KILLEROS_RELEASE/u);
@@ -355,10 +497,9 @@ test("Node-floor quality validates current metadata and tests the release-pinned
   assert.ok(publishingNpm);
   assert.match(release, /npm prefix --global >> "\$GITHUB_PATH"/u);
   assert.ok(qualityJob.includes(`npm@${publishingNpm}`));
-  assert.match(qualityJob, /- name: Provision publishing npm\s+if: matrix\.node-version == '22\.19\.0'/u);
+  assert.match(qualityJob, /- name: Provision publishing npm\s+run: npm install/u);
   assert.match(qualityJob, /npm install --prefix "\$RUNNER_TEMP\/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@/u);
-  assert.match(qualityJob, /- name: Test publication lifecycle with publishing npm\s+if: matrix\.node-version == '22\.19\.0'\s+env:\s+KILLEROS_TEST_NPM_CLI: \$\{\{ runner\.temp \}\}\/killeros-publishing-npm\/node_modules\/npm\/bin\/npm-cli\.js\s+run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test\/verify-release\.test\.ts/u);
-  assert.ok(qualityJob.indexOf('--test-name-pattern="publication lifecycle"') < qualityJob.indexOf("run: npm test"));
+  assert.match(qualityJob, /- name: Test publication lifecycle with publishing npm\s+env:\s+KILLEROS_TEST_NPM_CLI: \$\{\{ runner\.temp \}\}\/killeros-publishing-npm\/node_modules\/npm\/bin\/npm-cli\.js\s+run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test\/verify-release\.test\.ts/u);
   assert.doesNotMatch(qualityJob, /npm install --global/u);
   const lifecycleTests = readFileSync(new URL("./verify-release.test.ts", import.meta.url), "utf8");
   assert.match(lifecycleTests, /test\("publication lifecycle /u, "The pinned-npm entry point must select a retained test");
@@ -382,9 +523,7 @@ test("publication boundary requires directory publication with lifecycle scripts
 });
 
 test("CI retains package smoke coverage until required-check migration", () => {
-  const jobsStart = ci.search(/^jobs:\s*$/mu);
-  const packageJob = /^  package:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
-  assert.ok(packageJob);
+  const packageJob = ciJob("package");
   assert.match(packageJob, /- name: Validate release metadata\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
   assert.ok(packageJob.indexOf("scripts/verify-release.ts") < packageJob.indexOf("npm pack"));
   assert.doesNotMatch(packageJob, /npm publish/u);
@@ -434,14 +573,15 @@ test("public README documents current requirements and commands", () => {
   assert.doesNotMatch(readme, /supports Windows and Linux|on Linux and Windows/u);
   const escapedVersion = packageJson.version.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   assert.match(readme, new RegExp(`@v${escapedVersion}`, "u"));
-  assert.match(readme, /Node\.js\s+`?22\.19\.0`?(?:\+| or later)/u);
+  const nodeVersion = readFileSync(new URL("../.node-version", import.meta.url), "utf8").trim();
+  assert.ok(readme.includes(`Node.js ${nodeVersion} or later within Node 26`));
   assert.match(readme, /\/goal <objective>/u);
   assert.match(readme, /^\/goal edit/mu);
   assert.match(readme, /^\/goal pause/mu);
   assert.match(readme, /^\/goal resume/mu);
   assert.match(readme, /^\/goal clear/mu);
   assert.doesNotMatch(readme, /\/goal (start|check|checks|limit|history)/u);
-  for (const command of ["codex-fast", "notification", "handoff", "clear", "exit"] as const) {
+  for (const command of ["codex-fast", "notification", "handoff", "new", "exit"] as const) {
     assert.match(readme, new RegExp(`^/${command}(?:\\s|$)`, "mu"));
   }
   assert.doesNotMatch(readme, /^\/init(?:\s|$)/mu);

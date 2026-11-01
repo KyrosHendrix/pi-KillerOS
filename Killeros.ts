@@ -36,7 +36,8 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   if (process.platform !== "win32") throw new Error("KillerOS supports Windows only.");
   const goalRuntime = createGoalRuntime();
   const commandResolver = createSlashCommandResolver(pi);
-  registerShellUi(pi, commandResolver);
+  let refreshTitle: ReturnType<typeof registerCompletionNotifications> | undefined;
+  registerShellUi(pi, commandResolver, (ctx) => refreshTitle?.(ctx));
   registerGoalInterface(pi, goalRuntime);
   registerGoalRuntime(pi, goalRuntime);
   registerPersonalInstructions(pi);
@@ -52,5 +53,5 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   const goalCompaction = registerGoalSettlement(pi, goalRuntime);
   registerAutoCompaction(pi, { goal: goalCompaction, settingsStore, onPreferenceChange: updateFooterPreference });
   registerRequestActivity(pi);
-  registerCompletionNotifications(pi, options.completionNotifications);
+  refreshTitle = registerCompletionNotifications(pi, options.completionNotifications);
 }

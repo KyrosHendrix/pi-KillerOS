@@ -1,6 +1,8 @@
 import { createHook, type AsyncHook } from "node:async_hooks";
+import { release } from "node:os";
 import xterm from "@xterm/headless";
 import { hasNative, spawn, type IPty } from "zigpty";
+import { harvestJitiCache, seedJitiCache } from "./JitiCache.ts";
 
 type TerminalCloseResult = { code: number; forced: boolean; failure?: string };
 
@@ -16,19 +18,30 @@ export class PiTerminalProcess {
   private raw = Buffer.alloc(0);
   private exitCode: number | undefined;
   private parsedSequence = 0;
+  private parsedBells = 0;
+  private parsedTitles = 0;
+  private readonly parsedTitleHistory: string[] = [];
   private pendingWrites = 0;
   private readonly nativeResources = new Set<number>();
   private nativeResourcesCreated = 0;
   private readonly nativeCleanupHook: AsyncHook;
   private closing: Promise<TerminalCloseResult> | undefined;
 
-  constructor(options: { file: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; cols?: number; rows?: number }) {
+  constructor(options: { file: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; cols?: number; rows?: number; onTitle?: (title: string) => void; onBell?: () => void }) {
     if (!hasNative) throw new Error("A native PTY binding is required; pipe fallback is not terminal coverage");
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(options.env)) if (value !== undefined) env[key] = value;
     const cols = options.cols ?? 100;
     const rows = options.rows ?? 30;
-    this.terminal = new xterm.Terminal({ cols, rows, allowProposedApi: true, scrollback: 200 });
+    this.terminal = new xterm.Terminal({ cols, rows, allowProposedApi: true, scrollback: 200,
+      windowsPty: { backend: "conpty", buildNumber: Number(release().split(".")[2]) } });
+    this.terminal.onBell(() => { this.parsedBells++; options.onBell?.(); });
+    this.terminal.onTitleChange((title) => {
+      this.parsedTitles++;
+      this.parsedTitleHistory.push(title);
+      if (this.parsedTitleHistory.length > 32) this.parsedTitleHistory.shift();
+      options.onTitle?.(title);
+    });
     let spawning = true;
     this.nativeCleanupHook = createHook({
       init: (id, type) => {
@@ -39,6 +52,7 @@ export class PiTerminalProcess {
         for (const notify of this.changed) notify();
       },
     }).enable();
+    seedJitiCache(options.env);
     try {
       this.pty = spawn(options.file, options.args, { cwd: options.cwd, env, cols, rows, name: "xterm-256color", encoding: null });
     } catch (error) {
@@ -58,12 +72,16 @@ export class PiTerminalProcess {
       });
     });
     this.pty.onExit(({ exitCode }) => {
+      harvestJitiCache(options.env);
       this.exitCode = exitCode;
       for (const notify of this.changed) notify();
     });
   }
 
   get sequence(): number { return this.parsedSequence; }
+  get bellCount(): number { return this.parsedBells; }
+  get titleCount(): number { return this.parsedTitles; }
+  get titles(): readonly string[] { return this.parsedTitleHistory; }
 
   screen(): string {
     const buffer = this.terminal.buffer.active;
@@ -83,10 +101,20 @@ export class PiTerminalProcess {
     this.pty.write(data);
   }
 
+  /** Paste short lines without autocomplete, then observe echo before sending a separate Enter key. */
+  async submitEditorText(text: string, options: { signal: AbortSignal }): Promise<void> {
+    const after = this.sequence;
+    this.write(text.length <= 1_000 && !text.includes("\n") ? `\x1b[200~${text}\x1b[201~` : text);
+    await this.waitForScreen((screen) => screen.split("\n").some((line) => line.includes("❯") && line.includes(text)),
+      { signal: options.signal, after });
+    this.write("\x1b[13u");
+  }
+
   resize(cols: number, rows: number): void {
     this.terminal.resize(cols, rows);
     this.pty.resize(cols, rows);
   }
+
 
   async waitForScreen(predicate: (screen: string) => boolean, options: { signal: AbortSignal; after?: number; timeoutMs?: number }): Promise<string> {
     if (options.signal.aborted) throw new Error("Terminal screen wait cancelled", { cause: options.signal.reason });
@@ -100,7 +128,9 @@ export class PiTerminalProcess {
       const check = (): void => {
         try {
           const screen = this.screen();
-          if (this.sequence > (options.after ?? -1) && predicate(screen)) { clean(); resolve(screen); }
+          // ConPTY can split a synchronized frame across callbacks. Do not act on its partial screen.
+          if (this.pendingWrites === 0 && !this.terminal.modes.synchronizedOutputMode
+            && this.sequence > (options.after ?? -1) && predicate(screen)) { clean(); resolve(screen); }
           else if (this.exitCode !== undefined && this.pendingWrites === 0) { clean(); reject(new Error(`Terminal exited before expected screen: ${this.diagnostics()}`)); }
         } catch (error) { clean(); reject(error instanceof Error ? error : new Error(String(error))); }
       };
@@ -114,8 +144,8 @@ export class PiTerminalProcess {
     });
   }
 
-  async close(): Promise<TerminalCloseResult> {
-    this.closing ??= this.closeOwned();
+  async close(options: { force?: boolean } = {}): Promise<TerminalCloseResult> {
+    this.closing ??= this.closeOwned(options.force === true);
     return await this.closing;
   }
 
@@ -127,7 +157,7 @@ export class PiTerminalProcess {
     } finally { if (timer) clearTimeout(timer); }
   }
 
-  private async closeOwned(): Promise<TerminalCloseResult> {
+  private async closeOwned(force: boolean): Promise<TerminalCloseResult> {
     let writeFailure: unknown;
     let killFailure: unknown;
     const closeFailures: unknown[] = [];
@@ -139,14 +169,21 @@ export class PiTerminalProcess {
       catch (error) { closeFailures.push(error); }
     };
     try {
-      // Pi's public clear and exit actions also handle an unfinished editor draft.
+      // Normal cleanup sends Pi's interrupt and exit keys; fault scenarios can require immediate termination.
       if (this.exitCode === undefined) {
-        try { this.pty.write("\x03\x04"); }
-        catch (error) { writeFailure = error; }
+        if (force) {
+          try { this.pty.kill("SIGKILL"); }
+          catch (error) { killFailure = error; }
+        } else {
+          try { this.pty.write("\x03\x04"); }
+          catch (error) { writeFailure = error; }
+        }
       }
-      let code = await this.waitForExit(5_000);
-      const forced = code === undefined && this.pty.exitCode === null;
-      if (code === undefined && !forced) code = this.pty.exitCode ?? undefined;
+      // Windows may finish Pi's shutdown output before the native process and PTY close.
+      // Keep a bounded grace period before classifying that cleanup as forced.
+      let code = await this.waitForExit(force ? 5_000 : 15_000);
+      const forced = force || (code === undefined && this.pty.exitCode === null);
+      if (code === undefined && this.pty.exitCode !== null) code = this.pty.exitCode ?? undefined;
       if (forced) {
         // Check the native handle's state before either escalation or close can act on it.
         if (this.pty.exitCode === null) {
