@@ -336,7 +336,6 @@ test("ESLint configuration ignores private artifacts without excluding repositor
 
 test("CI blocks moderate dependency advisories without running lifecycle scripts", () => {
   assert.match(ci, /npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund/u);
-  assert.match(ci, /fail-on-severity: moderate/u);
   assert.match(ci, /npm ci --ignore-scripts/u);
   for (const workflow of [ci, release]) {
     const runners = [...workflow.matchAll(/^    runs-on: (.+)$/gmu)].map((match) => match[1]);
@@ -361,7 +360,7 @@ test("CI and releases use the pinned Node.js version with one Windows quality jo
   assert.notEqual(jobsStart, -1);
   const jobs = ci.slice(jobsStart);
   assert.deepEqual([...jobs.matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
-    ["quality", "pi-latest", "package", "audit", "dependency-review", "codeql"]);
+    ["quality", "pi-latest", "package", "audit", "codeql"]);
   const qualityJob = /^  quality:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(jobs)?.[0];
   assert.ok(qualityJob);
   assert.match(qualityJob, /^    name: Quality$/mu);
@@ -398,7 +397,7 @@ test("CI and releases use the pinned Node.js version with one Windows quality jo
   }
 });
 
-test("CI checks minimum and latest Pi with matched runtime packages and stable required-check names", () => {
+test("CI checks the newest peer-range Pi with matched runtime packages and a stable required-check name", () => {
   const triggers = ci.slice(ci.indexOf("\non:"), ci.indexOf("\n# Keep the default token"));
   assert.match(triggers, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n  pull_request:/u);
   assert.match(triggers, /pull_request:\s*\n\s*types:\s*\n\s*- opened\s*\n\s*- synchronize\s*\n\s*- reopened\s*\n\s*- ready_for_review\s*\n  schedule:/u);
@@ -411,14 +410,10 @@ test("CI checks minimum and latest Pi with matched runtime packages and stable r
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   const compatibilityJob = /^  pi-latest:\r?\n(?:(?: {4,}.*)?\r?\n)*/mu.exec(ci.slice(jobsStart))?.[0];
   assert.ok(compatibilityJob);
-  assert.match(compatibilityJob, /^    name: Pi compatibility \(\$\{\{ matrix\.pi-channel \}\}\)$/mu);
-  const targets = [...compatibilityJob.matchAll(/- pi-channel: (minimum|latest)\s*\n\s*pi-target: '([^']+)'/gu)]
-    .map((match) => [match[1], match[2]]);
-  assert.deepEqual(targets, [
-    ["minimum", packageJson.devDependencies["@earendil-works/pi-coding-agent"]],
-    ["latest", packageJson.peerDependencies["@earendil-works/pi-coding-agent"]],
-  ]);
-  assert.match(compatibilityJob, /PI_TARGET: \$\{\{ matrix\.pi-target \}\}/u);
+  assert.match(compatibilityJob, /^    name: Pi compatibility \(latest\)$/mu);
+  assert.doesNotMatch(compatibilityJob, /strategy:|matrix\./u);
+  const target = /^          PI_TARGET: '([^']+)'$/mu.exec(compatibilityJob)?.[1];
+  assert.equal(target, packageJson.peerDependencies["@earendil-works/pi-coding-agent"]);
   assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version/u);
   assert.match(compatibilityJob, /npm ci --ignore-scripts --no-audit --no-fund/u);
   assert.match(compatibilityJob, /^        run: npm run check$/mu);
