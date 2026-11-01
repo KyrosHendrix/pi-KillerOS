@@ -1590,6 +1590,9 @@ test("native receipt timeouts stay quiet and denied timing saves recover", { tim
   const pipe = `\\\\.\\pipe\\killeros-receipt-timeout-${process.pid}-${Date.now()}`;
   const server = createPipeServer(socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
   const marker = path.join(family.directory, "timeout-exit.json");
+  // While this flag exists, receipt Git deadlines fire after 1 s instead of 5 s; the requested delay is recorded.
+  const shortenDeadline = path.join(family.directory, "shorten-receipt-deadline");
+  const requestedDeadline = path.join(family.directory, "requested-receipt-deadline.txt");
   const extension = path.join(family.directory, "external-faults.mjs");
   const session = path.join(family.directory, "session.jsonl");
   let denied = false;
@@ -1619,10 +1622,18 @@ cp.spawn=function(file,args,...rest){
  });
  return child;
 };syncBuiltinESMExports();
+const originalSetTimeout=globalThis.setTimeout;
+globalThis.setTimeout=function(callback,delay,...args){
+ if(fs.existsSync(${JSON.stringify(shortenDeadline)})&&new Error().stack?.includes("change-receipt")){
+  fs.writeFileSync(${JSON.stringify(requestedDeadline)},String(delay));
+  return originalSetTimeout.call(this,callback,1000,...args);
+ }
+ return originalSetTimeout.call(this,callback,delay,...args);
+};
 export default function(pi){
  let prompt="";pi.on("before_agent_start",event=>{prompt=event.prompt;});
   pi.on("agent_before_settle",()=>{if(prompt==="Deny timing save")fs.chmodSync(${JSON.stringify(session)},0o444);});
- pi.on("session_shutdown",()=>{cp.spawn=original;syncBuiltinESMExports();});
+ pi.on("session_shutdown",()=>{cp.spawn=original;globalThis.setTimeout=originalSetTimeout;syncBuiltinESMExports();});
 }`);
     const port = await provider.listen();
     writeProviderConfig(family.agent, port);
@@ -1643,10 +1654,15 @@ export default function(pi){
     const history = runTurns({ family, provider, signal: t.signal, extensions: [extension], turns: [
       { label: "Timeout actual Git read", step: { kind: "text", content: "Timeout response." },
         doneWhen: screen => screen.includes("Timeout response."),
-        mutate: () => { git(family.project, "config", "include.path", pipe.replaceAll("\\", "/")); },
+        mutate: () => {
+          git(family.project, "config", "include.path", pipe.replaceAll("\\", "/"));
+          writeFileSync(shortenDeadline, "");
+        },
         verify: receipt => {
           assert.deepEqual(receipt.changes, { state: "unavailable", reason: "timeout" });
           assert.ok(connections > 0, "Git really opened the owned blocked config pipe");
+          assert.equal(readFileSync(requestedDeadline, "utf8"), "5000", "KillerOS requests a five-second Git deadline");
+          rmSync(shortenDeadline);
           writeFileSync(config, originalConfig);
         } },
       { label: "Recover after Git timeout", step: { kind: "text", content: "Timeout recovery response." },

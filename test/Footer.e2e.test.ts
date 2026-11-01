@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
@@ -971,6 +972,19 @@ async function waitForFooterTrace(
   });
 }
 
+/**
+ * Waits until every Pi-launched Git child has exited and none starts for `quietMs`.
+ * Startup can queue a second scan after Pi's branch discovery, and nothing in the trace announces it in advance.
+ */
+async function waitForFooterGitQuiet(trace: string, signal: AbortSignal, quietMs = 1_000): Promise<FooterTraceEvent[]> {
+  for (;;) {
+    const settled = await waitForFooterTrace(trace, (events) => footerGitStarts(events).length === footerGitExits(events).length, signal);
+    await delay(quietMs, undefined, { signal });
+    const later = readFooterTrace(trace);
+    if (footerGitStarts(later).length === footerGitStarts(settled).length) return later;
+  }
+}
+
 function footerTraceSettled(events: readonly FooterTraceEvent[], minimumScans: number): boolean {
   const starts = footerGitStarts(events);
   const exits = footerGitExits(events);
@@ -1682,27 +1696,11 @@ test("Footer Git refresh timing, watch bursts, and file-count rendering stay bou
     // Pi may queue a second startup scan when its branch discovery completes.
     await terminal.waitForScreen((screen) => screen.split("\n").some((line) => line.includes("directory:") && line.includes("main")),
       { signal: t.signal });
-    const fallbackStarted = footerRootScanStartedAt(events, 0);
-    screens.idleBefore = terminal.screen();
-    events = await waitForFooterTrace(family.trace, (sample) => {
-      const roots = footerRootScanStarts(sample);
-      const last = roots.at(-1);
-      const starts = footerGitStarts(sample);
-      const lastRootIndex = last === undefined ? -1 : starts.lastIndexOf(last);
-      return last?.time !== undefined && Date.parse(last.time) - fallbackStarted >= 25_000
-        && starts.length - lastRootIndex >= 8
-        && footerTraceSettled(sample, roots.length);
-    }, t.signal, 40_000);
-    const fallbackElapsed = footerRootScanStartedAt(events, footerRootScanCount(events) - 1) - fallbackStarted;
+    // A burst that overlaps a queued startup scan would measure that scan instead of its own debounce.
+    events = await waitForFooterGitQuiet(family.trace, t.signal);
     maximumActiveChildren = Math.max(maximumActiveChildren, footerMaximumActiveGitChildren(events));
-    assert.ok(fallbackElapsed >= 25_000 && fallbackElapsed <= 45_000,
-      `The idle fallback scan arrived after ${fallbackElapsed} ms`);
-    screens.idleFallback = terminal.screen();
-      const withoutClock = (screen: string): string => screen.replace(/ +(?:\d+h )?(?:\d+m )?\d+s(?= · \$)/gu, " <elapsed>");
-      assert.equal(withoutClock(screens.idleFallback), withoutClock(screens.idleBefore),
-        "An idle fallback scan preserves the rendered terminal apart from its session clock");
-    assert.equal(footerRenderedGitLine(screens.idleFallback), "");
 
+    // FooterGitSchedule.test.ts checks the debounce, five-second throttle, and 30-second idle fallback on mocked timers.
     const burstBefore = events;
     const burstSequence = terminal.sequence;
     const firstMutationAt = Date.now();
@@ -1725,29 +1723,17 @@ test("Footer Git refresh timing, watch bursts, and file-count rendering stay bou
     assert.match(burstOutput, /\x1b\[[0-9;]*m\+2/u);
     assert.match(burstOutput, /\x1b\[[0-9;]*m−1/u);
 
-    const sustainedBefore = events;
-    const sustainedStarted = Date.now();
-    for (let index = 0; index < 13; index += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 400));
-      writeFileSync(modified, "changed\n", "utf8");
-      const sample = readFooterTrace(family.trace);
-      maximumActiveChildren = Math.max(maximumActiveChildren, footerMaximumActiveGitChildren(sample));
-    }
-    const sustainedElapsed = Date.now() - sustainedStarted;
-    assert.ok(sustainedElapsed >= 5_000 && sustainedElapsed < 12_000, `Sustained activity lasted ${sustainedElapsed} ms`);
-    const sustainedRootScans = footerRootScanCount(readFooterTrace(family.trace)) - footerRootScanCount(sustainedBefore);
-    assert.ok(sustainedRootScans >= 1 && sustainedRootScans <= 2,
-      `Sustained changes started ${sustainedRootScans} scans in ${sustainedElapsed} ms`);
-    events = await waitForFooterGitScan(family.trace, sustainedBefore, t.signal,
-      { outcome: "success", repository: "present", committed: true, count: 2, timeoutMs: 15_000 });
+    // Rewriting identical content rescans with unchanged results, as an idle fallback scan does.
+    const withoutClock = (screen: string): string => screen.replace(/ +(?:\d+h )?(?:\d+m )?\d+s(?= · \$)/gu, " <elapsed>");
+    const unchangedBefore = events;
+    screens.unchangedBefore = terminal.screen();
+    writeFileSync(modified, "changed\n", "utf8");
+    events = await waitForFooterGitScan(family.trace, unchangedBefore, t.signal,
+      { outcome: "success", repository: "present", committed: true, timeoutMs: 15_000 });
     maximumActiveChildren = Math.max(maximumActiveChildren, footerMaximumActiveGitChildren(events));
-    const firstSustainedScan = footerRootScanStartedAt(events, footerRootScanCount(sustainedBefore));
-    const secondSustainedScan = footerRootScanStartedAt(events, footerRootScanCount(sustainedBefore) + 1);
-    const scanSpacing = secondSustainedScan - firstSustainedScan;
-    assert.ok(scanSpacing >= 4_750 && scanSpacing < 8_000,
-      `Sustained scans were ${scanSpacing} ms apart across the five-second throttle`);
-    assert.equal(footerRootScanCount(events) - footerRootScanCount(sustainedBefore), 2,
-      "The five-second watch throttle bounds sustained changes to two scans");
+    screens.unchangedRescan = terminal.screen();
+    assert.equal(withoutClock(screens.unchangedRescan), withoutClock(screens.unchangedBefore),
+      "A rescan with unchanged results preserves the rendered terminal apart from its session clock");
     assert.ok(maximumActiveChildren <= 6,
       `Only one six-command metadata scan may be active at once; observed ${maximumActiveChildren} Git children`);
 

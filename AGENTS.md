@@ -90,8 +90,19 @@ Before finishing a code change:
 
 ```bash
 npm run check
-npm test
+npm run test:changed
 ```
+
+`test:changed` runs the test files that cover the branch's changes since `origin/main`, including uncommitted and untracked files. Pass `-- --dry-run` to see the selection. When you add a module or a test file, map it in `scripts/test-changed.ts`; `test/test-changed.test.ts` fails until you do.
+
+CI owns the full suite. Do not run `npm test` locally unless asked: it takes about 10 minutes on a laptop, and a pull request's CI runs it in about 5. CI tests the pushed commit, not uncommitted changes. Push only when you're allowed to. To run CI on a pushed branch without a pull request:
+
+```bash
+run=$(gh workflow run ci.yml --ref <branch> | grep -oE 'runs/[0-9]+' | cut -d/ -f2)
+gh run watch "$run" --exit-status
+```
+
+A test that fails in CI and passes on its own is a bug, not bad luck. Do not rerun CI until it turns green. Read the failure report, rerun the failing file locally, and fix the cause in the test, its driver, or KillerOS. If you can't fix it in the current change, open an issue with the failure report and say so in the pull request. Do not add retries, longer timeouts, or skips to make a flaky test pass.
 
 `check` runs TypeScript without emitting files, then ESLint. Tests execute `.ts` files directly. There is no separate build step. Repository contracts scan untracked, non-ignored files too.
 

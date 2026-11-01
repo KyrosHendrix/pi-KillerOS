@@ -1460,24 +1460,42 @@ for (const mode of ["tui", "rpc"] as const) {
 }
 
 // Catalog ID: runtime.tool-codemode-contracts.
-test("real Pi enforces tool exclusions and CLI modifiers", { timeout: 60_000 }, async (t: TestContext) => {
+const exclusions = ["killeros_*", "killeros_goal_update", "question", "allowlist"] as const;
+
+/** Runs one bounded part of the tool-contract family and checks the Pi launches and provider requests it owns. */
+async function runToolContracts(t: TestContext, scenarioId: string, expected: Omit<TestCounts, "otherChildren">,
+  work: (results: JsonRecord[]) => Promise<void>): Promise<void> {
   const results: JsonRecord[] = [];
   const before = { ...testCounts };
-  await checkVisibleErrorControl(t.signal);
-  for (const mode of ["tui", "rpc"] as const) {
-    for (const excluded of ["killeros_*", "killeros_goal_update", "question", "allowlist"] as const) {
-      results.push(await runExclusionFamily(mode, excluded, t.signal));
-    }
-  }
-  results.push(await runValidLoadout("minus-goal-tool", t.signal));
-  results.push(await runValidLoadout("wildcard-allowlist", t.signal));
-  results.push(await runValidLoadout("plus-codemode", t.signal));
-  results.push(await assertInvalidCliModifier("read,+codemode", "tool names cannot be mixed with +name or -name entries"));
-  results.push(await assertInvalidCliModifier("+codemode,-killeros_*", "+name and -name entries take exact tool names, not patterns"));
-
+  await work(results);
   const processCounts = { pi: testCounts.pi - before.pi,
     providerRequests: testCounts.providerRequests - before.providerRequests,
     otherChildren: testCounts.otherChildren - before.otherChildren };
-  assert.deepEqual(processCounts, { pi: 14, providerRequests: 40, otherChildren: 0 });
-  t.diagnostic(JSON.stringify({ scenarioId: "runtime.tool-codemode-contracts", results, processCounts }));
+  assert.deepEqual(processCounts, { ...expected, otherChildren: 0 });
+  t.diagnostic(JSON.stringify({ scenarioId, results, processCounts }));
+}
+
+// The family is split so each test's sequential Pi launches fit its timeout on slower machines.
+// Together the three parts launch 14 Pi processes and make 40 provider requests.
+test("real Pi enforces tool exclusions in TUI", { timeout: 60_000 }, async (t: TestContext) => {
+  await runToolContracts(t, "runtime.tool-exclusions-tui", { pi: 5, providerRequests: 17 }, async (results) => {
+    await checkVisibleErrorControl(t.signal);
+    for (const excluded of exclusions) results.push(await runExclusionFamily("tui", excluded, t.signal));
+  });
+});
+
+test("real Pi enforces tool exclusions in RPC", { timeout: 60_000 }, async (t: TestContext) => {
+  await runToolContracts(t, "runtime.tool-exclusions-rpc", { pi: 4, providerRequests: 16 }, async (results) => {
+    for (const excluded of exclusions) results.push(await runExclusionFamily("rpc", excluded, t.signal));
+  });
+});
+
+test("real Pi applies valid tool loadouts and rejects invalid CLI modifiers", { timeout: 60_000 }, async (t: TestContext) => {
+  await runToolContracts(t, "runtime.tool-cli-modifiers", { pi: 5, providerRequests: 7 }, async (results) => {
+    results.push(await runValidLoadout("minus-goal-tool", t.signal));
+    results.push(await runValidLoadout("wildcard-allowlist", t.signal));
+    results.push(await runValidLoadout("plus-codemode", t.signal));
+    results.push(await assertInvalidCliModifier("read,+codemode", "tool names cannot be mixed with +name or -name entries"));
+    results.push(await assertInvalidCliModifier("+codemode,-killeros_*", "+name and -name entries take exact tool names, not patterns"));
+  });
 });
