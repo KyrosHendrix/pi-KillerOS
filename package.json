@@ -43,7 +43,7 @@
     "check": "tsc --noEmit && eslint .",
     "lint": "eslint .",
     "prepublishOnly": "node --experimental-strip-types scripts/verify-release.ts",
-    "test": "node --test --test-concurrency=4 --test-force-exit --experimental-strip-types test/*.test.*",
+    "test": "node --test --test-concurrency=4 --test-force-exit --experimental-strip-types --import ./test/support/TestTemp.ts test/*.test.*",
     "test:changed": "node --experimental-strip-types scripts/test-changed.ts"
   },
   "pi": {

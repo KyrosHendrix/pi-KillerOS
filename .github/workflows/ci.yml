@@ -148,7 +148,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test shard
-        run: node --test --test-concurrency=2 --test-force-exit --experimental-strip-types --test-shard=${{ matrix.shard }}/4 test/*.test.*
+        run: node --test --test-concurrency=2 --test-force-exit --experimental-strip-types --import ./test/support/TestTemp.ts --test-shard=${{ matrix.shard }}/4 test/*.test.*
 
       - name: Upload test failure reports
         if: failure()
