@@ -4,6 +4,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-11-03
+
 ### Changed
 
 - Require Node.js 26.13.0 or later within Node 26. Development, CI, and releases now use the pinned 26.13.0 version instead of a Node-version matrix.

@@ -36,7 +36,7 @@ Run `/login` if needed, then start a conversation.
 <summary>GitHub install and version pinning</summary>
 
 - GitHub: `pi install git:github.com/KyrosHendrix/pi-KillerOS`.
-- Pin a version: `npm:killeros@3.0.8` or `git:github.com/KyrosHendrix/pi-KillerOS@v3.0.8`.
+- Pin a version: `npm:killeros@4.0.0` or `git:github.com/KyrosHendrix/pi-KillerOS@v4.0.0`.
 - Add `-l` for a project-only install.
 
 </details>
