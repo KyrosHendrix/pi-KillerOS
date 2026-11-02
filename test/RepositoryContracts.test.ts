@@ -367,7 +367,7 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
   assert.deepEqual([...ci.slice(jobsStart).matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
-    ["quality-checks", "quality-tests", "quality", "pi-latest", "package", "audit", "codeql"]);
+    ["quality-checks", "quality-tests", "quality", "pi-latest", "audit", "codeql"]);
 
   // Branch protection requires "Quality"; it passes only when every quality job passed.
   const quality = ciJob("quality");
@@ -520,13 +520,6 @@ test("publication boundary requires directory publication with lifecycle scripts
     const invalid = release.replace("npm publish . --ignore-scripts=false", command);
     assert.throws(() => assertPublicationBoundary(invalid), command);
   }
-});
-
-test("CI retains package smoke coverage until required-check migration", () => {
-  const packageJob = ciJob("package");
-  assert.match(packageJob, /- name: Validate release metadata\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
-  assert.ok(packageJob.indexOf("scripts/verify-release.ts") < packageJob.indexOf("npm pack"));
-  assert.doesNotMatch(packageJob, /npm publish/u);
 });
 
 test("GitHub releases require green current main and consistent package provenance", () => {

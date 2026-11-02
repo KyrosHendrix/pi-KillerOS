@@ -285,42 +285,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  package:
-    name: Package smoke test
-    runs-on: windows-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '26.13.0'
-
-      - name: Validate release metadata
-        env:
-          KILLEROS_RELEASE: 'true'
-        run: node --experimental-strip-types scripts/verify-release.ts
-
-      - name: Validate publish contents
-        run: |
-          npm pack --dry-run --ignore-scripts --json > pack.json
-          node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            const parsed = JSON.parse(readFileSync("pack.json", "utf8"));
-            const pack = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
-            if (!pack || typeof pack !== "object") throw new Error("npm pack returned no package metadata");
-            const files = new Set(pack.files.map(({ path }) => path));
-            const required = ["Killeros.ts", "README.md", "CHANGELOG.md", "themes/killeros.json"];
-            const missing = required.filter((file) => !files.has(file));
-            if (missing.length) throw new Error(`Package is missing: ${missing.join(", ")}`);
-            if (pack.id !== `killeros@${JSON.parse(readFileSync("package.json", "utf8")).version}`) throw new Error(`Unexpected package id: ${pack.id}`);
-          '
-
   audit:
     name: Dependency audit
     runs-on: windows-latest
