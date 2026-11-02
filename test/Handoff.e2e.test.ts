@@ -623,7 +623,7 @@ test("handoff refuses no saved session, no model, and no usable context", { time
       assert.deepEqual(saved.buildSessionProjection().messages, [], "Native context edits remove every projected message");
     }
     if (vector.options.noModel) assert.deepEqual([record(initial.model).provider, record(initial.model).id], ["unknown", "unknown"],
-      "Pi 1.4 represents missing model selection with its native unknown placeholder");
+      "Pi represents missing model selection with its native unknown placeholder");
     if (vector.options.noSession) assert.equal(initial.sessionFile, undefined, "Saving is explicitly disabled");
     const after = f.cli.currentSequence;
     await f.prompt("/handoff");

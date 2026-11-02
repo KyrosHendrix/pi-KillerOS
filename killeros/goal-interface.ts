@@ -1,4 +1,3 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -13,7 +12,9 @@ import type { GoalRuntime, GoalState, GoalStatus } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const GoalUpdateParams = Type.Object({
-  status: StringEnum(["complete", "continue", "blocked"] as const, {
+  // `type: "string"` keeps the plain string enum every provider accepts.
+  status: Type.Enum(["complete", "continue", "blocked"], {
+    type: "string",
     description: "Record an active-goal decision, or complete a blocked goal during an eligible later ordinary request",
   }),
   evidence: Type.String({

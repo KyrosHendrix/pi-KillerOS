@@ -53,9 +53,10 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function graphemeCount(value: string): number {
+// Goal text limits count Unicode code points, as JSON Schema `maxLength` does when Pi validates tool arguments.
+function codePointCount(value: string): number {
   let length = 0;
-  for (const _ of graphemeSegmenter.segment(value)) length += 1;
+  for (const _ of value) length += 1;
   return length;
 }
 
@@ -64,15 +65,15 @@ function isSafePersistedText(value: unknown, limit: number, required = true): va
     && (required ? Boolean(value.trim()) : true)
     && value === value.trim()
     && safeTerminalText(value) === value
-    && graphemeCount(value) <= limit;
+    && codePointCount(value) <= limit;
 }
 
 /** Normalizes model or user text before it crosses the persisted goal boundary. */
 export function normalizeGoalText(value: string, limit: number, label: string): string {
-  if (graphemeCount(value) > limit) throw new Error(`${label} must not exceed ${limit} characters`);
+  if (codePointCount(value) > limit) throw new Error(`${label} must not exceed ${limit} characters`);
   const normalized = safeTerminalText(value).trim();
   if (!normalized) throw new Error(`${label} must not be empty`);
-  if (graphemeCount(normalized) > limit) throw new Error(`${label} must not exceed ${limit} characters`);
+  if (codePointCount(normalized) > limit) throw new Error(`${label} must not exceed ${limit} characters`);
   return normalized;
 }
 
@@ -213,7 +214,7 @@ export function parseGoalState(value: unknown): GoalState | undefined {
   if (version !== GOAL_VERSION
     || !incrementableNonNegativeInteger(revision) || revision < 1
     || typeof objective !== "string" || !objective.trim() || safeTerminalText(objective) !== objective
-      || graphemeCount(objective.trim()) > GOAL_OBJECTIVE_LIMIT
+      || codePointCount(objective.trim()) > GOAL_OBJECTIVE_LIMIT
     || !isGoalStatus(status)
     || !safeNonNegativeInteger(createdAt)
     || !safeNonNegativeInteger(updatedAt)
@@ -519,19 +520,22 @@ export async function verifyGoalDeliverable(verification: GoalFileVerification):
   }
 }
 
+/** Truncates safe text to `limit` code points without splitting a grapheme cluster. */
 export function boundGoalText(value: string, limit = GOAL_EVIDENCE_LIMIT): string {
-  const safe = safeTerminalText(value).trim();
-  return [...graphemeSegmenter.segment(safe)]
-    .slice(0, limit)
-    .map(({ segment }) => segment)
-    .join("")
-    .trimEnd();
+  let remaining = limit;
+  let bounded = "";
+  for (const { segment } of graphemeSegmenter.segment(safeTerminalText(value).trim())) {
+    remaining -= codePointCount(segment);
+    if (remaining < 0) break;
+    bounded += segment;
+  }
+  return bounded.trimEnd();
 }
 
 export function validateGoalObjective(input: string): string | undefined {
   const objective = input.trim();
   if (!objective || safeTerminalText(objective) !== objective) return undefined;
-  return graphemeCount(objective) <= GOAL_OBJECTIVE_LIMIT ? objective : undefined;
+  return codePointCount(objective) <= GOAL_OBJECTIVE_LIMIT ? objective : undefined;
 }
 
 export function goalElapsedMilliseconds(state: GoalState, now: number): number {
