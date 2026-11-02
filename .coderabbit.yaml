@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit reviews every non-draft pull request. AGENTS.md owns the contracts; these instructions point reviewers at them.
+language: "en-US"
+reviews:
+  profile: "chill"
+  poem: false
+  sequence_diagrams: false
+  changed_files_summary: false
+  path_filters:
+    - "!package-lock.json"
+  path_instructions:
+    - path: "killeros/{goal-*,auto-compaction}.ts"
+      instructions: |
+        Goal continuation requires an accepted turn decision. Flag any path where compaction or provider retries grant turns or restart completed or blocked goals.
+        A goal request stays goal-owned through settlement. Pending goal commands must survive cancelled navigation and be guarded against committed navigation and competing goal mutations across async waits.
+        `question` and `killeros_goal_update` stay sequential and model-only; codemode must neither hide them from the model nor expose them to scripts.
+    - path: "killeros/{activity,worked-for,notifications}.ts"
+      instructions: |
+        Receipts and completion sounds finalize at `agent_settled`, never at an intermediate provider result.
+        Session replacement, reload, and committed tree navigation invalidate pending work and stale contexts; cancelled navigation preserves valid pending work.
+    - path: "killeros/{passive-git-status,change-receipt}.ts"
+      instructions: |
+        Passive Git scans must not execute repository filters or repository-owned Git shims. A failed scan means unavailable metadata, not an empty repository. Fix Git correctness here, not in callers.
+    - path: "killeros/{settings,codex-fast,codex-fast-state}.ts"
+      instructions: |
+        Settings updates derive from the latest settings under the writer lock, preserve unrelated fields, and never replace malformed settings while reporting success.
+        Fast mode is process-local and changes only an eligible request's service tier. Flag changes to sampling, other payload fields, model matching, or retry behavior, and any OpenAI priority service applied to Azure (`azure`, `azure-openai-responses`).
+    - path: "killeros/{hooks,personal-instructions,handoff,secret-detector}.ts"
+      instructions: |
+        Enforce project trust and file boundaries. Hook timeout and cancellation cleanup must account for descendant processes after shell exit.
+        Handoff rejects recognized credentials before creating a destination session and saves validated context before reporting success, without starting an agent turn.
+    - path: "test/**"
+      instructions: |
+        Application scenarios use the real Pi CLI through `test/support/`, not simulated hosts or private helpers. Flag retries, longer timeouts, or skips added to hide flakiness. Process-tree tests must wait for complete PID contents, not just readiness-file creation.
+knowledge_base:
+  code_guidelines:
+    filePatterns:
+      - "AGENTS.md"
