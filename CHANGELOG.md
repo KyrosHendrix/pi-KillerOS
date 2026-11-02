@@ -7,7 +7,8 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 ### Changed
 
 - Require Node.js 26.13.0 or later within Node 26. Development, CI, and releases now use the pinned 26.13.0 version instead of a Node-version matrix.
-- Raised the minimum supported Pi version to 1.4.0 and aligned the exact development pins, lockfile, and CI compatibility targets.
+- Raised the minimum supported Pi version to 1.5.0 and aligned the exact development pins, lockfile, and CI compatibility targets.
+- Goal objective and evidence limits now count Unicode code points, matching Pi 1.5.0's tool-argument validation. A saved goal whose text fits only when counted as visible characters no longer restores.
 - Removed the redundant session-reset alias. Use Pi's native `/new` command.
 
 ### Fixed

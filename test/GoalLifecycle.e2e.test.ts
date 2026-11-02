@@ -712,10 +712,10 @@ test("blocker audits require three consecutive matching turns", { timeout: 180_0
     // so each vector asserts its own constraint line.
     const invalidKeys: Array<{ key: string | undefined; expect: RegExp }> = [
       { key: undefined, expect: /A blocked goal update requires a stable lowercase blockerKey/u },
-      { key: "", expect: /blockerKey: must not have fewer than 1 characters/u },
-      { key: "UPPERCASE", expect: /blockerKey: must match pattern "\^\[a-z0-9\]\[a-z0-9._-\]\{0,119\}\$"/u },
-      { key: "contains whitespace", expect: /blockerKey: must match pattern "\^\[a-z0-9\]\[a-z0-9._-\]\{0,119\}\$"/u },
-      { key: `x${"y".repeat(120)}`, expect: /blockerKey: must not have more than 120 characters/u },
+      { key: "", expect: /blockerKey: expected at least 1 characters/u },
+      { key: "UPPERCASE", expect: /blockerKey: expected to match \^\[a-z0-9\]\[a-z0-9._-\]\{0,119\}\$/u },
+      { key: "contains whitespace", expect: /blockerKey: expected to match \^\[a-z0-9\]\[a-z0-9._-\]\{0,119\}\$/u },
+      { key: `x${"y".repeat(120)}`, expect: /blockerKey: expected at most 120 characters/u },
     ];
     f.enqueue({ kind: "calls", decisions: [...invalidKeys.map(vector => blocked(vector.key, "Still blocked")),
       blocked("missing-credential", "Evidence for missing-credential"), blocked("missing-credential", "Evidence for missing-credential")] });
@@ -850,7 +850,8 @@ test("blocker audits require three consecutive matching turns", { timeout: 180_0
       { key: valid.key, streak: 3, lastTurn: 3, evidence: "Still unavailable" });
   });
 
-  const unicode = "\u{10400}".repeat(1_000) + "e\u0301".repeat(1_000);
+  // Exactly 2,000 code points but 3,000 UTF-16 units and 1,500 graphemes: only code-point limits accept it and reject one more.
+  const unicode = "\u{10400}".repeat(1_000) + "e\u0301".repeat(500);
   await history(t, "goals.blockers", "unicode-audit-roundtrip", { launches: 2, requests: 3 }, manager => {
     savedGoal(manager, "blocker-audit", { ...base, blockerAudit: { key: "external", streak: 1, lastTurn: 1, evidence: unicode } });
   }, async f => {
@@ -892,7 +893,8 @@ test("blocker audits require three consecutive matching turns", { timeout: 180_0
 // Catalog ID: goals.blocker-corruption. Historical corruption can run independently of live audits.
 test("malformed saved blocker audits fail closed without dispatch", { timeout: 60_000 }, async t => {
   const base = activeGoal("Restore the blocker audit", Date.now());
-  const unicode = "\u{10400}".repeat(1_000) + "e\u0301".repeat(1_000);
+  // Exactly 2,000 code points but 3,000 UTF-16 units and 1,500 graphemes: only code-point limits accept it and reject one more.
+  const unicode = "\u{10400}".repeat(1_000) + "e\u0301".repeat(500);
   const malformed = [
     { key: "", streak: 1, lastTurn: 1 }, { key: "UPPERCASE", streak: 1, lastTurn: 1 },
     { key: "valid", streak: 0, lastTurn: 1 }, { key: "valid", streak: 4, lastTurn: 1 },
@@ -2076,11 +2078,10 @@ test("replacement, start, and edit write failures leave truthful state", { timeo
     const notice = await scenarioRpcNotice(fixture, cursor, /Goal could not be replaced: replacement write failed/u, signal);
     assert.match(notice, /Old objective|Goal paused/u);
 
-    // The denied replacement append still enters the live session branch before its bytes are
-    // flushed, so the RPC view reports the attempt while the durable session file must not.
+    // Pi drops a failed append from the live session too, so neither view records the attempt.
     const saved = rpcGoalEntries(await scenarioRpcEntries(fixture, signal));
-    assert.ok(saved.some(entry => entry.event === "replace" && entry.state?.objective === "New objective"),
-      "The replacement attempt must be visible in the live session view");
+    assert.equal(saved.some(entry => entry.event === "replace" || entry.state?.objective === "New objective"), false,
+      "The denied replacement must not enter the live session view");
     assert.equal(saved.at(-1)?.event, "error");
     assert.equal(saved.at(-1)?.state?.status, "paused");
     assert.equal(saved.at(-1)?.state?.objective, "Old objective");
@@ -2126,8 +2127,8 @@ test("replacement, start, and edit write failures leave truthful state", { timeo
       const notice = await scenarioRpcNotice(fixture, cursor, new RegExp(`${status} replacement failed`, "u"), signal);
       assert.match(notice, /Goal could not be replaced/u);
       const saved = rpcGoalEntries(await scenarioRpcEntries(fixture, signal));
-      assert.ok(saved.some(entry => entry.event === "replace" && entry.state?.objective === "Replacement objective"),
-        `${status}: the replacement attempt must be visible in the live session view`);
+      assert.equal(saved.some(entry => entry.event === "replace" || entry.state?.objective === "Replacement objective"), false,
+        `${status}: the denied replacement must not enter the live session view`);
       assert.deepEqual(sessionGoalEntries(fixture.sessionFile), before,
         `${status}: the denied append leaves the durable saved goal untouched`);
       assert.ok(readFileSync(String(fixture.sessionFile), "utf8").startsWith(rawBefore));
@@ -2151,9 +2152,8 @@ test("replacement, start, and edit write failures leave truthful state", { timeo
     const cursor = await scenarioRpcPrompt(fixture, "/goal New objective", signal);
     assert.match(await scenarioRpcNotice(fixture, cursor, /Goal could not be started: first write failed/u, signal),
       /Goal could not be started: first write failed/u);
-    assert.ok(rpcGoalEntries(await scenarioRpcEntries(fixture, signal))
-      .some(entry => entry.event === "set" && entry.state?.objective === "New objective"),
-      "The denied start must be visible in the live session view");
+    assert.deepEqual(rpcGoalEntries(await scenarioRpcEntries(fixture, signal)), [],
+      "The denied start must not enter the live session view");
     assert.deepEqual(sessionGoalEntries(fixture.sessionFile), [], "The denied start must not be durable");
     assert.equal(fixture.provider.requests.length, 0);
     assert.equal(readFileSync(String(fixture.sessionFile), "utf8").includes('"customType":"killeros-goal"'), false);
@@ -2190,8 +2190,8 @@ test("replacement, start, and edit write failures leave truthful state", { timeo
     const notice = await scenarioRpcNotice(fixture, cursor, /Goal objective could not be updated: edit write failed/u, signal, "error");
     assert.match(notice, /Goal paused: Goal objective could not be updated: edit write failed/u);
     const saved = rpcGoalEntries(await scenarioRpcEntries(fixture, signal));
-    assert.ok(saved.some(entry => entry.event === "edit" && entry.state?.objective === "Revised objective"),
-      "The denied edit must be visible in the live session view");
+    assert.equal(saved.some(entry => entry.event === "edit" || entry.state?.objective === "Revised objective"), false,
+      "The denied edit must not enter the live session view");
     assert.equal(sessionGoalEntries(fixture.sessionFile).some(entry => entry.event === "edit"), false,
       "The denied edit must not be durable");
     assert.equal(saved.at(-1)?.state?.status, "paused");

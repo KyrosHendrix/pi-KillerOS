@@ -1,4 +1,3 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
   type ExtensionAPI,
   type ToolDefinition,
@@ -21,7 +20,9 @@ const QuestionParams = Type.Object({
     maxItems: 9,
     description: "Between 1 and 9 options for the user to choose from",
   }),
-  mode: Type.Optional(StringEnum(["single", "multiple"] as const, {
+  // `type: "string"` keeps the plain string enum every provider accepts.
+  mode: Type.Optional(Type.Enum(["single", "multiple"], {
+    type: "string",
     description: "Choose one answer or multiple answers; defaults to single",
   })),
   minSelections: Type.Optional(Type.Integer({

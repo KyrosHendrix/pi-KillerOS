@@ -2295,19 +2295,18 @@ test(`${racesCatalogId}: failed completion append permits same-process retry`, {
   if (failure !== undefined) throw failure instanceof Error ? failure : new Error(errorText(failure), { cause: failure });
 });
 
-test(`${racesCatalogId}: failed completion snapshot fails closed on reopen`, { timeout: 100_000 }, async (t) => {
+test(`${racesCatalogId}: failed completion snapshot permits completion after reopen`, { timeout: 100_000 }, async (t) => {
   assert.equal(process.platform, "win32", "KillerOS supports Windows only");
   const observations: LaunchObservation[] = [];
-  const divergences: string[] = [];
   let artifactDirectory = "";
   let failure: unknown;
   try {
     artifactDirectory = createArtifactDirectory("killeros-blocked-goal-append-");
     const appendFaultTargets = await runAppendFaultFixture(t.signal, artifactDirectory, observations, "failed-append", "seeded");
 
-    // Pi advances its leaf before a failed append; reopening that orphan must fail closed.
+    // Pi keeps a failed append out of the session, so a fresh reopen restores the blocked goal intact.
     await runRecoveryFixture(t.signal, artifactDirectory, observations, "retry-after-recovery",
-      appendFaultTargets, async (fixture, label, target, _seed) => {
+      appendFaultTargets, async (fixture, label, target, seed) => {
         writeFileSync(target, changedContent);
         const restoredEntries = savedGoalEntries(await goalEntriesOf(fixture));
         assert.equal(restoredEntries.at(-1)?.event, "blocked", "the recovered session must still last-block");
@@ -2316,27 +2315,23 @@ test(`${racesCatalogId}: failed completion snapshot fails closed on reopen`, { t
         const cursor = fixture.rpc!.currentSequence;
         await promptOrdinaryRun(fixture, "The storage recovered; verify the deliverable and record completion.", `${label}: retry`);
         await waitForGoalSettled(fixture, cursor, `${label}: settlement`);
-        const entries = await goalEntriesOf(fixture);
-        toolResultError(goalToolResults(entries), /^Tool killeros_goal_update not found$/u,
-          `${label}: an unreachable blocked ancestor must not authorize completion`);
-        assert.equal(savedGoalEntriesFromSessionFile(fixture.currentSessionFile, `${label}: durable after retry`)
-          .filter((entry) => entry.event === "complete").length, 0,
-        `${label}: the orphaned snapshot must append no completion`);
-        const branch = SessionManager.open(fixture.currentSessionFile).getBranch();
-        assert.equal(branch.some((entry) => entry.type === "custom" && entry.customType === "killeros-goal"), false,
-          `${label}: the missing persisted parent must keep the blocked ancestor outside the active branch`);
-        divergences.push(`${label}: Pi's failed disk append leaves an orphaned branch; fresh reopen denies completion while same-process retry succeeds`);
-        return { recovered: false, upstreamLimit: "Pi 1.4.0 advances its leaf before a failed disk append" };
+        const durable = savedGoalEntriesFromSessionFile(fixture.currentSessionFile, `${label}: durable after retry`);
+        assert.equal(durable.filter((entry) => entry.event === "complete").length, 1,
+          `${label}: the reopened blocked goal accepts exactly one completion`);
+        const completed = durable.at(-1)?.state;
+        assert.equal(completed?.status, "complete");
+        assert.equal(completed?.objective, seed.objective);
+        assert.equal(completed?.turns, seed.turns, `${label}: completion after reopen must not grant a goal turn`);
+        return { recovered: true };
       });
 
     assert.equal(observations.length, 2, "the append and reopen histories use two Pi launches");
-    assert.equal(divergences.length, 1, "the failed snapshot reopen limitation must be recorded");
-    writeRunsJournal(`${racesCatalogId}.append-reopen`, observations, { divergences });
+    writeRunsJournal(`${racesCatalogId}.append-reopen`, observations);
     assert.deepEqual(evidenceWriteProblems, [], "the evidence journal must be saved");
     t.diagnostic(`Launch evidence: ${evidenceDirectory}`);
   } catch (error) {
     failure = error;
-    writeRunsJournal(`${racesCatalogId}.append-reopen`, observations, { status: "failed", divergences });
+    writeRunsJournal(`${racesCatalogId}.append-reopen`, observations, { status: "failed" });
     t.diagnostic(`Partial launch evidence: ${evidenceDirectory}`);
     if (artifactDirectory) try {
       throwScenarioFailure({ directory: artifactDirectory, message: `${racesCatalogId}: append reopen failed`, errors: [error, ...evidenceWriteProblems.map((message) => new Error(message))], diagnostics: "" });
