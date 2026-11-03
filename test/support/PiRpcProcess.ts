@@ -2,6 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { shareJitiCache } from "./JitiCache.ts";
+import { piTimerResolutionOptions } from "./TimerResolution.ts";
 
 export type PiRpcRecord = Record<string, unknown>;
 
@@ -47,6 +48,7 @@ export class PiRpcProcess {
 
   constructor(options: { cliPath: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) {
     shareJitiCache(options.env);
+    piTimerResolutionOptions(options.env);
     this.child = spawn(process.execPath, [options.cliPath, ...options.args], {
       cwd: options.cwd,
       env: options.env,
