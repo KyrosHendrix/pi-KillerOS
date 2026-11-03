@@ -367,15 +367,16 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
   assert.deepEqual([...ci.slice(jobsStart).matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
-    ["quality-checks", "quality-tests", "quality", "pi-latest", "audit", "codeql"]);
+    ["quality-checks", "quality-lifecycle", "quality-tests", "quality", "pi-latest", "audit", "codeql"]);
 
   // Branch protection requires "Quality"; it passes only when every quality job passed.
   const quality = ciJob("quality");
   assert.match(quality, /^    name: Quality$/mu);
-  assert.match(quality, /^    needs: \[quality-checks, quality-tests\]$/mu);
+  assert.match(quality, /^    needs: \[quality-checks, quality-lifecycle, quality-tests\]$/mu);
   assert.match(quality, /^    if: always\(\)$/mu);
-  assert.match(quality, /test "\$\{\{ needs\.quality-checks\.result \}\}" = success/u);
-  assert.match(quality, /test "\$\{\{ needs\.quality-tests\.result \}\}" = success/u);
+  for (const job of ["quality-checks", "quality-lifecycle", "quality-tests"]) {
+    assert.match(quality, new RegExp(`test "\\$\\{\\{ needs\\.${job}\\.result \\}\\}" = success`, "u"));
+  }
 
   const checks = ciJob("quality-checks");
   assert.match(checks, /^    name: Quality checks$/mu);
@@ -383,7 +384,7 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
   assert.match(checks, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
   assert.match(checks, /^        run: npm run check$/mu);
 
-  // Shards run the npm test command with lower per-runner concurrency and a shard selector.
+  // Shards run the npm test flags through scripts/test-shard.ts, which lowers per-runner concurrency.
   const tests = ciJob("quality-tests");
   const shards = /^        shard: \[([\d, ]+)\]$/mu.exec(tests)?.[1].split(", ").map(Number);
   assert.ok(shards);
@@ -391,15 +392,26 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
   assert.match(tests, /^      fail-fast: false$/mu);
   assert.match(tests, new RegExp(`^    name: Quality tests \\(\\$\\{\\{ matrix\\.shard \\}\\}/${shards.length}\\)$`, "mu"));
   assert.match(tests, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
-  const testScript = packageJson.scripts.test;
-  assert.match(testScript, /--test-concurrency=4 /u);
-  const shardCommand = testScript
-    .replace("--test-concurrency=4", "--test-concurrency=2")
-    .replace(/ (\S+)$/u, ` --test-shard=\${{ matrix.shard }}/${shards.length} $1`);
+  assert.match(packageJson.scripts.test, /^node --test --test-concurrency=4 .* test\/\*\.test\.\*$/u);
+  const shardCommand = `node --experimental-strip-types scripts/test-shard.ts \${{ matrix.shard }}/${shards.length}`;
   assert.ok(tests.split(/\r?\n/u).includes(`        run: ${shardCommand}`), `Shards must run: ${shardCommand}`);
   assert.match(tests, /name: test-failures-quality-\$\{\{ matrix\.shard \}\}-\$\{\{ github\.run_attempt \}\}/u);
 
-  for (const [job, suite] of [["quality-checks", "--test-name-pattern=\"publication lifecycle\""], ["quality-tests", shardCommand], ["pi-latest", "run: npm test"]] as const) {
+  // Quality repeats the same lifecycles as pi-latest, one runner per lifecycle.
+  const lifecycle = ciJob("quality-lifecycle");
+  assert.match(lifecycle, /^      fail-fast: false$/mu);
+  assert.match(lifecycle, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
+  assert.match(lifecycle, /for attempt in 1 2 3 4 5; do\s+echo "\$LIFECYCLE run \$attempt\/5"\s+eval "\$COMMAND" \|\| exit \$\?/u);
+  assert.doesNotMatch(lifecycle, /--test-force-exit/u);
+  const lifecycleCommands = [...lifecycle.matchAll(/^            command: (.+)$/gmu)].map((match) => match[1]);
+  const compatibilityLoops = [...ciJob("pi-latest").matchAll(/^            (node --test --experimental-strip-types .+) \|\| exit \$\?$/gmu)].map((match) => match[1]);
+  assert.equal(lifecycleCommands.length, 5);
+  assert.deepEqual(lifecycleCommands, compatibilityLoops, "Quality and pi-latest must repeat the same lifecycles");
+
+  for (const [job, suite] of [
+    ["quality-checks", "--test-name-pattern=\"publication lifecycle\""], ["quality-lifecycle", "eval \"$COMMAND\""],
+    ["quality-tests", shardCommand], ["pi-latest", "run: npm test"],
+  ] as const) {
     const source = ciJob(job);
     assert.match(source, /^    runs-on: windows-latest$/mu);
     assert.match(source, /- name: Upload test failure reports\s+if: failure\(\)\s+uses: actions\/upload-artifact@[a-f0-9]{40}/u);
@@ -408,8 +420,8 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
     assert.match(source, /^          retention-days: 7$/mu);
     assert.ok(source.indexOf("Upload test failure reports") > source.indexOf(suite));
   }
-  for (const job of ["quality-checks", "pi-latest"]) {
-    const source = ciJob(job);
+  {
+    const source = ciJob("pi-latest");
     assert.match(source, /- name: Repeat Pi startup lifecycle without forced exit/u);
     assert.match(source, /node --test --experimental-strip-types test\/PiStartup\.test\.ts \|\| exit \$\?/u);
     for (const step of [

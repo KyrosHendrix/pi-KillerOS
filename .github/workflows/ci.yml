@@ -69,47 +69,6 @@ jobs:
           KILLEROS_TEST_NPM_CLI: ${{ runner.temp }}/killeros-publishing-npm/node_modules/npm/bin/npm-cli.js
         run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test/verify-release.test.ts
 
-      - name: Repeat Pi startup lifecycle without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Pi startup lifecycle run $attempt/5"
-            node --test --experimental-strip-types test/PiStartup.test.ts || exit $?
-          done
-
-      - name: Repeat installed CLI pilot without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Installed CLI pilot run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi CLI completes a goal and restores it without unsolicited model work" test/PiExtensionContract.test.ts || exit $?
-          done
-
-      - name: Test terminal pilot and fault controls without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Terminal pilot and fault controls run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver controls report|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
-          done
-
-      - name: Test Pi cancellation lifecycle without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Pi cancellation lifecycle run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="continuation dispatch respects idle, pending, and cancellation gates|active faux provider retries preserve goal ownership until settlement|Cancelled ordinary and goal compaction cannot recover after an aborted settlement" test/Goals.e2e.test.ts test/runtime-native-provider.e2e.test.ts test/CompactionTrigger.e2e.test.ts || exit $?
-          done
-
-
-      - name: Repeat saved tool restoration without forced exit
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Saved tool restoration run $attempt/5"
-            node --test --experimental-strip-types test/PiToolRestoration.e2e.test.ts || exit $?
-          done
-
-
       - name: Upload test failure reports
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -120,16 +79,72 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-
-  # Four runners at two files each finish the suite faster and with less per-runner load than one runner at four.
-  quality-tests:
-    name: Quality tests (${{ matrix.shard }}/4)
+  # Each lifecycle runs five times without --test-force-exit, so a leaked handle or child hangs the run.
+  # One runner per lifecycle keeps each repeat serial while the lifecycles run in parallel.
+  quality-lifecycle:
+    name: Quality lifecycle (${{ matrix.lifecycle }})
     runs-on: windows-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        include:
+          - lifecycle: Pi startup
+            command: node --test --experimental-strip-types test/PiStartup.test.ts
+          - lifecycle: installed CLI pilot
+            command: node --test --experimental-strip-types --test-name-pattern="installed Pi CLI completes a goal and restores it without unsolicited model work" test/PiExtensionContract.test.ts
+          - lifecycle: terminal pilot and fault controls
+            command: node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver controls report|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts
+          - lifecycle: Pi cancellation
+            command: node --test --experimental-strip-types --test-name-pattern="continuation dispatch respects idle, pending, and cancellation gates|active faux provider retries preserve goal ownership until settlement|Cancelled ordinary and goal compaction cannot recover after an aborted settlement" test/Goals.e2e.test.ts test/runtime-native-provider.e2e.test.ts test/CompactionTrigger.e2e.test.ts
+          - lifecycle: saved tool restoration
+            command: node --test --experimental-strip-types test/PiToolRestoration.e2e.test.ts
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.13.0'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Repeat lifecycle without forced exit
+        env:
+          LIFECYCLE: ${{ matrix.lifecycle }}
+          COMMAND: ${{ matrix.command }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            echo "$LIFECYCLE run $attempt/5"
+            eval "$COMMAND" || exit $?
+          done
+
+      - name: Upload test failure reports
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: test-failures-quality-lifecycle-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: node_modules/.killeros-*/failure.txt
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # scripts/test-shard.ts balances files by measured duration; each runner runs two files at a time.
+  quality-tests:
+    name: Quality tests (${{ matrix.shard }}/6)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -148,7 +163,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test shard
-        run: node --test --test-concurrency=2 --test-force-exit --experimental-strip-types --import ./test/support/TestTemp.ts --test-shard=${{ matrix.shard }}/4 test/*.test.*
+        run: node --experimental-strip-types scripts/test-shard.ts ${{ matrix.shard }}/6
 
       - name: Upload test failure reports
         if: failure()
@@ -163,7 +178,7 @@ jobs:
   # Branch protection requires this check name.
   quality:
     name: Quality
-    needs: [quality-checks, quality-tests]
+    needs: [quality-checks, quality-lifecycle, quality-tests]
     if: always()
     runs-on: windows-latest
     timeout-minutes: 5
@@ -171,6 +186,7 @@ jobs:
       - name: Require every quality job
         run: |
           test "${{ needs.quality-checks.result }}" = success
+          test "${{ needs.quality-lifecycle.result }}" = success
           test "${{ needs.quality-tests.result }}" = success
 
   pi-latest:

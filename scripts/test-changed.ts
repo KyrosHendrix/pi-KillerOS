@@ -140,6 +140,19 @@ function changedFiles(base: string): string[] {
   return [...new Set([...tracked.split("\n"), ...untracked.split("\n")].filter(Boolean))];
 }
 
+/**
+ * Returns the Node flags of the npm `test` script, without `node` and the file glob.
+ * Scripts that run a subset of the suite reuse them so their runs never drift from `npm test`.
+ */
+export function testFlags(): string[] {
+  const manifest: unknown = JSON.parse(read("package.json"));
+  const testScript = typeof manifest === "object" && manifest !== null && "scripts" in manifest
+    && typeof manifest.scripts === "object" && manifest.scripts !== null && "test" in manifest.scripts ? manifest.scripts.test : undefined;
+  if (typeof testScript !== "string") throw new Error("package.json must define a test script");
+  const [, ...flags] = testScript.split(" ").slice(0, -1);
+  return flags;
+}
+
 function main(): number {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -149,13 +162,7 @@ function main(): number {
   const tests = selectTests(changed);
   console.log(`${changed.length} changed path(s) select ${tests.length} test file(s):\n${tests.map((test) => `  ${test}`).join("\n")}`);
   if (values["dry-run"]) return 0;
-  // Reuse the npm test command's flags so the two never drift; only the file list differs.
-  const manifest: unknown = JSON.parse(read("package.json"));
-  const testScript = typeof manifest === "object" && manifest !== null && "scripts" in manifest
-    && typeof manifest.scripts === "object" && manifest.scripts !== null && "test" in manifest.scripts ? manifest.scripts.test : undefined;
-  if (typeof testScript !== "string") throw new Error("package.json must define a test script");
-  const [, ...flags] = testScript.split(" ").slice(0, -1);
-  const result = spawnSync(process.execPath, [...flags, ...tests], { cwd: root, stdio: "inherit" });
+  const result = spawnSync(process.execPath, [...testFlags(), ...tests], { cwd: root, stdio: "inherit" });
   return result.status ?? 1;
 }
 

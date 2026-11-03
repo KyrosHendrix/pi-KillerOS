@@ -22,7 +22,7 @@ test("every test file is selected by a change to the code it covers", () => {
   // Support files are excluded: every scenario imports a Pi driver, which would make any test look mapped.
   const sources = [
     ...modules.map((module) => `killeros/${module}`), ...hostFiles,
-    "scripts/verify-release.ts", "scripts/release-notes.ts", "scripts/test-changed.ts", "themes/killeros.json",
+    "scripts/verify-release.ts", "scripts/release-notes.ts", "scripts/test-changed.ts", "scripts/test-shard.ts", "themes/killeros.json",
   ];
   const reachable = new Set(sources.flatMap((source) => selectTests([source])));
   // These cover the test drivers themselves and are selected when test/support changes.

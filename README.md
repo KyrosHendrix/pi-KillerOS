@@ -113,7 +113,7 @@ Or give the agent a checkable goal:
 
 ## Contributing
 
-Use Node.js 26.13.0, pinned in `.node-version`. Install dependencies with `npm ci --ignore-scripts --no-audit --no-fund`. Run the checkout with `npx pi -e .`, with any installed copy disabled. Run `npm run check` and `npm run test:changed`, which runs the test files that cover your changes. CI runs the full suite, `npm test`, across four runners in about 5 minutes. Locally it takes about 10 minutes and runs at most four test files concurrently to bound child-process load. There is no build step.
+Use Node.js 26.13.0, pinned in `.node-version`. Install dependencies with `npm ci --ignore-scripts --no-audit --no-fund`. Run the checkout with `npx pi -e .`, with any installed copy disabled. Run `npm run check` and `npm run test:changed`, which runs the test files that cover your changes. CI runs the full suite, `npm test`, across six runners balanced by measured file duration. Locally it takes about 10 minutes and runs at most four test files concurrently to bound child-process load. There is no build step.
 
 Automatic pre-merge CI requires a pull request, including a draft pull request. Open a draft PR for feedback or run the CI workflow manually. Standalone pushes to `dev` do not start automatic CI. Run local checks before pushing. CI also runs on pushes to `main` and on the weekly schedule.
 
