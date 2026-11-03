@@ -384,7 +384,7 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
   assert.match(checks, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
   assert.match(checks, /^        run: npm run check$/mu);
 
-  // Shards run the npm test flags through scripts/test-shard.ts, which lowers per-runner concurrency.
+  // npm test and every shard run through scripts/test-suite.ts; shards run two units at a time.
   const tests = ciJob("quality-tests");
   const shards = /^        shard: \[([\d, ]+)\]$/mu.exec(tests)?.[1].split(", ").map(Number);
   assert.ok(shards);
@@ -392,8 +392,8 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
   assert.match(tests, /^      fail-fast: false$/mu);
   assert.match(tests, new RegExp(`^    name: Quality tests \\(\\$\\{\\{ matrix\\.shard \\}\\}/${shards.length}\\)$`, "mu"));
   assert.match(tests, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
-  assert.match(packageJson.scripts.test, /^node --test --test-concurrency=4 .* test\/\*\.test\.\*$/u);
-  const shardCommand = `node --experimental-strip-types scripts/test-shard.ts \${{ matrix.shard }}/${shards.length}`;
+  assert.equal(packageJson.scripts.test, "node --experimental-strip-types scripts/test-suite.ts");
+  const shardCommand = `node --experimental-strip-types scripts/test-suite.ts --shard \${{ matrix.shard }}/${shards.length} --concurrency 2`;
   assert.ok(tests.split(/\r?\n/u).includes(`        run: ${shardCommand}`), `Shards must run: ${shardCommand}`);
   assert.match(tests, /name: test-failures-quality-\$\{\{ matrix\.shard \}\}-\$\{\{ github\.run_attempt \}\}/u);
 
