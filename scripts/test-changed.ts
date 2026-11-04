@@ -12,12 +12,12 @@
  * - host entry points and package metadata select the host integration tests;
  * - any other path selects the tests whose source names that path.
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { nodeTestFlags } from "./test-suite.ts";
+import { runSuite, testUnits } from "./test-suite.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const contracts = "test/RepositoryContracts.test.ts";
@@ -141,7 +141,7 @@ function changedFiles(base: string): string[] {
   return [...new Set([...tracked.split("\n"), ...untracked.split("\n")].filter(Boolean))];
 }
 
-function main(): number {
+async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: { base: { type: "string", default: "origin/main" }, "dry-run": { type: "boolean", default: false } },
@@ -150,9 +150,8 @@ function main(): number {
   const tests = selectTests(changed);
   console.log(`${changed.length} changed path(s) select ${tests.length} test file(s):\n${tests.map((test) => `  ${test}`).join("\n")}`);
   if (values["dry-run"]) return 0;
-  // The same Node flags as `npm test`; a short selection runs as one test run, four files at a time.
-  const result = spawnSync(process.execPath, ["--test", "--test-concurrency=4", ...nodeTestFlags, ...tests], { cwd: root, stdio: "inherit" });
-  return result.status ?? 1;
+  // The same units as `npm test`, four at a time, so a long file splits like it does in the full suite.
+  return await runSuite(testUnits(tests), 4);
 }
 
-if (import.meta.main) process.exitCode = main();
+if (import.meta.main) process.exitCode = await main();
