@@ -7,7 +7,7 @@ import { readAutoCompactionPreference, type AutoCompactionPreference } from "./a
 import { createKillerosSettingsStore, type KillerosSettingsStore } from "./settings.ts";
 import { isCodexFastEnabled, isCodexFastModel, subscribeCodexFast } from "./codex-fast-state.ts";
 import { formatCwd, formatTime, modelDisplayName, padRight } from "./display.ts";
-import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, type PassiveGitRunner } from "./passive-git-status.ts";
+import { hideGitConsole, inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, type PassiveGitRunner } from "./passive-git-status.ts";
 import { goalElapsedMilliseconds } from "./goal-state.ts";
 import type { GoalRuntime, GoalState } from "./runtime.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -16,7 +16,13 @@ import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
 const GIT_STATUS_REFRESH_INTERVAL_MS = 30_000;
 const GIT_STATUS_TIMEOUT_MS = 5_000;
 const GIT_STATUS_WATCH_DEBOUNCE_MS = 250;
-const GIT_STATUS_WATCH_INTERVAL_MS = 5_000;
+/**
+ * Minimum time between watch-triggered scans. KILLEROS_FOOTER_WATCH_INTERVAL_MS can only shorten it, so end-to-end
+ * tests need not sit through the cooldown; FooterGitSchedule.test.ts checks the real five seconds on mocked timers.
+ */
+const watchIntervalOverride = Number(process.env.KILLEROS_FOOTER_WATCH_INTERVAL_MS);
+const GIT_STATUS_WATCH_INTERVAL_MS = Number.isSafeInteger(watchIntervalOverride) && watchIntervalOverride > 0
+  ? Math.min(watchIntervalOverride, 5_000) : 5_000;
 export const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
 export interface GitFileChanges {
@@ -33,7 +39,7 @@ type GitStatusExecutor = (
     env: NodeJS.ProcessEnv;
     maxBuffer: number;
     timeout: number;
-    windowsHide: true;
+    windowsHide: boolean;
   },
   callback: (error: Error | null, stdout: string) => void,
 ) => unknown;
@@ -53,7 +59,7 @@ export async function resolveGitFileChanges(
       env: passiveGitEnv(),
       maxBuffer: 4 * 1024 * 1024,
       timeout: GIT_STATUS_TIMEOUT_MS,
-      windowsHide: true as const,
+      windowsHide: hideGitConsole(),
     };
     const runAt = (directory: string): PassiveGitRunner => (args) => new Promise((resolve, reject) => {
       execute(gitCommand, ["-C", directory, ...args], options, (error, stdout) => {

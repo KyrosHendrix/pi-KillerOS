@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, watch } from "node:fs";
-import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, passiveWorktreeMode, passiveWorktreeSettings, resolvePassiveHead, type PassiveWorktreeFile as DirtyFile, type PassiveWorktreeSnapshot } from "./passive-git-status.ts";
+import { hideGitConsole, inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, passiveWorktreeMode, passiveWorktreeSettings, resolvePassiveHead, type PassiveWorktreeFile as DirtyFile, type PassiveWorktreeSnapshot } from "./passive-git-status.ts";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
 import { createInflate } from "node:zlib";
@@ -80,7 +80,7 @@ function runGit(cwd: string, args: readonly string[], input?: Buffer, stdoutLimi
       cwd,
       env: passiveGitEnv(),
       stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
-      windowsHide: true,
+      windowsHide: hideGitConsole(),
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, realpathSync, statSync } from "node:fs";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
 
@@ -7,6 +7,26 @@ const WORKTREE_CONTENT_LIMIT = 128 * 1024 * 1024;
 const PASSIVE_METADATA_ARGS = ["-c", "core.fsmonitor=false"] as const;
 
 export type PassiveGitRunner = (args: readonly string[]) => Promise<Buffer>;
+
+let consoleAttached: boolean | undefined;
+
+/**
+ * Whether automatic Git children must start with Node's `windowsHide`. That flag starts a console child with
+ * CREATE_NO_WINDOW, which gives it a hidden console of its own and so a second process, conhost.exe, for every
+ * Git call. A process that already has a console, visible or hidden, lets its children share it without opening
+ * a window, so only a process without one hides them. The console device opens exactly when one is attached.
+ */
+export function hideGitConsole(): boolean {
+  if (consoleAttached === undefined) {
+    try {
+      closeSync(openSync("\\\\.\\CONOUT$", "w"));
+      consoleAttached = true;
+    } catch {
+      consoleAttached = false;
+    }
+  }
+  return !consoleAttached;
+}
 
 /** Revs-only returns empty output for an unborn HEAD; command failures still reject. */
 export async function resolvePassiveHead(runGit: PassiveGitRunner): Promise<string> {
@@ -33,12 +53,38 @@ export type PassiveWorktreeSnapshot = {
   symlinks: boolean;
 };
 
-export async function passiveWorktreeSettings(runGit: PassiveGitRunner): Promise<Pick<PassiveWorktreeSnapshot, "fileMode" | "symlinks">> {
-  const [fileMode, symlinks] = await Promise.all([
-    runGit(["config", "--type=bool", "--default", "true", "--get", "core.filemode"]),
-    runGit(["config", "--type=bool", "--default", "true", "--get", "core.symlinks"]),
-  ]);
-  return { fileMode: decode(fileMode).trim() === "true", symlinks: decode(symlinks).trim() === "true" };
+/** Settings that decide how worktree bytes and modes compare with the index. */
+export type PassiveWorktreeSettings = Pick<PassiveWorktreeSnapshot, "fileMode" | "symlinks"> & { autoCrlf: string };
+
+/**
+ * Reads core.autocrlf, core.filemode, and core.symlinks in one Git process instead of one each, because
+ * every scan needs all three and each Git start costs tens of milliseconds on Windows.
+ *
+ * Git normalizes values with --type=bool-or-str, so this matches `--type=bool --get`: the last value of a key
+ * wins, a missing key takes Git's default, and any value Git cannot read as a bool fails the scan. The
+ * command-line probe key always matches, so the read succeeds when the repository sets none of the keys.
+ */
+export async function passiveWorktreeSettings(runGit: PassiveGitRunner): Promise<PassiveWorktreeSettings> {
+  const output = decode(await runGit(["-c", "killeros.probe=true", "config", "-z", "--type=bool-or-str", "--get-regexp",
+    "^(core\\.(autocrlf|filemode|symlinks)|killeros\\.probe)$"]));
+  const values = new Map<string, string[]>();
+  for (const record of output.split("\0")) {
+    if (!record) continue;
+    const separator = record.indexOf("\n");
+    const key = separator < 0 ? record : record.slice(0, separator);
+    values.set(key, [...values.get(key) ?? [], separator < 0 ? "true" : record.slice(separator + 1)]);
+  }
+  if (!values.has("killeros.probe")) throw new Error("incomplete Git settings");
+  const bool = (key: string): boolean => {
+    const all = values.get(key) ?? ["true"];
+    if (all.some((value) => value !== "true" && value !== "false")) throw new Error(`invalid ${key}`);
+    return all.at(-1) === "true";
+  };
+  return {
+    autoCrlf: (values.get("core.autocrlf")?.at(-1) ?? "false").trim().toLowerCase(),
+    fileMode: bool("core.filemode"),
+    symlinks: bool("core.symlinks"),
+  };
 }
 
 export function passiveWorktreeMode(
@@ -334,15 +380,13 @@ function matchesIndex(content: Buffer, entry: IndexEntry, autoCrlf: string): boo
  * No Git command in this path asks Git to convert worktree content, so clean and process filters cannot start.
  */
 export async function inspectWorktreeWithoutFilters(root: string, runGit: PassiveGitRunner): Promise<PassiveWorktreeSnapshot> {
-  const [indexOutput, untrackedOutput, head, autoCrlfOutput, settings] = await Promise.all([
+  const [indexOutput, untrackedOutput, head, { autoCrlf, ...settings }] = await Promise.all([
     runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--cached", "--debug", "-z", "--full-name",
       "--format=%(objectmode) %(objectname) %(stage)%x09%(eolattr)%x09%(path)"]),
     runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--others", "--exclude-standard", "-z", "--full-name"]),
     resolvePassiveHead(runGit),
-    runGit(["config", "--type=bool-or-str", "--default", "false", "--get", "core.autocrlf"]),
     passiveWorktreeSettings(runGit),
   ]);
-  const autoCrlf = decode(autoCrlfOutput).trim().toLowerCase();
   const index = parseIndex(indexOutput);
   const tree = head !== "(initial)" ? parseTree(await runGit(["ls-tree", "-r", "-z", "--full-tree", head])) : new Map<string, TreeEntry>();
   const files = new Map<string, PassiveWorktreeFile>();

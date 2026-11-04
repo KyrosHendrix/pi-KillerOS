@@ -275,6 +275,8 @@ function createFooterFamily(name: string, options: { outsideRepository?: boolean
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: globalGitConfig,
     GIT_TRACE2_EVENT: trace,
+    // FooterGitSchedule.test.ts checks the real five-second watch cooldown; these scenarios only need scans to follow changes.
+    KILLEROS_FOOTER_WATCH_INTERVAL_MS: "500",
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
   };
@@ -1012,6 +1014,12 @@ function footerMaximumActiveGitChildren(events: readonly FooterTraceEvent[]): nu
   return maximum;
 }
 
+/**
+ * Git children one successful footer scan starts: the root lookup, the index and untracked listings,
+ * HEAD, and one settings read. A committed HEAD adds its tree listing.
+ */
+const footerScanCommands = 5;
+
 async function waitForFooterGitScan(
   trace: string,
   before: readonly FooterTraceEvent[],
@@ -1023,7 +1031,7 @@ async function waitForFooterGitScan(
   const startsBefore = footerGitStarts(before).length;
   const failuresBefore = footerGitFailureCount(before);
   const commandsPerScan = options.repository === "absent" || options.outcome === "failure"
-    ? 1 : 7 + (options.committed ? 1 : 0);
+    ? 1 : footerScanCommands + (options.committed ? 1 : 0);
   return await waitForFooterTrace(trace, (events) => {
     const starts = footerGitStarts(events);
     const exits = footerGitExits(events);
@@ -1036,7 +1044,7 @@ async function waitForFooterGitScan(
     const targetRoot = rootStarts[minimumScans - 1];
     const rootExit = targetRoot?.sid === undefined ? undefined : exits.find((event) => event.sid === targetRoot.sid);
     return rootExit?.code !== undefined && rootExit.code !== 0
-      || starts.length >= startsBefore + 7;
+      || starts.length >= startsBefore + footerScanCommands;
   }, signal, options.timeoutMs ?? 20_000);
 }
 
@@ -1065,7 +1073,7 @@ function footerGit(family: FooterFamily, cwd: string, ...args: string[]): string
   assert.ok(gitDirectory, "Fixture preparation requires an absolute system Git");
   return execFileSync(path.join(gitDirectory, "git.exe"), ["-C", cwd, "-c", "core.fsmonitor=false", "-c", "filter.tripwire.clean=",
     "-c", "user.name=KillerOS Footer Fixture", "-c", "user.email=footer@fixture.invalid", ...args], {
-    cwd, env, encoding: "utf8", windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+    cwd, env, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
   });
 }
 

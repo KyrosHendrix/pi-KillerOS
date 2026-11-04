@@ -24,7 +24,7 @@ import {
   type SlashCommandResolver,
 } from "./commands.ts";
 import { reportError } from "./errors.ts";
-import { passiveGitCommand, passiveGitEnv } from "./passive-git-status.ts";
+import { hideGitConsole, passiveGitCommand, passiveGitEnv } from "./passive-git-status.ts";
 
 function readPackageVersion(path: string | URL): string | undefined {
   try {
@@ -85,7 +85,7 @@ export function resolveGitBranch(cwd: string, trusted = true): Promise<string | 
         env: passiveGitEnv(),
         maxBuffer: 64 * 1024,
         timeout: 5_000,
-        windowsHide: true,
+        windowsHide: hideGitConsole(),
       },
       (error, stdout) => {
         if (error) {

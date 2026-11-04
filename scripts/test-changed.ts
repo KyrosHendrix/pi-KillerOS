@@ -17,7 +17,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { runSuite, testUnits } from "./test-suite.ts";
+import { runSuite, testTimings, testUnits, unitTarget } from "./test-suite.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const contracts = "test/RepositoryContracts.test.ts";
@@ -53,7 +53,7 @@ export const moduleTests = {
   "handoff.ts": ["test/Handoff.e2e.test.ts", "test/HandoffTerminal.e2e.test.ts", "test/GoalHandoff.e2e.test.ts"],
   "hooks.ts": ["test/Hooks.e2e.test.ts", "test/Hooks.system.test.ts"],
   "notifications.ts": ["test/Notifications.e2e.test.ts"],
-  "passive-git-status.ts": ["test/Footer.e2e.test.ts", "test/runtime-receipt-git.e2e.test.ts"],
+  "passive-git-status.ts": ["test/Footer.e2e.test.ts", "test/runtime-receipt-git.e2e.test.ts", "test/PassiveGitStatus.test.ts"],
   "personal-instructions.ts": ["test/PersonalInstructions.e2e.test.ts"],
   "question-ui.ts": ["test/Question.e2e.test.ts"],
   "question.ts": ["test/Question.e2e.test.ts"],
@@ -150,8 +150,9 @@ async function main(): Promise<number> {
   const tests = selectTests(changed);
   console.log(`${changed.length} changed path(s) select ${tests.length} test file(s):\n${tests.map((test) => `  ${test}`).join("\n")}`);
   if (values["dry-run"]) return 0;
-  // The same units as `npm test`, four at a time, so a long file splits like it does in the full suite.
-  return await runSuite(testUnits(tests), 4);
+  // The same units and concurrency as `npm test`, sized for the selected files so a small selection still fills four slots.
+  const selected = Object.fromEntries(Object.entries(testTimings).filter(([file]) => tests.includes(file)));
+  return await runSuite(testUnits(tests, unitTarget(4, selected)), 4);
 }
 
 if (import.meta.main) process.exitCode = await main();
