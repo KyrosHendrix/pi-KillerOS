@@ -42,8 +42,8 @@ test("changed-test selection follows importers, support files, host files, and p
   // No other module imports codex-fast.
   assert.deepEqual(selectTests(["killeros/codex-fast.ts"]), ["test/RepositoryContracts.test.ts", "test/runtime-fast.e2e.test.ts"]);
 
-  // JitiCache is imported by both Pi drivers, so terminal and RPC scenarios depend on it.
-  const cache = selectTests(["test/support/JitiCache.ts"]);
+  // LaunchCaches is imported by both Pi drivers, so terminal and RPC scenarios depend on it.
+  const cache = selectTests(["test/support/LaunchCaches.ts"]);
   for (const file of ["test/Footer.e2e.test.ts", "test/Goals.e2e.test.ts", "test/PiRpcControls.test.ts"]) assert.ok(cache.includes(file), file);
 
   assert.ok(selectTests(["package.json"]).includes("test/PiExtensionContract.test.ts"));

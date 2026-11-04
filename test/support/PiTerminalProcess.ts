@@ -2,7 +2,7 @@ import { createHook, type AsyncHook } from "node:async_hooks";
 import { release } from "node:os";
 import xterm from "@xterm/headless";
 import { hasNative, spawn, type IPty } from "zigpty";
-import { shareJitiCache } from "./JitiCache.ts";
+import { shareLaunchCaches } from "./LaunchCaches.ts";
 import { piTimerResolutionOptions } from "./TimerResolution.ts";
 
 type TerminalCloseResult = { code: number; forced: boolean; failure?: string };
@@ -54,7 +54,7 @@ export class PiTerminalProcess {
         for (const notify of this.changed) notify();
       },
     }).enable();
-    shareJitiCache(options.env);
+    shareLaunchCaches(options.env);
     try {
       this.pty = spawn(options.file, options.args, { cwd: options.cwd, env, cols, rows, name: "xterm-256color", encoding: null });
     } catch (error) {
