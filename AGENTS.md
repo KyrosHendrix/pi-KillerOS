@@ -95,7 +95,7 @@ npm run test:changed
 
 `test:changed` runs the test files that cover the branch's changes since `origin/main`, including uncommitted and untracked files. Pass `-- --dry-run` to see the selection. When you add a module or a test file, map it in `scripts/test-changed.ts`; `test/test-changed.test.ts` fails until you do.
 
-CI owns the full suite. Do not run `npm test` locally unless asked: it takes about 10 minutes on a laptop, and a pull request's CI runs it in about 5. CI tests the pushed commit, not uncommitted changes. Push only when you're allowed to. To run CI on a pushed branch without a pull request:
+CI owns the full suite. Do not run `npm test` locally unless asked: it takes about 10 minutes on a laptop, and a pull request's CI runs it in under 2. CI tests the pushed commit, not uncommitted changes. Push only when you're allowed to. To run CI on a pushed branch without a pull request:
 
 ```bash
 run=$(gh workflow run ci.yml --ref <branch> | grep -oE 'runs/[0-9]+' | cut -d/ -f2)
