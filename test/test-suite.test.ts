@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   assignShards, exactNames, lifecycles, lifecycleUnits, parseConcurrency, parseShard, recordTimings, runUnits, testFiles, testTimings,
-  testUnits, unitArguments, unitFailed, unitSeconds, unmeasuredSeconds, type TestUnit, type Unit,
+  testUnits, unitArguments, unitFailed, unitSeconds, unitTarget, unmeasuredSeconds, type TestUnit, type Unit,
 } from "../scripts/test-suite.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -24,12 +24,14 @@ test("every test file runs in exactly one shard for any shard count", () => {
   const files = testFiles();
   assert.ok(files.includes("test/RepositoryContracts.test.ts") && files.includes("test/test-suite.test.ts"));
   assert.ok(files.every((file) => /^test\/[^/]+\.test\.[^/]+$/u.test(file)), "Only files named *.test.*");
-  const units = [...testUnits(files), ...lifecycleUnits(5)];
+  const units = [...testUnits(files, unitSeconds.min), ...lifecycleUnits(5)];
   for (let total = 1; total <= 16; total++) {
     const assigned = assignShards(units, total).flatMap((shard) => shard.units);
     assert.deepEqual(assigned.map((unit) => unit.name).sort(), units.map((unit) => unit.name).sort(), `${total} shard(s) must run each unit once`);
   }
-  assert.deepEqual([...new Set(testUnits(files).map((unit) => unit.file))], files, "Every file has at least one unit");
+  for (const target of [unitSeconds.min, unitSeconds.max]) {
+    assert.deepEqual([...new Set(testUnits(files, target).map((unit) => unit.file))], files, `Every file has at least one unit at ${target}s`);
+  }
 });
 
 test("lifecycle repeats keep CI's plain Node flags and select existing tests", () => {
@@ -68,22 +70,32 @@ test("timings name only existing test files", () => {
 
 test("every timed test, and any test the timings lack, runs in exactly one unit", () => {
   for (const [file, tests] of Object.entries(testTimings)) {
-    const units = testUnits([file]);
-    for (const name of [...Object.keys(tests), "a test added after the timings were recorded"]) {
-      assert.equal(units.filter((unit) => runsTest(unit, name)).length, 1, `${file}: "${name}" must run in exactly one unit`);
+    for (const target of [unitSeconds.min, unitSeconds.max]) {
+      const units = testUnits([file], target);
+      for (const name of [...Object.keys(tests), "a test added after the timings were recorded"]) {
+        assert.equal(units.filter((unit) => runsTest(unit, name)).length, 1, `${file} at ${target}s: "${name}" must run in exactly one unit`);
+      }
     }
   }
 });
 
-test("tests pack into units of about unitSeconds, and a file that fits one unit runs whole", () => {
-  const timings = { "test/split.test.ts": { long: unitSeconds + 5, a: 8, b: 6, c: 1 }, "test/small.test.ts": { x: 2, y: 3 } };
-  const units = testUnits(["test/split.test.ts", "test/small.test.ts", "test/new.test.ts"], timings);
+test("tests pack into units of about the target, and a file that fits one unit runs whole", () => {
+  const timings = { "test/split.test.ts": { long: 20, a: 8, b: 6, c: 1 }, "test/small.test.ts": { x: 2, y: 3 } };
+  const units = testUnits(["test/split.test.ts", "test/small.test.ts", "test/new.test.ts"], 15, timings);
   assert.deepEqual(units.map(({ name, seconds, select }) => ({ name, seconds, select })), [
-    { name: "split#1", seconds: unitSeconds + 5, select: { mode: "only", tests: ["long"] } },
+    { name: "split#1", seconds: 20, select: { mode: "only", tests: ["long"] } },
     { name: "split#rest", seconds: 15, select: { mode: "skip", tests: ["long"] } },
     { name: "small", seconds: 5, select: undefined },
     { name: "new", seconds: unmeasuredSeconds, select: undefined },
   ], "The smallest group skips the others, so it also runs tests the timings lack");
+  assert.deepEqual(testUnits(["test/split.test.ts"], 40, timings).map((unit) => unit.name), ["split"], "A larger target keeps the file whole");
+});
+
+test("the unit target gives about three units per worker slot within its bounds", () => {
+  const timings = { "test/a.test.ts": { a: 450, b: 450 } };
+  assert.equal(unitTarget(10, timings), 30, "900 s over 10 slots is three units of 30 s per slot");
+  assert.equal(unitTarget(30, timings), unitSeconds.min, "Many slots never shrink units below the minimum");
+  assert.equal(unitTarget(1, timings), unitSeconds.max, "Few slots never grow units past the maximum");
 });
 
 test("exact name patterns escape regular expression syntax", () => {
@@ -94,7 +106,7 @@ test("exact name patterns escape regular expression syntax", () => {
 
 test("shards balance estimated time, longest units first", () => {
   const timings = { "test/a.test.ts": { a: 9 }, "test/b.test.ts": { b: 7 }, "test/c.test.ts": { c: 5 }, "test/d.test.ts": { d: 3 } };
-  const shards = assignShards(testUnits(Object.keys(timings), timings), 2);
+  const shards = assignShards(testUnits(Object.keys(timings), 15, timings), 2);
   assert.deepEqual(shards.map((shard) => shard.units.map((unit) => unit.name)), [["a", "d"], ["b", "c"]]);
   assert.deepEqual(shards.map((shard) => shard.seconds), [12, 12]);
 });
@@ -106,7 +118,7 @@ test("shard selectors must be <index>/<total> within range", () => {
 
 test("concurrency must be a positive integer", () => {
   assert.equal(parseConcurrency("3"), 3);
-  for (const value of ["0", "-1", "1.5", "two"]) assert.throws(() => parseConcurrency(value), /positive concurrency/u, value);
+  for (const value of ["0", "-1", "1.5", "two", "auto"]) assert.throws(() => parseConcurrency(value), /positive concurrency/u, value);
 });
 
 test("recorded timings read local and CI suite output by file and top-level test", () => {
@@ -136,8 +148,9 @@ test("dry run prints every shard without running tests", () => {
 });
 
 test("the suite runs a shard and prefixes output by unit", () => {
-  // With one shard per unit, the last shard holds exactly one of the shortest units.
-  const total = testUnits(testFiles()).length;
+  // With one shard per unit, the last shard holds exactly one of the shortest units. That many slots keep the minimum target.
+  const total = testUnits(testFiles(), unitSeconds.min).length;
+  assert.equal(unitTarget(total), unitSeconds.min);
   const output = execFileSync(process.execPath, ["--experimental-strip-types", "scripts/test-suite.ts", "--shard", `${total}/${total}`, "--concurrency", "1"],
     { cwd: root, encoding: "utf8" });
   assert.match(output, /^\[[^\]]+\] ℹ tests [1-9]\d*$/mu);

@@ -7,7 +7,7 @@
  *   node --experimental-strip-types scripts/test-suite.ts --record <log>...      rewrite test/test-timings.json
  *
  * Tests inside one process run one after another, so the suite runs in units: groups of one file's
- * top-level tests, packed from `test/test-timings.json` into about `unitSeconds` each. A file with one
+ * top-level tests, packed from `test/test-timings.json` into about `unitTarget` seconds each. A file with one
  * unit runs whole. A file with several runs one process per group (`--test-name-pattern`), except its
  * smallest group, which skips every other group's tests (`--test-skip-pattern`), so tests missing
  * from the timings still run exactly once.
@@ -38,8 +38,18 @@ export type Timings = Readonly<Record<string, Readonly<Record<string, number>>>>
 
 export const testTimings: Timings = measured;
 
-/** Target seconds per unit. A test longer than this is a unit by itself. */
-export const unitSeconds = 15;
+/** Bounds on the target seconds per unit. A test longer than the target is a unit by itself. */
+export const unitSeconds = { min: 15, max: 60 } as const;
+
+/**
+ * Target seconds per unit for a run with `slots` worker slots in total: about three units per slot.
+ * CI's many small slots get short units that balance well; a local run's few slots get long units,
+ * because each unit process spends about 1.5 s loading Pi before its first test.
+ */
+export function unitTarget(slots: number, timings: Timings = testTimings): number {
+  const total = Object.values(timings).reduce((sum, tests) => sum + Object.values(tests).reduce((a, b) => a + b, 0), 0);
+  return Math.min(unitSeconds.max, Math.max(unitSeconds.min, Math.round(total / (slots * 3))));
+}
 
 /** Estimate for a file without timings, so a new file counts as mid-sized until it is recorded. */
 export const unmeasuredSeconds = 10;
@@ -86,23 +96,23 @@ export function testFiles(): string[] {
 
 const unitName = (file: string): string => file.replace(/^test\//u, "").replace(/\.test\.[^.]+$/u, "");
 
-/** Packs tests longest first into groups of about `unitSeconds`, each test into the first group it fits. */
-function packTests(tests: Readonly<Record<string, number>>): Array<{ tests: string[]; seconds: number }> {
+/** Packs tests longest first into groups of about `target` seconds, each test into the first group it fits. */
+function packTests(tests: Readonly<Record<string, number>>, target: number): Array<{ tests: string[]; seconds: number }> {
   const groups: Array<{ tests: string[]; seconds: number }> = [];
   for (const [test, seconds] of Object.entries(tests).sort(([a, x], [b, y]) => y - x || a.localeCompare(b))) {
-    const group = groups.find((candidate) => candidate.seconds + seconds <= unitSeconds);
+    const group = groups.find((candidate) => candidate.seconds + seconds <= target);
     if (group) { group.tests.push(test); group.seconds += seconds; } else groups.push({ tests: [test], seconds });
   }
   return groups;
 }
 
-/** Expands files into units from `timings`. */
-export function testUnits(files: readonly string[], timings: Timings = testTimings): TestUnit[] {
+/** Expands files into units of about `target` seconds from `timings`. */
+export function testUnits(files: readonly string[], target: number, timings: Timings = testTimings): TestUnit[] {
   return files.flatMap((file): TestUnit[] => {
     const name = unitName(file);
     const tests = Object.hasOwn(timings, file) ? timings[file] : undefined;
     if (!tests) return [{ kind: "tests", name, file, seconds: unmeasuredSeconds }];
-    const groups = packTests(tests);
+    const groups = packTests(tests, target);
     const seconds = (group: { seconds: number }): number => Math.max(1, Math.round(group.seconds));
     if (groups.length < 2) return [{ kind: "tests", name, file, seconds: seconds(groups[0] ?? { seconds: 0 }) }];
     const rest = groups.reduce((least, group) => group.seconds < least.seconds ? group : least);
@@ -203,7 +213,7 @@ export function recordTimings(logs: readonly string[], files: readonly string[])
 async function runUnit(unit: Unit): Promise<UnitResult> {
   // Inside a test process, NODE_TEST_CONTEXT would make the unit stream results to that test runner instead of reporting them.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "NODE_TEST_CONTEXT"));
-  const child = spawn(process.execPath, unitArguments(unit), { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const child = spawn(process.execPath, unitArguments(unit), { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   const topLevel: TopLevel[] = [];
   const relay = (stream: NodeJS.ReadableStream, sink: NodeJS.WriteStream): void => {
     let pending = "";
@@ -252,8 +262,8 @@ export async function runSuite(units: readonly Unit[], concurrency: number): Pro
 }
 
 /**
- * Parses `--concurrency`. The default of four units stays below the point where scenarios contend for CPU:
- * on a 12-core laptop, 12 units ran each test 2.3 times slower than 4 did, for little more throughput.
+ * Parses `--concurrency`. The default of four units is what a 12-thread desktop sustains: four units already
+ * kept about seven threads busy, and eight saturated the machine and made scenarios time out.
  */
 export function parseConcurrency(value: string): number {
   const concurrency = Number(value);
@@ -280,7 +290,7 @@ async function main(): Promise<number> {
   const concurrency = parseConcurrency(values.concurrency);
   const repeats = Number(values["lifecycle-repeats"]);
   if (!Number.isSafeInteger(repeats) || repeats < 0) throw new Error(`Expected a non-negative lifecycle repeat count, got "${values["lifecycle-repeats"]}"`);
-  const shards = assignShards([...testUnits(testFiles()), ...lifecycleUnits(repeats)], total);
+  const shards = assignShards([...testUnits(testFiles(), unitTarget(total * concurrency)), ...lifecycleUnits(repeats)], total);
   if (values["dry-run"]) {
     shards.forEach((shard, position) => console.log(`shard ${position + 1}/${total}: ~${shard.seconds}s\n${shard.units.map((unit) => `  ${unit.name} ~${unit.seconds}s`).join("\n")}`));
     return 0;
