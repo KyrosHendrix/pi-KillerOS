@@ -58,7 +58,7 @@ async function withHooks(t: TestContext, scenarioId: string, run: (fixture: {
   const config = path.join(project, ".pi", "killeros-hooks.json");
   for (const folder of [project, agent, path.dirname(config), path.join(directory, "tmp")]) mkdirSync(folder, { recursive: true });
   // Keep receipt scans inside the disposable project instead of the parent checkout.
-  execFileSync("git", ["init", "--quiet", project], { windowsHide: true });
+  execFileSync("git", ["init", "--quiet", project]);
   const probe = path.join(directory, "reload.mjs");
   const mutator = path.join(directory, "mutate-input.mjs");
   const tuiSettlement = path.join(directory, "tui-settled");

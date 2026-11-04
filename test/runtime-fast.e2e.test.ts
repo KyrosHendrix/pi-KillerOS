@@ -97,7 +97,7 @@ function createFamily(root: string, name: string): Family {
     if (value !== undefined) env[key] = value;
   }
   // Bound passive receipt/footer scans to the fixture, not the enclosing development checkout.
-  execFileSync("git", ["init", "--quiet"], { cwd: project, env, windowsHide: true, stdio: "pipe" });
+  execFileSync("git", ["init", "--quiet"], { cwd: project, env, stdio: "pipe" });
   return { directory, project, agent, env };
 }
 
@@ -279,7 +279,7 @@ test("real Pi /codex-fast controls process-local state, status, and footer", { t
         "--model", "openai-codex/codex-local", "--thinking", "off", "--no-context-files", "--no-skills", "--no-prompt-templates",
         "--no-themes", "--no-mcp", "--no-extensions", "--extension", path.join(repositoryRoot, "Killeros.ts"),
         "--session", path.join(family.directory, `session-oneshot-${mode}.jsonl`), "--offline",
-        "/codex-fast status"], { cwd: family.project, env: family.env, encoding: "utf8", timeout: 90_000, windowsHide: true });
+        "/codex-fast status"], { cwd: family.project, env: family.env, encoding: "utf8", timeout: 90_000 });
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
       oneShotResults[mode] = { code: result.status, output: output.slice(-400) };
       assert.equal(result.status, 0, `${mode} one-shot exits cleanly with the command registered`);

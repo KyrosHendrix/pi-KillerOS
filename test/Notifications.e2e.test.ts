@@ -190,7 +190,7 @@ function createFixture(label: string, agentRelativePath = "agent", createAgentDi
   const observer = path.join(root, "observer.jsonl");
   const session = path.join(sessions, "notification-session.jsonl");
   mkdirSync(project, { recursive: true });
-  execFileSync("git", ["init", "--quiet", project], { windowsHide: true, stdio: "pipe" });
+  execFileSync("git", ["init", "--quiet", project], { stdio: "pipe" });
   if (createAgentDirectory) mkdirSync(agent, { recursive: true });
   mkdirSync(sessions);
   mkdirSync(temporary);
@@ -862,7 +862,6 @@ async function runOneShotMode(options: {
       timeout: observerTimeoutMs,
       maxBuffer: 1_048_576,
       signal: options.signal,
-      windowsHide: true,
     });
     let stdinFailure: unknown;
     try {

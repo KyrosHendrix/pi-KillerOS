@@ -22,6 +22,12 @@ test("real Pi receipts report only the response delta with bounded Git metadata"
     const family = createFamily(repositoryRoot, "delta");
     directories.push(family.directory);
     initRepository(family.project);
+    // An owned npm fixture fails at once, like the fixture manifest's test script; KillerOS still observes
+    // actual native bash tool results. It sits outside the project so the receipt deltas stay exact.
+    const bin = path.join(family.directory, "check-bin");
+    mkdirSync(bin);
+    writeFileSync(path.join(bin, "npm"), "#!/bin/sh\nexit 1\n");
+    family.env.PATH = bin + path.delimiter + family.env.PATH;
     writeFileSync(path.join(family.project, "rename-me.txt"), "rename\nkept\nstable\n");
     git(family.project, "add", "rename-me.txt");
     git(family.project, "commit", "-q", "-m", "rename source");
@@ -902,11 +908,11 @@ test("real Pi receipt never executes repository-controlled Git code or filters",
     git(source, "add", ".");
     git(source, "commit", "-q", "-m", "fixture");
     const promised = git(source, "rev-parse", "HEAD:big.bin").toString("utf8").trim();
-    execFileSync("git", ["clone", "-q", source, clone], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    execFileSync("git", ["clone", "-q", source, clone], { stdio: ["ignore", "pipe", "pipe"] });
     for (const entry of readdirSync(path.join(clone, ".git", "objects", "pack"))) {
       if (!entry.endsWith(".pack")) continue;
       execFileSync("git", ["unpack-objects"], { cwd: clone, input: readFileSync(path.join(clone, ".git", "objects", "pack", entry)),
-        stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+        stdio: ["pipe", "pipe", "pipe"] });
     }
     for (const entry of readdirSync(path.join(clone, ".git", "objects", "pack"))) {
       rmSync(path.join(clone, ".git", "objects", "pack", entry));
@@ -1443,7 +1449,7 @@ test("receipt settlement rescans without watcher delivery and while filters chan
     git(family.project, "-c", `filter.race.clean=${command}`, "hash-object", "--path=clean.txt", "clean.txt");
     assert.equal(readFileSync(sentinel, "utf8"), "executed");
     rmSync(sentinel);
-    const gitFile = execFileSync("where.exe", ["git.exe"], { encoding: "utf8", windowsHide: true }).trim().split(/\r?\n/u)[0];
+    const gitFile = execFileSync("where.exe", ["git.exe"], { encoding: "utf8" }).trim().split(/\r?\n/u)[0];
     assert.ok(gitFile);
     writeFileSync(extension, `import fs from "node:fs";
 import promises from "node:fs/promises";
@@ -1524,7 +1530,7 @@ test("native receipts preserve Windows alias and symlink safety", { timeout: 60_
         const canonical = path.resolve(family.project);
         const alias = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
           "(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:KILLEROS_SHORT_PATH).ShortPath"],
-        { env: { ...process.env, KILLEROS_SHORT_PATH: canonical }, encoding: "utf8", windowsHide: true, timeout: 10_000 }).trim();
+        { env: { ...process.env, KILLEROS_SHORT_PATH: canonical }, encoding: "utf8", timeout: 10_000 }).trim();
         if (alias.toLowerCase() === canonical.toLowerCase()) {
           outcomes.push({ kind, capability: "Filesystem does not provide an 8.3 alias", piLaunches: 0 });
           continue;
@@ -1567,7 +1573,7 @@ test("native receipts preserve Windows alias and symlink safety", { timeout: 60_
           mutate: () => { rmSync(link); symlinkSync(destination, link, "file"); },
           verify: receipt => {
             const oracle = execFileSync("git", ["hash-object", "--no-filters", "--stdin"], { cwd: family.project,
-              input: destination, encoding: "utf8", windowsHide: true }).trim();
+              input: destination, encoding: "utf8" }).trim();
             const summary = fileSummary(receipt.changes);
             assert.equal(summary.state, "available");
             assert.deepEqual(summary.files.map(file => file.path), oracle === indexId ? [] : ["link"]);

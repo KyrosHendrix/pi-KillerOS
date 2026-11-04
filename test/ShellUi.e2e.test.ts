@@ -113,7 +113,7 @@ test("Git branch resolution is asynchronous, selector-safe, trusted, and disposa
     socket.once("close", () => { clearTimeout(timer); sockets.delete(socket); });
   });
   let gitLaunches = 0;
-  const git = (cwd: string, args: string[]): void => { gitLaunches++; execFileSync("git", args, { cwd, windowsHide: true, timeout: 5_000 }); };
+  const git = (cwd: string, args: string[]): void => { gitLaunches++; execFileSync("git", args, { cwd, timeout: 5_000 }); };
   try {
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(pipe, resolve); });
     const inherited = path.join(setup.directory, "inherited");

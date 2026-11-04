@@ -175,7 +175,7 @@ function git(project: string, ...args: string[]): void {
     if (value !== undefined) env[key] = value;
   }
   execFileSync("git", ["-c", "user.email=receipts@fixture.invalid", "-c", "user.name=Receipt Fixture", ...args], {
-    cwd: project, env, stdio: "ignore", windowsHide: true,
+    cwd: project, env, stdio: "ignore",
   });
 }
 
@@ -191,7 +191,7 @@ function initRepository(project: string): void {
 }
 
 function writeProviderConfig(agent: string, port: number, displayName = "receipt model"): void {
-  const gitExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8", windowsHide: true }).trim();
+  const gitExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim();
   writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ tuiMode: "fullscreen", cacheWarming: "off",
     shellPath: path.resolve(gitExecPath, "../../..", "bin/bash.exe"),
     compaction: { enabled: false }, retry: { enabled: false }, defaultThinkingLevel: "off" }));
@@ -237,7 +237,7 @@ export default function(pi) {
     parameters: Type.Object({ command: Type.String() }),
     execute: async (_id, args, signal) => {
       const result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", args.command],
-        { windowsHide: true, signal, timeout: 15000, maxBuffer: 1048576 });
+        { signal, timeout: 15000, maxBuffer: 1048576 });
       return { content: [{ type: "text", text: result.stdout || "PowerShell check completed" }], details: {} };
     },
   });
@@ -1003,6 +1003,12 @@ test("real Pi bounds observed checks and warns once for unavailable change colle
   const cleanupFailures: unknown[] = [];
   try {
     initRepository(family.project);
+    // An owned npm fixture returns the scripted status at once, as in the recognition scenario. KillerOS still
+    // observes actual native bash tool results; 22 real npm starts only added Windows process startup time.
+    const bin = path.join(family.directory, "check-bin");
+    mkdirSync(bin);
+    writeFileSync(path.join(bin, "npm"), "#!/bin/sh\n[ \"$1\" = test ] && exit 0\nexit 1\n");
+    family.env.PATH = bin + path.delimiter + family.env.PATH;
     const port = await provider.listen();
     writeProviderConfig(family.agent, port);
     // The tools still run normally; only this owned repository's Git metadata is unreadable.
@@ -1023,8 +1029,7 @@ test("real Pi bounds observed checks and warns once for unavailable change colle
       cwd: family.project, env: family.env, cols: 120, rows: 80 });
     await terminal.waitForScreen((screen) => screen.includes("KillerOS") && screen.includes("ctx 100%"), { signal: t.signal });
     await Promise.all([
-      // This turn starts 22 real npm checks before settlement, including each Windows process startup.
-      waitForReceiptSettlement(observer.events, 1, t.signal, 75_000),
+      waitForReceiptSettlement(observer.events, 1, t.signal),
       terminal.submitEditorText("run all observed checks", { signal: t.signal }),
     ]);
     const warning = "Warning: Change receipt unavailable: error";
@@ -1300,7 +1305,7 @@ test("real Pi receipt lifecycle settles, discards, and survives navigation at th
           "--session", sessionFile, "--offline", "--approve", "--no-context-files", "--no-skills", "--no-prompt-templates",
           "--no-themes", "--no-mcp", "--no-extensions", "--extension", path.join(repositoryRoot, "Killeros.ts"),
           "--extension", observer.extension, `complete the ${mode} receipt boundary`],
-        { cwd: family.project, env: family.env, windowsHide: true, timeout: 30_000, maxBuffer: 2_097_152, signal: t.signal });
+        { cwd: family.project, env: family.env, timeout: 30_000, maxBuffer: 2_097_152, signal: t.signal });
       invocation.child.stdin?.end();
       const [result] = await Promise.all([invocation, waitForReceiptSettlement(observer.events, 1, t.signal)]);
       assert.equal(invocation.child.exitCode, 0, `${mode} exits naturally`);

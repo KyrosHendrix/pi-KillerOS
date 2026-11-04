@@ -1127,7 +1127,7 @@ async function createGoalFixture(
     mkdirSync(agent);
     mkdirSync(project);
     // Keep receipt scans inside the fixture rather than the enclosing checkout.
-    execFileSync("git", ["init", "--quiet"], { cwd: project, windowsHide: true, stdio: "pipe" });
+    execFileSync("git", ["init", "--quiet"], { cwd: project, stdio: "pipe" });
     mkdirSync(sessions);
     mkdirSync(temporary);
 
@@ -3313,9 +3313,9 @@ test("file proof binds only to one exact, path-shaped deliverable", { timeout: 9
         const value = inherited.get(key.toLowerCase());
         if (value !== undefined) tuiEnv[key] = value;
       }
-      execFileSync("git", ["init", "--quiet"], { cwd: tuiProject, env: tuiEnv, windowsHide: true, stdio: "pipe" });
+      execFileSync("git", ["init", "--quiet"], { cwd: tuiProject, env: tuiEnv, stdio: "pipe" });
       const gitRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-        cwd: tuiProject, env: tuiEnv, windowsHide: true, encoding: "utf8",
+        cwd: tuiProject, env: tuiEnv, encoding: "utf8",
       }).trim();
       assert.equal(path.resolve(gitRoot).toLowerCase(), path.resolve(tuiProject).toLowerCase(),
         "the TUI fixture must own its Git repository");

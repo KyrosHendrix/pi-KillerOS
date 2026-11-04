@@ -53,7 +53,6 @@ export class PiRpcProcess {
       cwd: options.cwd,
       env: options.env,
       detached: true,
-      windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
     const stdout = this.child.stdout;
@@ -229,7 +228,7 @@ export class PiRpcProcess {
       forced = true;
       const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
       try {
-        execFileSync(taskkill, ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", timeout: 3_000, windowsHide: true });
+        execFileSync(taskkill, ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", timeout: 3_000 });
       } catch (error) {
         treeCleanupError = errorText(error);
         this.child.kill("SIGKILL");

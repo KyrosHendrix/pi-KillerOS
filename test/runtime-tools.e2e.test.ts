@@ -1397,7 +1397,6 @@ async function assertInvalidCliModifier(selection: string, expectedMessage: stri
       env,
       encoding: "utf8",
       timeout: 20_000,
-      windowsHide: true,
       maxBuffer: 1_048_576,
     });
     assert.equal(result.error, undefined, `${selection}: real Pi CLI must return a parse result without a spawn error`);

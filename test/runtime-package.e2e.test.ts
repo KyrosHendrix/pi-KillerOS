@@ -55,7 +55,7 @@ test("packed KillerOS activates, reloads, and preserves Pi display preferences",
     const npm = (args: string[], cwd: string): string => {
       npmLaunches++;
       return execFileSync(process.execPath, [npmCli, "--userconfig", userConfig, "--globalconfig", globalConfig,
-        "--loglevel", "error", ...args], { cwd, env: npmEnv, encoding: "utf8", timeout: 60_000, maxBuffer: 4_194_304, windowsHide: true });
+        "--loglevel", "error", ...args], { cwd, env: npmEnv, encoding: "utf8", timeout: 60_000, maxBuffer: 4_194_304 });
     };
     npm(["pack", "--pack-destination", pack], root);
     const archives = readdirSync(pack).filter(file => file.endsWith(".tgz"));
@@ -100,7 +100,7 @@ test("packed KillerOS activates, reloads, and preserves Pi display preferences",
       const gitFixture = path.join(owned, "git-fixture");
       if (mode === "tui") {
         mkdirSync(gitFixture);
-        execFileSync("git", ["init", "-q"], { cwd: gitFixture, env, timeout: 30_000, windowsHide: true });
+        execFileSync("git", ["init", "-q"], { cwd: gitFixture, env, timeout: 30_000 });
         writeFileSync(path.join(gitFixture, "untracked.txt"), "new\n");
       }
       writeFileSync(probe, `
@@ -225,7 +225,7 @@ export default function(pi) {
         for (let launch = 0; launch < 2; launch++) {
           piLaunches++;
           const invocation = promisify(execFile)(process.execPath, [cliPath, "--print", ...(mode === "json" ? ["--mode", "json"] : []),
-            ...args, "/package-exit"], { cwd, env, timeout: 30_000, maxBuffer: 1_048_576, signal: t.signal, windowsHide: true });
+            ...args, "/package-exit"], { cwd, env, timeout: 30_000, maxBuffer: 1_048_576, signal: t.signal });
           invocation.child.stdin?.end();
           const result = await invocation;
           assert.doesNotMatch(result.stderr, /Extension error|Failed to load extension|AssertionError/u);
