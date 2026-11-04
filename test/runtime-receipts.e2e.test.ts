@@ -1342,11 +1342,9 @@ function stringField(value: RecordValue, key: string): string {
   return field;
 }
 
-test("native session boundaries discard receipts parked at settlement", { timeout: 180_000 }, async t => {
-  const operations = ["none", "rename", "new", "cancel-new", "reload", "tree", "tree-before-reset", "tree-before-settle", "cancel-tree"];
-  const selected = process.env.KILLEROS_RECEIPT_BOUNDARY_OPERATION;
-  const observations: RecordValue[] = [];
-  for (const operation of operations.filter(value => selected === undefined || selected.split(",").includes(value))) {
+// Each boundary operation is its own test with one Pi launch, so the scheduler can run them in parallel.
+for (const operation of ["none", "rename", "new", "cancel-new", "reload", "tree", "tree-before-reset", "tree-before-settle", "cancel-tree"]) {
+  test(`native session boundaries discard receipts parked at settlement (${operation})`, { timeout: 60_000 }, async t => {
     const family = createFamily(`parked-${operation}`);
     const provider = new ReceiptProvider();
     let terminal: PiTerminalProcess | undefined;
@@ -1504,18 +1502,15 @@ export default function(pi){
       assert.equal(provider.requests.length, 4);
       assert.deepEqual(await terminal.close(), { code: 0, forced: false });
       terminal = undefined;
-      observations.push({ operation, requests: 4, states: ["available", "error"], discard });
-      t.diagnostic(JSON.stringify(observations.at(-1)));
+      t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-parked-boundaries", piLaunches: 1, providerRequests: 4,
+        observation: { operation, requests: 4, states: ["available", "error"], discard }, cleanup: "natural" }));
     } finally {
       if (terminal) await terminal.close();
       await provider.close();
       await removeDirectoryEventually(family.directory);
     }
-  }
-  assert.ok(observations.length > 0);
-  t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-parked-boundaries", piLaunches: observations.length,
-    providerRequests: observations.length * 4, observations, cleanup: "natural" }));
-});
+  });
+}
 
 test("native receipts reject malformed provider rates and count tool and compaction usage", { timeout: 60_000 }, async t => {
   const family = createFamily("provider-metrics");

@@ -1391,16 +1391,66 @@ test("Footer Git status is passive, trusted, and never executes repository code"
   t.diagnostic(JSON.stringify({ piLaunches, families: familyCounts, terminalCleanup, scratchDirectoriesRemoved }));
 });
 
-test("Footer Git status preserves last good counts through failures and recovers without recreation", { timeout: 360_000 }, async (t: TestContext) => {
+/**
+ * FT-04 harness: each recovery history is its own test with one Pi launch. `body` creates families and
+ * starts terminals through the harness, which closes every terminal, reports diagnostics on failure,
+ * and checks natural exit, native resource release, and scratch directory removal.
+ */
+async function footerRecovery(t: TestContext, body: (harness: {
+  createFamily: (...args: Parameters<typeof createFooterFamily>) => FooterFamily;
+  startTerminal: (...args: Parameters<typeof startFooterTerminal>) => PiTerminalProcess;
+  screens: Record<string, string>;
+}) => Promise<void>): Promise<void> {
   const families: FooterFamily[] = [];
   const terminals: PiTerminalProcess[] = [];
   const cleanupFailures: unknown[] = [];
   const screens: Record<string, string> = {};
-  let piLaunches = 0;
   let failure: unknown;
   try {
-    const recovery = createFooterFamily("recovery");
-    families.push(recovery);
+    await body({
+      createFamily: (...args) => { const family = createFooterFamily(...args); families.push(family); return family; },
+      startTerminal: (...args) => { const terminal = startFooterTerminal(...args); terminals.push(terminal); return terminal; },
+      screens,
+    });
+  } catch (error) { failure = error; }
+  finally {
+    for (const terminal of [...terminals].reverse()) {
+      try {
+        const result = await terminal.close();
+        if (result.code !== 0 || result.forced || result.failure) cleanupFailures.push(new Error(`Footer recovery terminal cleanup: ${JSON.stringify(result)}`));
+      } catch (error) { cleanupFailures.push(error); }
+    }
+  }
+  const piLaunches = terminals.length;
+  if (failure !== undefined || cleanupFailures.length > 0) {
+    throwScenarioFailure({ directory: families[0]?.directory ?? repositoryRoot, message: "Footer recovery E2E failed",
+      errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures],
+      diagnostics: JSON.stringify({ directories: families.map((family) => family.directory), platform: process.platform,
+        node: process.version, pi: piVersion, piLaunches,
+        gitStarts: families.map((family) => footerGitStarts(readFooterTrace(family.trace)).length),
+        gitExits: families.map((family) => footerGitExits(readFooterTrace(family.trace)).length), screens,
+        terminals: terminals.map((terminal) => terminal.diagnostics()) }),
+    });
+  }
+  assert.equal(piLaunches, 1, "Each FT-04 history launches Pi once");
+  const familyCounts = families.map((family) => ({ name: family.name,
+    piLaunchedGitChildren: footerGitStarts(readFooterTrace(family.trace)).length,
+    scannerStarts: footerScannerStarts(readFooterTrace(family.trace)).length,
+    fixtureGitCalls: family.fixtureGitCalls }));
+  const terminalCleanup = terminals.map(footerTerminalCleanup);
+  assert.ok(terminalCleanup.every(({ exitCode, nativeResources }) => exitCode === 0 && nativeResources === 0),
+    "All FT-04 Pi terminals exit naturally and release native resources");
+  for (const family of families) await removeDirectoryEventually(family.directory);
+  const scratchDirectoriesRemoved = families.map((family) => ({ directory: family.directory, removed: !existsSync(family.directory) }));
+  assert.ok(scratchDirectoriesRemoved.every(({ removed }) => removed), "Every FT-04 scratch directory is removed");
+  const fixtureGitCalls = familyCounts.reduce((total, family) => total + family.fixtureGitCalls, 0);
+  t.diagnostic(JSON.stringify({ providerRequests: 0, providerRequestBasis: "No model prompt is submitted; no provider server is configured",
+    piLaunches, families: familyCounts, fixtureGitCalls, terminalCleanup, scratchDirectoriesRemoved }));
+}
+
+test("Footer Git status preserves last good counts through failures and recovers without recreation (recovery)", { timeout: 120_000 }, async (t: TestContext) => {
+  await footerRecovery(t, async ({ createFamily, startTerminal, screens }) => {
+    const recovery = createFamily("recovery");
     initFooterRepository(recovery);
     const tracked = path.join(recovery.project, "tracked.txt");
     const added = path.join(recovery.project, "added.txt");
@@ -1412,9 +1462,7 @@ test("Footer Git status preserves last good counts through failures and recovers
     writePassiveFooterConfig(recovery.agent);
 
     const recoveryBefore = readFooterTrace(recovery.trace);
-    const recoveryTerminal = startFooterTerminal(recovery);
-    terminals.push(recoveryTerminal);
-    piLaunches += 1;
+    const recoveryTerminal = startTerminal(recovery);
     const recoveryStartupSequence = recoveryTerminal.sequence;
     screens.recoveryStartup = await recoveryTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
     let events = await waitForFooterGitScan(recovery.trace, recoveryBefore, t.signal,
@@ -1470,9 +1518,12 @@ test("Footer Git status preserves last good counts through failures and recovers
       { signal: t.signal, after: beforeCleanRender });
     assert.equal(footerRenderedGitLine(screens.cleanRecovery), "", "A successful clean scan replaces the last good dirty counts");
     assert.deepEqual(await recoveryTerminal.close(), { code: 0, forced: false });
+  });
+});
 
-    const headStates = createFooterFamily("head-states");
-    families.push(headStates);
+test("Footer Git status preserves last good counts through failures and recovers without recreation (head states)", { timeout: 120_000 }, async (t: TestContext) => {
+  await footerRecovery(t, async ({ createFamily, startTerminal, screens }) => {
+    const headStates = createFamily("head-states");
     initFooterRepository(headStates);
     const unbornTracked = path.join(headStates.project, "unborn.txt");
     const laterAdded = path.join(headStates.project, "later-added.txt");
@@ -1481,12 +1532,10 @@ test("Footer Git status preserves last good counts through failures and recovers
     writePassiveFooterConfig(headStates.agent);
 
     const headBefore = readFooterTrace(headStates.trace);
-    const headTerminal = startFooterTerminal(headStates);
-    terminals.push(headTerminal);
-    piLaunches += 1;
+    const headTerminal = startTerminal(headStates);
     const headStartupSequence = headTerminal.sequence;
     screens.unbornStartup = await headTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    events = await waitForFooterGitScan(headStates.trace, headBefore, t.signal,
+    let events = await waitForFooterGitScan(headStates.trace, headBefore, t.signal,
       { outcome: "success", repository: "present", committed: false });
     screens.unbornDirty = await headTerminal.waitForScreen((screen) => /±1 \[~0 \+1 −0\]/u.test(footerRenderedGitLine(screen)),
       { signal: t.signal, after: headStartupSequence });
@@ -1569,9 +1618,12 @@ test("Footer Git status preserves last good counts through failures and recovers
       { signal: t.signal, after: beforeCommittedRecoveryRender });
     assert.match(footerRenderedGitLine(screens.committedHeadRecovery), /±2 \[~1 \+1 −0\]/u);
     assert.deepEqual(await headTerminal.close(), { code: 0, forced: false });
+  });
+});
 
-    const discovery = createFooterFamily("discovery", { outsideRepository: true });
-    families.push(discovery);
+test("Footer Git status preserves last good counts through failures and recovers without recreation (discovery)", { timeout: 120_000 }, async (t: TestContext) => {
+  await footerRecovery(t, async ({ createFamily, startTerminal, screens }) => {
+    const discovery = createFamily("discovery", { outsideRepository: true });
     initFooterRepository(discovery);
     const discoveryTracked = path.join(discovery.project, "tracked.txt");
     writeFileSync(discoveryTracked, "baseline\n", "utf8");
@@ -1581,12 +1633,10 @@ test("Footer Git status preserves last good counts through failures and recovers
     writePassiveFooterConfig(discovery.agent);
 
     const discoveryBefore = readFooterTrace(discovery.trace);
-    const discoveryTerminal = startFooterTerminal(discovery);
-    terminals.push(discoveryTerminal);
-    piLaunches += 1;
+    const discoveryTerminal = startTerminal(discovery);
     const discoveryStartupSequence = discoveryTerminal.sequence;
     screens.discoveryStartup = await discoveryTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    events = await waitForFooterGitScan(discovery.trace, discoveryBefore, t.signal,
+    let events = await waitForFooterGitScan(discovery.trace, discoveryBefore, t.signal,
       { outcome: "success", repository: "present", committed: true });
     screens.discoveryDirty = await discoveryTerminal.waitForScreen((screen) => /±1 \[~1 \+0 −0\]/u.test(footerRenderedGitLine(screen)),
       { signal: t.signal, after: discoveryStartupSequence });
@@ -1603,16 +1653,17 @@ test("Footer Git status preserves last good counts through failures and recovers
     assert.ok(footerGitFailureCount(events) > footerGitFailureCount(discoveryBeforeFailure),
       "The unavailable discovery reached the selected system Git process");
     assert.deepEqual(await discoveryTerminal.close(), { code: 0, forced: false });
+  });
+});
 
-    const initialUnavailable = createFooterFamily("initial-unavailable", { outsideRepository: true });
-    families.push(initialUnavailable);
+test("Footer Git status preserves last good counts through failures and recovers without recreation (initial unavailable)", { timeout: 120_000 }, async (t: TestContext) => {
+  await footerRecovery(t, async ({ createFamily, startTerminal, screens }) => {
+    const initialUnavailable = createFamily("initial-unavailable", { outsideRepository: true });
     writePassiveFooterConfig(initialUnavailable.agent);
     const unavailableBefore = readFooterTrace(initialUnavailable.trace);
-    const unavailableTerminal = startFooterTerminal(initialUnavailable);
-    terminals.push(unavailableTerminal);
-    piLaunches += 1;
+    const unavailableTerminal = startTerminal(initialUnavailable);
     screens.unavailableStartup = await unavailableTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    events = await waitForFooterGitScan(initialUnavailable.trace, unavailableBefore, t.signal,
+    let events = await waitForFooterGitScan(initialUnavailable.trace, unavailableBefore, t.signal,
       { outcome: "failure", repository: "absent" });
     screens.unavailableFailure = await waitForFooterFailureBarrier(unavailableTerminal, t.signal, "");
     assert.equal(footerRenderedGitLine(screens.unavailableFailure), "", "A failed initial discovery is not rendered as a clean repository");
@@ -1628,40 +1679,7 @@ test("Footer Git status preserves last good counts through failures and recovers
     assert.match(footerRenderedGitLine(screens.unavailableRecovery), /±1 \[~0 \+1 −0\]/u,
       "The same footer instance recovers after an unavailable first refresh");
     assert.deepEqual(await unavailableTerminal.close(), { code: 0, forced: false });
-    assert.equal(piLaunches, 4);
-  } catch (error) { failure = error; }
-  finally {
-    for (const terminal of terminals.reverse()) {
-      try {
-        const result = await terminal.close();
-        if (result.code !== 0 || result.forced || result.failure) cleanupFailures.push(new Error(`Footer recovery terminal cleanup: ${JSON.stringify(result)}`));
-      } catch (error) { cleanupFailures.push(error); }
-    }
-  }
-  if (failure !== undefined || cleanupFailures.length > 0) {
-    throwScenarioFailure({ directory: families[0]?.directory ?? repositoryRoot, message: "Footer recovery E2E failed",
-      errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures],
-      diagnostics: JSON.stringify({ directories: families.map((family) => family.directory), platform: process.platform,
-        node: process.version, pi: piVersion, piLaunches,
-        gitStarts: families.map((family) => footerGitStarts(readFooterTrace(family.trace)).length),
-        gitExits: families.map((family) => footerGitExits(readFooterTrace(family.trace)).length), screens,
-        terminals: terminals.map((terminal) => terminal.diagnostics()) }),
-    });
-  }
-  assert.equal(piLaunches, 4);
-  const familyCounts = families.map((family) => ({ name: family.name,
-    piLaunchedGitChildren: footerGitStarts(readFooterTrace(family.trace)).length,
-    scannerStarts: footerScannerStarts(readFooterTrace(family.trace)).length,
-    fixtureGitCalls: family.fixtureGitCalls }));
-  const terminalCleanup = terminals.map(footerTerminalCleanup);
-  assert.ok(terminalCleanup.every(({ exitCode, nativeResources }) => exitCode === 0 && nativeResources === 0),
-    "All FT-04 Pi terminals exit naturally and release native resources");
-  for (const family of families) await removeDirectoryEventually(family.directory);
-  const scratchDirectoriesRemoved = families.map((family) => ({ directory: family.directory, removed: !existsSync(family.directory) }));
-  assert.ok(scratchDirectoriesRemoved.every(({ removed }) => removed), "Every FT-04 scratch directory is removed");
-  const fixtureGitCalls = familyCounts.reduce((total, family) => total + family.fixtureGitCalls, 0);
-  t.diagnostic(JSON.stringify({ providerRequests: 0, providerRequestBasis: "No model prompt is submitted; no provider server is configured",
-    piLaunches, families: familyCounts, fixtureGitCalls, terminalCleanup, scratchDirectoriesRemoved }));
+  });
 });
 
 test("Footer Git refresh timing, watch bursts, and file-count rendering stay bounded", { timeout: 180_000 }, async (t: TestContext) => {

@@ -503,7 +503,8 @@ test("a native provider failure saves a sanitized paused goal and one error noti
   });
 });
 
-test("malformed saved goals and unsafe reports fail closed before dispatch", { timeout: 180_000 }, async t => {
+/** Saved goal states for goals.restore-validation. Each vector is its own test, with one Pi launch. */
+const restoreValidationVectors = (() => {
   const now = Date.now();
   const common = { version: 1, revision: 1, objective: "Reject contradictory state", createdAt: now, updatedAt: now,
     activeMilliseconds: 0, turns: 1, blockedAuditStartTurn: 0, baselineTokens: 0 };
@@ -536,9 +537,19 @@ test("malformed saved goals and unsafe reports fail closed before dispatch", { t
     { label: "zero-turn-limit", state: { ...legacy, maxTurns: 0 }, valid: false },
     { label: "oversized-turn-limit", state: { ...legacy, maxTurns: 10_001 }, valid: false },
   ];
-  assert.equal(vectors.length, 20, "Persisted report vectors are independently selectable in goals.report-validation");
-  assert.equal(vectors.filter(vector => vector.valid).length, 5);
-  for (const vector of vectors) {
+  return vectors;
+})();
+
+test("malformed saved goal vectors cover every rejected and accepted shape", t => {
+  assert.equal(restoreValidationVectors.length, 20, "Persisted report vectors are independently selectable in goals.report-validation");
+  assert.equal(new Set(restoreValidationVectors.map(vector => vector.label)).size, 20, "Vector labels name one test each");
+  assert.equal(restoreValidationVectors.filter(vector => vector.valid).length, 5);
+  t.diagnostic(JSON.stringify({ scenarioId: "goals.restore-validation", validationVectors: 20,
+    piLaunches: 20, providerRequests: 15, fixtureGitLaunches: 0, nestedChildAccounting: "pending" }));
+});
+
+for (const vector of restoreValidationVectors) {
+  test(`malformed saved goals and unsafe reports fail closed before dispatch (${vector.label})`, { timeout: 60_000 }, async t => {
     const probeRejectedGoal = vector.label.startsWith("contradiction-")
       || ["unsafe-revision", "unsafe-turns", "unsafe-duration"].includes(vector.label);
     await history(t, "goals.restore-validation", vector.label, { launches: 1, requests: vector.valid || probeRejectedGoal ? 1 : 0 }, manager => {
@@ -577,11 +588,8 @@ test("malformed saved goals and unsafe reports fail closed before dispatch", { t
         }
       }
     });
-  }
-
-  t.diagnostic(JSON.stringify({ scenarioId: "goals.restore-validation", validationVectors: 20,
-    piLaunches: 20, providerRequests: 15, fixtureGitLaunches: 0, nestedChildAccounting: "pending" }));
-});
+  });
+}
 
 // Catalog ID: goals.report-validation. Preserve the original epoch-zero report inputs.
 test("persisted goal reports authorize only valid bounded decisions", { timeout: 60_000 }, async t => {
@@ -1810,7 +1818,11 @@ test("explicit pause prevents another continuation after accepted goal progress"
 });
 
 // Catalog ID: goals.pause-clear. Native settlement proves cancellation, not private host-call order.
-test("pause and clear cancel goal work while inactive clears preserve unrelated work", { timeout: 240_000 }, async t => {
+/**
+ * goals.pause-clear runs 14 histories (14 Pi launches, 16 provider requests, 14 natural exits) in five
+ * independent groups, one test each. Each group runs its histories through `run` and checks its share.
+ */
+function pauseClearHistories(t: TestContext) {
   const totals = { piLaunches: 0, providerRequests: 0, naturalExits: 0 };
   const run = async (label: string, options: GoalScenarioOptions, exercise: (fixture: GoalScenarioFixture) => Promise<void>) => {
     const summary = await runGoalScenarioHistory(t, "goals.pause-clear", label, options, exercise);
@@ -1818,6 +1830,16 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
     totals.providerRequests += summary.providerRequests;
     totals.naturalExits += summary.naturalExits;
   };
+  const finish = (expected: { histories: number; providerRequests: number }): void => {
+    assert.deepEqual(totals, { piLaunches: expected.histories, providerRequests: expected.providerRequests, naturalExits: expected.histories });
+    t.diagnostic(JSON.stringify({ scenarioId: "goals.pause-clear", histories: expected.histories, inputVectors: expected.histories, ...totals,
+      unresolved: "private call ordering, scheduled-before-turn pause, and host abort failure are not established" }));
+  };
+  return { run, finish };
+}
+
+test("pause and clear cancel goal work while inactive clears preserve unrelated work (clean pause, resume, and clear)", { timeout: 60_000 }, async t => {
+  const { run, finish } = pauseClearHistories(t);
   await run("rpc-clean-pause-resume-clear", { session: {} }, async fixture => {
     const first = fixture.provider.enqueue({ kind: "stop" }, { held: true });
     await launchGoalScenarioRpc(fixture, t.signal);
@@ -1859,6 +1881,11 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
     assert.equal(state.pendingMessageCount, 0);
     assert.equal(fixture.provider.requests.length, 2);
   });
+  finish({ histories: 1, providerRequests: 2 });
+});
+
+test("pause and clear cancel goal work while inactive clears preserve unrelated work (active work)", { timeout: 120_000 }, async t => {
+  const { run, finish } = pauseClearHistories(t);
   for (const mode of ["tui", "rpc"] as const) {
     for (const control of ["pause", "clear"] as const) {
       const objective = `Immediately ${control} active work`;
@@ -1900,6 +1927,11 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
         });
     }
   }
+  finish({ histories: 4, providerRequests: 4 });
+});
+
+test("pause and clear cancel goal work while inactive clears preserve unrelated work (inactive clears)", { timeout: 120_000 }, async t => {
+  const { run, finish } = pauseClearHistories(t);
   for (const status of ["paused", "blocked", "complete"] as const) {
     await run(`clear-${status}-during-unrelated-work`, {
       session: { goal: { state: statusGoal(`${status} objective`, status), event: status } },
@@ -1930,6 +1962,11 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
       assert.ok(rpc.currentSequence >= cursor);
     });
   }
+  finish({ histories: 3, providerRequests: 3 });
+});
+
+test("pause and clear cancel goal work while inactive clears preserve unrelated work (write failure recovery)", { timeout: 120_000 }, async t => {
+  const { run, finish } = pauseClearHistories(t);
   for (const mode of ["tui", "rpc"] as const) {
     for (const control of ["pause", "clear"] as const) {
       await run(`${mode}-${control}-write-failure-recovery`, {
@@ -1987,6 +2024,11 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
       });
     }
   }
+  finish({ histories: 4, providerRequests: 4 });
+});
+
+test("pause and clear cancel goal work while inactive clears preserve unrelated work (first write failure)", { timeout: 120_000 }, async t => {
+  const { run, finish } = pauseClearHistories(t);
   for (const control of ["pause", "clear"] as const) {
     await run(`rpc-${control}-first-write-failure`, {
       session: {}, faultMessage: "\x1b]2;owned\x07\x1b[31mtransient\x1b[0m\0 session write failure",
@@ -2029,9 +2071,7 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
       assert.ok(rpc.currentSequence >= cursor);
     });
   }
-  assert.deepEqual(totals, { piLaunches: 14, providerRequests: 16, naturalExits: 14 });
-  t.diagnostic(JSON.stringify({ scenarioId: "goals.pause-clear", histories: 14, inputVectors: 14, ...totals,
-    unresolved: "private call ordering, scheduled-before-turn pause, and host abort failure are not established" }));
+  finish({ histories: 2, providerRequests: 3 });
 });
 
 test("replacement, start, and edit write failures leave truthful state", { timeout: 240_000 }, async t => {
