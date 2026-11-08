@@ -1261,7 +1261,12 @@ test("Footer Git status preserves last good counts through failures and recovers
 
     const unavailableBeforeRecovery = events;
     const beforeUnavailableRecoveryRender = unavailableTerminal.sequence;
-    initFooterRepository(initialUnavailable);
+    // Build the repository outside the watched project and move it in whole: a scan fired by the watcher during
+    // `git init` would read a half-written .git and record a failure the success wait below cannot outlive.
+    const staging = path.join(initialUnavailable.directory, "staging-repository");
+    mkdirSync(staging);
+    initFooterRepository(initialUnavailable, staging);
+    renameSync(path.join(staging, ".git"), path.join(initialUnavailable.project, ".git"));
     writeFileSync(path.join(initialUnavailable.project, "recovered.txt"), "available after startup\n", "utf8");
     events = await waitForFooterGitScan(initialUnavailable.trace, unavailableBeforeRecovery, t.signal,
       { outcome: "success", repository: "present", committed: false });
