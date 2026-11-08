@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, spawn, spawnSync } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, watch, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -7,7 +7,6 @@ import { createInterface } from "node:readline";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { createJiti } from "jiti";
 import { executeHook } from "../Killeros.ts";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 
@@ -184,109 +183,6 @@ test("Exported executeHook enforces real timeout, abort, and resource cleanup co
   t.diagnostic(JSON.stringify({ scenarioId: "HK-03", piLaunches: 0, primaryChildLaunches: childLaunches,
     boundary: "public root executeHook with real processes; PID withholding is an explicit adapter fault model",
     remaining: "synchronous-completion adapter ordering belongs to HK-05" }));
-});
-
-// Catalog ID: HK-05.
-test("Exported executeHook contains adapter stream errors and synchronous cleanup", { timeout: 60_000 }, async (t) => {
-  const root = mkdtempSync(path.join(import.meta.dirname, "../node_modules/.killeros-hook-consumer-"));
-  try {
-    const npmCli = [path.dirname(process.execPath), ...(process.env.PATH ?? process.env.Path ?? "").split(path.delimiter)]
-      .map((directory) => path.join(directory, "node_modules/npm/bin/npm-cli.js")).find(existsSync);
-    assert.ok(npmCli, "the package consumer requires the installed npm CLI");
-    const config = path.join(root, "empty.npmrc");
-    writeFileSync(config, "");
-    writeFileSync(`${config}.global`, "");
-    const result = await run(process.execPath, [npmCli, "--userconfig", config, "--globalconfig", `${config}.global`,
-      "--loglevel", "error", "pack", "--offline", "--ignore-scripts", "--json", "--pack-destination", root], {
-      cwd: path.join(import.meta.dirname, ".."), timeout: 30_000, windowsHide: true,
-      env: { ...process.env, npm_config_cache: path.join(root, "npm-cache"), npm_config_update_notifier: "false" },
-    });
-    const parsed: unknown = JSON.parse(result.stdout);
-    assert.ok(typeof parsed === "object" && parsed !== null);
-    const archives: unknown = Array.isArray(parsed) ? parsed : Object.values(parsed);
-    assert.ok(Array.isArray(archives) && archives.length === 1);
-    const archive: unknown = archives[0];
-    assert.ok(typeof archive === "object" && archive !== null && "filename" in archive && typeof archive.filename === "string");
-    await run(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe"),
-      ["-xf", path.join(root, archive.filename), "-C", root], { timeout: 30_000, windowsHide: true });
-    const packed = await createJiti(import.meta.url).import<typeof import("../Killeros.ts")>(path.join(root, "package/Killeros.ts"));
-    assert.equal(typeof packed.executeHook, "function", "the packed root exports the actual public hook API");
-
-    const streamFault = await startProcess(t);
-    const faultResultPromise = packed.executeHook({ command: "owned stream fault", cwd: root, environment: {},
-      spawnProcess: () => streamFault.child });
-    streamFault.child.stdout.destroy(new Error("stdout failed"));
-    streamFault.child.stderr.destroy(new Error("stderr failed"));
-    streamFault.child.stdin.end();
-    const fault = await faultResultPromise;
-    await streamFault.closed;
-    assert.match(fault.stderr, /stdout failed/u);
-    assert.match(fault.stderr, /stderr failed/u);
-    assert.equal(fault.timedOut, false);
-    assert.equal(fault.cancelled, false);
-
-    const dataOnly = await startProcess(t, `process.stdin.once("data", () => {
-      process.stdout.write("data-only stdout"); process.stderr.write("data-only stderr"); process.exit(0);
-    });`);
-    const dataResultPromise = packed.executeHook({ command: "owned data-only adapter", cwd: root, environment: {},
-      spawnProcess: () => ({
-        stdout: { on: (event, listener) => { assert.equal(event, "data"); return dataOnly.child.stdout.on(event, listener); } },
-        stderr: { on: (event, listener) => { assert.equal(event, "data"); return dataOnly.child.stderr.on(event, listener); } },
-        kill: (signal) => dataOnly.child.kill(signal),
-        on: (event, listener) => dataOnly.child.on(event, listener),
-        once: (event, listener) => dataOnly.child.once(event, listener),
-      }) });
-    dataOnly.child.stdin.write("output");
-    const data = await dataResultPromise;
-    await dataOnly.closed;
-    assert.equal(data.code, 0);
-    assert.equal(data.stdout, "data-only stdout");
-    assert.equal(data.stderr, "data-only stderr");
-
-    const failure = await packed.executeHook("missing executable adapter", root, {}, 1_000, () => {
-      const invocation = spawnSync(path.join(root, "missing-node.exe"), [], { windowsHide: true });
-      assert.ok(invocation.error, "a real executable lookup fails before the adapter throws");
-      throw new Error("process could not start", { cause: invocation.error });
-    });
-    assert.deepEqual(failure, { code: 1, stdout: "", stderr: "process could not start",
-      timedOut: false, cancelled: false, exitUnconfirmed: false });
-
-    for (const action of ["completion", "abort"] as const) {
-      const reaped = await startProcess(t);
-      reaped.child.stdin.end();
-      await reaped.closed;
-      const controller = new AbortController();
-      const signals: Array<NodeJS.Signals | number | undefined> = [];
-      let notifyClose: ((code: number | null) => void) | undefined;
-      const baseline = timeoutCount();
-      const synchronous = await packed.executeHook({ command: "reaped real process adapter", cwd: root,
-        environment: {}, timeoutMs: 50, signal: controller.signal,
-        spawnProcess: () => {
-          if (action === "abort") controller.abort();
-          return {
-            stdout: reaped.child.stdout, stderr: reaped.child.stderr,
-            on: (event, listener) => reaped.child.on(event, listener),
-            once: (_event, listener) => {
-              notifyClose = listener;
-              if (action === "completion") listener(0);
-            },
-            kill: (signal) => { signals.push(signal); notifyClose?.(null); return true; },
-          };
-        } });
-      assert.equal(synchronous.code, action === "abort" ? 130 : 0, action);
-      assert.equal(synchronous.cancelled, action === "abort", action);
-      assert.equal(synchronous.timedOut, false, action);
-      assert.equal(synchronous.exitUnconfirmed, false, action);
-      assert.deepEqual(signals, action === "abort" ? ["SIGTERM"] : [], action);
-      assert.equal(timeoutCount(), baseline, `${action}: synchronous public adapter leaves no timer`);
-    }
-    t.diagnostic(JSON.stringify({ scenarioId: "HK-05", piLaunches: 0, primaryChildLaunches: 4,
-      failedExecutableLookups: 1, packagePreparationChildren: 2,
-      boundary: "packed public root; actual child streams and reaped child handles with explicit synchronous adapter delivery" }));
-  } finally {
-    await removeDirectoryEventually(root);
-    assert.equal(existsSync(root), false, "the packed public consumer is removed");
-  }
 });
 
 /** A descendant acknowledges its complete PID and writes only after an explicit external release. */

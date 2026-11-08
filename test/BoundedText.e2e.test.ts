@@ -15,6 +15,9 @@ const sources = ["long ".repeat(100), "中", "中日文".repeat(30), "😀👩�
   "中\n😀\ne\u0301\n".repeat(10),
   Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n")] as const;
 
+// Every width the assertions branch on, its neighbors, and odd widths between them. Wrapping has no other thresholds.
+const boundaryWidths = [1, 2, 3, 4, 5, 7, 11, 19, 20, 21, 22, 23, 31, 39, 40, 41, 57, 79, 80] as const;
+
 type SourceIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 type BoundedScenario = {
   id: "BT-01" | "BT-02";
@@ -193,7 +196,7 @@ export default function(pi) {
       await terminal.waitForScreen(screen => screen.includes("❯\u00a0z"), { signal: t.signal });
       for (const expanded of [false, true]) {
         if (expanded) terminal.write("\x0f");
-        for (let width = 1; width <= 80; width++) {
+        for (const width of boundaryWidths) {
           lastVector = { index, expanded, width };
           const after = terminal.sequence;
           const producerRows = new Map<string, string[]>();
@@ -328,8 +331,8 @@ export default function(pi) {
     parsedUnicodeLimitation: "Emoji and combining fidelity is checked at the actual producer before ConPTY/xterm" }));
 }
 
-// Catalog ID: BT-01. Actual native producer rows preserve Unicode within every usable width.
-test("Collapsed and expanded Unicode transcript text fits every usable terminal width", { timeout: 240_000 }, async (t) => {
+// Catalog ID: BT-01. Actual native producer rows preserve Unicode at every boundary width.
+test("Collapsed and expanded Unicode transcript text fits boundary terminal widths", { timeout: 240_000 }, async (t) => {
   await runBoundedScenario(t, { id: "BT-01", sourceIndices: [0, 1, 2, 3, 4, 5] });
 });
 

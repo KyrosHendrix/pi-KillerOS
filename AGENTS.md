@@ -84,7 +84,7 @@ node --test --test-force-exit --experimental-strip-types test/RepositoryContract
 
 Application scenarios use the real Pi CLI through `test/support/`, not simulated hosts or private helpers.
 
-For host integration, use `test/PiExtensionContract.test.ts` for packed-package activation and reload, `test/runtime-tools.e2e.test.ts` for tool exposure, and `test/runtime-native-provider.e2e.test.ts` for provider transport, sampling, Azure, and capacity retries. Use `test/Editor.e2e.test.ts` for inherited navigation, `test/Hooks.e2e.test.ts` for trust boundaries, and `test/Hooks.system.test.ts` for public hook process cleanup.
+For host integration, use `test/PiExtensionContract.test.ts` for packed-package activation and reload, `test/runtime-tools.e2e.test.ts` for tool exposure, and `test/runtime-native-provider.e2e.test.ts` for provider transport, sampling, Azure, and capacity retries. Use the terminal test in `test/PiExtensionContract.test.ts` for inherited editor navigation, `test/Hooks.e2e.test.ts` for trust boundaries, and `test/Hooks.system.test.ts` for public hook process cleanup.
 
 Before finishing a code change:
 

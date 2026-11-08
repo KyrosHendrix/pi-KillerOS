@@ -2,7 +2,7 @@
  * Runs the full test suite, or one CI shard of it, scheduled by measured duration.
  *
  *   npm test                                                       the full suite, four units at a time
- *   node --experimental-strip-types scripts/test-suite.ts --shard 2/8 --concurrency 2 --lifecycle-repeats 5   one CI shard
+ *   node --experimental-strip-types scripts/test-suite.ts --shard 2/8 --concurrency 2 --lifecycle-repeats 2   one CI shard
  *   node --experimental-strip-types scripts/test-suite.ts --shard 2/8 --dry-run   print every shard's units
  *   node --experimental-strip-types scripts/test-suite.ts --record <log>...      rewrite test/test-timings.json
  *
@@ -70,14 +70,14 @@ export type LifecycleUnit = { kind: "lifecycle"; name: string; files: readonly s
  * process hangs the repeat until the job times out. `--lifecycle-repeats` adds that many units of each.
  */
 export const lifecycles = [
-  { name: "Pi startup", files: ["test/PiStartup.test.ts"], seconds: 5 },
+  { name: "Pi startup", files: ["test/runtime-startup.e2e.test.ts"], seconds: 5 },
   { name: "installed CLI pilot", files: ["test/PiExtensionContract.test.ts"], seconds: 5,
     pattern: "installed Pi CLI completes a goal and restores it without unsolicited model work" },
-  { name: "terminal pilot and fault controls", files: ["test/PiExtensionContract.test.ts", "test/PiTerminalControls.test.ts", "test/PiRpcControls.test.ts"], seconds: 17,
-    pattern: "installed Pi terminal|terminal driver controls report|RPC driver controls" },
+  { name: "terminal pilot", files: ["test/PiExtensionContract.test.ts"], seconds: 5,
+    pattern: "installed Pi terminal" },
   { name: "Pi cancellation", files: ["test/Goals.e2e.test.ts", "test/runtime-native-provider.e2e.test.ts", "test/CompactionTrigger.e2e.test.ts"], seconds: 10,
     pattern: "continuation dispatch respects idle, pending, and cancellation gates|active faux provider retries preserve goal ownership until settlement|Cancelled ordinary and goal compaction cannot recover after an aborted settlement" },
-  { name: "saved tool restoration", files: ["test/PiToolRestoration.e2e.test.ts"], seconds: 3 },
+  { name: "saved tool restoration", files: ["test/runtime-restoration.e2e.test.ts"], seconds: 3 },
 ] as const satisfies ReadonlyArray<Omit<LifecycleUnit, "kind">>;
 
 /** Units that repeat every lifecycle `repeats` times, each repeat in its own process. */
