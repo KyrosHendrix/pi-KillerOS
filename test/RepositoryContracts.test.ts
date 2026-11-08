@@ -374,7 +374,7 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
   assert.deepEqual([...ci.slice(jobsStart).matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
-    ["quality-checks", "quality-tests", "quality", "pi-latest", "pi-latest-tests", "audit", "codeql"]);
+    ["quality-checks", "quality-tests", "quality", "pi-latest", "pi-latest-tests", "pi-latest-suite", "audit", "codeql"]);
 
   // Branch protection requires "Quality"; it passes only when every quality job passed.
   const quality = ciJob("quality");
@@ -456,6 +456,13 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   assert.match(compatibilityTests, /git diff --exit-code -- package\.json package-lock\.json/u);
   assert.ok(compatibilityTests.indexOf("Verify package files are unchanged") > compatibilityTests.indexOf("Install matched Pi packages"));
   assert.ok(compatibilityTests.indexOf("Test shard against matched Pi") > compatibilityTests.indexOf("Verify package files are unchanged"));
+  // Branch protection requires "Pi compatibility (latest) suite"; a failed shard must fail it, and shards may skip only without a newer Pi.
+  const compatibilitySuite = ciJob("pi-latest-suite");
+  assert.match(compatibilitySuite, /^    name: Pi compatibility \(latest\) suite$/mu);
+  assert.match(compatibilitySuite, /^    needs: \[pi-latest, pi-latest-tests\]$/mu);
+  assert.match(compatibilitySuite, /^    if: always\(\)$/mu);
+  assert.match(compatibilitySuite, /test "\$LATEST" = success/u);
+  assert.match(compatibilitySuite, /if \[ "\$FULL_SUITE" = true \]; then test "\$SHARDS" = success; else test "\$SHARDS" = skipped; fi/u);
   const target = /^          PI_TARGET: '([^']+)'$/mu.exec(compatibilityJob)?.[1];
   assert.equal(target, packageJson.peerDependencies["@earendil-works/pi-coding-agent"]);
   assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version/u);

@@ -243,6 +243,23 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  pi-latest-suite:
+    # Branch protection requires this check: the shards may skip only when the newest Pi matches the lockfile.
+    name: Pi compatibility (latest) suite
+    needs: [pi-latest, pi-latest-tests]
+    if: always()
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the compatibility check and every shard it started
+        env:
+          FULL_SUITE: ${{ needs.pi-latest.outputs.full-suite }}
+          LATEST: ${{ needs.pi-latest.result }}
+          SHARDS: ${{ needs.pi-latest-tests.result }}
+        run: |
+          test "$LATEST" = success
+          if [ "$FULL_SUITE" = true ]; then test "$SHARDS" = success; else test "$SHARDS" = skipped; fi
+
   audit:
     name: Dependency audit
     # Static analysis runs no repository code, so it uses the faster Linux runner.
