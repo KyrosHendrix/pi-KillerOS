@@ -401,7 +401,8 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
     assert.match(source, /^      fail-fast: false$/mu);
     assert.match(source, new RegExp(`^    name: .+ \\(\\$\\{\\{ matrix\\.shard \\}\\}/${shards.length}\\)$`, "mu"));
     assert.match(source, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
-    const command = `node --experimental-strip-types scripts/test-suite.ts --shard \${{ matrix.shard }}/${shards.length} --concurrency 2 --lifecycle-repeats 2`;
+    const matrixShard = ["$", "{{ matrix.shard }}"].join("");
+    const command = `node --experimental-strip-types scripts/test-suite.ts --shard ${matrixShard}/${shards.length} --concurrency 2 --lifecycle-repeats 2`;
     assert.ok(source.split(/\r?\n/u).includes(`        run: ${command}`), `${job} must run: ${command}`);
     assert.doesNotMatch(source, /--test-force-exit/u, `${job}: lifecycle flags belong to scripts/test-suite.ts`);
     return command;
