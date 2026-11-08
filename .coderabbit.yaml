@@ -1,7 +1,14 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # CodeRabbit reviews every pull request and push. AGENTS.md owns the contracts; these instructions point reviewers at them.
+# main requires one approving review and the CodeRabbit check, so CodeRabbit's verdict decides whether a pull request can merge.
 language: "en-US"
 reviews:
+  # Request changes for blocking findings; approve only after they are resolved on the latest commit.
+  auto_approvals:
+    enabled: true
+    allow_author_approval: false
+  # A review that errors fails the required CodeRabbit check instead of passing it.
+  fail_commit_status: true
   auto_review:
     enabled: true
     drafts: true
