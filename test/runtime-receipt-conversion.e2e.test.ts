@@ -38,8 +38,7 @@ async function withIsolatedHome<T>(directory: string, body: () => Promise<T>): P
   }
 }
 
-// autocrlf=true converts in both directions; false and input add no receipt path of their own.
-for (const autoCrlf of ["true"] as const) {
+for (const autoCrlf of ["false", "true", "input"] as const) {
   test(`native receipt paths agree with Git across the conversion matrix (autocrlf ${autoCrlf})`, { timeout: 120_000 }, async () => {
     const family = createFamily(repositoryRoot, `conversion-${autoCrlf}`);
     try {

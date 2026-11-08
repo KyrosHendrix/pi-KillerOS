@@ -261,7 +261,9 @@
     "installed Pi print and JSON preserve trust and reject interactive workflows": 10
   },
   "test/runtime-receipt-conversion.e2e.test.ts": {
-    "native receipt paths agree with Git across the conversion matrix (autocrlf true)": 2.6
+    "native receipt paths agree with Git across the conversion matrix (autocrlf true)": 2.6,
+    "native receipt paths agree with Git across the conversion matrix (autocrlf false)": 2.6,
+    "native receipt paths agree with Git across the conversion matrix (autocrlf input)": 2.6
   },
   "test/runtime-receipt-git.e2e.test.ts": {
     "native receipt timeouts stay quiet and denied timing saves recover": 3.7,

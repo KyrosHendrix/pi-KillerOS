@@ -2166,6 +2166,8 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       provider.plan(
         provider.questionCall("Navigation question", [{ label: "Alpha" }]),
         provider.text("Q5T1 DONE"),
+        provider.questionCall("History reuse", [{ label: "Alpha" }]),
+        provider.text("Q5TH DONE"),
         provider.questionCall("Post navigation question", [{ label: "After" }]),
         provider.text("Q5T2 DONE"),
       );
@@ -2189,8 +2191,24 @@ test("Question cancellation and invalidation never publish a late answer", { tim
         "invalidate:tree-refused: the public navigation refuses during a pending question");
       assert.ok(!abortedMessage.test(String(screens.treeDialogAfterRefusal)),
         "invalidate:tree-refused: the refused navigation does not abort the pending question");
-      await chooseOffered(terminal, /1\. Alpha/u, "invalidate:tree-refused", { signal: t.signal });
+      await chooseOffered(terminal, /Custom answer/u, "invalidate:tree-refused", { signal: t.signal });
+      await waitForInputDialog(terminal, "Custom answer", { signal: t.signal });
+      await submitInputDialog(terminal, "Kept", { signal: t.signal, controlDirectory: control });
       await terminal.waitForScreen((screen) => screen.includes("Q5T1 DONE"), { signal: t.signal });
+      assert.equal(singleResult(sessionFile, 0, "invalidate:tree-refused").details?.answer, "Kept");
+
+      // Vector history:reuse: the dialog offers the saved custom answer and publishes it without retyping.
+      await submitEditorText(terminal, "q5 th", { signal: t.signal });
+      await waitForSelector(terminal, "History reuse", { signal: t.signal });
+      await chooseOffered(terminal, /More actions/u, "history:reuse", { signal: t.signal });
+      await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
+      await chooseOffered(terminal, /Recent answers/u, "history:reuse", { signal: t.signal });
+      screens.recentAnswers = await waitForSelector(terminal, "Recent answers", { signal: t.signal, dialogTitle: /^Recent answers$/u });
+      assert.deepEqual(readChoices(String(screens.recentAnswers)).entries.map((entry) => entry.text), ["1. Kept"],
+        "history:reuse: Recent answers lists the saved custom answer");
+      await chooseOffered(terminal, /1\. Kept/u, "history:reuse", { signal: t.signal });
+      await terminal.waitForScreen((screen) => screen.includes("Q5TH DONE"), { signal: t.signal });
+      assert.equal(singleResult(sessionFile, 1, "history:reuse").details?.answer, "Kept");
 
       // Vector invalidate:tree-commit: the same navigation commits once idle, through the real session_tree path.
       await submitEditorText(terminal, "/fixture-arm nav-commit", { signal: t.signal });
@@ -2200,17 +2218,23 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       await terminal.waitForScreen((screen) => screen.includes("Navigated to selected point"), { signal: t.signal, after: commitCursor });
       await waitForControlFile(path.join(control, "nav-result"), (content) => content.includes("\"cancelled\":false"), "invalidate:tree-commit");
 
-      // A fresh question works after the committed navigation.
+      // A fresh question works after the committed navigation, and session_tree cleared the saved answers.
       await submitEditorText(terminal, "q5 t2", { signal: t.signal });
       await waitForSelector(terminal, "Post navigation question", { signal: t.signal });
+      await chooseOffered(terminal, /More actions/u, "history:tree-clear", { signal: t.signal });
+      screens.moreAfterNavigation = await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
+      assert.ok(!readChoices(String(screens.moreAfterNavigation)).entries.some((entry) => /Recent answers/u.test(entry.text)),
+        "history:tree-clear: committed tree navigation clears recent answers");
+      terminal.write(dialogCancel);
+      await waitForSelector(terminal, "Post navigation question", { signal: t.signal, entry: mainSelectorEntry });
       await chooseOffered(terminal, /1\. After/u, "invalidate:tree-fresh", { signal: t.signal });
       await terminal.waitForScreen((screen) => screen.includes("Q5T2 DONE"), { signal: t.signal });
       const treeResults = readQuestionResults(sessionFile);
-      assert.equal(treeResults.length, 2, "invalidate:tree-fresh: both the pending and the fresh question publish");
+      assert.equal(treeResults.length, 3, "invalidate:tree-fresh: the pending, reused, and fresh questions publish");
       assert.deepEqual(await terminal.close(), { code: 0, forced: false }, "the tree family exits naturally");
       terminal = undefined;
       await provider.close();
-      observations.push({ family: "tree", providerRequests: 4 });
+      observations.push({ family: "tree", providerRequests: 6 });
     } catch (error) {
       failures.push(error);
     } finally {
