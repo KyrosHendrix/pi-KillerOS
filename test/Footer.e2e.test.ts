@@ -248,6 +248,7 @@ function isFooterRecord(value: unknown): value is FooterRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Creates an isolated footer fixture with its own project, agent, sessions, and Git trace, optionally outside any repository. */
 function createFooterFamily(name: string, options: { outsideRepository?: boolean; path?: string } = {}): FooterFamily {
   // Corrupting HEAD must not let Git discover the checkout above the fixture.
   const parent = os.tmpdir();
@@ -979,6 +980,7 @@ function footerGitFailureCount(events: readonly FooterTraceEvent[]): number {
  */
 const footerScanCommands = 5;
 
+/** Waits until the footer's Git trace shows `count` more complete scans with the expected outcome after `before`. */
 async function waitForFooterGitScan(
   trace: string,
   before: readonly FooterTraceEvent[],

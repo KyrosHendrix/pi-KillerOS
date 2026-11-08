@@ -67,6 +67,7 @@ const EDITOR_SUGGESTIONS = [
   'Try "draft an implementation plan for <feature>"',
 ] as const;
 
+/** Resolves the current branch with passive Git, or undefined for an untrusted project, no safe Git binary, or a failed lookup. */
 export function resolveGitBranch(cwd: string, trusted = true): Promise<string | undefined> {
   if (!trusted) return Promise.resolve(undefined);
   let gitCommand: string | undefined;

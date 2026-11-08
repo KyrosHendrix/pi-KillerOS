@@ -170,6 +170,7 @@ function createParserObservers() {
     onBell() { bells += 1; },
   };
 }
+/** Creates an isolated notification fixture with its own project, agent, sessions, and observer log. */
 function createFixture(label: string, agentRelativePath = "agent", createAgentDirectory = true): Fixture {
   const root = mkdtempSync(path.join(repositoryRoot, "node_modules", `.killeros-notification-${label}-`));
   const project = path.join(root, "project");

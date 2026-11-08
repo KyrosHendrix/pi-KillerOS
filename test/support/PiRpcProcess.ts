@@ -213,6 +213,7 @@ export class PiRpcProcess {
     return await this.closePromise;
   }
 
+  /** Ends Pi's stdin and waits for a natural exit; past `timeoutMs`, force-stops the owned process tree and reports whether cleanup was forced or uncertain. */
   private async closeOwned(timeoutMs: number): Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> {
     if (this.child.stdin && !this.child.stdin.destroyed && !this.child.stdin.writableEnded) this.child.stdin.end();
     let exit = await this.waitForExit(timeoutMs);

@@ -75,6 +75,7 @@ export async function passiveWorktreeSettings(runGit: PassiveGitRunner): Promise
     values.set(key, [...values.get(key) ?? [], separator < 0 ? "true" : record.slice(separator + 1)]);
   }
   if (!values.has("killeros.probe")) throw new Error("incomplete Git settings");
+  /** Returns a boolean setting's last value, true when unset, and throws when any value is not a Git boolean. */
   const bool = (key: string): boolean => {
     const all = values.get(key) ?? ["true"];
     if (all.some((value) => value !== "true" && value !== "false")) throw new Error(`invalid ${key}`);

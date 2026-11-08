@@ -235,6 +235,7 @@ class WorkedForV4Component implements Component {
     this.theme = theme;
   }
 
+  /** Returns the receipt laid out for `width`, reusing the last layout while the width is unchanged. */
   render(width: number): string[] {
     if (width <= 0) return [];
     if (this.cached?.width !== width) this.cached = { width, lines: this.layout(width) };
@@ -245,6 +246,7 @@ class WorkedForV4Component implements Component {
     this.cached = undefined;
   }
 
+  /** Lays out the receipt for `width`: the outcome headline followed by its timing, usage, and change details. */
   private layout(width: number): string[] {
     const { data, theme } = this;
     const outcome = OUTCOMES[data.outcome];

@@ -43,6 +43,7 @@ function notifications(events: Record<string, unknown>[]) {
     .map(event => ({ message: event.message, level: event.notifyType }));
 }
 
+/** Runs a hook scenario in a temporary project and agent directory and cleans up every Pi it launched. */
 async function withHooks(t: TestContext, scenarioId: string, run: (fixture: {
   project: string;
   config: string;

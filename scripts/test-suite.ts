@@ -162,6 +162,7 @@ export function unitArguments(unit: Unit): string[] {
   return ["--test", ...nodeTestFlags, ...select, unit.file];
 }
 
+/** Lists the test files a unit runs. */
 const unitFiles = (unit: Unit): readonly string[] => unit.kind === "lifecycle" ? unit.files : [unit.file];
 
 /** A finished top-level test as the spec reporter lists it. */
@@ -218,6 +219,7 @@ async function runUnit(unit: Unit): Promise<UnitResult> {
   const relay = (stream: NodeJS.ReadableStream, sink: NodeJS.WriteStream): void => {
     let pending = "";
     stream.setEncoding("utf8");
+    /** Records a finished top-level test from one reporter line and forwards the line with the unit's prefix. */
     const emit = (line: string): void => {
       const result = parseTopLevel(line);
       if (result) topLevel.push(result);
@@ -243,6 +245,7 @@ async function runUnit(unit: Unit): Promise<UnitResult> {
 export async function runUnits(units: readonly Unit[], concurrency: number): Promise<UnitResult[]> {
   const queue = longestFirst(units);
   const results: UnitResult[] = [];
+  /** Runs queued units one at a time until the queue is empty. */
   const worker = async (): Promise<void> => {
     for (let unit = queue.shift(); unit; unit = queue.shift()) results.push(await runUnit(unit));
   };
@@ -271,6 +274,7 @@ export function parseConcurrency(value: string): number {
   return concurrency;
 }
 
+/** Parses the CLI, then prints the shard plan, records timings, or runs the shard, and resolves to the exit code. */
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     shard: { type: "string", default: "1/1" },

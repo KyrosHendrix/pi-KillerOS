@@ -64,7 +64,7 @@ function transcriptBlock(screen: string, begin: string, end: string): string[] {
   return rows.slice(start + 1, finish).filter(row => row.trim() !== "");
 }
 
-// Both scenarios drive the real native renderers, starting directly at their first owned history.
+/** Drives the real native renderers, starting at their first owned history, through each source collapsed and expanded at every boundary width. */
 async function runBoundedScenario(t: TestContext, { id, sourceIndices }: BoundedScenario): Promise<void> {
   const directory = mkdtempSync(path.join(realpathSync(os.tmpdir()), ".killeros-bounded-text-"));
   const dependencies = path.join(directory, "node_modules");

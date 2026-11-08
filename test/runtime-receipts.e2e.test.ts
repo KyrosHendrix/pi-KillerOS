@@ -167,6 +167,7 @@ function createFamily(name: string): Family {
   return { directory, project, agent, temporary, env };
 }
 
+/** Runs fixture Git in `project` without system or global configuration. */
 function git(project: string, ...args: string[]): void {
   const env: NodeJS.ProcessEnv = { HOME: path.dirname(project), USERPROFILE: path.dirname(project),
     PATH: process.env.PATH ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "NUL" };
@@ -219,7 +220,7 @@ function workedForEntries(sessionFile: string): WorkedForEntry[] {
   return entries;
 }
 
-// Observe native settlement after KillerOS has finished its registered handler.
+/** Writes an extension that records native settlements, and optionally timings, after KillerOS's own settlement handler. */
 function receiptObserver(directory: string, captureTimings = false): { extension: string; events: string; timings: string } {
   const events = path.join(directory, "settlements.jsonl");
   const timings = path.join(directory, "timings.jsonl");

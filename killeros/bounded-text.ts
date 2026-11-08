@@ -14,6 +14,7 @@ export class BoundedText implements Component {
     this.maxRows = maxRows;
   }
 
+  /** Returns the text wrapped to `width`, reusing the last layout while the width is unchanged. */
   render(width: number): string[] {
     if (width <= 0) return [];
     if (this.cached?.width !== width) this.cached = { width, lines: this.layout(width) };
@@ -24,6 +25,7 @@ export class BoundedText implements Component {
     this.cached = undefined;
   }
 
+  /** Wraps the text to `width`; past `maxRows`, keeps the first rows and ends the last one with an ellipsis. */
   private layout(width: number): string[] {
     const lines = new Text(this.text, 0, 0).render(width).map((line) => truncateToWidth(line, width, ""));
     if (this.maxRows === undefined || lines.length <= this.maxRows) return lines;

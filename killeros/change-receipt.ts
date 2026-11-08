@@ -66,6 +66,7 @@ class GitFailure extends Error {
   }
 }
 
+/** Runs the passive Git binary in `cwd` with optional stdin and bounded stdout, rejecting with a GitFailure when Git is unavailable or fails. */
 function runGit(cwd: string, args: readonly string[], input?: Buffer, stdoutLimit = GIT_OUTPUT_LIMIT): Promise<Buffer> {
   let gitCommand: string;
   try {

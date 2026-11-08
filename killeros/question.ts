@@ -89,6 +89,7 @@ type QuestionDetails = SingleQuestionDetails | MultipleQuestionDetails;
 export function registerQuestionTool(pi: ExtensionAPI): void {
   const history = createCustomInputHistory();
   const pendingQuestions = new Set<AbortController>();
+  /** Cancels open questions and forgets custom answers when the session starts, changes tree, or shuts down. */
   const clearCustomInputHistory = (): void => {
     for (const pending of pendingQuestions) pending.abort();
     history.clear();
@@ -110,6 +111,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
     exposure: "model-only",
     executionMode: "sequential",
 
+    /** Opens the question dialog and returns the selection; outside TUI mode or after cancellation it throws instead. */
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const { mode, minSelections, maxSelections } = normalizeQuestionSelection(params);
       if (ctx.mode !== "tui") throw new Error("The question tool requires interactive TUI mode");

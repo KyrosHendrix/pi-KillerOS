@@ -140,6 +140,7 @@ function changedFiles(base: string): string[] {
   return [...new Set([...tracked.split("\n"), ...untracked.split("\n")].filter(Boolean))];
 }
 
+/** Selects the tests that cover the changed files, prints them for --dry-run or runs them, and resolves to the exit code. */
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,

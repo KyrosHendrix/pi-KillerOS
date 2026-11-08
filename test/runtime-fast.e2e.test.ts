@@ -85,6 +85,7 @@ class FastProvider {
 
 type Family = { directory: string; project: string; agent: string; env: NodeJS.ProcessEnv };
 
+/** Creates an isolated fast-mode fixture with its own project, agent directory, and offline Pi environment. */
 function createFamily(root: string, name: string): Family {
   const directory = mkdtempSync(path.join(root, "node_modules", `.killeros-fast-${name}-`));
   const project = path.join(directory, "project");
