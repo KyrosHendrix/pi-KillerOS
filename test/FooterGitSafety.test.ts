@@ -11,9 +11,14 @@ import { resolveGitFileChanges } from "../killeros/footer.ts";
 
 type HostileRepository = { root: string; project: string; alternate: string; outside: string; sentinels: string[] };
 
-/** Runs fixture Git with the runner's own PATH, which the scanner under test never uses. */
+// Windows searches the working directory before PATH unless NoDefaultCurrentDirectoryInExePath is set, so a bare
+// "git" run inside the fixture would start the fixture's own shim. Resolve the runner's Git once, from a neutral directory.
+const fixtureGit = execFileSync("where.exe", ["git"], { cwd: os.homedir(), encoding: "utf8" }).split(/\r?\n/u)[0]?.trim() ?? "";
+assert.ok(path.isAbsolute(fixtureGit), "The fixture needs the runner's Git");
+
+/** Runs the runner's Git by absolute path; the scanner under test never uses it. */
 function git(cwd: string, ...args: string[]): void {
-  execFileSync("git", ["-c", "core.autocrlf=false", ...args], { cwd, stdio: "ignore",
+  execFileSync(fixtureGit, ["-c", "core.autocrlf=false", ...args], { cwd, stdio: "ignore",
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "K", GIT_AUTHOR_EMAIL: "k@example.test",
       GIT_COMMITTER_NAME: "K", GIT_COMMITTER_EMAIL: "k@example.test" } });
 }
