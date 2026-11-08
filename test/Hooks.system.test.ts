@@ -14,12 +14,20 @@ type HookProcess = NonNullable<Parameters<typeof executeHook>[4]>;
 const run = promisify(execFile);
 const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
 
+// The test holds no handle to descendants or to closed shells, so Windows may give their PIDs to unrelated processes,
+// such as another test's Pi console host. Once a PID is seen gone it is never signalled again.
+const exitedPids = new Set<number>();
+
 function isAlive(pid: number): boolean {
+  if (exitedPids.has(pid)) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ESRCH") return false;
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+      exitedPids.add(pid);
+      return false;
+    }
     throw error;
   }
 }
@@ -271,9 +279,12 @@ test("Windows hook cleanup terminates descendants or reports bounded uncertainty
       const shell = spawn(command, {shell:true,stdio:["ignore","pipe","pipe"],windowsHide:true});
       const closed = once(shell, "close");
       const pids = [shell.pid];
+      // A PID seen gone is never signalled again: Windows may already have given it to an unrelated process.
+      const gone = new Set();
       const alive = pid => {
+        if (gone.has(pid)) return false;
         try { process.kill(pid,0); return true; }
-        catch(error) { assert.equal(error.code,"ESRCH"); return false; }
+        catch(error) { assert.equal(error.code,"ESRCH"); gone.add(pid); return false; }
       };
       try {
           const lines = createInterface({input:shell.stdout});
