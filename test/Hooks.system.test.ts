@@ -15,10 +15,9 @@ const run = promisify(execFile);
 const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
 
 // The test holds no handle to descendants or to closed shells, so Windows may give their PIDs to unrelated processes,
-// such as another test's Pi console host. Once a PID is seen gone it is never signalled again.
-const exitedPids = new Set<number>();
-
-function isAlive(pid: number): boolean {
+// such as another test's Pi console host. Each tree records the PIDs it saw exit and never signals them again;
+// the record is per tree so a PID one tree saw exit cannot hide another tree's live process.
+function isAlive(pid: number, exitedPids: Set<number>): boolean {
   if (exitedPids.has(pid)) return false;
   try {
     process.kill(pid, 0);
@@ -32,12 +31,12 @@ function isAlive(pid: number): boolean {
   }
 }
 
-async function waitForExit(pid: number): Promise<void> {
-  if (!isAlive(pid)) return;
+async function waitForExit(pid: number, exitedPids: Set<number>): Promise<void> {
+  if (!isAlive(pid, exitedPids)) return;
   await new Promise<void>((resolve, reject) => {
     const check = setInterval(() => {
       try {
-        if (isAlive(pid)) return;
+        if (isAlive(pid, exitedPids)) return;
         clearInterval(check);
         clearTimeout(deadline);
         resolve();
@@ -54,14 +53,14 @@ async function waitForExit(pid: number): Promise<void> {
   });
 }
 
-async function stopProcess(pid: number): Promise<void> {
-  if (!isAlive(pid)) return;
+async function stopProcess(pid: number, exitedPids: Set<number>): Promise<void> {
+  if (!isAlive(pid, exitedPids)) return;
   try {
     await run(taskkill, ["/pid", String(pid), "/T", "/F"], { windowsHide: true, timeout: 10_000 });
   } catch (error) {
-    if (isAlive(pid)) throw error;
+    if (isAlive(pid, exitedPids)) throw error;
   }
-  await waitForExit(pid);
+  await waitForExit(pid, exitedPids);
 }
 
 /** Starts a real owned process and waits for its complete readiness line before testing cleanup. */
@@ -233,12 +232,13 @@ async function startTree(t: TestContext, directory: string) {
   });
   const closed = once(shell, "close");
   const pids: number[] = [];
+  const exitedPids = new Set<number>();
   if (shell.pid) pids.push(shell.pid);
   t.after(async () => {
     const errors: unknown[] = [];
     if (/^[1-9]\d*\n$/u.test(readFileSync(ready, "utf8"))) pids.push(Number(readFileSync(ready, "utf8")));
     for (const pid of new Set(pids)) {
-      try { await stopProcess(pid); } catch (error) { errors.push(error); }
+      try { await stopProcess(pid, exitedPids); } catch (error) { errors.push(error); }
     }
     await closed;
     if (errors.length) throw new AggregateError(errors, "Owned hook tree cleanup failed");
@@ -259,7 +259,7 @@ async function startTree(t: TestContext, directory: string) {
   }
   const descendantPid = pids.at(-1);
   assert.ok(descendantPid);
-  return { shell, closed, pids, descendantPid, marker, release, script, source };
+  return { shell, closed, pids, exitedPids, descendantPid, marker, release, script, source };
 }
 
 // Catalog ID: HK-04.
@@ -327,13 +327,13 @@ test("Windows hook cleanup terminates descendants or reports bounded uncertainty
     if (!naturalResult.exitUnconfirmed) {
       t.diagnostic(JSON.stringify({ scenarioId: "HK-04", naturalResult, confirmedBranchExecuted: true }));
       // No manual termination or release may precede this proof of confirmed cleanup.
-      for (const pid of naturalTree.pids) await waitForExit(pid);
+      for (const pid of naturalTree.pids) await waitForExit(pid, naturalTree.exitedPids);
       writeFileSync(naturalTree.release, "write");
       assert.equal(existsSync(naturalTree.marker), false);
     } else {
       t.diagnostic(JSON.stringify({ scenarioId: "HK-04", naturalResult, confirmedBranchExecuted: false }));
     }
-    for (const pid of naturalTree.pids) await stopProcess(pid);
+    for (const pid of naturalTree.pids) await stopProcess(pid, naturalTree.exitedPids);
     await naturalTree.closed;
     for (const variant of ["shell-close", "shell-close-cancel", "disabled-cleanup"] as const) {
       const tree = await startTree(t, path.join(root, variant));
@@ -362,7 +362,7 @@ test("Windows hook cleanup terminates descendants or reports bounded uncertainty
       assert.equal(existsSync(tree.marker), false, "the descendant has not been released before cleanup");
       if (variant === "disabled-cleanup") {
         assert.equal(result.exitUnconfirmed, true, "a surviving owned tree cannot be reported stopped");
-        assert.ok(isAlive(tree.descendantPid));
+        assert.ok(isAlive(tree.descendantPid, tree.exitedPids));
         const marked = new Promise<void>((resolve, reject) => {
           const watcher = watch(path.dirname(tree.marker), () => {
             if (!existsSync(tree.marker)) return;
@@ -381,14 +381,14 @@ test("Windows hook cleanup terminates descendants or reports bounded uncertainty
       } else {
         // Confirm all owned PIDs are gone before releasing the attempted late write.
         for (const pid of tree.pids) {
-          if (pid !== tree.descendantPid) await stopProcess(pid);
-          else await waitForExit(pid);
+          if (pid !== tree.descendantPid) await stopProcess(pid, tree.exitedPids);
+          else await waitForExit(pid, tree.exitedPids);
         }
         writeFileSync(tree.release, "write");
         assert.equal(existsSync(tree.marker), false, `${variant}: exited descendants cannot write later`);
       }
-      await stopProcess(tree.descendantPid);
-      for (const pid of tree.pids) await stopProcess(pid);
+      await stopProcess(tree.descendantPid, tree.exitedPids);
+      for (const pid of tree.pids) await stopProcess(pid, tree.exitedPids);
       await tree.closed;
     }
     assert.equal(childLaunches, 15);
