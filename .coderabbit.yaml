@@ -1,7 +1,26 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit reviews every non-draft pull request. AGENTS.md owns the contracts; these instructions point reviewers at them.
+# CodeRabbit reviews every pull request and push. AGENTS.md owns the contracts; these instructions point reviewers at them.
+# main requires the CodeRabbit check and one approving review. The check also passes when a review is skipped or
+# rate limited, so the approval is the gate: CodeRabbit approves only a reviewed latest commit, and any other
+# collaborator's approval satisfies it too.
 language: "en-US"
 reviews:
+  # Request changes for blocking findings; approve only after they are resolved on the latest commit.
+  auto_approvals:
+    enabled: true
+    allow_author_approval: false
+    # A configured limit requires a merge-risk assessment of the latest commit, so a pull request whose only
+    # changes are filtered out below (such as a lockfile-only update) is never approved unassessed.
+    max_merge_risk: "high"
+  # A review that errors fails the required CodeRabbit check instead of passing it.
+  fail_commit_status: true
+  auto_review:
+    enabled: true
+    drafts: true
+    base_branches:
+      - ".*"
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
   profile: "chill"
   poem: false
   sequence_diagrams: false

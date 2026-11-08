@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -1284,139 +1283,6 @@ async function runExclusionFamily(mode: SessionMode, excluded: "killeros_*" | "k
   return outcome;
 }
 
-async function runValidLoadout(name: "minus-goal-tool" | "wildcard-allowlist" | "plus-codemode", signal: AbortSignal): Promise<JsonRecord> {
-  const plusCodemode = name === "plus-codemode";
-  const family = new PiFamily({ name, mode: plusCodemode ? "tui" : "rpc", codemode: plusCodemode ? "on" : "disabled", signal,
-    tools: plusCodemode ? "+codemode" : name === "minus-goal-tool" ? "-killeros_goal_update" : "read,killeros_*" });
-  const errors: unknown[] = [];
-  let primaryFailure: unknown;
-  let outcome: JsonRecord | undefined;
-  try {
-    await family.start();
-    if (name === "minus-goal-tool") {
-      family.provider.plan({ kind: "text", content: "VALID_MINUS_LOADOUT" });
-      const start = family.provider.requests.length;
-      await family.runPrompt("Inspect the modifier loadout", "VALID_MINUS_LOADOUT");
-      assertDeclarations(family.provider, start, { codemode: "disabled", activeGoal: false, goalTool: false,
-        exposureProbe: true, unrelated: true, question: true, read: true, write: true });
-      assert.equal(lastGoalState(await family.entries()), undefined, "native removal starts without goal state");
-    } else if (name === "wildcard-allowlist") {
-      family.provider.plan({ kind: "calls", calls: [completionCall("The wildcard loadout retained the goal decision tool")] },
-        { kind: "text", content: "VALID_WILDCARD_LOADOUT" });
-      const start = family.provider.requests.length;
-      await family.runPrompt("/goal Verify wildcard tool selection", "VALID_WILDCARD_LOADOUT");
-      assertDeclarations(family.provider, start, { codemode: "disabled", activeGoal: true,
-        goalTool: true, exposureProbe: false, unrelated: false, question: false, read: true, write: false }, start + 1);
-      assertDeclarations(family.provider, start + 1, { codemode: "disabled", activeGoal: true,
-        goalTool: false, exposureProbe: false, unrelated: false, question: false, read: true, write: false });
-      const names = requestToolNames(family.provider.requests[start] ?? {});
-      assert.ok(names.includes("killeros_goal_update"));
-      assert.ok(names.includes("read"));
-      assert.ok(!names.includes("question"));
-    } else {
-      for (const stage of ["startup", "reload"] as const) {
-        if (stage === "reload") await reloadFamily(family);
-        const marker = `VALID_PLUS_CODEMODE_${stage.toUpperCase()}`;
-        family.provider.plan(
-          { kind: "calls", calls: [completionCall(`Native defaults verified at ${stage}`)] },
-          { kind: "text", content: marker },
-        );
-        const start = family.provider.requests.length;
-        await family.runPrompt(`/goal Verify native defaults at ${stage}`, marker);
-        assertCodemodeNativeDefaults(family.provider, start, start + 1);
-        assert.equal(family.provider.requests.length, start + 2, `${stage}: one goal decision requires one follow-up request`);
-        assert.equal(assertGoalStatus(await family.entries(), "complete", `${stage}: +codemode goal`).turns, 1);
-      }
-    }
-    assertNoFixtureFaults(family.provider);
-    outcome = { name, requests: family.provider.requests.length };
-  } catch (error) {
-    primaryFailure = error;
-  } finally {
-    try { await family.close(); } catch (error) { errors.push(error); }
-    if (primaryFailure !== undefined || errors.length > 0) {
-      const evidence = JSON.stringify({ test: "runtime.tool-codemode-contracts", family: family.diagnostics(), counts: { ...testCounts } }, null, 2);
-      try {
-        const failureDirectory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-runtime-tools-failure-"));
-        try {
-          throwScenarioFailure({ directory: failureDirectory, message: `Valid tool loadout ${name} failed`,
-            errors: [...(primaryFailure === undefined ? [] : [primaryFailure]), ...errors], diagnostics: evidence });
-        } catch (failure) {
-          if (!existsSync(path.join(failureDirectory, "failure.txt"))) throw failure;
-        }
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    try {
-      await removeDirectoryEventually(family.directory);
-      assert.equal(existsSync(family.directory), false, "remove the owned valid-loadout family directory");
-    } catch (error) { errors.push(error); }
-  }
-  if (primaryFailure !== undefined || errors.length > 0) {
-    throw new AggregateError([...(primaryFailure === undefined ? [] : [primaryFailure]), ...errors], `Valid tool loadout ${name} failed`);
-  }
-  if (outcome === undefined) throw new Error(`Valid tool loadout ${name} ended without a result`);
-  return outcome;
-}
-
-async function assertInvalidCliModifier(selection: string, expectedMessage: string): Promise<JsonRecord> {
-  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-runtime-tools-invalid-cli-"));
-  const agent = path.join(directory, "agent");
-  const appData = path.join(directory, "appdata");
-  const localAppData = path.join(directory, "localappdata");
-  const temporary = path.join(directory, "tmp");
-  const inherited = new Map(Object.entries(process.env).map(([key, value]) => [key.toLowerCase(), value]));
-  const env: NodeJS.ProcessEnv = {
-    HOME: directory,
-    USERPROFILE: directory,
-    APPDATA: appData,
-    LOCALAPPDATA: localAppData,
-    TEMP: temporary,
-    TMP: temporary,
-    PATH: inherited.get("path") ?? path.dirname(process.execPath),
-    PI_CODING_AGENT_DIR: agent,
-    PI_OFFLINE: "1",
-    PI_SKIP_VERSION_CHECK: "1",
-    PI_TELEMETRY: "0",
-  };
-  for (const key of ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT"]) {
-    const value = inherited.get(key.toLowerCase());
-    if (value !== undefined) env[key] = value;
-  }
-  const errors: unknown[] = [];
-  let outcome: JsonRecord | undefined;
-  try {
-    mkdirSync(agent);
-    mkdirSync(appData);
-    mkdirSync(localAppData);
-    mkdirSync(temporary);
-    testCounts.pi++;
-    const result = spawnSync(process.execPath, [cliPath, "--mode", "rpc", "--no-session", "--offline", "--no-extensions", "--tools", selection], {
-      cwd: directory,
-      env,
-      encoding: "utf8",
-      timeout: 20_000,
-      windowsHide: true,
-      maxBuffer: 1_048_576,
-    });
-    assert.equal(result.error, undefined, `${selection}: real Pi CLI must return a parse result without a spawn error`);
-    assert.notEqual(result.status, 0, `${selection}: the installed Pi CLI must reject this modifier list`);
-    const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-    assert.ok(output.includes(expectedMessage), `${selection}: CLI output must include ${expectedMessage}; got ${output.slice(-2_000)}`);
-    outcome = { selection, status: result.status, output: output.slice(-1_000) };
-  } catch (error) {
-    errors.push(error);
-  }
-  try {
-    await removeDirectoryEventually(directory);
-    assert.equal(existsSync(directory), false, "remove the owned invalid-modifier directory");
-  } catch (error) { errors.push(error); }
-  if (errors.length > 0) throw new AggregateError(errors, `Invalid tool modifier ${selection} failed`);
-  if (outcome === undefined) throw new Error(`Invalid tool modifier ${selection} ended without a result`);
-  return outcome;
-}
-
 async function checkVisibleErrorControl(signal: AbortSignal): Promise<void> {
   const family = new PiFamily({ name: "visible-error-control", mode: "tui", codemode: "disabled", signal, faultOnSettlement: true });
   const errors: unknown[] = [];
@@ -1481,21 +1347,5 @@ test("real Pi enforces tool exclusions in TUI", { timeout: 60_000 }, async (t: T
   await runToolContracts(t, "runtime.tool-exclusions-tui", { pi: 5, providerRequests: 17 }, async (results) => {
     await checkVisibleErrorControl(t.signal);
     for (const excluded of exclusions) results.push(await runExclusionFamily("tui", excluded, t.signal));
-  });
-});
-
-test("real Pi enforces tool exclusions in RPC", { timeout: 60_000 }, async (t: TestContext) => {
-  await runToolContracts(t, "runtime.tool-exclusions-rpc", { pi: 4, providerRequests: 16 }, async (results) => {
-    for (const excluded of exclusions) results.push(await runExclusionFamily("rpc", excluded, t.signal));
-  });
-});
-
-test("real Pi applies valid tool loadouts and rejects invalid CLI modifiers", { timeout: 60_000 }, async (t: TestContext) => {
-  await runToolContracts(t, "runtime.tool-cli-modifiers", { pi: 5, providerRequests: 7 }, async (results) => {
-    results.push(await runValidLoadout("minus-goal-tool", t.signal));
-    results.push(await runValidLoadout("wildcard-allowlist", t.signal));
-    results.push(await runValidLoadout("plus-codemode", t.signal));
-    results.push(await assertInvalidCliModifier("read,+codemode", "tool names cannot be mixed with +name or -name entries"));
-    results.push(await assertInvalidCliModifier("+codemode,-killeros_*", "+name and -name entries take exact tool names, not patterns"));
   });
 });

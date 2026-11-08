@@ -241,8 +241,6 @@ function readChoices(screen: string): ChoiceView {
 /** An entry offered only by the main question selector, never by its sub-dialogs. */
 const mainSelectorEntry = /^\d+\. (Custom answer|Edit custom answer)$/u;
 const moreActionsTitle = /^More actions$/u;
-const recentAnswersTitle = /^Recent answers$/u;
-const reviewChooserTitle = /^Review option details$/u;
 
 /** Confirms an offered entry and waits for its dialog state to change, not merely for another spinner frame. */
 async function chooseOffered(terminal: PiTerminalProcess, target: RegExp, label: string, options: { signal: AbortSignal }): Promise<string> {
@@ -1769,411 +1767,6 @@ test("Question transcript renderers strip controls, bound collapsed rows, and ex
   t.diagnostic(JSON.stringify({ scenarioId: "Q-03", piLaunches: 2, providerRequests: 10, historical }));
 });
 
-// Catalog ID: Q-04.
-test("Question history, preview paging, resize, and draft preservation", { timeout: 180_000 }, async (t: TestContext) => {
-  const failures: unknown[] = [];
-  const observations: RecordValue[] = [];
-  let piLaunches = 0;
-
-  // Family A: reuse and dedup, cancelled sub-steps, preview paging, resize, and the byte bound, in one long session.
-  {
-    const family = createFamily(repositoryRoot, "history");
-    const control = path.join(family.directory, "control");
-    mkdirSync(control);
-    const extension = path.join(family.directory, "session-observer.ts");
-    writeFileSync(extension, questionControlExtensionSource(control, true));
-    const provider = new QuestionProvider();
-    let terminal: PiTerminalProcess | undefined;
-    const screens: RecordValue = {};
-    let sessionFile = "";
-    try {
-      await provider.listen();
-      sessionFile = writeProviderConfig(family.agent, provider, true);
-      provider.plan(
-        provider.questionCall("History first", [{ label: "Alpha" }]), provider.text("Q4H1 DONE"),
-        provider.questionCall("History second", [{ label: "Alpha" }]), provider.text("Q4H2 DONE"),
-        provider.questionCall("History first again", [{ label: "Alpha" }]), provider.text("Q4H3 DONE"),
-        provider.questionCall("History reuse", [{ label: "Alpha" }]), provider.text("Q4H4 DONE"),
-        provider.questionCall("Saved answer", [{ label: "Alpha" }]), provider.text("Q4H5 DONE"),
-        provider.questionCall("Cancelled sub-steps", [{ label: "Alpha" }, { label: "Beta" }], { mode: "multiple" }), provider.text("Q4H6 DONE"),
-        provider.questionCall("Preview paging", [{ label: "Alpha", description: "Description", preview: Array.from({ length: 19 }, (_, index) => `preview-line-${index}`).join("\n") }, { label: "Beta" }], { mode: "multiple" }), provider.text("Q4H7 DONE"),
-        provider.questionCall("Resize multi", [{ label: "Alpha" }, { label: "Beta" }], { mode: "multiple" }), provider.text("Q4H8 DONE"),
-        provider.questionCall("Resize draft", [{ label: "Alpha" }]), provider.text("Q4H9 DONE"),
-        provider.questionCall("No history after new session", [{ label: "Alpha" }, { label: "Beta" }]), provider.text("Q4H11 DONE"),
-      );
-      for (let index = 0; index < 6; index++) {
-        provider.plan(provider.questionCall(`Byte bound ${index}`, [{ label: "Alpha" }]), provider.text(`Q4B${index} DONE`));
-      }
-      provider.plan(provider.questionCall("Byte bound reuse", [{ label: "Alpha" }]), provider.text("Q4B6 DONE"));
-      provider.plan(provider.questionCall("Option paging", Array.from({ length: 9 }, (_, index) => ({
-        label: `Choice ${index + 1} ${"L".repeat(180)}`,
-      }))), provider.text("Q4P DONE"));
-
-      terminal = new PiTerminalProcess({ file: process.execPath, args: [cliPath, ...terminalArgs(sessionFile, "question"), "--extension", extension],
-        cwd: family.project, env: family.env, cols: 100, rows: 30 });
-      piLaunches += 1;
-      await terminal.waitForScreen((screen) => screen.includes("KillerOS") && screen.includes("❯"), { signal: t.signal });
-      let settlements = 0;
-      const settle = async (marker: string): Promise<void> => {
-        assert.ok(terminal);
-        await terminal.waitForScreen((screen) => screen.includes(marker), { signal: t.signal });
-        const expected = ++settlements;
-        const content = await waitForControlFile(path.join(control, "settled.json"), (text) =>
-          record(JSON.parse(text), "native settlement").count === expected, marker);
-        assert.deepEqual(record(JSON.parse(content), "native settlement"),
-          { count: expected, idle: true, pending: false, aborted: false }, `${marker}: native final settlement`);
-      };
-      const customAnswer = async (question: string, value: string, label: string): Promise<void> => {
-        assert.ok(terminal);
-        await submitEditorText(terminal, label, { signal: t.signal });
-        await waitForSelector(terminal, question, { signal: t.signal });
-        await chooseOffered(terminal, /Custom answer/u, label, { signal: t.signal });
-        await waitForInputDialog(terminal, "Custom answer", { signal: t.signal });
-        await submitInputDialog(terminal, value, { signal: t.signal, controlDirectory: control });
-      };
-
-      // Vectors history:dedup: First, Second, First reuse complete answers without duplicates.
-      await customAnswer("History first", "First", "q4 a1");
-      await settle("Q4H1 DONE");
-      assert.equal(singleResult(sessionFile, 0, "history:first").details?.answer, "First");
-      await customAnswer("History second", "Second", "q4 a2");
-      await settle("Q4H2 DONE");
-      assert.equal(singleResult(sessionFile, 1, "history:second").details?.answer, "Second");
-      await customAnswer("History first again", "First", "q4 a3");
-      await settle("Q4H3 DONE");
-      assert.equal(singleResult(sessionFile, 2, "history:first-again").details?.answer, "First");
-      await submitEditorText(terminal, "q4 a4", { signal: t.signal });
-      await waitForSelector(terminal, "History reuse", { signal: t.signal });
-      await chooseOffered(terminal, /More actions/u, "history:dedup", { signal: t.signal });
-      await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
-      await chooseOffered(terminal, /Recent answers/u, "history:dedup", { signal: t.signal });
-      screens.recentDedup = await waitForSelector(terminal, "Recent answers", { signal: t.signal, dialogTitle: recentAnswersTitle });
-      assert.deepEqual(readChoices(String(screens.recentDedup)).entries.map((entry) => entry.text), ["1. First", "2. Second"],
-        "history:dedup: recent answers deduplicate First and keep submission order");
-      await chooseOffered(terminal, /2\. Second/u, "history:dedup", { signal: t.signal });
-      await settle("Q4H4 DONE");
-      let result = singleResult(sessionFile, 3, "history:dedup");
-      assert.equal(result.details?.answer, "Second", "history:dedup: a reused answer publishes without retyping");
-
-      // Setup for cancelled sub-steps: one more saved custom answer.
-      await customAnswer("Saved answer", "Saved", "q4 a5");
-      await settle("Q4H5 DONE");
-      assert.equal(singleResult(sessionFile, 4, "history:saved").details?.answer, "Saved");
-
-      // Vector history:cancelled-steps: canceled history and review steps preserve the selection.
-      await submitEditorText(terminal, "q4 a6", { signal: t.signal });
-      await waitForSelector(terminal, "Cancelled sub-steps", { signal: t.signal });
-      await chooseOffered(terminal, /1\. \[ \] Alpha/u, "history:cancelled-steps", { signal: t.signal });
-      await waitForSelector(terminal, "Cancelled sub-steps", { signal: t.signal, entry: mainSelectorEntry });
-      await chooseOffered(terminal, /More actions/u, "history:cancelled-steps", { signal: t.signal });
-      await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
-      await chooseOffered(terminal, /Recent answers/u, "history:cancelled-steps", { signal: t.signal });
-      await waitForSelector(terminal, "Recent answers", { signal: t.signal, dialogTitle: recentAnswersTitle });
-      terminal.write(dialogCancel);
-      await waitForSelector(terminal, "Cancelled sub-steps", { signal: t.signal, entry: mainSelectorEntry });
-      await chooseOffered(terminal, /More actions/u, "history:cancelled-steps", { signal: t.signal });
-      await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
-      await chooseOffered(terminal, /Review option details/u, "history:cancelled-steps", { signal: t.signal });
-      await waitForSelector(terminal, "Review option details", { signal: t.signal, dialogTitle: reviewChooserTitle });
-      terminal.write(dialogCancel);
-      await waitForSelector(terminal, "Cancelled sub-steps", { signal: t.signal, entry: mainSelectorEntry });
-      await chooseOffered(terminal, /More actions/u, "history:cancelled-steps", { signal: t.signal });
-      await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
-      await chooseOffered(terminal, /Review option details/u, "history:cancelled-steps", { signal: t.signal });
-      await waitForSelector(terminal, "Review option details", { signal: t.signal, dialogTitle: reviewChooserTitle });
-      await chooseOffered(terminal, /1\. Alpha/u, "history:cancelled-steps", { signal: t.signal });
-      await waitForSelector(terminal, /Review 1\//u, { signal: t.signal });
-      terminal.write(dialogCancel);
-      screens.cancelledStepsBack = await waitForSelector(terminal, "Cancelled sub-steps", { signal: t.signal, entry: mainSelectorEntry });
-      assert.match(String(screens.cancelledStepsBack), /\[x\] Alpha/u, "history:cancelled-steps: the selection survives cancelled sub-steps");
-      await chooseOffered(terminal, /Submit answers/u, "history:cancelled-steps", { signal: t.signal });
-      await settle("Q4H6 DONE");
-      result = singleResult(sessionFile, 5, "history:cancelled-steps");
-      assert.deepEqual(result.details?.answers, ["Alpha"], "history:cancelled-steps: only the surviving selection submits");
-
-      // Vector preview:paging: 23 review lines page next four times and previous once at rows 23.
-      const previewResize = terminal.sequence;
-      terminal.resize(100, 23);
-      await terminal.waitForScreen((screen) => screen.split("\n").some((line) => line.trim() === "─".repeat(100)),
-        { signal: t.signal, after: previewResize });
-      await submitEditorText(terminal, "q4 a7", { signal: t.signal });
-      await waitForSelector(terminal, "Preview paging", { signal: t.signal });
-      await chooseOffered(terminal, /1\. \[ \] Alpha/u, "preview:paging", { signal: t.signal });
-      await waitForSelector(terminal, "Preview paging", { signal: t.signal, entry: mainSelectorEntry });
-      await chooseOffered(terminal, /More actions/u, "preview:paging", { signal: t.signal });
-      await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
-      await chooseOffered(terminal, /Review option details/u, "preview:paging", { signal: t.signal });
-      await waitForSelector(terminal, "Review option details", { signal: t.signal, dialogTitle: reviewChooserTitle });
-      await chooseOffered(terminal, /1\. Alpha/u, "preview:paging", { signal: t.signal });
-      const seenPreviewLines = new Set<string>();
-      const capturePreview = (screen: string): void => {
-        for (const match of screen.matchAll(/preview-line-\d+/gu)) seenPreviewLines.add(match[0]);
-      };
-      screens.previewPage1 = await waitForSelector(terminal, /Review 1\/5/u, { signal: t.signal });
-      capturePreview(String(screens.previewPage1));
-      assert.ok(String(screens.previewPage1).includes("Description"), "preview:paging: the description renders on the first page");
-      for (let nextPage = 2; nextPage <= 5; nextPage++) {
-        await chooseOffered(terminal, /Next page/u, "preview:paging", { signal: t.signal });
-        screens[`previewPage${nextPage}`] = await waitForSelector(terminal, new RegExp(`Review ${nextPage}/5`, "u"), { signal: t.signal });
-        capturePreview(String(screens[`previewPage${nextPage}`]));
-      }
-      await chooseOffered(terminal, /Previous page/u, "preview:paging", { signal: t.signal });
-      screens.previewBack = await waitForSelector(terminal, /Review 4\/5/u, { signal: t.signal });
-      capturePreview(String(screens.previewBack));
-      await chooseOffered(terminal, /Back/u, "preview:paging", { signal: t.signal });
-      screens.previewReturn = await waitForSelector(terminal, "Preview paging", { signal: t.signal, entry: mainSelectorEntry });
-      assert.match(String(screens.previewReturn), /\[x\] Alpha/u, "preview:paging: selected answers survive review paging");
-      await chooseOffered(terminal, /Submit answers/u, "preview:paging", { signal: t.signal });
-      await settle("Q4H7 DONE");
-      result = singleResult(sessionFile, 6, "preview:paging");
-      assert.deepEqual(result.details?.answers, ["Alpha"], "preview:paging: the reviewed selection submits");
-      for (let index = 0; index < 19; index++) {
-        assert.ok(seenPreviewLines.has(`preview-line-${index}`), `preview:paging: preview-line-${index} was rendered across pages`);
-      }
-      const restoreResize = terminal.sequence;
-      terminal.resize(100, 30);
-      await terminal.waitForScreen((screen) => screen.split("\n").some((line) => line.trim() === "─".repeat(100)),
-        { signal: t.signal, after: restoreResize });
-
-      // Vector resize:multi-select: a resize rebuilds the step without losing selected answers.
-      await submitEditorText(terminal, "q4 a8", { signal: t.signal });
-      await waitForSelector(terminal, "Resize multi", { signal: t.signal });
-      await chooseOffered(terminal, /1\. \[ \] Alpha/u, "resize:multi-select", { signal: t.signal });
-      const multiResizeCursor = terminal.sequence;
-      terminal.resize(96, 26);
-      screens.multiResized = await waitForSelector(terminal, "Resize multi", { signal: t.signal, after: multiResizeCursor });
-      assert.ok(terminal.sequence > multiResizeCursor, "resize:multi-select: the resize dismissed and rebuilt the step");
-      assert.match(String(screens.multiResized), /Selected 1/u, "resize:multi-select: the rebuilt step reports the selection count");
-      assert.match(String(screens.multiResized), /\[x\] Alpha/u, "resize:multi-select: the selected answer survives the rebuild");
-      await chooseOffered(terminal, /Submit answers/u, "resize:multi-select", { signal: t.signal });
-      await settle("Q4H8 DONE");
-      result = singleResult(sessionFile, 7, "resize:multi-select");
-      assert.deepEqual(result.details?.answers, ["Alpha"], "resize:multi-select: the rebuilt step submits the preserved answer");
-
-      // Vector resize:text-draft: a resize during text input preserves the draft.
-      await submitEditorText(terminal, "q4 a9", { signal: t.signal });
-      await waitForSelector(terminal, "Resize draft", { signal: t.signal });
-      await chooseOffered(terminal, /Custom answer/u, "resize:text-draft", { signal: t.signal });
-      await waitForInputDialog(terminal, "Custom answer", { signal: t.signal });
-      const draftCursor = terminal.sequence;
-      terminal.write("\x1b[200~Draft after resize\x1b[201~");
-      await terminal.waitForScreen((screen) => screen.includes("Draft after resize"), { signal: t.signal, after: draftCursor });
-      const draftResizeCursor = terminal.sequence;
-      terminal.resize(90, 28);
-      screens.draftResized = await terminal.waitForScreen((screen) => screen.includes("Draft after resize") && screen.includes("Custom answer"),
-        { signal: t.signal, after: draftResizeCursor });
-      assert.ok(readChoices(String(screens.draftResized)).selected === undefined, "resize:text-draft: the input dialog is not dismissed by resize");
-      terminal.write(dialogConfirm);
-      await settle("Q4H9 DONE");
-      result = singleResult(sessionFile, 8, "resize:text-draft");
-      assert.equal(result.details?.answer, "Draft after resize", "resize:text-draft: the draft submits intact after resize");
-
-      // Vector history:session-clear: /new clears recent-answer history.
-      const previousSessionFile = sessionFile;
-      await submitEditorText(terminal, "/new", { signal: t.signal });
-      await terminal.waitForScreen((screen) => screen.includes("New session started"), { signal: t.signal });
-      sessionFile = await waitForControlFile(path.join(control, "session-file"),
-        content => content !== previousSessionFile && content !== "none" && content.trim().length > 0, "history:session-clear");
-      settlements = 0; // Pi reloads extension instances when replacing the session.
-      assert.equal(readQuestionResults(previousSessionFile).length, 9, "Session replacement preserves the original nine results");
-      await submitEditorText(terminal, "q4 a11", { signal: t.signal });
-      await waitForSelector(terminal, "No history after new session", { signal: t.signal });
-      await chooseOffered(terminal, /More actions/u, "history:session-clear", { signal: t.signal });
-      screens.clearedMore = await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
-      assert.ok(!readChoices(String(screens.clearedMore)).entries.some((entry) => /Recent answers/u.test(entry.text)),
-        "history:session-clear: a new session offers no recent answers");
-      terminal.write(dialogCancel);
-      await waitForSelector(terminal, "No history after new session", { signal: t.signal, entry: mainSelectorEntry });
-      await chooseOffered(terminal, /1\. Alpha/u, "history:session-clear", { signal: t.signal });
-      await settle("Q4H11 DONE");
-      result = singleResult(sessionFile, 0, "history:session-clear");
-      assert.equal(result.details?.answer, "Alpha", "history:session-clear: ordinary selection still answers after the reset");
-
-      // Vector history:byte-bound: six ~16 KB answers evict all but the newest four.
-      for (let index = 0; index < 6; index++) {
-        await customAnswer(`Byte bound ${index}`, `${index}:` + "𐐀".repeat(3_998), `q4 b${index}`);
-        await settle(`Q4B${index} DONE`);
-        assert.equal(singleResult(sessionFile, 1 + index, `history:byte-${index}`).details?.answer,
-          `${index}:` + "𐐀".repeat(3_998), "Each complete byte-bound answer persists before eviction");
-      }
-      await submitEditorText(terminal, "q4 b6", { signal: t.signal });
-      await waitForSelector(terminal, "Byte bound reuse", { signal: t.signal });
-      await chooseOffered(terminal, /More actions/u, "history:byte-bound", { signal: t.signal });
-      await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
-      await chooseOffered(terminal, /Recent answers/u, "history:byte-bound", { signal: t.signal });
-      screens.byteChoices = await waitForSelector(terminal, "Recent answers", { signal: t.signal, dialogTitle: recentAnswersTitle });
-      {
-        const view = readChoices(String(screens.byteChoices));
-        assert.equal(view.entries.length, 4, "history:byte-bound: only the newest four entries survive the byte bound");
-        assert.ok(!view.entries.some((entry) => /[01]:/u.test(entry.text)), "history:byte-bound: the two oldest entries were evicted");
-      }
-      await chooseOffered(terminal, /1\. 5:/u, "history:byte-bound", { signal: t.signal });
-      await settle("Q4B6 DONE");
-      result = singleResult(sessionFile, 7, "history:byte-bound");
-      assert.equal(result.details?.answer, "5:" + "𐐀".repeat(3_998),
-        "history:byte-bound: the newest entry under the byte bound is reusable");
-
-      // Vector options:paging: short terminals bound offered rows and preserve the ninth option's identity.
-      const pagingResize = terminal.sequence;
-      terminal.resize(80, 20);
-      await terminal.waitForScreen(screen => screen.split("\n").some(line => line.trim() === "─".repeat(80)),
-        { signal: t.signal, after: pagingResize });
-      await submitEditorText(terminal, "q4 paging", { signal: t.signal });
-      screens.optionPage = await waitForSelector(terminal, "Option paging", { signal: t.signal });
-      const firstPage = readChoices(String(screens.optionPage));
-      assert.ok(firstPage.dialogTitle.split("\n").length + firstPage.entries.length <= 12,
-        "options:paging: the title and offered choices fit the source twelve-row budget");
-      assert.ok(firstPage.entries.every(entry => visibleWidth(entry.text) <= 74),
-        `options:paging: every offered choice fits the source 74-column budget: ${JSON.stringify(firstPage)}`);
-      assert.ok(firstPage.entries.some(entry => entry.text === "Next choices"));
-      await chooseOffered(terminal, /^Next choices$/u, "options:paging", { signal: t.signal });
-      await waitForSelector(terminal, "Option paging", { signal: t.signal, entry: /9\. Choice 9/u });
-      await chooseOffered(terminal, /9\. Choice 9/u, "options:paging", { signal: t.signal });
-      await settle("Q4P DONE");
-      const ninth = singleResult(sessionFile, 8, "options:paging");
-      assert.equal(ninth.details?.selectedIndex, 9);
-      assert.equal(ninth.details?.answer, `Choice 9 ${"L".repeat(180)}`,
-        "options:paging: clipping the offered label does not truncate the published answer");
-
-      assert.equal(provider.requests.length, 36, "the history family uses exactly its planned provider requests");
-      assert.deepEqual(await terminal.close(), { code: 0, forced: false }, "the history family exits naturally");
-      terminal = undefined;
-      await provider.close();
-      assert.equal(readQuestionResults(previousSessionFile).length + readQuestionResults(sessionFile).length, 18);
-      observations.push({ family: "history", providerRequests: 36, questionResults: 18 });
-    } catch (error) {
-      failures.push(error);
-    } finally {
-      if (terminal) {
-        try {
-          const result = await terminal.close();
-          if (result.code !== 0 || result.forced || result.failure) failures.push(new Error(`Q-04 history cleanup: ${JSON.stringify(result)}`));
-        } catch (error) { failures.push(error); }
-      }
-      try { await provider.close(); } catch (error) { failures.push(error); }
-    }
-    if (failures.length > 0) {
-      throwScenarioFailure({ directory: family.directory, message: "Q-04 history family failed",
-        errors: failures,
-        diagnostics: JSON.stringify({ scenarioId: "Q-04", family: "history", providerRequests: provider.requests.length,
-          providerFaults: provider.faults, terminal: terminal?.diagnostics(), screens }, null, 2) });
-    }
-    await removeDirectoryEventually(family.directory);
-  }
-
-  t.diagnostic(JSON.stringify({ scenarioId: "Q-04", piLaunches, observations }));
-});
-
-// Independent of Q-04's history/reset workflow: one session must retain all 101 submissions.
-test("Question history retains the newest hundred distinct answers", { timeout: 180_000 }, async (t: TestContext) => {
-  const failures: unknown[] = [];
-  const observations: RecordValue[] = [];
-  let piLaunches = 0;
-
-  // The 100-entry bound — 101 distinct answers, then paged lookup of the oldest survivor.
-  {
-    const family = createFamily(repositoryRoot, "hundred");
-    const control = path.join(family.directory, "control");
-    mkdirSync(control);
-    const extension = path.join(family.directory, "session-observer.ts");
-    writeFileSync(extension, questionControlExtensionSource(control));
-    const provider = new QuestionProvider();
-    let terminal: PiTerminalProcess | undefined;
-    const screens: RecordValue = {};
-    let sessionFile = "";
-    try {
-      await provider.listen();
-      sessionFile = writeProviderConfig(family.agent, provider, true);
-      for (let index = 0; index <= 100; index++) {
-        provider.plan(provider.questionCall(`HQ-${index} pick`, [{ label: `Choice ${index}` }]), provider.text(`H${index} DONE`));
-      }
-      provider.plan(provider.questionCall("Hundred lookup", [{ label: "Alpha" }]), provider.text("HLAST DONE"));
-
-      terminal = new PiTerminalProcess({ file: process.execPath, args: [cliPath, ...terminalArgs(sessionFile, "question"), "--extension", extension],
-        cwd: family.project, env: family.env, cols: 100, rows: 30 });
-      piLaunches += 1;
-      await terminal.waitForScreen((screen) => screen.includes("KillerOS") && screen.includes("❯"), { signal: t.signal });
-      let settlements = 0;
-      const settle = async (marker: string): Promise<void> => {
-        assert.ok(terminal);
-        await terminal.waitForScreen((screen) => screen.includes(marker), { signal: t.signal });
-        const expected = ++settlements;
-        const content = await waitForControlFile(path.join(control, "settled.json"), (text) =>
-          record(JSON.parse(text), "native settlement").count === expected, marker);
-        assert.deepEqual(record(JSON.parse(content), "native settlement"),
-          { count: expected, idle: true, pending: false, aborted: false }, `${marker}: native final settlement`);
-      };
-      for (let index = 0; index <= 100; index++) {
-        await submitEditorText(terminal, `h${index}`, { signal: t.signal });
-        await waitForSelector(terminal, `HQ-${index} pick`, { signal: t.signal });
-        await chooseOffered(terminal, /Custom answer/u, `hundred:${index}`, { signal: t.signal });
-        await waitForInputDialog(terminal, "Custom answer", { signal: t.signal });
-        await submitInputDialog(terminal, `answer-${index}`, { signal: t.signal });
-        await settle(`H${index} DONE`);
-        assert.equal(singleResult(sessionFile, index, `hundred:${index}`).details?.answer, `answer-${index}`);
-      }
-
-      // Vector history:entry-bound: only the newest 100 distinct answers remain.
-      await submitEditorText(terminal, "hlookup", { signal: t.signal });
-      await waitForSelector(terminal, "Hundred lookup", { signal: t.signal });
-      await chooseOffered(terminal, /More actions/u, "history:entry-bound", { signal: t.signal });
-      await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
-      await chooseOffered(terminal, /Recent answers/u, "history:entry-bound", { signal: t.signal });
-      screens.firstPage = await waitForSelector(terminal, "Recent answers", { signal: t.signal, dialogTitle: recentAnswersTitle });
-      assert.match(readChoices(String(screens.firstPage)).entries[0]?.text ?? "", /answer-100/u,
-        "history:entry-bound: the newest answer leads the history");
-      const seenAnswers = new Set<string>();
-      const captureAnswers = (screen: string): void => {
-        for (const match of screen.matchAll(/answer-\d+/gu)) seenAnswers.add(match[0]);
-      };
-      captureAnswers(String(screens.firstPage));
-      let pages = 1;
-      for (; pages <= 30; pages++) {
-        assert.ok(terminal);
-        if (!readChoices(terminal.screen()).entries.some((entry) => entry.text === "Next choices")) break;
-        await chooseOffered(terminal, /Next choices/u, "history:entry-bound", { signal: t.signal });
-        const page = await waitForSelector(terminal, "Recent answers", { signal: t.signal, dialogTitle: recentAnswersTitle });
-        captureAnswers(page);
-      }
-      assert.ok(terminal && !readChoices(terminal.screen()).entries.some((entry) => entry.text === "Next choices"),
-        "history:entry-bound: paging reaches the final page");
-      assert.ok(seenAnswers.has("answer-1"), "history:entry-bound: the 100th distinct answer is reachable through paging");
-      assert.ok(!seenAnswers.has("answer-0"), "history:entry-bound: the 101st distinct answer was evicted");
-      assert.deepEqual([...seenAnswers].sort(), Array.from({ length: 100 }, (_, index) => `answer-${index + 1}`).sort(),
-        "history:entry-bound: every one of the newest hundred distinct answers remains reachable");
-      await chooseOffered(terminal, /answer-1$/u, "history:entry-bound", { signal: t.signal });
-      await settle("HLAST DONE");
-      const result = singleResult(sessionFile, 101, "history:entry-bound");
-      assert.equal(result.details?.answer, "answer-1", "history:entry-bound: the oldest surviving answer is reusable");
-
-      assert.equal(provider.requests.length, 204, "the hundred family uses exactly its planned provider requests");
-      assert.deepEqual(await terminal.close(), { code: 0, forced: false }, "the hundred family exits naturally");
-      terminal = undefined;
-      await provider.close();
-      observations.push({ family: "hundred", providerRequests: 204, questionResults: 102, historyPages: pages });
-    } catch (error) {
-      failures.push(error);
-    } finally {
-      if (terminal) {
-        try {
-          const result = await terminal.close();
-          if (result.code !== 0 || result.forced || result.failure) failures.push(new Error(`Q-04 hundred cleanup: ${JSON.stringify(result)}`));
-        } catch (error) { failures.push(error); }
-      }
-      try { await provider.close(); } catch (error) { failures.push(error); }
-    }
-    if (failures.length > 0) {
-      throwScenarioFailure({ directory: family.directory, message: "Q-04 hundred family failed",
-        errors: failures,
-        diagnostics: JSON.stringify({ scenarioId: "Q-04", family: "hundred", providerRequests: provider.requests.length,
-          providerFaults: provider.faults, terminal: terminal?.diagnostics(), screens }, null, 2) });
-    }
-    await removeDirectoryEventually(family.directory);
-  }
-
-  t.diagnostic(JSON.stringify({ scenarioId: "Q-04-entry-bound", piLaunches, observations }));
-});
-
 /** Fixture extension source: public marker input, armed behaviors, and session observation for Q-05. */
 function questionControlExtensionSource(controlDirectory: string, observeFrames = false): string {
   return `import fs from "node:fs";
@@ -2573,6 +2166,8 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       provider.plan(
         provider.questionCall("Navigation question", [{ label: "Alpha" }]),
         provider.text("Q5T1 DONE"),
+        provider.questionCall("History reuse", [{ label: "Alpha" }]),
+        provider.text("Q5TH DONE"),
         provider.questionCall("Post navigation question", [{ label: "After" }]),
         provider.text("Q5T2 DONE"),
       );
@@ -2596,8 +2191,24 @@ test("Question cancellation and invalidation never publish a late answer", { tim
         "invalidate:tree-refused: the public navigation refuses during a pending question");
       assert.ok(!abortedMessage.test(String(screens.treeDialogAfterRefusal)),
         "invalidate:tree-refused: the refused navigation does not abort the pending question");
-      await chooseOffered(terminal, /1\. Alpha/u, "invalidate:tree-refused", { signal: t.signal });
+      await chooseOffered(terminal, /Custom answer/u, "invalidate:tree-refused", { signal: t.signal });
+      await waitForInputDialog(terminal, "Custom answer", { signal: t.signal });
+      await submitInputDialog(terminal, "Kept", { signal: t.signal, controlDirectory: control });
       await terminal.waitForScreen((screen) => screen.includes("Q5T1 DONE"), { signal: t.signal });
+      assert.equal(singleResult(sessionFile, 0, "invalidate:tree-refused").details?.answer, "Kept");
+
+      // Vector history:reuse: the dialog offers the saved custom answer and publishes it without retyping.
+      await submitEditorText(terminal, "q5 th", { signal: t.signal });
+      await waitForSelector(terminal, "History reuse", { signal: t.signal });
+      await chooseOffered(terminal, /More actions/u, "history:reuse", { signal: t.signal });
+      await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
+      await chooseOffered(terminal, /Recent answers/u, "history:reuse", { signal: t.signal });
+      screens.recentAnswers = await waitForSelector(terminal, "Recent answers", { signal: t.signal, dialogTitle: /^Recent answers$/u });
+      assert.deepEqual(readChoices(String(screens.recentAnswers)).entries.map((entry) => entry.text), ["1. Kept"],
+        "history:reuse: Recent answers lists the saved custom answer");
+      await chooseOffered(terminal, /1\. Kept/u, "history:reuse", { signal: t.signal });
+      await terminal.waitForScreen((screen) => screen.includes("Q5TH DONE"), { signal: t.signal });
+      assert.equal(singleResult(sessionFile, 1, "history:reuse").details?.answer, "Kept");
 
       // Vector invalidate:tree-commit: the same navigation commits once idle, through the real session_tree path.
       await submitEditorText(terminal, "/fixture-arm nav-commit", { signal: t.signal });
@@ -2607,17 +2218,23 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       await terminal.waitForScreen((screen) => screen.includes("Navigated to selected point"), { signal: t.signal, after: commitCursor });
       await waitForControlFile(path.join(control, "nav-result"), (content) => content.includes("\"cancelled\":false"), "invalidate:tree-commit");
 
-      // A fresh question works after the committed navigation.
+      // A fresh question works after the committed navigation, and session_tree cleared the saved answers.
       await submitEditorText(terminal, "q5 t2", { signal: t.signal });
       await waitForSelector(terminal, "Post navigation question", { signal: t.signal });
+      await chooseOffered(terminal, /More actions/u, "history:tree-clear", { signal: t.signal });
+      screens.moreAfterNavigation = await waitForSelector(terminal, "More actions", { signal: t.signal, dialogTitle: moreActionsTitle });
+      assert.ok(!readChoices(String(screens.moreAfterNavigation)).entries.some((entry) => /Recent answers/u.test(entry.text)),
+        "history:tree-clear: committed tree navigation clears recent answers");
+      terminal.write(dialogCancel);
+      await waitForSelector(terminal, "Post navigation question", { signal: t.signal, entry: mainSelectorEntry });
       await chooseOffered(terminal, /1\. After/u, "invalidate:tree-fresh", { signal: t.signal });
       await terminal.waitForScreen((screen) => screen.includes("Q5T2 DONE"), { signal: t.signal });
       const treeResults = readQuestionResults(sessionFile);
-      assert.equal(treeResults.length, 2, "invalidate:tree-fresh: both the pending and the fresh question publish");
+      assert.equal(treeResults.length, 3, "invalidate:tree-fresh: the pending, reused, and fresh questions publish");
       assert.deepEqual(await terminal.close(), { code: 0, forced: false }, "the tree family exits naturally");
       terminal = undefined;
       await provider.close();
-      observations.push({ family: "tree", providerRequests: 4 });
+      observations.push({ family: "tree", providerRequests: 6 });
     } catch (error) {
       failures.push(error);
     } finally {

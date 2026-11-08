@@ -321,7 +321,6 @@ test(scenarioTitle, { timeout: 60_000 }, async (t) => {
       timeout: 30_000,
       maxBuffer: 1_048_576,
       signal: t.signal,
-      windowsHide: true,
     });
     const recordExitMetadata = (completed: boolean): void => {
       cleanup.exitCode = invocation.child.exitCode;

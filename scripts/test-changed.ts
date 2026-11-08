@@ -12,11 +12,12 @@
  * - host entry points and package metadata select the host integration tests;
  * - any other path selects the tests whose source names that path.
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { runSuite, testTimings, testUnits, unitTarget } from "./test-suite.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const contracts = "test/RepositoryContracts.test.ts";
@@ -26,7 +27,7 @@ export const moduleTests = {
   "activity.ts": ["test/Activity.e2e.test.ts", "test/runtime-receipts.e2e.test.ts"],
   "auto-compaction.ts": [
     "test/CompactionTrigger.e2e.test.ts", "test/CompactionGoals.e2e.test.ts", "test/CompactionModes.e2e.test.ts",
-    "test/CompactionSettings.e2e.test.ts", "test/CompactionManual.e2e.test.ts", "test/CompactionRestoration.e2e.test.ts",
+    "test/CompactionSettings.e2e.test.ts", "test/CompactionManual.e2e.test.ts",
     "test/CompactionSessionBoundaries.e2e.test.ts",
   ],
   "bounded-text.ts": ["test/BoundedText.e2e.test.ts"],
@@ -37,7 +38,7 @@ export const moduleTests = {
   "display.ts": ["test/Display.e2e.test.ts"],
   "errors.ts": [],
   "file-identity.ts": [],
-  "footer.ts": ["test/Footer.e2e.test.ts", "test/FooterGitSchedule.test.ts"],
+  "footer.ts": ["test/Footer.e2e.test.ts", "test/FooterGitSchedule.test.ts", "test/FooterGitSafety.test.ts"],
   "goal-command.ts": ["test/Goals.e2e.test.ts", "test/GoalLifecycle.e2e.test.ts", "test/GoalUi.e2e.test.ts"],
   "goal-interface.ts": ["test/Goals.e2e.test.ts", "test/GoalLifecycle.e2e.test.ts", "test/GoalUi.e2e.test.ts"],
   "goal-runtime.ts": [
@@ -52,15 +53,15 @@ export const moduleTests = {
   "handoff.ts": ["test/Handoff.e2e.test.ts", "test/HandoffTerminal.e2e.test.ts", "test/GoalHandoff.e2e.test.ts"],
   "hooks.ts": ["test/Hooks.e2e.test.ts", "test/Hooks.system.test.ts"],
   "notifications.ts": ["test/Notifications.e2e.test.ts"],
-  "passive-git-status.ts": ["test/Footer.e2e.test.ts", "test/runtime-receipt-git.e2e.test.ts"],
+  "passive-git-status.ts": ["test/Footer.e2e.test.ts", "test/runtime-receipt-git.e2e.test.ts", "test/PassiveGitStatus.test.ts", "test/FooterGitSafety.test.ts"],
   "personal-instructions.ts": ["test/PersonalInstructions.e2e.test.ts"],
-  "question-ui.ts": ["test/Question.e2e.test.ts"],
-  "question.ts": ["test/Question.e2e.test.ts"],
+  "question-ui.ts": ["test/Question.e2e.test.ts", "test/QuestionHistory.test.ts"],
+  "question.ts": ["test/Question.e2e.test.ts", "test/QuestionHistory.test.ts"],
   "runtime.ts": [],
   "safe-terminal-text.ts": [],
-  "secret-detector.ts": ["test/Handoff.e2e.test.ts"],
+  "secret-detector.ts": ["test/Handoff.e2e.test.ts", "test/SecretDetector.test.ts"],
   "settings.ts": ["test/Settings.e2e.test.ts"],
-  "shell-ui.ts": ["test/ShellUi.e2e.test.ts", "test/ShellUi.test.ts", "test/Editor.e2e.test.ts", "test/Theme.test.ts"],
+  "shell-ui.ts": ["test/ShellUi.e2e.test.ts", "test/ShellUi.test.ts", "test/Theme.test.ts"],
   "variants.ts": [],
   "worked-for.ts": ["test/runtime-receipts.e2e.test.ts"],
 } as const satisfies Record<string, readonly string[]>;
@@ -72,10 +73,9 @@ export const hostFiles = ["Killeros.ts", "package.json", "package-lock.json", "t
 
 /** Host integration tests: activation, packaging, startup, modes, tools, and provider transport. */
 export const hostTests = [
-  "test/PiExtensionContract.test.ts", "test/PiStartup.test.ts", "test/PiToolRestoration.e2e.test.ts",
+  "test/PiExtensionContract.test.ts", "test/runtime-restoration.e2e.test.ts",
   "test/runtime-startup.e2e.test.ts", "test/runtime-tools.e2e.test.ts", "test/runtime-platform.e2e.test.ts",
   "test/runtime-package.e2e.test.ts", "test/runtime-print-json.e2e.test.ts", "test/runtime-native-provider.e2e.test.ts",
-  "test/installed-archive.system.test.ts", "test/npm-package-fixtures.system.test.ts",
 ];
 
 const posix = (file: string): string => file.split(path.sep).join("/");
@@ -140,7 +140,8 @@ function changedFiles(base: string): string[] {
   return [...new Set([...tracked.split("\n"), ...untracked.split("\n")].filter(Boolean))];
 }
 
-function main(): number {
+/** Selects the tests that cover the changed files, prints them for --dry-run or runs them, and resolves to the exit code. */
+async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: { base: { type: "string", default: "origin/main" }, "dry-run": { type: "boolean", default: false } },
@@ -149,14 +150,9 @@ function main(): number {
   const tests = selectTests(changed);
   console.log(`${changed.length} changed path(s) select ${tests.length} test file(s):\n${tests.map((test) => `  ${test}`).join("\n")}`);
   if (values["dry-run"]) return 0;
-  // Reuse the npm test command's flags so the two never drift; only the file list differs.
-  const manifest: unknown = JSON.parse(read("package.json"));
-  const testScript = typeof manifest === "object" && manifest !== null && "scripts" in manifest
-    && typeof manifest.scripts === "object" && manifest.scripts !== null && "test" in manifest.scripts ? manifest.scripts.test : undefined;
-  if (typeof testScript !== "string") throw new Error("package.json must define a test script");
-  const [, ...flags] = testScript.split(" ").slice(0, -1);
-  const result = spawnSync(process.execPath, [...flags, ...tests], { cwd: root, stdio: "inherit" });
-  return result.status ?? 1;
+  // The same units and concurrency as `npm test`, sized for the selected files so a small selection still fills four slots.
+  const selected = Object.fromEntries(Object.entries(testTimings).filter(([file]) => tests.includes(file)));
+  return await runSuite(testUnits(tests, unitTarget(4, selected)), 4);
 }
 
-if (import.meta.main) process.exitCode = main();
+if (import.meta.main) process.exitCode = await main();

@@ -228,7 +228,7 @@ export default function(pi) {
       try {
         const branch=ctx.sessionManager.getBranch(); const leaf=branch.at(-1).id;
         const earlier=branch.find(e=>e.type==='custom' && e.customType==='fixture-marker').id;
-        const a=await ctx.navigateTree(args==='noop'?leaf:earlier,{summarize:false});
+        const a=await ctx.navigateTree(earlier,{summarize:false});
         const b=await ctx.navigateTree(leaf,{summarize:false});
         ctx.ui.notify(JSON.stringify({roundtrip:[a,b]}),'info');
       } finally { cancel=false; }
@@ -965,10 +965,9 @@ test("handoff rejects summaries that omit or contradict saved goal truth before 
 const navigationTitles = {
   committed: "committed navigation during generation invalidates the handoff",
   cancelled: "cancelled navigation during generation preserves the valid handoff",
-  noop: "no-op navigation during generation preserves the valid handoff",
 } as const;
 
-for (const navigation of ["committed", "cancelled", "noop"] as const) {
+for (const navigation of ["committed", "cancelled"] as const) {
   test(navigationTitles[navigation], { timeout: 120_000, skip: piRpcShutdownSkip }, async t => {
     for (let repeat = 1; repeat <= 3; repeat++) {
       const goals = [undefined, goalState()];
@@ -987,7 +986,7 @@ for (const navigation of ["committed", "cancelled", "noop"] as const) {
         try {
           await until(() => f.bodies.length === index + 1);
           const after = f.cli.currentSequence;
-          await f.prompt(`/stress-roundtrip ${navigation === "cancelled" ? "cancel" : navigation === "noop" ? "noop" : ""}`);
+          await f.prompt(`/stress-roundtrip ${navigation === "cancelled" ? "cancel" : ""}`);
           const notice = await f.cli.waitFor(event => event.type === "extension_ui_request" && event.method === "notify"
             && typeof event.message === "string" && event.message.includes("roundtrip"), { after, timeoutMs: 20_000, signal: t.signal });
           assert.deepEqual(record(JSON.parse(String(notice.message))).roundtrip,

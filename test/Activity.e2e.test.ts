@@ -1104,7 +1104,6 @@ async function runOneShotMode(mode: "print" | "json", signal: AbortSignal): Prom
       timeout: 45_000,
       maxBuffer: 1_048_576,
       signal,
-      windowsHide: true,
       encoding: "utf8",
     });
     let stdinFailure: unknown;

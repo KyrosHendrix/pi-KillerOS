@@ -1,7 +1,8 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { shareJitiCache } from "./JitiCache.ts";
+import { shareLaunchCaches } from "./LaunchCaches.ts";
+import { piTimerResolutionOptions } from "./TimerResolution.ts";
 
 export type PiRpcRecord = Record<string, unknown>;
 
@@ -46,12 +47,12 @@ export class PiRpcProcess {
   private closePromise: Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> | undefined;
 
   constructor(options: { cliPath: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) {
-    shareJitiCache(options.env);
+    shareLaunchCaches(options.env);
+    piTimerResolutionOptions(options.env);
     this.child = spawn(process.execPath, [options.cliPath, ...options.args], {
       cwd: options.cwd,
       env: options.env,
       detached: true,
-      windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
     const stdout = this.child.stdout;
@@ -212,6 +213,7 @@ export class PiRpcProcess {
     return await this.closePromise;
   }
 
+  /** Ends Pi's stdin and waits for a natural exit; past `timeoutMs`, force-stops the owned process tree and reports whether cleanup was forced or uncertain. */
   private async closeOwned(timeoutMs: number): Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> {
     if (this.child.stdin && !this.child.stdin.destroyed && !this.child.stdin.writableEnded) this.child.stdin.end();
     let exit = await this.waitForExit(timeoutMs);
@@ -227,7 +229,7 @@ export class PiRpcProcess {
       forced = true;
       const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
       try {
-        execFileSync(taskkill, ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", timeout: 3_000, windowsHide: true });
+        execFileSync(taskkill, ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", timeout: 3_000 });
       } catch (error) {
         treeCleanupError = errorText(error);
         this.child.kill("SIGKILL");

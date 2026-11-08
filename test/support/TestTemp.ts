@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import "./TimerResolution.ts";
 
 /**
  * Loaded with `--import` by the test commands. Points TEMP and TMP at one dedicated root,

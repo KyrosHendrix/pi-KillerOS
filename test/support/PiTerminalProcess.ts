@@ -2,7 +2,8 @@ import { createHook, type AsyncHook } from "node:async_hooks";
 import { release } from "node:os";
 import xterm from "@xterm/headless";
 import { hasNative, spawn, type IPty } from "zigpty";
-import { shareJitiCache } from "./JitiCache.ts";
+import { shareLaunchCaches } from "./LaunchCaches.ts";
+import { piTimerResolutionOptions } from "./TimerResolution.ts";
 
 type TerminalCloseResult = { code: number; forced: boolean; failure?: string };
 
@@ -31,6 +32,7 @@ export class PiTerminalProcess {
     if (!hasNative) throw new Error("A native PTY binding is required; pipe fallback is not terminal coverage");
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(options.env)) if (value !== undefined) env[key] = value;
+    piTimerResolutionOptions(env);
     const cols = options.cols ?? 100;
     const rows = options.rows ?? 30;
     this.terminal = new xterm.Terminal({ cols, rows, allowProposedApi: true, scrollback: 200,
@@ -52,7 +54,7 @@ export class PiTerminalProcess {
         for (const notify of this.changed) notify();
       },
     }).enable();
-    shareJitiCache(options.env);
+    shareLaunchCaches(options.env);
     try {
       this.pty = spawn(options.file, options.args, { cwd: options.cwd, env, cols, rows, name: "xterm-256color", encoding: null });
     } catch (error) {

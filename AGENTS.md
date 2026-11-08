@@ -84,7 +84,7 @@ node --test --test-force-exit --experimental-strip-types test/RepositoryContract
 
 Application scenarios use the real Pi CLI through `test/support/`, not simulated hosts or private helpers.
 
-For host integration, use `test/PiExtensionContract.test.ts` for packed-package activation and reload, `test/runtime-tools.e2e.test.ts` for tool exposure, and `test/runtime-native-provider.e2e.test.ts` for provider transport, sampling, Azure, and capacity retries. Use `test/Editor.e2e.test.ts` for inherited navigation, `test/Hooks.e2e.test.ts` for trust boundaries, and `test/Hooks.system.test.ts` for public hook process cleanup.
+For host integration, use `test/PiExtensionContract.test.ts` for packed-package activation and reload, `test/runtime-tools.e2e.test.ts` for tool exposure, and `test/runtime-native-provider.e2e.test.ts` for provider transport, sampling, Azure, and capacity retries. Use the terminal test in `test/PiExtensionContract.test.ts` for inherited editor navigation, `test/Hooks.e2e.test.ts` for trust boundaries, and `test/Hooks.system.test.ts` for public hook process cleanup.
 
 Before finishing a code change:
 
@@ -95,7 +95,7 @@ npm run test:changed
 
 `test:changed` runs the test files that cover the branch's changes since `origin/main`, including uncommitted and untracked files. Pass `-- --dry-run` to see the selection. When you add a module or a test file, map it in `scripts/test-changed.ts`; `test/test-changed.test.ts` fails until you do.
 
-CI owns the full suite. Do not run `npm test` locally unless asked: it takes about 10 minutes on a laptop, and a pull request's CI runs it in about 5. CI tests the pushed commit, not uncommitted changes. Push only when you're allowed to. To run CI on a pushed branch without a pull request:
+CI owns the full suite. Do not run `npm test` locally unless asked: it takes about 10 minutes on a laptop, and a pull request's CI runs it in under 2. CI tests the pushed commit, not uncommitted changes. Push only when you're allowed to. To run CI on a pushed branch without a pull request:
 
 ```bash
 run=$(gh workflow run ci.yml --ref <branch> | grep -oE 'runs/[0-9]+' | cut -d/ -f2)
@@ -114,7 +114,7 @@ node --test --test-force-exit --experimental-strip-types test/verify-release.tes
 
 For guidance-only changes in `AGENTS.md` or `docs/`, verify referenced paths, headings, and commands directly. Prose alone does not require the runtime suite.
 
-CI runs on Windows using Node.js 26.13.0, pinned in `.node-version`, and checks the minimum Pi in Quality, because development pins equal the peer-range minimums, and the newest compatible Pi in `Pi compatibility (latest)`, which repeats the runtime suites only when that install differs from the lockfile. Quality splits `npm test` across four runners; keep the shard command in `ci.yml` in sync with the `test` script. Compatibility installs must not change the tracked manifest or lockfile. Local checks do not establish that CI passes. Report what ran and what remains unverified.
+CI runs on Windows using Node.js 26.13.0, pinned in `.node-version`, and checks the minimum Pi in Quality, because development pins equal the peer-range minimums, and the newest compatible Pi in `Pi compatibility (latest)`, which repeats the runtime suites only when that install differs from the lockfile. `npm test` runs `scripts/test-suite.ts`, which packs each file's top-level tests from `test/test-timings.json` into units of 15 to 60 seconds, about three per worker slot. One top-level test is one unit at most, so split a long test that loops over independent scenarios into one test per scenario. Quality runs the same script across fifteen runners and adds the lifecycle repeats listed in `scripts/test-suite.ts`; `Pi compatibility (latest) tests` runs the identical shards against a newer Pi. When one shard regularly finishes well after the others, refresh the timings from a green CI run's shard logs: save `gh run view <run> --log` and run `node --experimental-strip-types scripts/test-suite.ts --record <log>`. Compatibility installs must not change the tracked manifest or lockfile. Local checks do not establish that CI passes. Report what ran and what remains unverified.
 
 ## Update docs and release metadata when needed
 

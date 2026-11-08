@@ -24,7 +24,7 @@ import {
   type SlashCommandResolver,
 } from "./commands.ts";
 import { reportError } from "./errors.ts";
-import { passiveGitCommand, passiveGitEnv } from "./passive-git-status.ts";
+import { hideGitConsole, passiveGitCommand, passiveGitEnv } from "./passive-git-status.ts";
 
 function readPackageVersion(path: string | URL): string | undefined {
   try {
@@ -67,6 +67,7 @@ const EDITOR_SUGGESTIONS = [
   'Try "draft an implementation plan for <feature>"',
 ] as const;
 
+/** Resolves the current branch with passive Git, or undefined for an untrusted project, no safe Git binary, or a failed lookup. */
 export function resolveGitBranch(cwd: string, trusted = true): Promise<string | undefined> {
   if (!trusted) return Promise.resolve(undefined);
   let gitCommand: string | undefined;
@@ -85,7 +86,7 @@ export function resolveGitBranch(cwd: string, trusted = true): Promise<string | 
         env: passiveGitEnv(),
         maxBuffer: 64 * 1024,
         timeout: 5_000,
-        windowsHide: true,
+        windowsHide: hideGitConsole(),
       },
       (error, stdout) => {
         if (error) {

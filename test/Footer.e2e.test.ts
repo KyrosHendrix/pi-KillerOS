@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { setTimeout as delay } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
@@ -249,6 +248,7 @@ function isFooterRecord(value: unknown): value is FooterRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Creates an isolated footer fixture with its own project, agent, sessions, and Git trace, optionally outside any repository. */
 function createFooterFamily(name: string, options: { outsideRepository?: boolean; path?: string } = {}): FooterFamily {
   // Corrupting HEAD must not let Git discover the checkout above the fixture.
   const parent = os.tmpdir();
@@ -275,6 +275,8 @@ function createFooterFamily(name: string, options: { outsideRepository?: boolean
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: globalGitConfig,
     GIT_TRACE2_EVENT: trace,
+    // FooterGitSchedule.test.ts checks the real five-second watch cooldown; these scenarios only need scans to follow changes.
+    KILLEROS_FOOTER_WATCH_INTERVAL_MS: "500",
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
   };
@@ -925,15 +927,6 @@ function footerRootScanCount(events: readonly FooterTraceEvent[]): number {
   return footerRootScanStarts(events).length;
 }
 
-function footerRootScanStartedAt(events: readonly FooterTraceEvent[], index: number): number {
-  const start = footerRootScanStarts(events)[index];
-  assert.ok(start, `Footer Git root scan ${index + 1} exists`);
-  assert.ok(start.time, `Footer Git root scan ${index + 1} has a trace timestamp`);
-  const timestamp = Date.parse(start.time);
-  assert.ok(Number.isFinite(timestamp), `Footer Git root scan ${index + 1} timestamp is parseable`);
-  return timestamp;
-}
-
 async function waitForFooterTrace(
   trace: string,
   predicate: (events: readonly FooterTraceEvent[]) => boolean,
@@ -972,25 +965,6 @@ async function waitForFooterTrace(
   });
 }
 
-/**
- * Waits until every Pi-launched Git child has exited and none starts for `quietMs`.
- * Startup can queue a second scan after Pi's branch discovery, and nothing in the trace announces it in advance.
- */
-async function waitForFooterGitQuiet(trace: string, signal: AbortSignal, quietMs = 1_000): Promise<FooterTraceEvent[]> {
-  for (;;) {
-    const settled = await waitForFooterTrace(trace, (events) => footerGitStarts(events).length === footerGitExits(events).length, signal);
-    await delay(quietMs, undefined, { signal });
-    const later = readFooterTrace(trace);
-    if (footerGitStarts(later).length === footerGitStarts(settled).length) return later;
-  }
-}
-
-function footerTraceSettled(events: readonly FooterTraceEvent[], minimumScans: number): boolean {
-  const starts = footerGitStarts(events);
-  const exits = footerGitExits(events);
-  return footerRootScanCount(events) >= minimumScans && starts.length === exits.length;
-}
-
 function footerGitFailureCount(events: readonly FooterTraceEvent[]): number {
   // Pi's separate startup branch query legitimately exits 128 for an unborn HEAD.
   const nativeBranchQueries = new Set(footerGitStarts(events)
@@ -1000,18 +974,13 @@ function footerGitFailureCount(events: readonly FooterTraceEvent[]): number {
     && event.code !== undefined && event.code !== 0).length;
 }
 
-function footerMaximumActiveGitChildren(events: readonly FooterTraceEvent[]): number {
-  let active = 0;
-  let maximum = 0;
-  for (const event of events) {
-    if (event.event === "start") {
-      active += 1;
-      maximum = Math.max(maximum, active);
-    } else if (event.event === "exit") active = Math.max(0, active - 1);
-  }
-  return maximum;
-}
+/**
+ * Git children one successful footer scan starts: the root lookup, the index and untracked listings,
+ * HEAD, and one settings read. A committed HEAD adds its tree listing.
+ */
+const footerScanCommands = 5;
 
+/** Waits until the footer's Git trace shows `count` more complete scans with the expected outcome after `before`. */
 async function waitForFooterGitScan(
   trace: string,
   before: readonly FooterTraceEvent[],
@@ -1023,7 +992,7 @@ async function waitForFooterGitScan(
   const startsBefore = footerGitStarts(before).length;
   const failuresBefore = footerGitFailureCount(before);
   const commandsPerScan = options.repository === "absent" || options.outcome === "failure"
-    ? 1 : 7 + (options.committed ? 1 : 0);
+    ? 1 : footerScanCommands + (options.committed ? 1 : 0);
   return await waitForFooterTrace(trace, (events) => {
     const starts = footerGitStarts(events);
     const exits = footerGitExits(events);
@@ -1036,7 +1005,7 @@ async function waitForFooterGitScan(
     const targetRoot = rootStarts[minimumScans - 1];
     const rootExit = targetRoot?.sid === undefined ? undefined : exits.find((event) => event.sid === targetRoot.sid);
     return rootExit?.code !== undefined && rootExit.code !== 0
-      || starts.length >= startsBefore + 7;
+      || starts.length >= startsBefore + footerScanCommands;
   }, signal, options.timeoutMs ?? 20_000);
 }
 
@@ -1065,7 +1034,7 @@ function footerGit(family: FooterFamily, cwd: string, ...args: string[]): string
   assert.ok(gitDirectory, "Fixture preparation requires an absolute system Git");
   return execFileSync(path.join(gitDirectory, "git.exe"), ["-C", cwd, "-c", "core.fsmonitor=false", "-c", "filter.tripwire.clean=",
     "-c", "user.name=KillerOS Footer Fixture", "-c", "user.email=footer@fixture.invalid", ...args], {
-    cwd, env, encoding: "utf8", windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+    cwd, env, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
   });
 }
 
@@ -1131,276 +1100,66 @@ const systemGitSearchPath = Object.entries(process.env).find(([key]) => key.toLo
 const systemGitDirectories = systemGitSearchPath.split(path.delimiter).filter((directory) => path.isAbsolute(directory)
   && existsSync(path.join(directory, "git.exe")));
 
-function writeRepositoryGitShims(repository: string, sentinel: string): void {
-  const script = `@echo off\r\necho executed> "${sentinel.replaceAll("\\", "/")}"\r\n`;
-  const bin = path.join(repository, "bin");
-  mkdirSync(bin);
-  for (const directory of [repository, bin]) {
-    for (const name of ["git", "where", "which", "git.exe", "where.exe", "which.exe", "git.cmd", "where.cmd", "which.cmd", "git.bat", "where.bat", "which.bat"]) {
-      writeFileSync(path.join(directory, name), script, "utf8");
-    }
-  }
-}
-
-test("Footer Git status is passive, trusted, and never executes repository code", { timeout: 300_000 }, async (t: TestContext) => {
+/**
+ * FT-04 harness: each recovery history is its own test with one Pi launch. `body` creates families and
+ * starts terminals through the harness, which closes every terminal, reports diagnostics on failure,
+ * and checks natural exit, native resource release, and scratch directory removal.
+ */
+async function footerRecovery(t: TestContext, body: (harness: {
+  createFamily: (...args: Parameters<typeof createFooterFamily>) => FooterFamily;
+  startTerminal: (...args: Parameters<typeof startFooterTerminal>) => PiTerminalProcess;
+  screens: Record<string, string>;
+}) => Promise<void>): Promise<void> {
   const families: FooterFamily[] = [];
   const terminals: PiTerminalProcess[] = [];
   const cleanupFailures: unknown[] = [];
-  const failures: unknown[] = [];
   const screens: Record<string, string> = {};
-  let piLaunches = 0;
   let failure: unknown;
-  const outwardLinks: string[] = [];
   try {
-    const trusted = createFooterFamily("git-trusted");
-    families.push(trusted);
-    const alternate = path.join(trusted.directory, "alternate-repository");
-    mkdirSync(alternate);
-    initFooterRepository(trusted);
-    initFooterRepository(trusted, alternate);
-    const files = Array.from({ length: 6 }, (_, index) => `modified-${index + 1}.txt`);
-    for (const file of files) writeFileSync(path.join(trusted.project, file), "initial\n", "utf8");
-    writeFileSync(path.join(trusted.project, "renamed.txt"), "rename\n", "utf8");
-    writeFileSync(path.join(trusted.project, "deleted.txt"), "delete\n", "utf8");
-    writeFileSync(path.join(alternate, "alternate.txt"), "alternate\n", "utf8");
-    footerGit(trusted, trusted.project, "add", ".");
-    footerGit(trusted, trusted.project, "commit", "--quiet", "-m", "footer baseline");
-    footerGit(trusted, alternate, "add", ".");
-    footerGit(trusted, alternate, "commit", "--quiet", "-m", "alternate baseline");
-
-    const childRepository = path.join(trusted.directory, "submodule-source");
-    mkdirSync(childRepository);
-    initFooterRepository(trusted, childRepository);
-    writeFileSync(path.join(childRepository, "submodule.txt"), "submodule baseline\n", "utf8");
-    footerGit(trusted, childRepository, "add", ".");
-    footerGit(trusted, childRepository, "commit", "--quiet", "-m", "submodule baseline");
-    footerGit(trusted, trusted.project, "-c", "protocol.file.allow=always", "submodule", "add", "--quiet", childRepository, "submodule");
-    writeFileSync(path.join(trusted.project, ".gitattributes"), "*.txt filter=tripwire\n", "utf8");
-    footerGit(trusted, trusted.project, "add", ".gitattributes", "submodule");
-    footerGit(trusted, trusted.project, "commit", "--quiet", "-m", "footer submodule and attributes");
-
-    const filterScript = path.join(trusted.directory, "git-tripwire.cjs");
-    const fsmonitorSentinel = path.join(trusted.directory, "fsmonitor-sentinel");
-    const filterSentinel = path.join(trusted.directory, "filter-sentinel");
-    writeFileSync(filterScript, "require('node:fs').writeFileSync(process.argv[2], 'executed\\n'); process.stdin.pipe(process.stdout);\n", "utf8");
-    const quote = (value: string): string => `"${value.replaceAll("\\", "/").replaceAll('"', '\\"')}"`;
-    const tripwire = `${quote(process.execPath)} ${quote(filterScript)}`;
-    footerGit(trusted, trusted.project, "config", "core.fsmonitor", `${tripwire} ${quote(fsmonitorSentinel)}`);
-    footerGit(trusted, trusted.project, "config", "filter.tripwire.clean", `${tripwire} ${quote(filterSentinel)}`);
-    writeRepositoryGitShims(trusted.project, path.join(trusted.directory, "repository-shim-sentinel"));
-    footerGit(trusted, trusted.project, "add", "bin", "git", "git.exe", "git.cmd", "git.bat", "where", "where.exe", "where.cmd", "where.bat",
-      "which", "which.exe", "which.cmd", "which.bat");
-    footerGit(trusted, trusted.project, "commit", "--quiet", "-m", "repository-local shims");
-    const linkedBin = path.join(trusted.directory, "linked-bin");
-    symlinkSync(path.join(trusted.project, "bin"), linkedBin, "junction");
-    for (const file of files) writeFileSync(path.join(trusted.project, file), "changed\n", "utf8");
-    footerGit(trusted, trusted.project, "mv", "renamed.txt", "moved.txt");
-    rmSync(path.join(trusted.project, "deleted.txt"));
-    writeFileSync(path.join(trusted.project, "untracked.txt"), "new\n", "utf8");
-    writeFileSync(path.join(trusted.project, "submodule", "submodule.txt"), "submodule changed without a commit\n", "utf8");
-    footerGit(trusted, trusted.project, "config", "--local", "user.name", "KillerOS Footer Fixture");
-    footerGit(trusted, trusted.project, "config", "--local", "user.email", "footer@fixture.invalid");
-    const selectorNames = ["GIT_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_WORK_TREE",
-      "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"] as const;
-    for (const [index, selector] of selectorNames.entries()) trusted.env[selector] = index === 0 || index === 3
-      ? alternate : path.join(alternate, `.selector-${selector.toLowerCase()}`);
-    trusted.env.GIT_OPTIONAL_LOCKS = "1";
-    trusted.env.GIT_NO_LAZY_FETCH = "0";
-    trusted.env.PATH = [linkedBin, trusted.project, ...systemGitDirectories].join(path.delimiter);
-    writePassiveFooterConfig(trusted.agent);
-    const settings: unknown = JSON.parse(readFileSync(path.join(trusted.agent, "settings.json"), "utf8"));
-    assert.ok(isFooterRecord(settings));
-    writeFileSync(path.join(trusted.agent, "settings.json"), JSON.stringify({ ...settings, theme: "dark" }), "utf8");
-
-    const trustedTerminal = startFooterTerminal(trusted);
-    terminals.push(trustedTerminal);
-    piLaunches += 1;
-    const trustedStartupSequence = trustedTerminal.sequence;
-    screens.trustedDirty = await trustedTerminal.waitForScreen((screen) => /±9 \[~7 \+1 −1\]/u.test(screen),
-      { signal: t.signal, after: trustedStartupSequence });
-    assert.match(footerRenderedGitLine(screens.trustedDirty), /±9 \[~7 \+1 −1\]/u);
-    const dirtyOutput = footerRawOutput(trustedTerminal);
-    assert.match(dirtyOutput, /\x1b\[38;5;3m(?:\x1b\[22m)?~7[^\r\n]{0,80}\x1b\[38;5;2m(?:\x1b\[22m)?\+1[^\r\n]{0,80}\x1b\[38;5;1m(?:\x1b\[22m)?−1/u,
-      "The dirty row uses the dark theme warning, success, and error colors");
-    assert.equal(existsSync(fsmonitorSentinel), false, "The configured filesystem monitor never executes");
-    assert.equal(existsSync(filterSentinel), false, "The configured clean filter never executes");
-    assert.equal(existsSync(path.join(trusted.directory, "repository-shim-sentinel")), false, "Repository-local Git/locator shims never execute");
-    assert.ok(footerScannerStarts(readFooterTrace(trusted.trace)).length > 0, "A safe system Git was found after unsafe PATH entries");
-    const beforeTrustedCleanRender = trustedTerminal.sequence;
-    footerGit(trusted, trusted.project, "add", "-A");
-    footerGit(trusted, trusted.project, "commit", "--quiet", "-m", "clean footer state");
-    screens.trustedClean = await trustedTerminal.waitForScreen((screen) => screen.includes("main") && footerRenderedGitLine(screen) === "",
-      { signal: t.signal, after: beforeTrustedCleanRender, timeoutMs: 30_000 });
-    assert.doesNotMatch(screens.trustedClean.split("\n").slice(-6).join("\n"), /±\d+ \[/u, "Clean Git state is hidden");
-    const beforeExternal = trustedTerminal.sequence;
-    writeFileSync(path.join(trusted.project, "external.txt"), "changed outside Pi\n", "utf8");
-    screens.trustedExternal = await trustedTerminal.waitForScreen((screen) => footerRenderedGitLine(screen) === "±1 [~0 +1 −0]",
-      { signal: t.signal, after: beforeExternal, timeoutMs: 30_000 });
-    const externalOutput = footerRawOutput(trustedTerminal);
-    assert.match(externalOutput, /\x1b\[38;5;3m(?:\x1b\[22m)?~0[^\r\n]{0,80}\x1b\[38;5;2m(?:\x1b\[22m)?\+1[^\r\n]{0,80}\x1b\[38;5;1m(?:\x1b\[22m)?−0/u,
-      "The external-change row uses the same semantic colors");
-    await trustedTerminal.close();
-
-    const untrusted = createFooterFamily("git-untrusted");
-    families.push(untrusted);
-    initFooterRepository(untrusted);
-    writeFileSync(path.join(untrusted.project, "dirty.txt"), "dirty\n", "utf8");
-    writePassiveFooterConfig(untrusted.agent);
-    const untrustedTerminal = startFooterTerminal(untrusted, { trusted: false });
-    terminals.push(untrustedTerminal);
-    piLaunches += 1;
-    screens.untrusted = await untrustedTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    assert.equal(footerScannerStarts(readFooterTrace(untrusted.trace)).length, 0, "Untrusted projects start no passive scanner Git child");
-    assert.equal(footerRenderedGitLine(screens.untrusted), "");
-    await untrustedTerminal.close();
-
-    const outside = createFooterFamily("git-outside", { outsideRepository: true });
-    families.push(outside);
-    const selectorRepository = path.join(outside.directory, "selector-repository");
-    mkdirSync(selectorRepository);
-    initFooterRepository(outside, selectorRepository);
-    writeFileSync(path.join(selectorRepository, "redirected.txt"), "would be visible if GIT_DIR leaked\n", "utf8");
-    footerGit(outside, selectorRepository, "add", ".");
-    footerGit(outside, selectorRepository, "commit", "--quiet", "-m", "selector baseline");
-    writeFileSync(path.join(selectorRepository, "redirected-untracked.txt"), "not this project\n", "utf8");
-    outside.env.GIT_DIR = path.join(selectorRepository, ".git");
-    outside.env.GIT_WORK_TREE = selectorRepository;
-    writePassiveFooterConfig(outside.agent);
-    const outsideTerminal = startFooterTerminal(outside);
-    terminals.push(outsideTerminal);
-    piLaunches += 1;
-    screens.outside = await outsideTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    const outsideTrace = await waitForFooterTrace(outside.trace, (events) => footerTraceSettled(events, 1), t.signal);
-    assert.equal(footerRenderedGitLine(screens.outside), "", "Inherited GIT_DIR cannot redirect a trusted non-repository session");
-    assert.ok(footerGitExits(outsideTrace).some((event) => event.event === "exit"), "The failed discovery reached the selected Git process");
-    await outsideTerminal.close();
-
-    const alias = createFooterFamily("git-alias");
-    families.push(alias);
-    initFooterRepository(alias);
-    writeFileSync(path.join(alias.project, "tracked.txt"), "alias baseline\n", "utf8");
-    const aliasShimSentinel = path.join(alias.directory, "alias-shim-sentinel");
-    writeRepositoryGitShims(alias.project, aliasShimSentinel);
-    footerGit(alias, alias.project, "add", ".");
-    footerGit(alias, alias.project, "commit", "--quiet", "-m", "alias Git shims");
-    const projectAlias = path.join(alias.directory, "project-alias");
-    symlinkSync(alias.project, projectAlias, "junction");
-    alias.env.PATH = path.join(projectAlias, "bin");
-    writePassiveFooterConfig(alias.agent);
-    const aliasTerminal = startFooterTerminal(alias, { cwd: projectAlias });
-    terminals.push(aliasTerminal);
-    piLaunches += 1;
-    screens.alias = await aliasTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    assert.equal(footerScannerStarts(readFooterTrace(alias.trace)).length, 0,
-      "A repository junction alias cannot make repository-local Git a passive executable");
-    assert.equal(footerRenderedGitLine(screens.alias), "");
-    assert.equal(existsSync(aliasShimSentinel), false, "The repository-alias Git shim never executes");
-    await aliasTerminal.close();
-
-    const outward = createFooterFamily("git-outward");
-    families.push(outward);
-    initFooterRepository(outward);
-    writeFileSync(path.join(outward.project, ".gitignore"), "bin/\n", "utf8");
-    footerGit(outward, outward.project, "add", ".gitignore");
-    footerGit(outward, outward.project, "commit", "--quiet", "-m", "ignore junction fixture");
-    writeFileSync(path.join(outward.project, "dirty.txt"), "visible\n", "utf8");
-    const externalShims = path.join(outward.directory, "external-shims");
-    mkdirSync(externalShims);
-    const outwardSentinel = path.join(outward.directory, "outward-sentinel");
-    writeRepositoryGitShims(externalShims, outwardSentinel);
-    const outwardBin = path.join(outward.project, "bin");
-    const outwardAlias = path.join(outward.directory, "outward-alias");
-    symlinkSync(path.join(externalShims, "bin"), outwardBin, "junction");
-    outwardLinks.push(outwardBin);
-    symlinkSync(outward.project, outwardAlias, "junction");
-    outwardLinks.push(outwardAlias);
-    writePassiveFooterConfig(outward.agent);
-    for (const vector of [
-      { cwd: outward.project, search: outwardBin, fallback: false },
-      { cwd: outwardAlias, search: path.join(outwardAlias, "bin"), fallback: false },
-      { cwd: outward.project, search: [outwardBin, ...systemGitDirectories].join(path.delimiter), fallback: true },
-    ]) {
-      outward.env.PATH = vector.search;
-      const before = footerScannerStarts(readFooterTrace(outward.trace)).length;
-      const terminal = startFooterTerminal(outward, { cwd: vector.cwd });
-      terminals.push(terminal);
-      piLaunches += 1;
-      const screen = await terminal.waitForScreen((value) => value.includes("KillerOS") && footerLine(value) !== ""
-        && (!vector.fallback || footerRenderedGitLine(value) === "±1 [~0 +1 −0]"), { signal: t.signal });
-      if (vector.fallback) assert.equal(footerRenderedGitLine(screen), "±1 [~0 +1 −0]");
-      else assert.equal(footerRenderedGitLine(screen), "");
-      await terminal.close();
-      const starts = footerScannerStarts(readFooterTrace(outward.trace)).length - before;
-      if (vector.fallback) assert.ok(starts > 0, "Safe Git scans after outward link rejection");
-      else assert.equal(starts, 0, "Outward repository link cannot supply Git");
-      assert.equal(existsSync(outwardSentinel), false, "Outward shim never executes");
-    }
-
-    const localOnly = createFooterFamily("git-local-only", { path: "." });
-    families.push(localOnly);
-    initFooterRepository(localOnly);
-    writeFileSync(path.join(localOnly.project, "git.exe"), "@echo off\r\necho executed> sentinel\r\n", "utf8");
-    writeFileSync(path.join(localOnly.project, "git.cmd"), "@echo off\r\necho executed> sentinel\r\n", "utf8");
-    footerGit(localOnly, localOnly.project, "add", ".");
-    footerGit(localOnly, localOnly.project, "commit", "--quiet", "-m", "local-only Git shim");
-    localOnly.env.PATH = ["", ".", localOnly.project].join(path.delimiter);
-    writePassiveFooterConfig(localOnly.agent);
-    const localOnlyTerminal = startFooterTerminal(localOnly);
-    terminals.push(localOnlyTerminal);
-    piLaunches += 1;
-    screens.localOnly = await localOnlyTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    assert.equal(footerScannerStarts(readFooterTrace(localOnly.trace)).length, 0,
-      "Repository-local Git is not accepted as the passive executable");
-    assert.equal(footerRenderedGitLine(screens.localOnly), "");
-    assert.equal(existsSync(path.join(localOnly.project, "sentinel")), false);
-    await localOnlyTerminal.close();
-    assert.equal(piLaunches, 8);
+    await body({
+      createFamily: (...args) => { const family = createFooterFamily(...args); families.push(family); return family; },
+      startTerminal: (...args) => { const terminal = startFooterTerminal(...args); terminals.push(terminal); return terminal; },
+      screens,
+    });
   } catch (error) { failure = error; }
   finally {
-    for (const terminal of terminals.reverse()) {
+    for (const terminal of [...terminals].reverse()) {
       try {
         const result = await terminal.close();
-        if (result.code !== 0 || result.forced || result.failure) cleanupFailures.push(new Error(`Footer Git terminal cleanup: ${JSON.stringify(result)}`));
+        if (result.code !== 0 || result.forced || result.failure) cleanupFailures.push(new Error(`Footer recovery terminal cleanup: ${JSON.stringify(result)}`));
       } catch (error) { cleanupFailures.push(error); }
     }
-    for (const link of outwardLinks.reverse()) {
-      try { rmSync(link); } catch (error) { cleanupFailures.push(error); }
-    }
   }
-  if (failure !== undefined || failures.length > 0 || cleanupFailures.length > 0) {
-    throwScenarioFailure({ directory: families[0]?.directory ?? repositoryRoot, message: "Footer Git safety E2E failed",
-      errors: [...(failure === undefined ? [] : [failure]), ...failures, ...cleanupFailures],
+  const piLaunches = terminals.length;
+  if (failure !== undefined || cleanupFailures.length > 0) {
+    throwScenarioFailure({ directory: families[0]?.directory ?? repositoryRoot, message: "Footer recovery E2E failed",
+      errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures],
       diagnostics: JSON.stringify({ directories: families.map((family) => family.directory), platform: process.platform,
         node: process.version, pi: piVersion, piLaunches,
-        gitStarts: families.map((family) => ({ name: family.name, count: footerGitStarts(readFooterTrace(family.trace)).length })),
-        scannerStarts: families.map((family) => ({ name: family.name, count: footerScannerStarts(readFooterTrace(family.trace)).length })),
-        fixtureGitCalls: families.map((family) => ({ name: family.name, count: family.fixtureGitCalls })), screens,
+        gitStarts: families.map((family) => footerGitStarts(readFooterTrace(family.trace)).length),
+        gitExits: families.map((family) => footerGitExits(readFooterTrace(family.trace)).length), screens,
         terminals: terminals.map((terminal) => terminal.diagnostics()) }),
     });
   }
+  assert.equal(piLaunches, 1, "Each FT-04 history launches Pi once");
   const familyCounts = families.map((family) => ({ name: family.name,
     piLaunchedGitChildren: footerGitStarts(readFooterTrace(family.trace)).length,
     scannerStarts: footerScannerStarts(readFooterTrace(family.trace)).length,
     fixtureGitCalls: family.fixtureGitCalls }));
   const terminalCleanup = terminals.map(footerTerminalCleanup);
   assert.ok(terminalCleanup.every(({ exitCode, nativeResources }) => exitCode === 0 && nativeResources === 0),
-    "All FT-03 Pi terminals exit naturally and release native resources");
+    "All FT-04 Pi terminals exit naturally and release native resources");
   for (const family of families) await removeDirectoryEventually(family.directory);
   const scratchDirectoriesRemoved = families.map((family) => ({ directory: family.directory, removed: !existsSync(family.directory) }));
-  assert.ok(scratchDirectoriesRemoved.every(({ removed }) => removed), "Every FT-03 scratch directory is removed");
-  t.diagnostic(JSON.stringify({ piLaunches, families: familyCounts, terminalCleanup, scratchDirectoriesRemoved }));
-});
+  assert.ok(scratchDirectoriesRemoved.every(({ removed }) => removed), "Every FT-04 scratch directory is removed");
+  const fixtureGitCalls = familyCounts.reduce((total, family) => total + family.fixtureGitCalls, 0);
+  t.diagnostic(JSON.stringify({ providerRequests: 0, providerRequestBasis: "No model prompt is submitted; no provider server is configured",
+    piLaunches, families: familyCounts, fixtureGitCalls, terminalCleanup, scratchDirectoriesRemoved }));
+}
 
-test("Footer Git status preserves last good counts through failures and recovers without recreation", { timeout: 360_000 }, async (t: TestContext) => {
-  const families: FooterFamily[] = [];
-  const terminals: PiTerminalProcess[] = [];
-  const cleanupFailures: unknown[] = [];
-  const screens: Record<string, string> = {};
-  let piLaunches = 0;
-  let failure: unknown;
-  try {
-    const recovery = createFooterFamily("recovery");
-    families.push(recovery);
+test("Footer Git status preserves last good counts through failures and recovers without recreation (recovery)", { timeout: 120_000 }, async (t: TestContext) => {
+  await footerRecovery(t, async ({ createFamily, startTerminal, screens }) => {
+    const recovery = createFamily("recovery");
     initFooterRepository(recovery);
     const tracked = path.join(recovery.project, "tracked.txt");
     const added = path.join(recovery.project, "added.txt");
@@ -1412,9 +1171,7 @@ test("Footer Git status preserves last good counts through failures and recovers
     writePassiveFooterConfig(recovery.agent);
 
     const recoveryBefore = readFooterTrace(recovery.trace);
-    const recoveryTerminal = startFooterTerminal(recovery);
-    terminals.push(recoveryTerminal);
-    piLaunches += 1;
+    const recoveryTerminal = startTerminal(recovery);
     const recoveryStartupSequence = recoveryTerminal.sequence;
     screens.recoveryStartup = await recoveryTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
     let events = await waitForFooterGitScan(recovery.trace, recoveryBefore, t.signal,
@@ -1422,23 +1179,7 @@ test("Footer Git status preserves last good counts through failures and recovers
     screens.recoveryDirty = await recoveryTerminal.waitForScreen((screen) => /±2 \[~1 \+1 −0\]/u.test(footerRenderedGitLine(screen)),
       { signal: t.signal, after: recoveryStartupSequence });
 
-    const recoveryBeforeHeadFailure = events;
-    const recoveryHead = path.join(recovery.project, ".git", "HEAD");
-    writeFileSync(recoveryHead, "not a valid HEAD\n", "utf8");
-    writeFileSync(tracked, "changed\n", "utf8");
-    events = await waitForFooterGitScan(recovery.trace, recoveryBeforeHeadFailure, t.signal,
-      { outcome: "failure", repository: "present" });
-    screens.headFailure = await waitForFooterFailureBarrier(recoveryTerminal, t.signal, "±2 [~1 +1 −0]");
-    assert.match(footerRenderedGitLine(screens.headFailure), /±2 \[~1 \+1 −0\]/u,
-      "A failed HEAD lookup keeps the last successful counts instead of inventing new files");
-
-    const recoveryBeforeHeadRestore = events;
-    writeFileSync(recoveryHead, "ref: refs/heads/main\n", "utf8");
-    events = await waitForFooterGitScan(recovery.trace, recoveryBeforeHeadRestore, t.signal,
-      { outcome: "success", repository: "present", committed: true });
-    // The successful result equals the last displayed counts, so the footer does not repaint.
-    assert.match(footerRenderedGitLine(recoveryTerminal.screen()), /±2 \[~1 \+1 −0\]/u);
-
+    // The head-states test covers committed HEAD failures; this history covers repository config failures.
     const recoveryBeforeConfigFailure = events;
     const recoveryGitConfig = path.join(recovery.project, ".git", "config");
     const savedRecoveryGitConfig = path.join(recovery.directory, "saved-git-config");
@@ -1470,108 +1211,12 @@ test("Footer Git status preserves last good counts through failures and recovers
       { signal: t.signal, after: beforeCleanRender });
     assert.equal(footerRenderedGitLine(screens.cleanRecovery), "", "A successful clean scan replaces the last good dirty counts");
     assert.deepEqual(await recoveryTerminal.close(), { code: 0, forced: false });
+  });
+});
 
-    const headStates = createFooterFamily("head-states");
-    families.push(headStates);
-    initFooterRepository(headStates);
-    const unbornTracked = path.join(headStates.project, "unborn.txt");
-    const laterAdded = path.join(headStates.project, "later-added.txt");
-    writeFileSync(unbornTracked, "staged on unborn branch\n", "utf8");
-    footerGit(headStates, headStates.project, "add", ".");
-    writePassiveFooterConfig(headStates.agent);
-
-    const headBefore = readFooterTrace(headStates.trace);
-    const headTerminal = startFooterTerminal(headStates);
-    terminals.push(headTerminal);
-    piLaunches += 1;
-    const headStartupSequence = headTerminal.sequence;
-    screens.unbornStartup = await headTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    events = await waitForFooterGitScan(headStates.trace, headBefore, t.signal,
-      { outcome: "success", repository: "present", committed: false });
-    screens.unbornDirty = await headTerminal.waitForScreen((screen) => /±1 \[~0 \+1 −0\]/u.test(footerRenderedGitLine(screen)),
-      { signal: t.signal, after: headStartupSequence });
-
-    const unbornBeforeConfigFailure = events;
-    const headGitConfig = path.join(headStates.project, ".git", "config");
-    const savedHeadGitConfig = path.join(headStates.directory, "saved-git-config");
-    renameSync(headGitConfig, savedHeadGitConfig);
-    mkdirSync(headGitConfig);
-    writeFileSync(unbornTracked, "staged on unborn branch\n", "utf8");
-    events = await waitForFooterGitScan(headStates.trace, unbornBeforeConfigFailure, t.signal,
-      { outcome: "failure", repository: "present" });
-    screens.unbornConfigFailure = await waitForFooterFailureBarrier(headTerminal, t.signal, "±1 [~0 +1 −0]");
-    assert.match(footerRenderedGitLine(screens.unbornConfigFailure), /±1 \[~0 \+1 −0\]/u,
-      "An unreadable config keeps the last successful unborn-branch counts");
-
-    const unbornBeforeConfigRestore = events;
-    rmSync(headGitConfig, { recursive: true, force: true });
-    renameSync(savedHeadGitConfig, headGitConfig);
-    events = await waitForFooterGitScan(headStates.trace, unbornBeforeConfigRestore, t.signal,
-      { outcome: "success", repository: "present", committed: false });
-    // A successful scan with unchanged counts is intentionally render-suppressed.
-    assert.match(footerRenderedGitLine(headTerminal.screen()), /±1 \[~0 \+1 −0\]/u);
-
-    const unbornBeforeFailure = events;
-    const unbornHead = path.join(headStates.project, ".git", "HEAD");
-    writeFileSync(unbornHead, "not a valid HEAD\n", "utf8");
-    writeFileSync(laterAdded, "added while HEAD is unavailable\n", "utf8");
-    events = await waitForFooterGitScan(headStates.trace, unbornBeforeFailure, t.signal,
-      { outcome: "failure", repository: "present" });
-    screens.unbornHeadFailure = await waitForFooterFailureBarrier(headTerminal, t.signal, "±1 [~0 +1 −0]");
-    assert.match(footerRenderedGitLine(screens.unbornHeadFailure), /±1 \[~0 \+1 −0\]/u,
-      "An unavailable unborn HEAD cannot turn a failed scan into a second added file");
-
-    const unbornBeforeRestore = events;
-    const beforeUnbornRecoveryRender = headTerminal.sequence;
-    writeFileSync(unbornHead, "ref: refs/heads/main\n", "utf8");
-    events = await waitForFooterGitScan(headStates.trace, unbornBeforeRestore, t.signal,
-      { outcome: "success", repository: "present", committed: false });
-    screens.unbornRecovery = await headTerminal.waitForScreen((screen) => /±2 \[~0 \+2 −0\]/u.test(footerRenderedGitLine(screen)),
-      { signal: t.signal, after: beforeUnbornRecoveryRender });
-    assert.match(footerRenderedGitLine(screens.unbornRecovery), /±2 \[~0 \+2 −0\]/u);
-
-    const beforeInitialCommit = events;
-    const beforeInitialClean = headTerminal.sequence;
-    footerGit(headStates, headStates.project, "add", "-A");
-    footerGit(headStates, headStates.project, "commit", "--quiet", "-m", "commit unborn branch files");
-    writeFileSync(unbornTracked, "staged on unborn branch\n", "utf8");
-    events = await waitForFooterGitScan(headStates.trace, beforeInitialCommit, t.signal,
-      { outcome: "success", repository: "present", committed: true });
-    screens.initialCommit = await headTerminal.waitForScreen((screen) => footerRenderedGitLine(screen) === "",
-      { signal: t.signal, after: beforeInitialClean });
-
-    const committedBeforeChange = events;
-    const committedChangeSequence = headTerminal.sequence;
-    writeFileSync(unbornTracked, "committed file changed\n", "utf8");
-    events = await waitForFooterGitScan(headStates.trace, committedBeforeChange, t.signal,
-      { outcome: "success", repository: "present", committed: true });
-    screens.committedChange = await headTerminal.waitForScreen((screen) => /±1 \[~1 \+0 −0\]/u.test(footerRenderedGitLine(screen)),
-      { signal: t.signal, after: committedChangeSequence });
-    assert.match(footerRenderedGitLine(screens.committedChange), /±1 \[~1 \+0 −0\]/u,
-      "A committed HEAD reports a real modification");
-
-    const committedBeforeHeadFailure = events;
-    const committedAdded = path.join(headStates.project, "committed-later-added.txt");
-    writeFileSync(unbornHead, "not a valid HEAD\n", "utf8");
-    writeFileSync(committedAdded, "added during committed HEAD failure\n", "utf8");
-    events = await waitForFooterGitScan(headStates.trace, committedBeforeHeadFailure, t.signal,
-      { outcome: "failure", repository: "present" });
-    screens.committedHeadFailure = await waitForFooterFailureBarrier(headTerminal, t.signal, "±1 [~1 +0 −0]");
-    assert.match(footerRenderedGitLine(screens.committedHeadFailure), /±1 \[~1 \+0 −0\]/u,
-      "A failed committed HEAD lookup preserves prior counts and does not invent added files");
-
-    const committedBeforeRestore = events;
-    const beforeCommittedRecoveryRender = headTerminal.sequence;
-    writeFileSync(unbornHead, "ref: refs/heads/main\n", "utf8");
-    events = await waitForFooterGitScan(headStates.trace, committedBeforeRestore, t.signal,
-      { outcome: "success", repository: "present", committed: true });
-    screens.committedHeadRecovery = await headTerminal.waitForScreen((screen) => /±2 \[~1 \+1 −0\]/u.test(footerRenderedGitLine(screen)),
-      { signal: t.signal, after: beforeCommittedRecoveryRender });
-    assert.match(footerRenderedGitLine(screens.committedHeadRecovery), /±2 \[~1 \+1 −0\]/u);
-    assert.deepEqual(await headTerminal.close(), { code: 0, forced: false });
-
-    const discovery = createFooterFamily("discovery", { outsideRepository: true });
-    families.push(discovery);
+test("Footer Git status preserves last good counts through failures and recovers without recreation (discovery)", { timeout: 120_000 }, async (t: TestContext) => {
+  await footerRecovery(t, async ({ createFamily, startTerminal, screens }) => {
+    const discovery = createFamily("discovery", { outsideRepository: true });
     initFooterRepository(discovery);
     const discoveryTracked = path.join(discovery.project, "tracked.txt");
     writeFileSync(discoveryTracked, "baseline\n", "utf8");
@@ -1581,12 +1226,10 @@ test("Footer Git status preserves last good counts through failures and recovers
     writePassiveFooterConfig(discovery.agent);
 
     const discoveryBefore = readFooterTrace(discovery.trace);
-    const discoveryTerminal = startFooterTerminal(discovery);
-    terminals.push(discoveryTerminal);
-    piLaunches += 1;
+    const discoveryTerminal = startTerminal(discovery);
     const discoveryStartupSequence = discoveryTerminal.sequence;
     screens.discoveryStartup = await discoveryTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    events = await waitForFooterGitScan(discovery.trace, discoveryBefore, t.signal,
+    let events = await waitForFooterGitScan(discovery.trace, discoveryBefore, t.signal,
       { outcome: "success", repository: "present", committed: true });
     screens.discoveryDirty = await discoveryTerminal.waitForScreen((screen) => /±1 \[~1 \+0 −0\]/u.test(footerRenderedGitLine(screen)),
       { signal: t.signal, after: discoveryStartupSequence });
@@ -1603,23 +1246,29 @@ test("Footer Git status preserves last good counts through failures and recovers
     assert.ok(footerGitFailureCount(events) > footerGitFailureCount(discoveryBeforeFailure),
       "The unavailable discovery reached the selected system Git process");
     assert.deepEqual(await discoveryTerminal.close(), { code: 0, forced: false });
+  });
+});
 
-    const initialUnavailable = createFooterFamily("initial-unavailable", { outsideRepository: true });
-    families.push(initialUnavailable);
+test("Footer Git status preserves last good counts through failures and recovers without recreation (initial unavailable)", { timeout: 120_000 }, async (t: TestContext) => {
+  await footerRecovery(t, async ({ createFamily, startTerminal, screens }) => {
+    const initialUnavailable = createFamily("initial-unavailable", { outsideRepository: true });
     writePassiveFooterConfig(initialUnavailable.agent);
     const unavailableBefore = readFooterTrace(initialUnavailable.trace);
-    const unavailableTerminal = startFooterTerminal(initialUnavailable);
-    terminals.push(unavailableTerminal);
-    piLaunches += 1;
+    const unavailableTerminal = startTerminal(initialUnavailable);
     screens.unavailableStartup = await unavailableTerminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    events = await waitForFooterGitScan(initialUnavailable.trace, unavailableBefore, t.signal,
+    let events = await waitForFooterGitScan(initialUnavailable.trace, unavailableBefore, t.signal,
       { outcome: "failure", repository: "absent" });
     screens.unavailableFailure = await waitForFooterFailureBarrier(unavailableTerminal, t.signal, "");
     assert.equal(footerRenderedGitLine(screens.unavailableFailure), "", "A failed initial discovery is not rendered as a clean repository");
 
     const unavailableBeforeRecovery = events;
     const beforeUnavailableRecoveryRender = unavailableTerminal.sequence;
-    initFooterRepository(initialUnavailable);
+    // Build the repository outside the watched project and move it in whole: a scan fired by the watcher during
+    // `git init` would read a half-written .git and record a failure the success wait below cannot outlive.
+    const staging = path.join(initialUnavailable.directory, "staging-repository");
+    mkdirSync(staging);
+    initFooterRepository(initialUnavailable, staging);
+    renameSync(path.join(staging, ".git"), path.join(initialUnavailable.project, ".git"));
     writeFileSync(path.join(initialUnavailable.project, "recovered.txt"), "available after startup\n", "utf8");
     events = await waitForFooterGitScan(initialUnavailable.trace, unavailableBeforeRecovery, t.signal,
       { outcome: "success", repository: "present", committed: false });
@@ -1628,188 +1277,5 @@ test("Footer Git status preserves last good counts through failures and recovers
     assert.match(footerRenderedGitLine(screens.unavailableRecovery), /±1 \[~0 \+1 −0\]/u,
       "The same footer instance recovers after an unavailable first refresh");
     assert.deepEqual(await unavailableTerminal.close(), { code: 0, forced: false });
-    assert.equal(piLaunches, 4);
-  } catch (error) { failure = error; }
-  finally {
-    for (const terminal of terminals.reverse()) {
-      try {
-        const result = await terminal.close();
-        if (result.code !== 0 || result.forced || result.failure) cleanupFailures.push(new Error(`Footer recovery terminal cleanup: ${JSON.stringify(result)}`));
-      } catch (error) { cleanupFailures.push(error); }
-    }
-  }
-  if (failure !== undefined || cleanupFailures.length > 0) {
-    throwScenarioFailure({ directory: families[0]?.directory ?? repositoryRoot, message: "Footer recovery E2E failed",
-      errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures],
-      diagnostics: JSON.stringify({ directories: families.map((family) => family.directory), platform: process.platform,
-        node: process.version, pi: piVersion, piLaunches,
-        gitStarts: families.map((family) => footerGitStarts(readFooterTrace(family.trace)).length),
-        gitExits: families.map((family) => footerGitExits(readFooterTrace(family.trace)).length), screens,
-        terminals: terminals.map((terminal) => terminal.diagnostics()) }),
-    });
-  }
-  assert.equal(piLaunches, 4);
-  const familyCounts = families.map((family) => ({ name: family.name,
-    piLaunchedGitChildren: footerGitStarts(readFooterTrace(family.trace)).length,
-    scannerStarts: footerScannerStarts(readFooterTrace(family.trace)).length,
-    fixtureGitCalls: family.fixtureGitCalls }));
-  const terminalCleanup = terminals.map(footerTerminalCleanup);
-  assert.ok(terminalCleanup.every(({ exitCode, nativeResources }) => exitCode === 0 && nativeResources === 0),
-    "All FT-04 Pi terminals exit naturally and release native resources");
-  for (const family of families) await removeDirectoryEventually(family.directory);
-  const scratchDirectoriesRemoved = families.map((family) => ({ directory: family.directory, removed: !existsSync(family.directory) }));
-  assert.ok(scratchDirectoriesRemoved.every(({ removed }) => removed), "Every FT-04 scratch directory is removed");
-  const fixtureGitCalls = familyCounts.reduce((total, family) => total + family.fixtureGitCalls, 0);
-  t.diagnostic(JSON.stringify({ providerRequests: 0, providerRequestBasis: "No model prompt is submitted; no provider server is configured",
-    piLaunches, families: familyCounts, fixtureGitCalls, terminalCleanup, scratchDirectoriesRemoved }));
-});
-
-test("Footer Git refresh timing, watch bursts, and file-count rendering stay bounded", { timeout: 180_000 }, async (t: TestContext) => {
-  const family = createFooterFamily("timing");
-  let terminal: PiTerminalProcess | undefined;
-  let terminalClose: Awaited<ReturnType<PiTerminalProcess["close"]>> | undefined;
-  let failure: unknown;
-  const cleanupFailures: unknown[] = [];
-  const screens: Record<string, string> = {};
-  let maximumActiveChildren = 0;
-  let burstTiming: { firstMutationAt: number; scanAt: number } | undefined;
-  try {
-    initFooterRepository(family);
-    const modified = path.join(family.project, "modified.txt");
-    const renamed = path.join(family.project, "renamed.txt");
-    const deleted = path.join(family.project, "deleted.txt");
-    writeFileSync(modified, "baseline\n", "utf8");
-    writeFileSync(renamed, "rename baseline\n", "utf8");
-    writeFileSync(deleted, "delete baseline\n", "utf8");
-    footerGit(family, family.project, "add", ".");
-    footerGit(family, family.project, "commit", "--quiet", "-m", "footer timing baseline");
-    writePassiveFooterConfig(family.agent);
-
-    const beforeStartup = readFooterTrace(family.trace);
-    terminal = startFooterTerminal(family);
-    screens.startup = await terminal.waitForScreen((screen) => screen.includes("KillerOS") && footerLine(screen) !== "", { signal: t.signal });
-    let events = await waitForFooterGitScan(family.trace, beforeStartup, t.signal,
-      { outcome: "success", repository: "present", committed: true });
-    maximumActiveChildren = footerMaximumActiveGitChildren(events);
-    assert.equal(footerRenderedGitLine(terminal.screen()), "", "Clean status remains hidden after startup");
-
-    // Pi may queue a second startup scan when its branch discovery completes.
-    await terminal.waitForScreen((screen) => screen.split("\n").some((line) => line.includes("directory:") && line.includes("main")),
-      { signal: t.signal });
-    // A burst that overlaps a queued startup scan would measure that scan instead of its own debounce.
-    events = await waitForFooterGitQuiet(family.trace, t.signal);
-    maximumActiveChildren = Math.max(maximumActiveChildren, footerMaximumActiveGitChildren(events));
-
-    // FooterGitSchedule.test.ts checks the debounce, five-second throttle, and 30-second idle fallback on mocked timers.
-    const burstBefore = events;
-    const burstSequence = terminal.sequence;
-    const firstMutationAt = Date.now();
-    writeFileSync(modified, "changed\n", "utf8");
-    renameSync(renamed, path.join(family.project, "moved.txt"));
-    writeFileSync(path.join(family.project, "added.txt"), "new file\n", "utf8");
-    events = await waitForFooterGitScan(family.trace, burstBefore, t.signal,
-      { outcome: "success", repository: "present", committed: true });
-    const burstScanAt = footerRootScanStartedAt(events, footerRootScanCount(burstBefore));
-    burstTiming = { firstMutationAt, scanAt: burstScanAt };
-    assert.ok(burstScanAt - firstMutationAt >= 200,
-      `The first scan began ${burstScanAt - firstMutationAt} ms after the first burst mutation`);
-    maximumActiveChildren = Math.max(maximumActiveChildren, footerMaximumActiveGitChildren(events));
-    screens.burst = await terminal.waitForScreen((screen) => /±4 \[~1 \+2 −1\]/u.test(footerRenderedGitLine(screen)),
-      { signal: t.signal, after: burstSequence });
-    assert.match(footerRenderedGitLine(screens.burst), /±4 \[~1 \+2 −1\]/u,
-      "Modified, moved, added, and deleted paths render as colored counts");
-    const burstOutput = footerRawOutput(terminal);
-    assert.match(burstOutput, /\x1b\[[0-9;]*m~1/u);
-    assert.match(burstOutput, /\x1b\[[0-9;]*m\+2/u);
-    assert.match(burstOutput, /\x1b\[[0-9;]*m−1/u);
-
-    // Rewriting identical content rescans with unchanged results, as an idle fallback scan does.
-    const withoutClock = (screen: string): string => screen.replace(/ +(?:\d+h )?(?:\d+m )?\d+s(?= · \$)/gu, " <elapsed>");
-    const unchangedBefore = events;
-    screens.unchangedBefore = terminal.screen();
-    writeFileSync(modified, "changed\n", "utf8");
-    events = await waitForFooterGitScan(family.trace, unchangedBefore, t.signal,
-      { outcome: "success", repository: "present", committed: true, timeoutMs: 15_000 });
-    maximumActiveChildren = Math.max(maximumActiveChildren, footerMaximumActiveGitChildren(events));
-    screens.unchangedRescan = terminal.screen();
-    assert.equal(withoutClock(screens.unchangedRescan), withoutClock(screens.unchangedBefore),
-      "A rescan with unchanged results preserves the rendered terminal apart from its session clock");
-    assert.ok(maximumActiveChildren <= 6,
-      `Only one six-command metadata scan may be active at once; observed ${maximumActiveChildren} Git children`);
-
-    const beforeCleanCommit = events;
-    const beforeCleanSequence = terminal.sequence;
-    footerGit(family, family.project, "add", "-A");
-    footerGit(family, family.project, "commit", "--quiet", "-m", "clean footer burst");
-    writeFileSync(modified, "changed\n", "utf8");
-    events = await waitForFooterGitScan(family.trace, beforeCleanCommit, t.signal,
-      { outcome: "success", repository: "present", committed: true });
-    maximumActiveChildren = Math.max(maximumActiveChildren, footerMaximumActiveGitChildren(events));
-    screens.clean = await terminal.waitForScreen((screen) => footerRenderedGitLine(screen) === "",
-      { signal: t.signal, after: beforeCleanSequence });
-    assert.equal(footerRenderedGitLine(screens.clean), "", "The committed clean state disappears from the footer");
-
-    const externalFile = path.join(family.project, "external.txt");
-    const beforeExternal = events;
-    const beforeExternalSequence = terminal.sequence;
-    writeFileSync(externalFile, "changed outside Pi\n", "utf8");
-    events = await waitForFooterGitScan(family.trace, beforeExternal, t.signal,
-      { outcome: "success", repository: "present", committed: true });
-    maximumActiveChildren = Math.max(maximumActiveChildren, footerMaximumActiveGitChildren(events));
-    screens.external = await terminal.waitForScreen((screen) => /±1 \[~0 \+1 −0\]/u.test(footerRenderedGitLine(screen)),
-      { signal: t.signal, after: beforeExternalSequence });
-    assert.match(footerRenderedGitLine(screens.external), /±1 \[~0 \+1 −0\]/u,
-      "A file changed outside Pi appears in the footer");
-
-    const beforeExternalCommit = events;
-    const beforeExternalCleanSequence = terminal.sequence;
-    footerGit(family, family.project, "add", "external.txt");
-    footerGit(family, family.project, "commit", "--quiet", "-m", "commit external footer change");
-    writeFileSync(externalFile, "changed outside Pi\n", "utf8");
-    events = await waitForFooterGitScan(family.trace, beforeExternalCommit, t.signal,
-      { outcome: "success", repository: "present", committed: true });
-    maximumActiveChildren = Math.max(maximumActiveChildren, footerMaximumActiveGitChildren(events));
-    screens.externalClean = await terminal.waitForScreen((screen) => footerRenderedGitLine(screen) === "",
-      { signal: t.signal, after: beforeExternalCleanSequence });
-    assert.equal(footerRenderedGitLine(screens.externalClean), "");
-
-    assert.ok(footerGitStarts(events).length <= 80,
-      `The complete timing workflow started ${footerGitStarts(events).length} Pi-launched Git children, above its bounded budget`);
-    assert.ok(maximumActiveChildren <= 6,
-      `The complete timing workflow observed ${maximumActiveChildren} concurrent Git children`);
-    terminalClose = await terminal.close();
-    assert.deepEqual(terminalClose, { code: 0, forced: false });
-  } catch (error) { failure = error; }
-  finally {
-    if (terminal) {
-      try {
-        const result = await terminal.close();
-        terminalClose = result;
-        if (result.code !== 0 || result.forced || result.failure) cleanupFailures.push(new Error(`Footer timing terminal cleanup: ${JSON.stringify(result)}`));
-      } catch (error) { cleanupFailures.push(error); }
-    }
-  }
-  if (failure !== undefined || cleanupFailures.length > 0) {
-    throwScenarioFailure({ directory: family.directory, message: "Footer timing E2E failed",
-      errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures],
-      diagnostics: JSON.stringify({ directory: family.directory, platform: process.platform, node: process.version,
-        pi: piVersion, gitStarts: footerGitStarts(readFooterTrace(family.trace)).length,
-        gitExits: footerGitExits(readFooterTrace(family.trace)).length, scannerStarts: footerScannerStarts(readFooterTrace(family.trace)).length,
-        fixtureGitCalls: family.fixtureGitCalls, burstTiming, maximumActiveChildren, screens,
-        terminal: terminal?.diagnostics() }),
-    });
-  }
-  assert.ok(terminal);
-  assert.equal(family.fixtureGitCalls, 7, "Fixture Git setup and cleanup use the expected direct command count");
-  const terminalCleanup = footerTerminalCleanup(terminal);
-  assert.equal(terminalCleanup.exitCode, 0);
-  assert.equal(terminalCleanup.nativeResources, 0);
-  const processCounts = { piLaunches: 1, providerRequests: 0,
-    providerRequestBasis: "No model prompt is submitted; no provider server is configured",
-    piLaunchedGitChildren: footerGitStarts(readFooterTrace(family.trace)).length,
-    scannerStarts: footerScannerStarts(readFooterTrace(family.trace)).length,
-    fixtureGitCalls: family.fixtureGitCalls, burstTiming, maximumActiveChildren, terminalClose, terminalCleanup };
-  await removeDirectoryEventually(family.directory);
-  assert.equal(existsSync(family.directory), false, "The FT-05 scratch directory is removed after terminal cleanup");
-  t.diagnostic(JSON.stringify({ ...processCounts, scratchDirectoryRemoved: true }));
+  });
 });

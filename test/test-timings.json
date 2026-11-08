@@ -1,0 +1,359 @@
+{
+  "test/Activity.e2e.test.ts": {
+    "Activity lifecycle copy tracks real request progress and settles truthfully": 7.7,
+    "Activity renders the orange glyph loop and contextual status styling": 1.8,
+    "Activity sanitizes custom tool names and appends the model suffix to every state": 2.5
+  },
+  "test/BlockedGoalCompletion.e2e.test.ts": {
+    "goals.blocked-completion: a later ordinary request can complete the same blocked goal once": 5,
+    "goals.blocked-completion: ordinary request eligibility and decision validation": 0.9,
+    "goals.blocked-races: blocked completion stays single-owner across mutations and retries": 3.2,
+    "goals.blocked-races: clear resume and reload invalidate pending completion": 1.9,
+    "goals.blocked-races: competing model completions record one terminal event": 0.7,
+    "goals.blocked-races: failed completion append permits same-process retry": 0.7,
+    "goals.blocked-races: failed completion snapshot permits completion after reopen": 1.2
+  },
+  "test/BoundedText.e2e.test.ts": {
+    "Collapsed and expanded multiline transcript text preserves all rows": 1.5,
+    "Collapsed and expanded Unicode transcript text fits boundary terminal widths": 5.6
+  },
+  "test/CompactionGoals.e2e.test.ts": {
+    "Accepted blocked completion owns a pending compaction and prevents restart": 2.8,
+    "Automatic compaction pauses a goal and resumes the same or next turn exactly once": 2.5,
+    "Compaction preserves accepted twenty-turn and restored one-turn limits": 0.9,
+    "Decisionless goals remain paused after successful or too-small compaction": 2.1,
+    "Exact session-too-small skip resumes the paused goal once after settlement, fail-closed on races": 2.3,
+    "Goal pause and resume persistence failures fail closed before and after compaction": 2.1,
+    "Native threshold and overflow retries grant no goal decision": 0.8,
+    "Replacement, explicit pause, provider error, and failed compaction keep the old goal stopped": 2.3,
+    "Terminal goals preserve ownership across later ordinary compaction": 3.8
+  },
+  "test/CompactionManual.e2e.test.ts": {
+    "Failed, cancelled, or unsavable manual recovery leaves the marked goal paused": 1.5,
+    "Manual compaction resumes only the exact marked goal after the interrupted turn settles": 1.3
+  },
+  "test/CompactionModes.e2e.test.ts": {
+    "Print mode skips KillerOS proactive compaction below Pi's native reserve threshold": 1.8
+  },
+  "test/CompactionSessionBoundaries.e2e.test.ts": {
+    "Session replacement and forking leave real compaction continuations exactly once or inert": 1.3,
+    "Tree navigation evaluates only the destination branch and cannot revive an old manual marker": 2.1,
+    "TUI ordinary and goal continuations survive reload and committed tree boundaries": 2.4
+  },
+  "test/CompactionSettings.e2e.test.ts": {
+    "RPC /auto-compact status, updates, normalization, and settings failure preservation": 1.1,
+    "Two Pi writers preserve independently changed auto-compaction fields under the settings lock": 0.8
+  },
+  "test/CompactionTrigger.e2e.test.ts": {
+    "Cancelled ordinary and goal compaction cannot recover after an aborted settlement": 5.6,
+    "One hidden ordinary continuation, settlement ordering, and 100 percent rearm": 2.3,
+    "Threshold and reserve gating use the live context window, Pi enablement, and command changes": 3.4
+  },
+  "test/Display.e2e.test.ts": {
+    "Display telemetry clamps values, rounds thresholds, and sanitizes Windows paths": 1.1,
+    "Time formatting preserves seconds across unit boundaries in goal and footer displays": 3
+  },
+  "test/Footer.e2e.test.ts": {
+    "Footer Git status preserves last good counts through failures and recovers without recreation (discovery)": 1.1,
+    "Footer Git status preserves last good counts through failures and recovers without recreation (initial unavailable)": 1.1,
+    "Footer Git status preserves last good counts through failures and recovers without recreation (recovery)": 4.2,
+    "Footer preserves model, context, cost, goal, and priority information across widths": 7.1,
+    "installed Pi terminal updates context capacity and the settings-driven compact hint": 2.4
+  },
+  "test/FooterGitSafety.test.ts": {
+    "an inherited GIT_DIR cannot make a non-repository directory report another repository's changes": 0.7,
+    "an untrusted project starts no Git process": 0.6,
+    "the footer counts a hostile repository's changes without running its filters, monitors, or shims": 0.7
+  },
+  "test/FooterGitSchedule.test.ts": {
+    "footer fallback rescans every 30 seconds until disposed": 0,
+    "footer watch debounces a burst into one scan after 250 ms": 0,
+    "footer watch disposal closes the watcher and cancels the pending scan": 0,
+    "footer watch stops on watcher errors and on disposal": 0,
+    "footer watch throttles sustained changes to one scan per five seconds": 0,
+    "the installed footer starts both the watch and the 30-second fallback": 0
+  },
+  "test/GoalCompletionVerification.e2e.test.ts": {
+    "baseline capture rejects a file swapped between inspection and open": 0.5,
+    "completion loses ownership when cancelled or restored mid-verification": 3.7,
+    "file completion proves the exact deliverable changed": 2
+  },
+  "test/GoalHandoff.e2e.test.ts": {
+    "direct quoted Update rejects unchanged content and pauses without a decision": 0.4,
+    "editing a paused goal applies the shared Create inference without resetting counters": 1.6,
+    "quoted Create rejects a missing file, then accepts file proof on resume": 0.6,
+    "saved turn-17 work stops at 20 and explicit resume finishes at 22": 1,
+    "three blocker audits stop work and later completion grants no new turns": 0.7
+  },
+  "test/GoalLifecycle.e2e.test.ts": {
+    "a native provider failure saves a sanitized paused goal and one error notification": 0.9,
+    "blocker audits require three consecutive matching turns": 3.6,
+    "editing preserves identity, status, and the current proof contract": 2.5,
+    "explicit pause prevents another continuation after accepted goal progress": 0.6,
+    "goal status and pause reject unsafe duration arithmetic without a rounded write": 0.9,
+    "goal tool availability follows RPC start pause resume and completion": 0.7,
+    "legacy saved goals stay inactive in print and JSON modes": 3,
+    "malformed saved goal vectors cover every rejected and accepted shape": 0,
+    "malformed saved goals and unsafe reports fail closed before dispatch (absolute-baseline)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (contradiction-1)": 2,
+    "malformed saved goals and unsafe reports fail closed before dispatch (contradiction-2)": 0.8,
+    "malformed saved goals and unsafe reports fail closed before dispatch (contradiction-3)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (contradiction-4)": 0.5,
+    "malformed saved goals and unsafe reports fail closed before dispatch (contradiction-5)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (contradiction-6)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (contradiction-7)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (legacy-check)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (legacy-noncanonical-hash)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (legacy-noncanonical-name)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (missing-baseline)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (old-natural-language)": 0.7,
+    "malformed saved goals and unsafe reports fail closed before dispatch (oversized-turn-limit)": 0.5,
+    "malformed saved goals and unsafe reports fail closed before dispatch (relative-baseline)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (unknown-verification)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (unsafe-duration)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (unsafe-revision)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (unsafe-turns)": 0.6,
+    "malformed saved goals and unsafe reports fail closed before dispatch (zero-turn-limit)": 0.5,
+    "pause and clear cancel goal work while inactive clears preserve unrelated work (active work)": 2.6,
+    "pause and clear cancel goal work while inactive clears preserve unrelated work (clean pause, resume, and clear)": 0.8,
+    "pause and clear cancel goal work while inactive clears preserve unrelated work (inactive clears)": 1.8,
+    "pause and clear cancel goal work while inactive clears preserve unrelated work (write failure recovery)": 3.4,
+    "persisted goal reports authorize only valid bounded decisions": 1.6,
+    "replacement, start, and edit write failures leave truthful state": 4,
+    "saved goals stay inactive outside TUI and RPC or without a saved session": 5.4,
+    "valid saved goals restore and resume without losing identity": 5.6
+  },
+  "test/Goals.e2e.test.ts": {
+    "continuation dispatch respects idle, pending, and cancellation gates": 3.3,
+    "goal commands separate objectives, controls, edits, and unsafe replacements": 2.8,
+    "only an accepted goal decision advances or finishes a turn": 4.8,
+    "pause and clear persist before stopping a run and survive write failure": 0.6,
+    "pending goal commands cannot overwrite newer state": 0.7,
+    "pending goal file inference respects newer commands and committed navigation": 1.5,
+    "provider abort reasons are sanitized before manual recovery is marked": 0.7,
+    "stale native replacements release the authorized goal continuation": 1.5,
+    "the goal tool is model-only, schema-bounded, and sequential": 2.3,
+    "the TUI goal panel offers only actions valid for the saved status": 1.6,
+    "turn budgets renew explicitly and stop silently at the limit": 3.1
+  },
+  "test/GoalUi.e2e.test.ts": {
+    "Goal transcript and update renderers sanitize controls, stay compact, and expose lifecycle history": 2.4
+  },
+  "test/Handoff.e2e.test.ts": {
+    "cancelled navigation during generation preserves the valid handoff": 2.2,
+    "committed navigation during generation invalidates the handoff": 2.2,
+    "goal edit or completed work during summary generation invalidates the captured handoff": 1.9,
+    "handoff budget follows options, then killeros.json, then the default": 3.4,
+    "handoff derives short safe names and strips terminal controls": 1.2,
+    "handoff persists one idle linked child with projected context and survives reopening": 1.4,
+    "handoff refuses a running agent, a queued message, and an active goal without side effects": 0.9,
+    "handoff refuses an active goal at the idle settlement boundary": 1,
+    "handoff refuses no saved session, no model, and no usable context": 2.5,
+    "handoff rejects an output reserve larger than known remaining context": 0.8,
+    "handoff rejects API key and token output without echoing the value": 0.7,
+    "handoff rejects framing and password output without echoing the value": 0.9,
+    "handoff rejects summaries that omit or contradict saved goal truth before destination creation": 0.8,
+    "handoff reports an aborted provider result as an unfinished summary": 0.9,
+    "handoff reports provider, empty, truncated, and abnormal-stop failures without a destination": 0.9,
+    "handoff reports replacement cancellation or destination write failure without a false success": 1.6,
+    "handoff reports the unsaved session error for restored inactive goals": 0.8,
+    "handoff transfers latest paused, blocked, and complete goal truth as idle context": 2.1,
+    "handoff validates section order and bodies but ignores heading-like lines inside fences": 1,
+    "reload or session replacement during generation invalidates the old handoff context": 1.8
+  },
+  "test/HandoffTerminal.e2e.test.ts": {
+    "Escape cancels provider-managed authentication before handoff creates a destination": 0.9,
+    "Escape cancels TUI generation and aborts the provider request without replacing the session": 1.1,
+    "handoff owns terminal input while generating and leaves a visible idle child": 1.1
+  },
+  "test/Hooks.e2e.test.ts": {
+    "Hook payloads and output remain valid JSON, bounded, and UTF-8 safe": 2.3,
+    "Project hook configuration enforces trust, file identity, size, and schema before execution": 4.4
+  },
+  "test/Hooks.system.test.ts": {
+    "Exported executeHook enforces real timeout, abort, and resource cleanup contracts": 5.4,
+    "Windows hook cleanup terminates descendants or reports bounded uncertainty": 4.8
+  },
+  "test/Notifications.e2e.test.ts": {
+    "Cancellation after a normal agent result suppresses the settlement bell": 0.7,
+    "Completion sound rings once at final settlement and never for aborts or retries": 1.8,
+    "Notification command dismisses without saving and enables once without ringing": 2.2,
+    "Notification preference persists globally, defaults off, and rejects malformed settings": 7.2
+  },
+  "test/PassiveGitStatus.test.ts": {
+    "a process started on a hidden console keeps Git children on that console without creating files": 0.1,
+    "a process with a console keeps automatic Git children on it": 0,
+    "worktree settings fail closed on values Git cannot read as booleans or on incomplete output": 0,
+    "worktree settings follow Git's --get rules for every scope in one read": 0
+  },
+  "test/PersonalInstructions.e2e.test.ts": {
+    "Personal instruction imports remain inside Pi's agent directory and reject linked files": 1,
+    "Personal instruction truncation preserves valid UTF-8": 0.4
+  },
+  "test/PiExtensionContract.test.ts": {
+    "installed Pi CLI completes a goal and restores it without unsolicited model work": 4.7,
+    "installed Pi terminal accepts resized questions, cancels partial selections, and preserves editor navigation": 5.3
+  },
+  "test/Question.e2e.test.ts": {
+    "Native question selection, filtering, custom answers, and count limits": 20.1,
+    "Question cancellation and invalidation never publish a late answer": 6.9,
+    "Question schema, bounds, model-only exposure, and non-TUI rejection": 2.9,
+    "Question transcript renderers strip controls, bound collapsed rows, and expand completely": 6.1
+  },
+  "test/QuestionHistory.test.ts": {
+    "custom answer history bounds total bytes and rejects one oversized answer": 0,
+    "custom answer history keeps the newest hundred distinct answers": 0,
+    "custom answer history moves a repeated answer to the newest slot without growing": 0
+  },
+  "test/release-notes.test.ts": {
+    "release-notes CLI extracts BOM-safe sections and prints current notes": 0.5,
+    "release-notes CLI fails cleanly for missing sections, unreadable files, and bad usage": 0.2
+  },
+  "test/RepositoryContracts.test.ts": {
+    "all shipped TypeScript entry points use strict checking": 0,
+    "CI and releases use the pinned Node.js version with one aggregated Windows quality check": 0,
+    "CI blocks moderate dependency advisories without running lifecycle scripts": 0,
+    "CI checks the newest peer-range Pi with matched runtime packages and a stable required-check name": 0,
+    "ESLint configuration ignores private artifacts without excluding repository code": 0.7,
+    "GitHub releases require green current main and consistent package provenance": 0,
+    "goal state and question UI stay separate from host wiring": 0,
+    "locked brace expansion bounds deeply nested patterns": 0.6,
+    "lockfile matches the exact Pi development pins without retired experimental packages": 0,
+    "machine identifiers use locale-independent casing": 0,
+    "peer ranges require the pinned Pi minimums and reject older and next-major versions": 0.1,
+    "public compaction documentation states the configurable default": 0,
+    "public guidance documents native wildcard filtering, image reads, and MCP selection": 0,
+    "public guidance uses Pi's native sampling and project MCP settings": 0,
+    "public README documents current requirements and commands": 0,
+    "public TUI guidance preserves Pi defaults and documents regular-mode scrollback": 0,
+    "publication boundary requires directory publication with lifecycle scripts explicitly enabled": 0,
+    "quality checks validate current metadata and test the release-pinned npm lifecycle": 0,
+    "real Pi fixtures use bounded cleanup for transient Windows directory locks": 0,
+    "removed init workflow leaves no command, tool, or runtime behind": 0,
+    "repository contains no retired feature references": 0.1,
+    "repository contract scan includes untracked non-ignored files": 0,
+    "request activity observes continuation scheduling before settlement cleanup": 0,
+    "skill-specific workflow gating is no longer part of KillerOS": 0,
+    "unreleased notes state only the current Pi minimum": 0
+  },
+  "test/runtime-fast.e2e.test.ts": {
+    "real Pi /codex-fast controls process-local state, status, and footer": 3.6,
+    "real Pi /codex-fast transforms only eligible payloads and survives reload": 1.3
+  },
+  "test/runtime-native-provider.e2e.test.ts": {
+    "active faux provider retries preserve goal ownership until settlement": 1.2,
+    "active native Mistral retry preserves goal ownership until settlement": 0.9,
+    "blocked faux provider retries preserve completion permission until settlement": 1.2,
+    "blocked native Mistral retry preserves completion permission until settlement": 0.7,
+    "native Azure Foundry excludes priority before and after reload": 0.9,
+    "native Azure Responses excludes priority before and after reload": 1,
+    "native OpenAI 429 retries once with unchanged high and low sampling": 0.9,
+    "native OpenAI API-key 400 preserves high and low sampling without retry": 3.8,
+    "native OpenAI OAuth 400 preserves high and low sampling without retry": 1.1
+  },
+  "test/runtime-package.e2e.test.ts": {
+    "packed KillerOS activates, reloads, and preserves Pi display preferences": 11.1
+  },
+  "test/runtime-platform.e2e.test.ts": {
+    "installed Pi rejects KillerOS activation on unsupported operating systems": 1.1
+  },
+  "test/runtime-print-json.e2e.test.ts": {
+    "installed Pi print and JSON preserve trust and reject interactive workflows": 10
+  },
+  "test/runtime-receipt-conversion.e2e.test.ts": {
+    "native receipt paths agree with Git across the conversion matrix (autocrlf true)": 2.6,
+    "native receipt paths agree with Git across the conversion matrix (autocrlf false)": 2.6,
+    "native receipt paths agree with Git across the conversion matrix (autocrlf input)": 2.6
+  },
+  "test/runtime-receipt-git.e2e.test.ts": {
+    "native receipt timeouts stay quiet and denied timing saves recover": 3.7,
+    "native receipts preserve Windows alias and symlink safety": 5.7,
+    "real Pi receipt bounds diff work, blob storage, and repository formats": 13,
+    "real Pi receipt never executes repository-controlled Git code or filters": 13.1,
+    "real Pi receipts report only the response delta with bounded Git metadata": 13.5,
+    "receipt disables a Git environment filter activated after its native baseline": 1.3,
+    "receipt oversized response resets to an empty next baseline": 3.4,
+    "receipt rejects a loose blob corrupted before collection": 2,
+    "receipt restored changes and isolated non-Git projects remain truthful": 3
+  },
+  "test/runtime-receipts.e2e.test.ts": {
+    "native session boundaries discard receipts parked at settlement (cancel-tree)": 2.2,
+    "native session boundaries discard receipts parked at settlement (new)": 2.5,
+    "native session boundaries discard receipts parked at settlement (reload)": 2.5,
+    "native session boundaries discard receipts parked at settlement (tree)": 2.3,
+    "real Pi describes saved observed checks without verification claims": 0.8,
+    "real Pi persists and renders complete worked-for receipt data": 19.6,
+    "real Pi receipt lifecycle settles, discards, and survives navigation at the correct boundary": 16.3,
+    "real Pi validates saved receipt telemetry and corruption": 1.8
+  },
+  "test/runtime-restoration.e2e.test.ts": {
+    "installed Pi restores saved tools without reviving goals": 1.9
+  },
+  "test/runtime-startup.e2e.test.ts": {
+    "installed Pi preserves continuation, startup-abort, trust, and reload": 2.9
+  },
+  "test/runtime-tools.e2e.test.ts": {
+    "real Pi enforces tool exclusions in TUI": 8.1,
+    "real Pi rpc keeps model-only decisions sequential across codemode settings": 6.2,
+    "real Pi tui keeps model-only decisions sequential across codemode settings": 10
+  },
+  "test/ScenarioFailure.test.ts": {
+    "scenario failures expose nested errors and bounded reports under forced exit": 0.4
+  },
+  "test/SecretDetector.test.ts": {
+    "every assignment pattern flags a credential line in a summary, but not a mid-sentence mention": 0,
+    "every token pattern flags a real-shaped value, alone and inside prose": 0,
+    "Markdown quotes and tables cannot hide an assignment": 0,
+    "near misses and ordinary handoff prose are not credentials": 0
+  },
+  "test/Settings.e2e.test.ts": {
+    "An exited settings writer does not leave the settings lock stuck": 0.9,
+    "Concurrent settings writers preserve every successful write and stale observers cannot remove a new lock": 6.1,
+    "Settings updates derive from the current file and preserve unrelated fields": 1.4
+  },
+  "test/ShellUi.e2e.test.ts": {
+    "Header masthead and startup tips stay fixed per session and exhaust their decks": 3.4
+  },
+  "test/ShellUi.test.ts": {
+    "shell startup contains no synchronous child process call": 0
+  },
+  "test/SlashCommands.e2e.test.ts": {
+    "Editor and autocomplete use the shared resolver, theme role, and safe widths": 2.7,
+    "Goal completions and /exit follow lifecycle contracts": 1.8,
+    "Slash tokenization, resolution, and highlighting agree in the live editor": 1.4
+  },
+  "test/test-changed.test.ts": {
+    "changed-test selection follows importers, support files, host files, and path references": 0.1,
+    "changed-test selection maps every KillerOS module to existing tests": 0.3,
+    "every test file is selected by a change to the code it covers": 0.4,
+    "test:changed dry run prints the selection without running it": 0.1
+  },
+  "test/test-suite.test.ts": {
+    "a lifecycle unit ignores file-named results from files its pattern skips": 0,
+    "a unit fails when it runs none or only some of its tests": 1.1,
+    "concurrency must be a positive integer": 0,
+    "dry run prints every shard without running tests": 0.1,
+    "every test file runs in exactly one shard for any shard count": 0,
+    "every timed test, and any test the timings lack, runs in exactly one unit": 0,
+    "exact name patterns escape regular expression syntax": 0,
+    "lifecycle repeats keep CI's plain Node flags and select existing tests": 0,
+    "recorded timings read local and CI suite output by file and top-level test": 0,
+    "shard selectors must be <index>/<total> within range": 0,
+    "shards balance estimated time, longest units first": 0,
+    "tests pack into units of about the target, and a file that fits one unit runs whole": 0,
+    "the suite runs a shard and prefixes output by unit": 0.3,
+    "the unit target gives about three units per worker slot within its bounds": 0,
+    "timings name only existing test files": 0
+  },
+  "test/Theme.test.ts": {
+    "reasoning text meets normal-text contrast on KillerOS surfaces": 0,
+    "shell UI uses theme roles instead of raw ANSI colors": 0,
+    "uses achromatic neutrals without changing the coral accent": 0,
+    "uses one neutral background for every tool state": 0
+  },
+  "test/verify-release.test.ts": {
+    "publication lifecycle invokes the real validator exactly once and blocks direct publish": 10.3,
+    "release validator accepts complete and README-pinned metadata": 0.3,
+    "release validator rejects direct publication and identity drift": 1
+  }
+}

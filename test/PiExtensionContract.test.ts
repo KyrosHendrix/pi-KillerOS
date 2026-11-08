@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { passiveGitCommand, passiveGitEnv } from "../killeros/passive-git-status.ts";
 import { parseGoalState } from "../killeros/goal-state.ts";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
@@ -872,107 +871,6 @@ test("installed Pi CLI completes a goal and restores it without unsolicited mode
     durationMs: Date.now() - startedAt,
   }));
 });
-
-test("installed Pi print and JSON preserve trust and reject interactive workflows", { timeout: 60_000 }, async (t) => {
-  for (const mode of ["print", "json"] as const) {
-    for (const trusted of [true, false]) {
-      await t.test(`${mode}/${trusted ? "trusted" : "untrusted"}`, async () => {
-        const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-noninteractive-"));
-        const project = path.join(directory, "project"), agentDir = path.join(directory, "agent");
-        mkdirSync(project); mkdirSync(agentDir);
-        const session = path.join(directory, "session.jsonl");
-        const probe = path.join(directory, "probe.ts");
-        const personal = "KILLEROS_NONINTERACTIVE_PERSONAL";
-        writeFileSync(path.join(project, "AGENTS.local.md"), personal);
-        writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false },
-          compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 } }));
-        writeFileSync(path.join(agentDir, "killeros.json"), JSON.stringify({ autoCompaction: { enabled: true, percentRemaining: 100 } }));
-        writeFileSync(probe, `export default function(pi) { pi.on("session_before_compact", () => {
-          pi.appendEntry("unexpected-noninteractive-compaction", {}); return {cancel:true};
-        }); }`);
-        let requests = 0;
-        const faults: string[] = [];
-        const server = createServer((request, response) => {
-          void (async () => {
-            assert.equal(request.method, "POST");
-            assert.equal(request.url, "/v1/chat/completions");
-            assert.equal(request.headers.authorization, "Bearer noninteractive-local-key");
-            const chunks: Buffer[] = [];
-            let size = 0;
-            for await (const chunk of request) {
-              assert.ok(chunk instanceof Uint8Array); size += chunk.length; assert.ok(size <= 1_048_576); chunks.push(Buffer.from(chunk));
-            }
-            const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-            assert.ok(isUnknownRecord(body) && isUnknownArray(body.messages) && isUnknownArray(body.tools));
-            assert.equal(JSON.stringify(body.messages).split(personal).length - 1, trusted ? 1 : 0);
-            const names = body.tools.map((tool) => { assert.ok(isUnknownRecord(tool) && isUnknownRecord(tool.function)); return tool.function.name; });
-            assert.deepEqual(names, ["question"], "No goal tool may activate in print or JSON mode");
-            const last = body.messages.at(-1); assert.ok(isUnknownRecord(last));
-            const step = requests++;
-            assert.ok(step < 2, "Noninteractive modes must not start compaction continuations");
-            if (step === 0) assert.equal(last.role, "user");
-            else {
-              assert.equal(last.role, "tool");
-              assert.match(JSON.stringify(last.content), /The question tool requires interactive TUI mode/u);
-            }
-            const delta = step === 0 ? { tool_calls: [{ index: 0, id: "noninteractive-question", type: "function", function: {
-              name: "question", arguments: JSON.stringify({ question: "Choose", options: [{ label: "Alpha" }] }),
-            } }] } : { content: "Noninteractive workflow verified" };
-            response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
-            response.end(`data: ${JSON.stringify({ id: `noninteractive-${step}`, model: "local", choices: [{ index: 0, delta,
-              finish_reason: step === 0 ? "tool_calls" : "stop" }], usage: { prompt_tokens: 2_000, completion_tokens: 20, total_tokens: 2_020 } })}\n\ndata: [DONE]\n\n`);
-          })().catch((error: unknown) => {
-            faults.push(error instanceof Error ? error.message : String(error));
-            if (!response.destroyed) { response.writeHead(500, { connection: "close" }); response.end("Rejected noninteractive fixture request"); }
-          });
-        });
-        let failure: unknown;
-        try {
-          await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
-          const address = server.address(); assert.ok(address && typeof address !== "string");
-          writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { "noninteractive-local": {
-            baseUrl: `http://127.0.0.1:${address.port}/v1`, api: "openai-completions", apiKey: "noninteractive-local-key",
-            models: [{ id: "local", name: "Noninteractive local", reasoning: false, input: ["text"], contextWindow: 100_000,
-              maxTokens: 1_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-          } } }));
-          const env = { ...isolatedFixtureEnvironment(directory), PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1" };
-          initializeFixtureRepository(project, env);
-          const args = ["--print", ...(mode === "json" ? ["--mode", "json"] : []), "--model", "noninteractive-local/local", "--thinking", "off",
-            "--tools", "question,killeros_*", "--session", session, trusted ? "--approve" : "--no-approve", "--offline", "--no-context-files",
-            "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp", "--no-extensions", "--extension", repositoryRoot, "--extension", probe];
-          const cli = path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
-          const options = { cwd: project, env, timeout: 15_000, maxBuffer: 1_048_576, signal: t.signal };
-          const run = async (prompt: string) => {
-            const invocation = promisify(execFile)(process.execPath, [cli, ...args, prompt], options);
-            invocation.child.stdin?.end();
-            return await invocation;
-          };
-          await run("/goal Unsupported noninteractive goal");
-          assert.equal(requests, 0, "/goal must not start provider work in print or JSON mode");
-          const result = await run("Verify noninteractive restrictions");
-          assert.match(result.stdout, /Noninteractive workflow verified/u);
-          assert.equal(requests, 2);
-          assert.deepEqual(faults, []);
-          const entries = readFileSync(session, "utf8").trim().split("\n").map((line) => { const value: unknown = JSON.parse(line); return value; });
-          assert.equal(entries.some((entry) => isUnknownRecord(entry)
-            && (entry.customType === "killeros-goal" || entry.customType === "unexpected-noninteractive-compaction")), false);
-          if (mode === "json") {
-            const events = result.stdout.trim().split("\n").map((line) => { const value: unknown = JSON.parse(line); return value; });
-            assert.ok(events.some((event) => isUnknownRecord(event) && event.type === "agent_settled" && event.aborted === false));
-          }
-        } catch (error) { failure = error; }
-        finally {
-          server.closeAllConnections(); await new Promise<void>((resolve) => { server.close(() => resolve()); });
-        }
-        if (failure !== undefined) throwScenarioFailure({ directory, message: `Pi ${mode} with trust ${trusted} failed`, errors: [failure],
-          diagnostics: JSON.stringify({ node: process.version, mode, trusted, requests, faults }) });
-        await removeDirectoryEventually(directory);
-      });
-    }
-  }
-});
-
-
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

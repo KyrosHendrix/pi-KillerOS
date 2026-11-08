@@ -4,7 +4,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { BoundedText } from "./bounded-text.ts";
-import { CUSTOM_INPUT_HISTORY_BYTES, CUSTOM_INPUT_HISTORY_LIMIT, FILTER_QUERY_MAX_BYTES, FILTER_QUERY_MAX_CHARACTERS, MultipleResultText, oneLine, openQuestionUi, type DisplayOption } from "./question-ui.ts";
+import { createCustomInputHistory, FILTER_QUERY_MAX_BYTES, FILTER_QUERY_MAX_CHARACTERS, MultipleResultText, oneLine, openQuestionUi, type DisplayOption } from "./question-ui.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 const OptionSchema = Type.Object({
@@ -87,30 +87,12 @@ interface MultipleQuestionDetails {
 type QuestionDetails = SingleQuestionDetails | MultipleQuestionDetails;
 
 export function registerQuestionTool(pi: ExtensionAPI): void {
-  const customInputHistory: string[] = [];
+  const history = createCustomInputHistory();
   const pendingQuestions = new Set<AbortController>();
-  let customInputHistoryBytes = 0;
+  /** Cancels open questions and forgets custom answers when the session starts, changes tree, or shuts down. */
   const clearCustomInputHistory = (): void => {
     for (const pending of pendingQuestions) pending.abort();
-    customInputHistory.length = 0;
-    customInputHistoryBytes = 0;
-  };
-  const rememberCustomInput = (value: string): boolean => {
-    const bytes = Buffer.byteLength(value, "utf8");
-    if (bytes > CUSTOM_INPUT_HISTORY_BYTES) return false;
-    const existingIndex = customInputHistory.indexOf(value);
-    if (existingIndex >= 0) {
-      const existing = customInputHistory[existingIndex];
-      if (existing !== undefined) customInputHistoryBytes -= Buffer.byteLength(existing, "utf8");
-      customInputHistory.splice(existingIndex, 1);
-    }
-    while (customInputHistory.length >= CUSTOM_INPUT_HISTORY_LIMIT || customInputHistoryBytes + bytes > CUSTOM_INPUT_HISTORY_BYTES) {
-      const removed = customInputHistory.shift();
-      if (removed !== undefined) customInputHistoryBytes -= Buffer.byteLength(removed, "utf8");
-    }
-    customInputHistory.push(value);
-    customInputHistoryBytes += bytes;
-    return true;
+    history.clear();
   };
   pi.on("session_start", clearCustomInputHistory);
   pi.on("session_tree", clearCustomInputHistory);
@@ -129,6 +111,7 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
     exposure: "model-only",
     executionMode: "sequential",
 
+    /** Opens the question dialog and returns the selection; outside TUI mode or after cancellation it throws instead. */
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const { mode, minSelections, maxSelections } = normalizeQuestionSelection(params);
       if (ctx.mode !== "tui") throw new Error("The question tool requires interactive TUI mode");
@@ -155,8 +138,8 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
           mode,
           minSelections,
           maxSelections,
-          customInputHistory,
-          rememberCustomInput,
+          customInputHistory: history.entries,
+          rememberCustomInput: history.remember,
         });
       } finally {
         pendingQuestions.delete(pending);

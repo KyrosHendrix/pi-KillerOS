@@ -23,6 +23,37 @@ export const CUSTOM_INPUT_HISTORY_BYTES = 64 * 1024;
 export const FILTER_QUERY_MAX_CHARACTERS = 4_000;
 export const FILTER_QUERY_MAX_BYTES = 16_000;
 
+/** Distinct custom answers, oldest first, bounded by entry count and total UTF-8 bytes. */
+export function createCustomInputHistory() {
+  const entries: string[] = [];
+  const view: readonly string[] = entries;
+  let bytes = 0;
+  return {
+    entries: view,
+    /** Moves `value` to the newest slot and evicts the oldest entries to fit; rejects a value larger than the byte bound. */
+    remember: (value: string): boolean => {
+      const size = Buffer.byteLength(value, "utf8");
+      if (size > CUSTOM_INPUT_HISTORY_BYTES) return false;
+      const existingIndex = entries.indexOf(value);
+      if (existingIndex >= 0) {
+        entries.splice(existingIndex, 1);
+        bytes -= size;
+      }
+      while (entries.length >= CUSTOM_INPUT_HISTORY_LIMIT || bytes + size > CUSTOM_INPUT_HISTORY_BYTES) {
+        const removed = entries.shift();
+        if (removed !== undefined) bytes -= Buffer.byteLength(removed, "utf8");
+      }
+      entries.push(value);
+      bytes += size;
+      return true;
+    },
+    clear: (): void => {
+      entries.length = 0;
+      bytes = 0;
+    },
+  };
+}
+
 export function oneLine(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }

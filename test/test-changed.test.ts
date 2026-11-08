@@ -22,11 +22,11 @@ test("every test file is selected by a change to the code it covers", () => {
   // Support files are excluded: every scenario imports a Pi driver, which would make any test look mapped.
   const sources = [
     ...modules.map((module) => `killeros/${module}`), ...hostFiles,
-    "scripts/verify-release.ts", "scripts/release-notes.ts", "scripts/test-changed.ts", "themes/killeros.json",
+    "scripts/verify-release.ts", "scripts/release-notes.ts", "scripts/test-changed.ts", "scripts/test-suite.ts", "themes/killeros.json",
   ];
   const reachable = new Set(sources.flatMap((source) => selectTests([source])));
   // These cover the test drivers themselves and are selected when test/support changes.
-  const harnessTests = ["test/PiRpcControls.test.ts", "test/PiTerminalControls.test.ts", "test/ScenarioFailure.test.ts"];
+  const harnessTests = ["test/ScenarioFailure.test.ts"];
   assert.deepEqual(testFiles.filter((file) => !reachable.has(file)), harnessTests, "Map new tests in scripts/test-changed.ts");
   for (const file of harnessTests) assert.ok(readdirSync(new URL("./support/", import.meta.url)).some((support) => selectTests([`test/support/${support}`]).includes(file)), file);
 });
@@ -42,9 +42,9 @@ test("changed-test selection follows importers, support files, host files, and p
   // No other module imports codex-fast.
   assert.deepEqual(selectTests(["killeros/codex-fast.ts"]), ["test/RepositoryContracts.test.ts", "test/runtime-fast.e2e.test.ts"]);
 
-  // JitiCache is imported by both Pi drivers, so terminal and RPC scenarios depend on it.
-  const cache = selectTests(["test/support/JitiCache.ts"]);
-  for (const file of ["test/Footer.e2e.test.ts", "test/Goals.e2e.test.ts", "test/PiRpcControls.test.ts"]) assert.ok(cache.includes(file), file);
+  // LaunchCaches is imported by both Pi drivers, so terminal and RPC scenarios depend on it.
+  const cache = selectTests(["test/support/LaunchCaches.ts"]);
+  for (const file of ["test/Footer.e2e.test.ts", "test/Goals.e2e.test.ts"]) assert.ok(cache.includes(file), file);
 
   assert.ok(selectTests(["package.json"]).includes("test/PiExtensionContract.test.ts"));
   assert.ok(selectTests(["scripts/verify-release.ts"]).includes("test/verify-release.test.ts"));

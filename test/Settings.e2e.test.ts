@@ -721,7 +721,6 @@ function createExitedPidChild(options: { home: string; agentDirectory: string; c
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 15_000,
-    windowsHide: true,
   });
   assert.equal(child.error, undefined, "The owned dead-PID child must launch and exit");
   assert.equal(child.status, 0, `The owned dead-PID child must exit successfully: ${child.stderr}`);

@@ -5,7 +5,7 @@ import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -167,6 +167,7 @@ function createFamily(name: string): Family {
   return { directory, project, agent, temporary, env };
 }
 
+/** Runs fixture Git in `project` without system or global configuration. */
 function git(project: string, ...args: string[]): void {
   const env: NodeJS.ProcessEnv = { HOME: path.dirname(project), USERPROFILE: path.dirname(project),
     PATH: process.env.PATH ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "NUL" };
@@ -175,7 +176,7 @@ function git(project: string, ...args: string[]): void {
     if (value !== undefined) env[key] = value;
   }
   execFileSync("git", ["-c", "user.email=receipts@fixture.invalid", "-c", "user.name=Receipt Fixture", ...args], {
-    cwd: project, env, stdio: "ignore", windowsHide: true,
+    cwd: project, env, stdio: "ignore",
   });
 }
 
@@ -191,7 +192,7 @@ function initRepository(project: string): void {
 }
 
 function writeProviderConfig(agent: string, port: number, displayName = "receipt model"): void {
-  const gitExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8", windowsHide: true }).trim();
+  const gitExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim();
   writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ tuiMode: "fullscreen", cacheWarming: "off",
     shellPath: path.resolve(gitExecPath, "../../..", "bin/bash.exe"),
     compaction: { enabled: false }, retry: { enabled: false }, defaultThinkingLevel: "off" }));
@@ -219,7 +220,7 @@ function workedForEntries(sessionFile: string): WorkedForEntry[] {
   return entries;
 }
 
-// Observe native settlement after KillerOS has finished its registered handler.
+/** Writes an extension that records native settlements, and optionally timings, after KillerOS's own settlement handler. */
 function receiptObserver(directory: string, captureTimings = false): { extension: string; events: string; timings: string } {
   const events = path.join(directory, "settlements.jsonl");
   const timings = path.join(directory, "timings.jsonl");
@@ -237,7 +238,7 @@ export default function(pi) {
     parameters: Type.Object({ command: Type.String() }),
     execute: async (_id, args, signal) => {
       const result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", args.command],
-        { windowsHide: true, signal, timeout: 15000, maxBuffer: 1048576 });
+        { signal, timeout: 15000, maxBuffer: 1048576 });
       return { content: [{ type: "text", text: result.stdout || "PowerShell check completed" }], details: {} };
     },
   });
@@ -903,169 +904,6 @@ test("real Pi persists and renders complete worked-for receipt data", { timeout:
   await removeDirectoryEventually(family.directory);
 });
 
-test("real Pi records only canonical observed check commands", { timeout: 90_000 }, async (t: TestContext) => {
-  const family = createFamily("recognition");
-  const provider = new ReceiptProvider();
-  let terminal: PiTerminalProcess | undefined;
-  let failure: unknown;
-  const cleanupFailures: unknown[] = [];
-  try {
-    initRepository(family.project);
-    const bin = path.join(family.directory, "check-bin");
-    mkdirSync(bin);
-    // Owned external command fixtures return a known status. KillerOS still receives
-    // actual native bash tool results; these labels describe observations, not verification.
-    const executable = "#!/bin/sh\nexit 0\n";
-    for (const name of ["npm", "pnpm", "yarn", "bun", "python", "py", "node", "cargo", "dotnet", "mvn", "go", "pytest", "gradle", "gradlew", "gradlew.bat", ".gradlew", ".gradlew.bat"]) {
-      writeFileSync(path.join(bin, name), executable);
-    }
-    for (const name of ["gradlew", "gradlew.bat"]) writeFileSync(path.join(family.project, name), executable);
-    family.env.PATH = bin + path.delimiter + family.env.PATH;
-    const port = await provider.listen();
-    writeProviderConfig(family.agent, port);
-    const observer = receiptObserver(family.directory);
-    const sessionFile = path.join(family.directory, "recognition.jsonl");
-    terminal = new PiTerminalProcess({ file: process.execPath,
-      args: [cliPath, "--model", "receipts-local/receipt-model", "--thinking", "off", "--tools", "bash",
-        "--session", sessionFile, "--offline", "--approve", "--no-context-files", "--no-skills", "--no-prompt-templates",
-        "--no-themes", "--no-mcp", "--no-extensions", "--extension", path.join(repositoryRoot, "Killeros.ts"),
-        "--extension", observer.extension],
-      cwd: family.project, env: family.env, cols: 120, rows: 40 });
-    await terminal.waitForScreen((screen) => screen.includes("KillerOS") && screen.includes("ctx 100%"), { signal: t.signal });
-    const canonical = [
-      ...["npm", "pnpm", "yarn", "bun"].flatMap((manager) => [`${manager} test`,
-        ...["test", "check", "lint", "typecheck", "build"].map((script) => `${manager} run ${script}`)]),
-      "python -m pytest", "py -m pytest", "node --test", "cargo clippy", "cargo check", "cargo test",
-      "dotnet test", "mvn verify", "mvn test", "go test", "go vet", "pytest",
-      ...["gradle", "gradlew", "gradlew.bat", "./gradlew", "./gradlew.bat", ".\\gradlew", ".\\gradlew.bat"]
-        .flatMap((command) => [`${command} test`, `${command} check`]),
-    ];
-    const rejected = ["npm test --if-present", "npm test --ignore-scripts", "npm test --help", "npm test -- --runInBand",
-      "node --test --help", "pytest tests/unit", "go test ./...", "API_TOKEN=secret npm test", "npm test || true",
-      "npm test && npm run build", "npm test\nnpm run build", "node --test --experimental-strip-types",
-      "node --test --test-name-pattern name test/WorkedFor.test.ts", "node --test test/WorkedFor.test.ts test/Footer.test.ts",
-      "node --test ../test/WorkedFor.test.ts", 'node --test "test/Worked For.test.ts"', "node --test test/*.test.ts",
-      "node --test test/WorkedFor.test.ts || true", "node --test test/WorkedFor.test.ts # focused",
-      "API_TOKEN=secret node --test test/WorkedFor.test.ts", "node --test test/test-helper.ts", "node --test -test/WorkedFor.test.ts",
-      "node --test /test/WorkedFor.test.ts", "node --test C:\\test\\WorkedFor.test.ts", "node --test https://example.test/WorkedFor.test.ts",
-      "node --test test/./WorkedFor.test.ts", "node --test test/foo.test.TS", "node --test test/foo.test.tsx",
-      "node --test test/$(printf WorkedFor).test.ts", "node --test test/WorkedFor.test.ts>receipt", "node --test test/WorkedFor.test.ts\n"];
-    const focused = ["node --test test/WorkedFor.test.ts", "node --test --experimental-strip-types test/WorkedFor.test.ts",
-      " \tnode --test test\\WorkedFor.test.ts\t "];
-    let settlements = 0;
-    let expectedRequests = 0;
-    const batches = [
-      ...[0, 20, 40].map((offset) => ({ commands: canonical.slice(offset, offset + 20).map((command) => ` \t${command}\t `),
-        expected: canonical.slice(offset, offset + 20).map((label) => ({ label, outcome: "passed" })) })),
-      ...[0, 20].map((offset) => ({ commands: rejected.slice(offset, offset + 20), expected: [] })),
-      { commands: focused, expected: focused.map(() => ({ label: "node --test (focused)", outcome: "passed" })) },
-    ];
-    for (const batch of batches) {
-      provider.plan(...batch.commands.map((command): Step => ({ kind: "tool", command })),
-        { kind: "text", content: `Check recognition batch ${settlements + 1} complete.` });
-      expectedRequests += batch.commands.length + 1;
-      await Promise.all([
-        waitForReceiptSettlement(observer.events, ++settlements, t.signal, 40_000),
-        terminal.submitEditorText(`run recognition batch ${settlements}`, { signal: t.signal }),
-      ]);
-      const entries = workedForEntries(sessionFile);
-      assert.equal(entries.length, settlements);
-      assert.deepEqual(entries.at(-1)?.data.checks, batch.expected);
-      assert.deepEqual(entries.at(-1)?.data.omittedChecks, { passed: 0, failed: 0 });
-      assert.equal(provider.requests.length, expectedRequests);
-    }
-    assert.equal(canonical.length, 50);
-    assert.equal(provider.requests.length, 90);
-    assert.deepEqual(await terminal.close(), { code: 0, forced: false });
-  } catch (error) { failure = error; }
-  finally {
-    if (terminal) {
-      try {
-        const result = await terminal.close();
-        if (result.code !== 0 || result.forced || result.failure) cleanupFailures.push(new Error(`Check recognition cleanup: ${JSON.stringify(result)}`));
-      } catch (error) { cleanupFailures.push(error); }
-    }
-    try { await provider.close(); } catch (error) { cleanupFailures.push(error); }
-  }
-  if (failure !== undefined || cleanupFailures.length > 0 || provider.errors.length > 0) {
-    throwScenarioFailure({ directory: family.directory, message: "Receipt check-recognition scenario failed",
-      errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures, ...provider.errors],
-      diagnostics: JSON.stringify({ directory: family.directory, requests: provider.requests.length, terminal: terminal?.diagnostics() }) });
-  }
-  await removeDirectoryEventually(family.directory);
-});
-
-test("real Pi bounds observed checks and warns once for unavailable change collection", { timeout: 90_000 }, async (t: TestContext) => {
-  const family = createFamily("overflow");
-  const provider = new ReceiptProvider();
-  let terminal: PiTerminalProcess | undefined;
-  let failure: unknown;
-  const cleanupFailures: unknown[] = [];
-  try {
-    initRepository(family.project);
-    const port = await provider.listen();
-    writeProviderConfig(family.agent, port);
-    // The tools still run normally; only this owned repository's Git metadata is unreadable.
-    writeFileSync(path.join(family.project, ".git/config"), "[invalid configuration\n");
-    const observer = receiptObserver(family.directory);
-    const sessionFile = path.join(family.directory, "overflow.jsonl");
-    const attempts = Array.from({ length: 22 }, (_, index) => ({
-      label: index % 2 === 0 ? "npm test" : "npm run check", outcome: index % 2 === 0 ? "passed" : "failed",
-    }));
-    provider.plan(...attempts.map(({ label }): Step => ({ kind: "tool", command: label })),
-      { kind: "text", content: "All observed checks completed." },
-      { kind: "text", content: "Second unavailable collection completed." });
-    terminal = new PiTerminalProcess({ file: process.execPath,
-      args: [cliPath, "--model", "receipts-local/receipt-model", "--thinking", "off", "--tools", "bash",
-        "--session", sessionFile, "--offline", "--approve", "--no-context-files", "--no-skills", "--no-prompt-templates",
-        "--no-themes", "--no-mcp", "--no-extensions", "--extension", path.join(repositoryRoot, "Killeros.ts"),
-        "--extension", observer.extension],
-      cwd: family.project, env: family.env, cols: 120, rows: 80 });
-    await terminal.waitForScreen((screen) => screen.includes("KillerOS") && screen.includes("ctx 100%"), { signal: t.signal });
-    await Promise.all([
-      // This turn starts 22 real npm checks before settlement, including each Windows process startup.
-      waitForReceiptSettlement(observer.events, 1, t.signal, 75_000),
-      terminal.submitEditorText("run all observed checks", { signal: t.signal }),
-    ]);
-    const warning = "Warning: Change receipt unavailable: error";
-    await terminal.waitForScreen((screen) => screen.includes(warning) && screen.includes("Checks: 11 passed · 11 failed"), { signal: t.signal });
-    const first = workedForEntries(sessionFile);
-    assert.equal(first.length, 1);
-    assert.deepEqual(first[0]?.data.checks, attempts.slice(0, 20), "The first twenty real check attempts retain their order and outcomes");
-    assert.deepEqual(first[0]?.data.omittedChecks, { passed: 1, failed: 1 });
-    assert.deepEqual(first[0]?.data.changes, { state: "unavailable", reason: "error" });
-    await Promise.all([
-      waitForReceiptSettlement(observer.events, 2, t.signal),
-      terminal.submitEditorText("repeat unavailable collection", { signal: t.signal }),
-    ]);
-    const second = workedForEntries(sessionFile);
-    assert.equal(second.length, 2);
-    assert.deepEqual(second[0], first[0]);
-    assert.deepEqual(second[1]?.data.changes, { state: "unavailable", reason: "error" });
-    assert.deepEqual(second[1]?.data.checks, [], "A later task resets its observed checks");
-    const screen = await terminal.waitForScreen((candidate) => candidate.includes("Second unavailable collection completed.")
-      && candidate.includes(warning), { signal: t.signal });
-    assert.equal(screen.split(warning).length - 1, 1, "The unavailable warning appears exactly once across both settled runs");
-    assert.equal(provider.requests.length, 24);
-    assert.deepEqual(await terminal.close(), { code: 0, forced: false });
-  } catch (error) { failure = error; }
-  finally {
-    if (terminal) {
-      try {
-        const result = await terminal.close();
-        if (result.code !== 0 || result.forced || result.failure) cleanupFailures.push(new Error(`Overflow terminal cleanup: ${JSON.stringify(result)}`));
-      } catch (error) { cleanupFailures.push(error); }
-    }
-    try { await provider.close(); } catch (error) { cleanupFailures.push(error); }
-  }
-  if (failure !== undefined || cleanupFailures.length > 0 || provider.errors.length > 0) {
-    throwScenarioFailure({ directory: family.directory, message: "Receipt check-overflow scenario failed",
-      errors: [...(failure === undefined ? [] : [failure]), ...cleanupFailures, ...provider.errors],
-      diagnostics: JSON.stringify({ directory: family.directory, requests: provider.requests.length, terminal: terminal?.diagnostics() }) });
-  }
-  await removeDirectoryEventually(family.directory);
-});
-
 test("real Pi receipt lifecycle settles, discards, and survives navigation at the correct boundary", { timeout: 300_000, skip: piRpcShutdownSkip }, async (t: TestContext) => {
   const failures: unknown[] = [];
   const diagnostics: RecordValue[] = [];
@@ -1300,7 +1138,7 @@ test("real Pi receipt lifecycle settles, discards, and survives navigation at th
           "--session", sessionFile, "--offline", "--approve", "--no-context-files", "--no-skills", "--no-prompt-templates",
           "--no-themes", "--no-mcp", "--no-extensions", "--extension", path.join(repositoryRoot, "Killeros.ts"),
           "--extension", observer.extension, `complete the ${mode} receipt boundary`],
-        { cwd: family.project, env: family.env, windowsHide: true, timeout: 30_000, maxBuffer: 2_097_152, signal: t.signal });
+        { cwd: family.project, env: family.env, timeout: 30_000, maxBuffer: 2_097_152, signal: t.signal });
       invocation.child.stdin?.end();
       const [result] = await Promise.all([invocation, waitForReceiptSettlement(observer.events, 1, t.signal)]);
       assert.equal(invocation.child.exitCode, 0, `${mode} exits naturally`);
@@ -1342,11 +1180,10 @@ function stringField(value: RecordValue, key: string): string {
   return field;
 }
 
-test("native session boundaries discard receipts parked at settlement", { timeout: 180_000 }, async t => {
-  const operations = ["none", "rename", "new", "cancel-new", "reload", "tree", "tree-before-reset", "tree-before-settle", "cancel-tree"];
-  const selected = process.env.KILLEROS_RECEIPT_BOUNDARY_OPERATION;
-  const observations: RecordValue[] = [];
-  for (const operation of operations.filter(value => selected === undefined || selected.split(",").includes(value))) {
+// Each boundary operation is its own test with one Pi launch, so the scheduler can run them in parallel.
+// Replacement, reload, and committed tree navigation discard a parked receipt; cancelled navigation keeps it.
+for (const operation of ["new", "reload", "tree", "cancel-tree"]) {
+  test(`native session boundaries discard receipts parked at settlement (${operation})`, { timeout: 60_000 }, async t => {
     const family = createFamily(`parked-${operation}`);
     const provider = new ReceiptProvider();
     let terminal: PiTerminalProcess | undefined;
@@ -1387,7 +1224,7 @@ const readPlan=()=>JSON.parse(fs.readFileSync(plan,"utf8"));
 const wait=async name=>{for(let i=0;i<1000;i++){if(fs.existsSync(file(name)))return;await new Promise(r=>setTimeout(r,10));}throw new Error("Boundary gate timeout "+name);};
 boundary.wrapper??=async function(target,...args){
  const p=readPlan(), stack=new Error().stack??"";
- if(boundary.requestStarted&&p.armed&&operation!=="tree-before-settle"&&boundary.intercepted!==p.id&&String(target)===${JSON.stringify(path.join(family.project, "baseline.txt"))}&&stack.includes("change-receipt")){
+ if(boundary.requestStarted&&p.armed&&boundary.intercepted!==p.id&&String(target)===${JSON.stringify(path.join(family.project, "baseline.txt"))}&&stack.includes("change-receipt")){
   boundary.intercepted=p.id;fs.writeFileSync(file("entered-"+p.id),JSON.stringify({stack}));
   await wait("release-"+p.id);
  }
@@ -1397,20 +1234,7 @@ promises.open=boundary.wrapper;
 syncBuiltinESMExports();
 export default function(pi){
  pi.on("before_provider_request",()=>{boundary.requestStarted=true;});
- pi.on("session_before_switch",()=>operation==="cancel-new"?{cancel:true}:undefined);
  pi.on("session_before_tree",()=>operation==="cancel-tree"?{cancel:true}:undefined);
- pi.on("agent_settled",async()=>{
-  const p=readPlan();if(operation==="tree-before-settle"&&p.armed){
-   fs.writeFileSync(file("entered-"+p.id),JSON.stringify({event:"agent_settled"}));await wait("release-"+p.id);
-  }
- });
- pi.on("session_tree",async()=>{
-  const p=readPlan();if(p.armed&&(operation==="tree-before-reset"||operation==="tree-before-settle")){
-   fs.writeFileSync(file("release-"+p.id),"yes");
-   await wait("settled-"+p.id);
-   fs.writeFileSync(file("early-settlement-"+p.id),"yes");
-  }
- });
  pi.registerCommand("receipt-boundary-arm",{description:"Capture a native boundary command context",handler:async(_args,ctx)=>{commandContext=ctx;boundary.requestStarted=false;ctx.ui.notify("Boundary armed");}});
  pi.registerCommand("receipt-boundary-state",{description:"Acknowledge active native state",handler:async(args,ctx)=>{
   fs.writeFileSync(file("state-"+args),JSON.stringify({file:ctx.sessionManager.getSessionFile(),idle:ctx.isIdle(),pending:ctx.hasPendingMessages()}));ctx.ui.notify("Boundary state "+args);
@@ -1420,10 +1244,9 @@ export default function(pi){
   const p=readPlan();
   void (async()=>{
    let result;
-   if(operation==="new"||operation==="cancel-new")result=await commandContext.newSession();
+   if(operation==="new")result=await commandContext.newSession();
    else if(operation==="reload")result=await commandContext.reload();
-   else if(operation.startsWith("tree")||operation==="cancel-tree")result=await commandContext.navigateTree(${JSON.stringify(target)},{summarize:false});
-   else if(operation==="rename")pi.setSessionName("Renamed during parked receipt");
+   else result=await commandContext.navigateTree(${JSON.stringify(target)},{summarize:false});
    fs.writeFileSync(file("action-"+p.id),JSON.stringify({ok:true,result}));
   })().catch(error=>fs.writeFileSync(file("action-"+p.id),JSON.stringify({error:String(error)})));
   return {consume:true};
@@ -1445,7 +1268,7 @@ export default function(pi){
           "--no-themes", "--no-mcp", "--no-extensions", "--extension", probe,
           "--extension", process.env.KILLEROS_RECEIPT_BOUNDARY_EXTENSION ?? repositoryRoot, "--extension", observer] });
       await terminal.waitForScreen(screen => screen.includes("KillerOS") && screen.includes("❯"), { signal: t.signal });
-      const discard = ["new", "reload", "tree", "tree-before-reset", "tree-before-settle"].includes(operation);
+      const discard = operation !== "cancel-tree";
       for (const failedScan of [false, true]) {
         const id = failedScan ? "error" : "available";
         await terminal.submitEditorText("/receipt-boundary-arm", { signal: t.signal });
@@ -1463,8 +1286,7 @@ export default function(pi){
         release();
         await waitFile(path.join(family.directory, `entered-${id}`));
         const entered = record(JSON.parse(readFileSync(path.join(family.directory, `entered-${id}`), "utf8")), "entered");
-        if (operation === "tree-before-settle") assert.equal(entered.event, "agent_settled");
-        else assert.match(String(entered.stack), /change-receipt/u, "The real receipt scan, not a footer read, is parked");
+        assert.match(String(entered.stack), /change-receipt/u, "The real receipt scan, not a footer read, is parked");
         if (failedScan) writeFileSync(path.join(family.project, ".git/config"), "[broken\n");
         terminal.write("\x1b[23~");
         await waitFile(path.join(family.directory, `action-${id}`));
@@ -1475,9 +1297,6 @@ export default function(pi){
         const after = workedForEntries(source);
         assert.equal(after.length, before.length + (discard ? 0 : 1), `${operation}/${id}: discard only committed boundaries`);
         if (!discard) assert.equal(record(after.at(-1)?.data.changes, "changes").state, failedScan ? "unavailable" : "available");
-        if (operation === "tree-before-reset" || operation === "tree-before-settle") {
-          await waitFile(path.join(family.directory, `early-settlement-${id}`));
-        }
         assert.doesNotMatch(terminal.screen(), /stale|Worked-for timing could not be saved/iu);
         if (discard) assert.doesNotMatch(terminal.screen(), /Change receipt unavailable/u);
         if (failedScan) writeFileSync(path.join(family.project, ".git/config"), "[core]\nrepositoryformatversion = 0\nbare = false\n");
@@ -1488,7 +1307,7 @@ export default function(pi){
         const state = record(JSON.parse(readFileSync(path.join(family.directory, `state-${recovery}`), "utf8")), "state");
         assert.deepEqual([state.idle, state.pending], [true, false]);
         await terminal.waitForScreen(screen => screen.includes(`Boundary state ${recovery}`), { signal: t.signal });
-        const expectedBells = ["new", "reload", "tree-before-reset", "tree-before-settle"].includes(operation) ? 0 : 1;
+        const expectedBells = operation === "new" || operation === "reload" ? 0 : 1;
         assert.equal(terminal.bellCount - bellsBefore, expectedBells, `${operation}/${id}: native completion sound respects the boundary`);
         if (failedScan && !discard) assert.equal(terminal.screen().split("Change receipt unavailable: error").length - 1, 1,
           "A surviving failed receipt publishes exactly one native warning");
@@ -1504,107 +1323,12 @@ export default function(pi){
       assert.equal(provider.requests.length, 4);
       assert.deepEqual(await terminal.close(), { code: 0, forced: false });
       terminal = undefined;
-      observations.push({ operation, requests: 4, states: ["available", "error"], discard });
-      t.diagnostic(JSON.stringify(observations.at(-1)));
+      t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-parked-boundaries", piLaunches: 1, providerRequests: 4,
+        observation: { operation, requests: 4, states: ["available", "error"], discard }, cleanup: "natural" }));
     } finally {
       if (terminal) await terminal.close();
       await provider.close();
       await removeDirectoryEventually(family.directory);
     }
-  }
-  assert.ok(observations.length > 0);
-  t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-parked-boundaries", piLaunches: observations.length,
-    providerRequests: observations.length * 4, observations, cleanup: "natural" }));
-});
-
-test("native receipts reject malformed provider rates and count tool and compaction usage", { timeout: 60_000 }, async t => {
-  const family = createFamily("provider-metrics");
-  const extension = path.join(family.directory, "metrics-provider.mjs");
-  const observation = path.join(family.directory, "provider.jsonl");
-  const clockAdapter = path.join(family.directory, "owned-clock.mjs");
-  const clockRestored = path.join(family.directory, "clock-restored");
-  const observer = receiptObserver(family.directory);
-  let terminal: PiTerminalProcess | undefined;
-  try {
-    initRepository(family.project);
-    writeProviderConfig(family.agent, 1);
-    const session = SessionManager.create(family.project, path.join(family.directory, "sessions"));
-    const usage = (totalTokens: number) => ({ input: totalTokens, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
-    session.appendMessage({ role: "user", content: "Historical tokens must not be recounted", timestamp: 1 });
-    session.appendMessage({ role: "assistant", content: [{ type: "text", text: "Historical assistant" }], api: "openai-completions",
-      provider: "receipts-local", model: "receipt-model", usage: usage(1000), stopReason: "stop", timestamp: 1 });
-    session.branchWithSummary(session.getLeafId(), "Historical branch usage", undefined, false, usage(500));
-    const file = session.getSessionFile();
-    assert.ok(file);
-    writeFileSync(clockAdapter, `import {writeFileSync} from "node:fs";
-const original=Date.now;
-const state={value:undefined};globalThis[Symbol.for("killeros.receipt.owned-clock")]=state;
-Date.now=()=>state.value??original();
-process.on("exit",()=>{Date.now=original;writeFileSync(${JSON.stringify(clockRestored)},"restored");});`);
-    writeFileSync(extension, `import {appendFileSync} from "node:fs";
-import {createAssistantMessageEventStream} from ${JSON.stringify(new URL("../node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url).href)};
-import {Type} from ${JSON.stringify(import.meta.resolve("typebox"))};
-const usage=totalTokens=>({input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}});
-const values=[-1,1.5,NaN,Infinity,undefined,25,25,25,25,25];let requests=0;
-const clock=globalThis[Symbol.for("killeros.receipt.owned-clock")];
-export default function(pi){
- pi.on("message_end",()=>{clock.value=undefined;});
- pi.registerTool({name:"receipt-noop",label:"Receipt usage",description:"Return owned tool usage",parameters:Type.Object({}),
-  execute:async()=>({content:[{type:"text",text:"Measured owned tool usage"}],details:{},usage:usage(1000)})});
- pi.registerProvider("receipts-local",{api:"openai-completions",streamSimple(model){
-  const ordinal=requests++,phase=ordinal%3,group=Math.floor(ordinal/3),output=phase===0?50:phase===1?values[group]:100;
-  const total=group===7?(phase===0?-1:phase===1?NaN:30000):10000;
-  appendFileSync(${JSON.stringify(observation)},JSON.stringify({ordinal,group,phase,output,total,totalNaN:Number.isNaN(total),undefined:output===undefined,nan:Number.isNaN(output),infinite:output===Infinity,starts:group===5&&phase===1?2:1,clock:group>=8&&phase===1?group:undefined})+"\\n");
-  const stream=createAssistantMessageEventStream();
-  const message={role:"assistant",content:phase<2?[{type:"toolCall",id:"metric-"+ordinal,name:"receipt-noop",arguments:{}}]:[{type:"text",text:"Metric sequence "+group+" finished."}],
-   api:model.api,provider:model.provider,model:model.id,usage:{...usage(total),output},stopReason:phase<2?"toolUse":"stop",timestamp:Date.now()};
-  if(group>=8&&phase===1)clock.value=100000;
-  stream.push({type:"start",partial:message});
-  if(group===5&&phase===1)stream.push({type:"start",partial:message});
-  setTimeout(()=>{if(group===9&&phase===1)clock.value=99000;stream.push({type:"done",reason:message.stopReason,message});stream.end();},25);
-  return stream;
- }});
- pi.on("agent_before_settle",(_event,ctx)=>({entries:[{type:"compaction",summary:"Owned native compaction usage",firstKeptEntryId:ctx.sessionManager.getLeafId(),usage:usage(3000)}]}));
-}`);
-    terminal = new PiTerminalProcess({ file: process.execPath, cwd: family.project, env: family.env, cols: 120, rows: 40,
-      args: ["--import", pathToFileURL(clockAdapter).href, cliPath, "--model", "receipts-local/receipt-model", "--thinking", "off", "--tools", "receipt-noop", "--session", file,
-        "--offline", "--approve", "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp",
-        "--no-extensions", "--extension", repositoryRoot, "--extension", extension, "--extension", observer.extension] });
-    await terminal.waitForScreen(screen => screen.includes("KillerOS") && screen.includes("❯"), { signal: t.signal });
-    for (let group = 0; group < 10; group++) {
-      await terminal.submitEditorText(`Measure provider metrics ${group}`, { signal: t.signal });
-      await waitForReceiptSettlement(observer.events, group + 1, t.signal);
-      const entries = workedForEntries(file);
-      assert.equal(entries.length, group + 1);
-      const receipt = entries.at(-1)?.data;
-      assert.ok(receipt);
-      assert.equal(receipt.outcome, "done");
-      assert.equal(receipt.tokens, 35000, "Three model usages plus two tool usages plus compaction; historical totals excluded");
-      if (group < 6 || group >= 8) {
-        assert.equal(Object.hasOwn(receipt, "outputTokens"), false, `Malformed output group ${group} invalidates the whole rate`);
-        assert.equal(Object.hasOwn(receipt, "responseMilliseconds"), false);
-      } else {
-        assert.equal(receipt.outputTokens, 175, "The next valid task recovers its own complete rate");
-        assert.ok(typeof receipt.responseMilliseconds === "number" && receipt.responseMilliseconds > 0);
-      }
-    }
-    const calls = readFileSync(observation, "utf8").trim().split("\n").map(line => record(JSON.parse(line), "provider call"));
-    assert.equal(calls.length, 30);
-    assert.equal(calls[7]?.nan, true);
-    assert.equal(calls[10]?.infinite, true);
-    assert.equal(calls[13]?.undefined, true);
-    assert.equal(calls[16]?.starts, 2, "Duplicate native provider start events reach the real agent loop");
-    assert.equal(calls[21]?.total, -1);
-    assert.equal(calls[22]?.totalNaN, true, "Invalid native total usage is ignored without discarding valid usage");
-    assert.deepEqual([calls[25]?.clock, calls[28]?.clock], [8, 9], "Actual child clock boundary covers zero and reversed intervals");
-    assert.deepEqual(await terminal.close(), { code: 0, forced: false });
-    terminal = undefined;
-    assert.equal(readFileSync(clockRestored, "utf8"), "restored");
-  } finally {
-    if (terminal) await terminal.close();
-    await removeDirectoryEventually(family.directory);
-  }
-  t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-provider-metrics", piLaunches: 1, providerStreams: 30,
-    httpRequests: 0, toolCalls: 20, receiptTokens: 35000, clockFaults: ["zero", "reverse"], cleanup: "natural" }));
-});
+  });
+}

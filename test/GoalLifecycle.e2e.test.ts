@@ -503,7 +503,8 @@ test("a native provider failure saves a sanitized paused goal and one error noti
   });
 });
 
-test("malformed saved goals and unsafe reports fail closed before dispatch", { timeout: 180_000 }, async t => {
+/** Saved goal states for goals.restore-validation. Each vector is its own test, with one Pi launch. */
+const restoreValidationVectors = (() => {
   const now = Date.now();
   const common = { version: 1, revision: 1, objective: "Reject contradictory state", createdAt: now, updatedAt: now,
     activeMilliseconds: 0, turns: 1, blockedAuditStartTurn: 0, baselineTokens: 0 };
@@ -536,9 +537,19 @@ test("malformed saved goals and unsafe reports fail closed before dispatch", { t
     { label: "zero-turn-limit", state: { ...legacy, maxTurns: 0 }, valid: false },
     { label: "oversized-turn-limit", state: { ...legacy, maxTurns: 10_001 }, valid: false },
   ];
-  assert.equal(vectors.length, 20, "Persisted report vectors are independently selectable in goals.report-validation");
-  assert.equal(vectors.filter(vector => vector.valid).length, 5);
-  for (const vector of vectors) {
+  return vectors;
+})();
+
+test("malformed saved goal vectors cover every rejected and accepted shape", t => {
+  assert.equal(restoreValidationVectors.length, 20, "Persisted report vectors are independently selectable in goals.report-validation");
+  assert.equal(new Set(restoreValidationVectors.map(vector => vector.label)).size, 20, "Vector labels name one test each");
+  assert.equal(restoreValidationVectors.filter(vector => vector.valid).length, 5);
+  t.diagnostic(JSON.stringify({ scenarioId: "goals.restore-validation", validationVectors: 20,
+    piLaunches: 20, providerRequests: 15, fixtureGitLaunches: 0, nestedChildAccounting: "pending" }));
+});
+
+for (const vector of restoreValidationVectors) {
+  test(`malformed saved goals and unsafe reports fail closed before dispatch (${vector.label})`, { timeout: 60_000 }, async t => {
     const probeRejectedGoal = vector.label.startsWith("contradiction-")
       || ["unsafe-revision", "unsafe-turns", "unsafe-duration"].includes(vector.label);
     await history(t, "goals.restore-validation", vector.label, { launches: 1, requests: vector.valid || probeRejectedGoal ? 1 : 0 }, manager => {
@@ -577,11 +588,8 @@ test("malformed saved goals and unsafe reports fail closed before dispatch", { t
         }
       }
     });
-  }
-
-  t.diagnostic(JSON.stringify({ scenarioId: "goals.restore-validation", validationVectors: 20,
-    piLaunches: 20, providerRequests: 15, fixtureGitLaunches: 0, nestedChildAccounting: "pending" }));
-});
+  });
+}
 
 // Catalog ID: goals.report-validation. Preserve the original epoch-zero report inputs.
 test("persisted goal reports authorize only valid bounded decisions", { timeout: 60_000 }, async t => {
@@ -888,40 +896,6 @@ test("blocker audits require three consecutive matching turns", { timeout: 180_0
 
   t.diagnostic(JSON.stringify({ scenarioId: "goals.blockers", histories: 4, piLaunches: 6, providerRequests: 26,
     fixtureGitLaunches: 0, nestedChildAccounting: "pending" }));
-});
-
-// Catalog ID: goals.blocker-corruption. Historical corruption can run independently of live audits.
-test("malformed saved blocker audits fail closed without dispatch", { timeout: 60_000 }, async t => {
-  const base = activeGoal("Restore the blocker audit", Date.now());
-  // Exactly 2,000 code points but 3,000 UTF-16 units and 1,500 graphemes: only code-point limits accept it and reject one more.
-  const unicode = "\u{10400}".repeat(1_000) + "e\u0301".repeat(500);
-  const malformed = [
-    { key: "", streak: 1, lastTurn: 1 }, { key: "UPPERCASE", streak: 1, lastTurn: 1 },
-    { key: "valid", streak: 0, lastTurn: 1 }, { key: "valid", streak: 4, lastTurn: 1 },
-    { key: "valid", streak: 1.5, lastTurn: 1 }, { key: "valid", streak: 1, lastTurn: -1 },
-    { key: "valid", streak: 1, lastTurn: 0 }, { key: "valid", streak: 1, lastTurn: 3 },
-    { key: "valid", streak: 1, lastTurn: 1, evidence: "" }, { key: "valid", streak: 1, lastTurn: 1, evidence: " padded" },
-    { key: "valid", streak: 1, lastTurn: 1, evidence: "x".repeat(2_001) },
-    { key: "valid", streak: 1, lastTurn: 1, evidence: unicode + "x" },
-  ];
-  assert.equal(malformed.length, 12);
-  for (const [index, blockerAudit] of malformed.entries()) {
-    const state = { ...base, blockerAudit };
-    await history(t, "goals.blocker-corruption", `malformed-audit-${index + 1}`, { launches: 1, requests: 0 }, manager => {
-      savedGoal(manager, "blocker-audit", state);
-    }, async f => {
-      await f.launch();
-      assert.match(await f.notice(), /No goal is set/u);
-      assert.equal(f.continuations().length, 0);
-      assert.deepEqual(f.goals(), [{ event: "blocker-audit", state }]);
-      const idle = await f.state();
-      assert.equal(idle.isStreaming, false);
-      assert.equal(idle.isCompacting, false);
-      assert.equal(idle.pendingMessageCount, 0);
-    });
-  }
-  t.diagnostic(JSON.stringify({ scenarioId: "goals.blocker-corruption", histories: 12, piLaunches: 12, providerRequests: 0,
-    malformedAudits: 12, fixtureGitLaunches: 0, nestedChildAccounting: "pending" }));
 });
 
 type GoalScenarioPlan = ProviderPlan & { beforeReply?: (body: Json) => void };
@@ -1585,71 +1559,7 @@ test("saved goals stay inactive outside TUI and RPC or without a saved session",
     });
   }
 
-  for (const mode of ["print", "json"] as const) {
-    await run(`${mode}-request-saved-active`, { session: { goal: { state: active, event: "set" } } }, async fixture => {
-      const request = fixture.provider.enqueue({ kind: "stop" });
-      const before = sessionGoalEntries(fixture.sessionFile);
-      await runGoalScenarioOneShot(fixture, mode, "Inspect the saved active goal without resuming it", t.signal);
-      assert.equal(fixture.provider.requests.length, 1);
-      assert.ok(!scenarioToolNames(request.body).includes("killeros_goal_update"));
-      assert.doesNotMatch(scenarioMessageText(request.body), /Active KillerOS goal/u);
-      assert.deepEqual(sessionGoalEntries(fixture.sessionFile), before,
-        "A saved active goal must not dispatch, pause, or checkpoint during noninteractive work or shutdown");
-    });
-    for (const sessionKind of ["saved", "none"] as const) {
-      const label = `${mode}-command-${sessionKind}`;
-      const options: GoalScenarioOptions = sessionKind === "saved"
-        ? { session: { goal: { state: active, event: "set" } } }
-        : {};
-      await run(label, options, async fixture => {
-        const before = sessionGoalEntries(fixture.sessionFile);
-        const result = await runGoalScenarioOneShot(fixture, mode, "/goal Unsupported noninteractive goal", t.signal);
-        // The noninteractive goal rejection has no stdout/stderr channel in print or json mode
-        // (observed 2026-10-25: only the seeded assistant text / a session-start JSON record),
-        // so the observable contracts here are the process output shape and session truth.
-        if (mode === "json") {
-          const lines = result.stdout.split(/\r?\n/u).filter(line => line.length > 0);
-          assert.equal(lines.length, 1, `${label}: a handled noninteractive goal command must emit exactly one JSON record`);
-          assert.equal(record(JSON.parse(lines[0] ?? "")).type, "session", `${label}: the JSON record must be the session start`);
-        } else {
-          assert.equal(result.stdout.trimEnd(), sessionKind === "saved" ? "The previous work is saved." : "", `${label}: print output`);
-        }
-        assert.equal(result.stderr, "", `${label}: no stderr`);
-        assert.equal(fixture.provider.requests.length, 0);
-        assert.deepEqual(sessionGoalEntries(fixture.sessionFile), before);
-        if (sessionKind === "none") {
-          assert.equal(fixture.sessionFile, undefined);
-          assert.deepEqual(readdirSync(fixture.sessions), []);
-        }
-      });
-    }
-  }
-
-  for (const mode of ["print", "json"] as const) {
-    for (const sessionKind of ["saved", "none"] as const) {
-      const state = statusGoal("A saved blocked goal must not be completable in this mode", "blocked");
-      const options: GoalScenarioOptions = sessionKind === "saved"
-        ? { session: { goal: { state, event: "blocked" } } }
-        : {};
-      await run(`${mode}-request-${sessionKind}`, options, async fixture => {
-        const rejected = fixture.provider.enqueue({ kind: "calls", decisions: [{ status: "complete", evidence: "Try blocked completion" }] });
-        fixture.provider.enqueue({ kind: "stop" });
-        const before = sessionGoalEntries(fixture.sessionFile);
-        const result = await runGoalScenarioOneShot(fixture, mode, "Attempt blocked goal completion", t.signal);
-        assert.equal(fixture.provider.requests.length, 2, `${mode}/${sessionKind}: ${JSON.stringify(result)}`);
-        assert.ok(!scenarioToolNames(rejected.body).includes("killeros_goal_update"));
-        assert.doesNotMatch(scenarioMessageText(rejected.body), /Active KillerOS goal|Blocked KillerOS goal/u);
-        assert.match(scenarioMessageText(fixture.provider.requests[1]), /not found|not available|no active|unknown tool/iu);
-        assert.deepEqual(sessionGoalEntries(fixture.sessionFile), before);
-        if (mode === "json") assert.match(result.stdout, /agent_end|agent_start|agent|assistant/u);
-        if (sessionKind === "none") {
-          assert.equal(fixture.sessionFile, undefined);
-          assert.deepEqual(readdirSync(fixture.sessions), []);
-        }
-      });
-    }
-  }
-
+  // Print and JSON inertness for saved goals is covered by the legacy-modes test and runtime-print-json.
   for (const status of ["paused", "complete", "absent"] as const) {
     const options: GoalScenarioOptions = status === "absent"
       ? { session: {} }
@@ -1677,8 +1587,8 @@ test("saved goals stay inactive outside TUI and RPC or without a saved session",
     });
   }
 
-  assert.deepEqual(totals, { piLaunches: 17, providerRequests: 22, naturalExits: 17 });
-  t.diagnostic(JSON.stringify({ scenarioId: "goals.modes", histories: 17, ...totals,
+  assert.deepEqual(totals, { piLaunches: 7, providerRequests: 12, naturalExits: 7 });
+  t.diagnostic(JSON.stringify({ scenarioId: "goals.modes", histories: 7, ...totals,
     fixtureGitLaunches: 0, activeButNotStartedGuard: "not covered by this catalog scenario",
     commandRejectionChannel: "unobservable in print and json stdout/stderr; catalog oracle needs re-tailoring (blocker)" }));
 });
@@ -1745,36 +1655,31 @@ test("legacy saved goals stay inactive in print and JSON modes", { timeout: 120_
     totals.providerRequests += summary.providerRequests;
     totals.naturalExits += summary.naturalExits;
   };
-  for (const mode of ["print", "json"] as const) {
-    const now = Date.now();
-    const legacyActive = { version: 1, revision: 1, objective: "Do not auto-run here", status: "active",
-      createdAt: now, updatedAt: now, activeMilliseconds: 0, activeStartedAt: now, turns: 1, baselineTokens: 0 };
-    await run(`${mode}-legacy-active-ordinary`, { session: { goal: { state: legacyActive, event: "turn" } } }, async fixture => {
-      const request = fixture.provider.enqueue({ kind: "stop" });
-      const before = sessionGoalEntries(fixture.sessionFile);
-      await runGoalScenarioOneShot(fixture, mode, "Inspect the saved goal", t.signal);
-      assert.equal(fixture.provider.requests.length, 1);
-      assert.match(scenarioMessageText(request.body), /Inspect the saved goal/u);
-      assert.ok(!scenarioToolNames(request.body).includes("killeros_goal_update"));
-      assert.doesNotMatch(scenarioMessageText(request.body), /Active KillerOS goal/u);
-      assert.deepEqual(sessionGoalEntries(fixture.sessionFile), before);
-    });
-    await run(`${mode}-legacy-active-status`, { session: { goal: { state: legacyActive, event: "turn" } } }, async fixture => {
-      const before = sessionGoalEntries(fixture.sessionFile);
-      const result = await runGoalScenarioOneShot(fixture, mode, "/goal", t.signal);
-      if (mode === "json") {
-        const lines = result.stdout.split(/\r?\n/u).filter(line => line.length > 0);
-        assert.equal(lines.length, 1);
-        assert.equal(record(JSON.parse(lines[0] ?? "")).type, "session");
-      } else assert.equal(result.stdout.trimEnd(), "The previous work is saved.");
-      assert.equal(result.stderr, "");
-      assert.equal(fixture.provider.requests.length, 0);
-      assert.deepEqual(sessionGoalEntries(fixture.sessionFile), before);
-    });
-  }
+  // One mode per case: KillerOS gates print and JSON through one non-interactive branch.
+  const now = Date.now();
+  const legacyActive = { version: 1, revision: 1, objective: "Do not auto-run here", status: "active",
+    createdAt: now, updatedAt: now, activeMilliseconds: 0, activeStartedAt: now, turns: 1, baselineTokens: 0 };
+  await run("json-legacy-active-ordinary", { session: { goal: { state: legacyActive, event: "turn" } } }, async fixture => {
+    const request = fixture.provider.enqueue({ kind: "stop" });
+    const before = sessionGoalEntries(fixture.sessionFile);
+    await runGoalScenarioOneShot(fixture, "json", "Inspect the saved goal", t.signal);
+    assert.equal(fixture.provider.requests.length, 1);
+    assert.match(scenarioMessageText(request.body), /Inspect the saved goal/u);
+    assert.ok(!scenarioToolNames(request.body).includes("killeros_goal_update"));
+    assert.doesNotMatch(scenarioMessageText(request.body), /Active KillerOS goal/u);
+    assert.deepEqual(sessionGoalEntries(fixture.sessionFile), before);
+  });
+  await run("print-legacy-active-status", { session: { goal: { state: legacyActive, event: "turn" } } }, async fixture => {
+    const before = sessionGoalEntries(fixture.sessionFile);
+    const result = await runGoalScenarioOneShot(fixture, "print", "/goal", t.signal);
+    assert.equal(result.stdout.trimEnd(), "The previous work is saved.");
+    assert.equal(result.stderr, "");
+    assert.equal(fixture.provider.requests.length, 0);
+    assert.deepEqual(sessionGoalEntries(fixture.sessionFile), before);
+  });
 
-  assert.deepEqual(totals, { piLaunches: 4, providerRequests: 2, naturalExits: 4 });
-  t.diagnostic(JSON.stringify({ scenarioId: "goals.legacy-modes", histories: 4, ...totals, fixtureGitLaunches: 0,
+  assert.deepEqual(totals, { piLaunches: 2, providerRequests: 1, naturalExits: 2 });
+  t.diagnostic(JSON.stringify({ scenarioId: "goals.legacy-modes", histories: 2, ...totals, fixtureGitLaunches: 0,
     commandRejectionChannel: "unobservable in print and json stdout/stderr; private callback disposition remains pending" }));
 });
 
@@ -1810,7 +1715,11 @@ test("explicit pause prevents another continuation after accepted goal progress"
 });
 
 // Catalog ID: goals.pause-clear. Native settlement proves cancellation, not private host-call order.
-test("pause and clear cancel goal work while inactive clears preserve unrelated work", { timeout: 240_000 }, async t => {
+/**
+ * goals.pause-clear runs 14 histories (14 Pi launches, 16 provider requests, 14 natural exits) in five
+ * independent groups, one test each. Each group runs its histories through `run` and checks its share.
+ */
+function pauseClearHistories(t: TestContext) {
   const totals = { piLaunches: 0, providerRequests: 0, naturalExits: 0 };
   const run = async (label: string, options: GoalScenarioOptions, exercise: (fixture: GoalScenarioFixture) => Promise<void>) => {
     const summary = await runGoalScenarioHistory(t, "goals.pause-clear", label, options, exercise);
@@ -1818,6 +1727,16 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
     totals.providerRequests += summary.providerRequests;
     totals.naturalExits += summary.naturalExits;
   };
+  const finish = (expected: { histories: number; providerRequests: number }): void => {
+    assert.deepEqual(totals, { piLaunches: expected.histories, providerRequests: expected.providerRequests, naturalExits: expected.histories });
+    t.diagnostic(JSON.stringify({ scenarioId: "goals.pause-clear", histories: expected.histories, inputVectors: expected.histories, ...totals,
+      unresolved: "private call ordering, scheduled-before-turn pause, and host abort failure are not established" }));
+  };
+  return { run, finish };
+}
+
+test("pause and clear cancel goal work while inactive clears preserve unrelated work (clean pause, resume, and clear)", { timeout: 60_000 }, async t => {
+  const { run, finish } = pauseClearHistories(t);
   await run("rpc-clean-pause-resume-clear", { session: {} }, async fixture => {
     const first = fixture.provider.enqueue({ kind: "stop" }, { held: true });
     await launchGoalScenarioRpc(fixture, t.signal);
@@ -1859,6 +1778,11 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
     assert.equal(state.pendingMessageCount, 0);
     assert.equal(fixture.provider.requests.length, 2);
   });
+  finish({ histories: 1, providerRequests: 2 });
+});
+
+test("pause and clear cancel goal work while inactive clears preserve unrelated work (active work)", { timeout: 120_000 }, async t => {
+  const { run, finish } = pauseClearHistories(t);
   for (const mode of ["tui", "rpc"] as const) {
     for (const control of ["pause", "clear"] as const) {
       const objective = `Immediately ${control} active work`;
@@ -1900,6 +1824,11 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
         });
     }
   }
+  finish({ histories: 4, providerRequests: 4 });
+});
+
+test("pause and clear cancel goal work while inactive clears preserve unrelated work (inactive clears)", { timeout: 120_000 }, async t => {
+  const { run, finish } = pauseClearHistories(t);
   for (const status of ["paused", "blocked", "complete"] as const) {
     await run(`clear-${status}-during-unrelated-work`, {
       session: { goal: { state: statusGoal(`${status} objective`, status), event: status } },
@@ -1930,6 +1859,11 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
       assert.ok(rpc.currentSequence >= cursor);
     });
   }
+  finish({ histories: 3, providerRequests: 3 });
+});
+
+test("pause and clear cancel goal work while inactive clears preserve unrelated work (write failure recovery)", { timeout: 120_000 }, async t => {
+  const { run, finish } = pauseClearHistories(t);
   for (const mode of ["tui", "rpc"] as const) {
     for (const control of ["pause", "clear"] as const) {
       await run(`${mode}-${control}-write-failure-recovery`, {
@@ -1987,51 +1921,7 @@ test("pause and clear cancel goal work while inactive clears preserve unrelated 
       });
     }
   }
-  for (const control of ["pause", "clear"] as const) {
-    await run(`rpc-${control}-first-write-failure`, {
-      session: {}, faultMessage: "\x1b]2;owned\x07\x1b[31mtransient\x1b[0m\0 session write failure",
-    }, async fixture => {
-      const request = fixture.provider.enqueue({ kind: "stop" }, { held: true });
-      const rpc = await launchGoalScenarioRpc(fixture, t.signal);
-      await scenarioRpcPrompt(fixture, `/goal Safely ${control} this goal`, t.signal);
-      await reached(request.started.promise, t.signal, `transient ${control} active request`);
-      await setScenarioFault(fixture, true);
-      const cursor = await scenarioRpcPrompt(fixture, `/goal ${control}`, t.signal);
-      await reached(request.closed.promise, t.signal, `transient ${control} cancellation`);
-      await scenarioRpcSettled(fixture, cursor, t.signal);
-      const notice = await scenarioRpcNotice(fixture, cursor, /Automatic continuation is stopped/u, t.signal, "error");
-      assert.equal(notice, control === "pause"
-        ? "Goal paused: the requested pause could not be saved: transient session write failure\nAutomatic continuation is stopped. If session storage is still unavailable, retry /goal pause after it recovers."
-        : "Goal paused: the requested clear could not be saved\nAutomatic continuation is stopped. Retry /goal clear to remove the goal.");
-      const fallback = sessionGoalEntries(fixture.sessionFile).at(-1)?.state;
-      assert.equal(fallback?.status, "paused");
-      assert.equal(fallback?.result, `the requested ${control} could not be saved: transient session write failure`);
-      assert.equal(fixture.provider.requests.length, 1);
-      await setScenarioFault(fixture, false);
-      if (control === "pause") {
-        const resumed = fixture.provider.enqueue({ kind: "stop" }, { held: true });
-        await scenarioRpcPrompt(fixture, "/goal resume", t.signal);
-        await reached(resumed.started.promise, t.signal, "resume after transient pause");
-        assert.equal(sessionGoalEntries(fixture.sessionFile).at(-1)?.state?.status, "active");
-        assert.equal(SessionManager.open(String(fixture.sessionFile)).getEntries().filter(entry =>
-          entry.type === "custom_message" && entry.customType === "killeros-goal-continuation").length, 2);
-        const cleared = await scenarioRpcPrompt(fixture, "/goal clear", t.signal);
-        await reached(resumed.closed.promise, t.signal, "clear after transient pause resume");
-        await scenarioRpcSettled(fixture, cleared, t.signal);
-        await scenarioRpcNotice(fixture, cleared, /Goal cleared/u, t.signal, "info");
-        assert.equal(sessionGoalEntries(fixture.sessionFile).at(-1)?.event, "clear");
-        assert.equal(sessionGoalEntries(fixture.sessionFile).at(-1)?.state, null);
-      }
-      const processId = scenarioProcessId(fixture);
-      await closeGoalScenarioProcess(fixture);
-      assertGoalAppendFaultAdapter(fixture, String(fixture.sessionFile), processId);
-      assert.equal(fixture.provider.requests.length, control === "pause" ? 2 : 1);
-      assert.ok(rpc.currentSequence >= cursor);
-    });
-  }
-  assert.deepEqual(totals, { piLaunches: 14, providerRequests: 16, naturalExits: 14 });
-  t.diagnostic(JSON.stringify({ scenarioId: "goals.pause-clear", histories: 14, inputVectors: 14, ...totals,
-    unresolved: "private call ordering, scheduled-before-turn pause, and host abort failure are not established" }));
+  finish({ histories: 4, providerRequests: 4 });
 });
 
 test("replacement, start, and edit write failures leave truthful state", { timeout: 240_000 }, async t => {

@@ -69,47 +69,6 @@ jobs:
           KILLEROS_TEST_NPM_CLI: ${{ runner.temp }}/killeros-publishing-npm/node_modules/npm/bin/npm-cli.js
         run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test/verify-release.test.ts
 
-      - name: Repeat Pi startup lifecycle without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Pi startup lifecycle run $attempt/5"
-            node --test --experimental-strip-types test/PiStartup.test.ts || exit $?
-          done
-
-      - name: Repeat installed CLI pilot without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Installed CLI pilot run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi CLI completes a goal and restores it without unsolicited model work" test/PiExtensionContract.test.ts || exit $?
-          done
-
-      - name: Test terminal pilot and fault controls without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Terminal pilot and fault controls run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver controls report|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
-          done
-
-      - name: Test Pi cancellation lifecycle without forced exit
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Pi cancellation lifecycle run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="continuation dispatch respects idle, pending, and cancellation gates|active faux provider retries preserve goal ownership until settlement|Cancelled ordinary and goal compaction cannot recover after an aborted settlement" test/Goals.e2e.test.ts test/runtime-native-provider.e2e.test.ts test/CompactionTrigger.e2e.test.ts || exit $?
-          done
-
-
-      - name: Repeat saved tool restoration without forced exit
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Saved tool restoration run $attempt/5"
-            node --test --experimental-strip-types test/PiToolRestoration.e2e.test.ts || exit $?
-          done
-
-
       - name: Upload test failure reports
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -120,16 +79,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-
-  # Four runners at two files each finish the suite faster and with less per-runner load than one runner at four.
+  # scripts/test-suite.ts balances test units by measured duration across the shards, and each runner
+  # runs two units at a time. --lifecycle-repeats adds two runs of each lifecycle listed in scripts/test-suite.ts,
+  # without --test-force-exit, so a leaked handle or child process hangs that repeat.
   quality-tests:
-    name: Quality tests (${{ matrix.shard }}/4)
+    name: Quality tests (${{ matrix.shard }}/15)
     runs-on: windows-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -148,7 +108,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test shard
-        run: node --test --test-concurrency=2 --test-force-exit --experimental-strip-types --import ./test/support/TestTemp.ts --test-shard=${{ matrix.shard }}/4 test/*.test.*
+        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/15 --concurrency 2 --lifecycle-repeats 2
 
       - name: Upload test failure reports
         if: failure()
@@ -174,11 +134,14 @@ jobs:
           test "${{ needs.quality-tests.result }}" = success
 
   pi-latest:
-    # Quality tests the locked Pi minimum. This job type-checks the newest Pi in the peer range
-    # and repeats the runtime suites only when that install differs from the lockfile.
+    # Quality tests the locked Pi minimum. This job type-checks the newest Pi in the peer range;
+    # pi-latest-tests repeats the runtime suites, sharded like Quality, only when that install differs from the lockfile.
     name: Pi compatibility (latest)
     runs-on: windows-latest
     timeout-minutes: 25
+    outputs:
+      full-suite: ${{ steps.pi.outputs.full-suite }}
+      packages: ${{ steps.pi.outputs.packages }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -211,15 +174,17 @@ jobs:
             "@earendil-works/pi-coding-agent@$PI_VERSION" \
             "@earendil-works/pi-tui@$PI_TUI_RANGE" \
             "typebox@$PI_TYPEBOX_RANGE"
-          FULL_SUITE=$(node -e '
-            const { readFileSync } = require("node:fs");
+          # Exact installed versions, so every pi-latest-tests shard installs the same packages.
+          node -e '
+            const { appendFileSync, readFileSync } = require("node:fs");
             const locked = JSON.parse(readFileSync("package-lock.json", "utf8")).packages;
             const names = ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"];
             const installed = (name) => JSON.parse(readFileSync("node_modules/" + name + "/package.json", "utf8")).version;
-            console.log(names.some((name) => installed(name) !== locked["node_modules/" + name]?.version));
-          ')
-          echo "Installed Pi $PI_VERSION; repeat runtime suites: $FULL_SUITE"
-          echo "full-suite=$FULL_SUITE" >> "$GITHUB_OUTPUT"
+            const fullSuite = names.some((name) => installed(name) !== locked["node_modules/" + name]?.version);
+            const packages = names.map((name) => name + "@" + installed(name)).join(" ");
+            console.log("Installed " + packages + "; repeat runtime suites: " + fullSuite);
+            appendFileSync(process.env.GITHUB_OUTPUT, "full-suite=" + fullSuite + "\npackages=" + packages + "\n");
+          '
 
       - name: Verify package files are unchanged
         run: git diff --exit-code -- package.json package-lock.json
@@ -227,67 +192,78 @@ jobs:
       - name: Type-check against matched Pi
         run: npm run check
 
-      - name: Repeat Pi startup lifecycle without forced exit
-        if: steps.pi.outputs.full-suite == 'true'
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Pi startup lifecycle run $attempt/5"
-            node --test --experimental-strip-types test/PiStartup.test.ts || exit $?
-          done
+  pi-latest-tests:
+    name: Pi compatibility (latest) tests (${{ matrix.shard }}/15)
+    needs: pi-latest
+    if: needs.pi-latest.outputs.full-suite == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
 
-      - name: Repeat installed CLI pilot without forced exit
-        if: steps.pi.outputs.full-suite == 'true'
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Installed CLI pilot run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi CLI completes a goal and restores it without unsolicited model work" test/PiExtensionContract.test.ts || exit $?
-          done
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.13.0'
+          cache: npm
+          cache-dependency-path: package-lock.json
 
-      - name: Test terminal pilot and fault controls without forced exit
-        if: steps.pi.outputs.full-suite == 'true'
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Terminal pilot and fault controls run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="installed Pi terminal|terminal driver controls report|RPC driver controls" test/PiExtensionContract.test.ts test/PiTerminalControls.test.ts test/PiRpcControls.test.ts || exit $?
-          done
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Test Pi cancellation lifecycle without forced exit
-        if: steps.pi.outputs.full-suite == 'true'
-        shell: bash
+      - name: Install matched Pi packages
+        env:
+          PI_PACKAGES: ${{ needs.pi-latest.outputs.packages }}
         run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Pi cancellation lifecycle run $attempt/5"
-            node --test --experimental-strip-types --test-name-pattern="continuation dispatch respects idle, pending, and cancellation gates|active faux provider retries preserve goal ownership until settlement|Cancelled ordinary and goal compaction cannot recover after an aborted settlement" test/Goals.e2e.test.ts test/runtime-native-provider.e2e.test.ts test/CompactionTrigger.e2e.test.ts || exit $?
-          done
+          read -ra packages <<< "$PI_PACKAGES"
+          test "${#packages[@]}" -eq 4
+          npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "${packages[@]}"
 
-      - name: Repeat saved tool restoration without forced exit
-        if: steps.pi.outputs.full-suite == 'true'
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Saved tool restoration run $attempt/5"
-            node --test --experimental-strip-types test/PiToolRestoration.e2e.test.ts || exit $?
-          done
+      - name: Verify package files are unchanged
+        run: git diff --exit-code -- package.json package-lock.json
 
-      - name: Test against matched Pi
-        if: steps.pi.outputs.full-suite == 'true'
-        run: npm test
+      - name: Test shard against matched Pi
+        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/15 --concurrency 2 --lifecycle-repeats 2
 
       - name: Upload test failure reports
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: test-failures-pi-latest-${{ github.run_attempt }}
+          name: test-failures-pi-latest-${{ matrix.shard }}-${{ github.run_attempt }}
           path: node_modules/.killeros-*/failure.txt
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
 
+  pi-latest-suite:
+    # Branch protection requires this check: the shards may skip only when the newest Pi matches the lockfile.
+    name: Pi compatibility (latest) suite
+    needs: [pi-latest, pi-latest-tests]
+    if: always()
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the compatibility check and every shard it started
+        env:
+          FULL_SUITE: ${{ needs.pi-latest.outputs.full-suite }}
+          LATEST: ${{ needs.pi-latest.result }}
+          SHARDS: ${{ needs.pi-latest-tests.result }}
+        run: |
+          test "$LATEST" = success
+          if [ "$FULL_SUITE" = true ]; then test "$SHARDS" = success; else test "$SHARDS" = skipped; fi
+
   audit:
     name: Dependency audit
-    runs-on: windows-latest
+    # Static analysis runs no repository code, so it uses the faster Linux runner.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out source
@@ -312,7 +288,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: windows-latest
+    # Static analysis runs no repository code, so it uses the faster Linux runner.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       actions: read

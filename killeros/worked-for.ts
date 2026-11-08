@@ -218,10 +218,12 @@ function safePath(value: string): string {
   return safeTerminalText(value).replaceAll("\n", "⏎");
 }
 
+/** A settled v4 receipt. Pi renders every transcript component on every frame, so the lines are cached per width until the theme invalidates them. */
 class WorkedForV4Component implements Component {
   private readonly data: WorkedForEntryDataV4;
   private readonly expanded: boolean;
   private readonly theme: Theme;
+  private cached?: { width: number; lines: string[] };
 
   constructor(
     data: WorkedForEntryDataV4,
@@ -233,8 +235,19 @@ class WorkedForV4Component implements Component {
     this.theme = theme;
   }
 
+  /** Returns the receipt laid out for `width`, reusing the last layout while the width is unchanged. */
   render(width: number): string[] {
     if (width <= 0) return [];
+    if (this.cached?.width !== width) this.cached = { width, lines: this.layout(width) };
+    return this.cached.lines;
+  }
+
+  invalidate(): void {
+    this.cached = undefined;
+  }
+
+  /** Lays out the receipt for `width`: the outcome headline followed by its timing, usage, and change details. */
+  private layout(width: number): string[] {
     const { data, theme } = this;
     const outcome = OUTCOMES[data.outcome];
     const headline = theme.fg(outcome.color, outcome.label);
@@ -291,8 +304,6 @@ class WorkedForV4Component implements Component {
     }
     return lines.map((line) => truncateToWidth(` ${line}`, width, "…"));
   }
-
-  invalidate(): void {}
 }
 
 export function workedForOutcome(stopReason: StopReason | undefined): WorkedForOutcome {

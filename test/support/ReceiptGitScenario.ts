@@ -137,7 +137,7 @@ function createFamily(root: string, name: string): Family {
 
 function git(project: string, ...args: string[]): Buffer {
   return execFileSync("git", ["-c", "user.email=receipts@fixture.invalid", "-c", "user.name=Receipt Git Fixture", ...args], {
-    cwd: project, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, maxBuffer: 32 * 1024 * 1024,
+    cwd: project, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024,
   });
 }
 
@@ -155,7 +155,7 @@ function initRepository(project: string): void {
 }
 
 function writeProviderConfig(agent: string, port: number, tuiMode: "fullscreen" | "regular" = "fullscreen"): void {
-  const gitExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8", windowsHide: true }).trim();
+  const gitExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim();
   writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ tuiMode, cacheWarming: "off",
     shellPath: path.resolve(gitExecPath, "../../..", "bin/bash.exe"),
     compaction: { enabled: false }, retry: { enabled: false }, defaultThinkingLevel: "off" }));
