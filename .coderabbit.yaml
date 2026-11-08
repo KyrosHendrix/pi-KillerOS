@@ -1,7 +1,14 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit reviews every non-draft pull request. AGENTS.md owns the contracts; these instructions point reviewers at them.
+# CodeRabbit reviews every pull request and push. AGENTS.md owns the contracts; these instructions point reviewers at them.
 language: "en-US"
 reviews:
+  auto_review:
+    enabled: true
+    drafts: true
+    base_branches:
+      - ".*"
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
   profile: "chill"
   poem: false
   sequence_diagrams: false
