@@ -985,7 +985,7 @@ test("Automatic compaction pauses a goal and resumes the same or next turn exact
       ? "same-turn-rpc:compaction-before-settlement"
       : "same-turn-rpc:settlement-before-compaction");
     const interrupted = last(probeEvents(fixture).filter((event) => event.type === "agent_end"), "interrupted agent_end");
-    assert.equal(interrupted.stopReason, "error", "this history exercises Pi's exact abort-error result, not the separate aborted result");
+    assert.equal(interrupted.stopReason, "aborted", "Pi classifies the interrupted request as aborted");
     assert.equal(interrupted.errorMessage, "This operation was aborted",
       "only the exact native abort error qualifies here, not an arbitrary provider error");
     assert.equal(firstSettlement.aborted, true, "Pi confirms the interrupted request was aborted at settlement");

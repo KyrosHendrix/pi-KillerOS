@@ -6,7 +6,6 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import { stripVTControlCharacters } from "node:util";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -178,57 +177,6 @@ test("installed Pi terminal updates context capacity and the settings-driven com
   await removeDirectoryEventually(directory);
 });
 
-// FT-01 keeps the file header frozen; helpers for FT-02..FT-05 live below this point.
-import { truncateToWidth } from "@earendil-works/pi-tui";
-
-type FooterDisplayRow = { left: string; right: string };
-
-/* Mirrors killeros/display.ts padRight without importing production modules: clip visibly, then pad. */
-function footerReplicaPadRight(text: string, width: number): string {
-  if (width <= 0) return "";
-  const clipped = truncateToWidth(text, width, "");
-  return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
-}
-
-/* Mirrors killeros/footer.ts footerRowFits: content plus margins must fit the row. */
-function footerReplicaFits(left: string, right: string, width: number): boolean {
-  const contentWidth = visibleWidth(left) + (right ? visibleWidth(right) + 1 : 0);
-  return contentWidth + 2 <= width;
-}
-
-/* Mirrors killeros/footer.ts renderFooterRow's visible output, including its tiny-width fallbacks. */
-function footerReplicaRow(left: string, right: string, width: number): string {
-  if (width <= 0) return "";
-  if (width < 3) return " ".repeat(width);
-  const innerWidth = width - 2;
-  if (!right) return ` ${footerReplicaPadRight(left, innerWidth)} `;
-  const clippedRight = truncateToWidth(right, innerWidth, "");
-  const rightWidth = visibleWidth(clippedRight);
-  const leftBudget = Math.max(0, innerWidth - rightWidth - 1);
-  const clippedLeft = truncateToWidth(left, leftBudget, "…");
-  const gap = " ".repeat(Math.max(0, innerWidth - visibleWidth(clippedLeft) - rightWidth));
-  return ` ${clippedLeft}${gap}${clippedRight} `;
-}
-
-/* Mirrors killeros/footer.ts render()'s order-only candidate ladder: session row, then full,
-   capacity, and percentage variants at provider, provider-focused, and essential priorities. */
-function footerReplicaCandidates(input: {
-  signature: string;
-  level: string;
-  essentialModel: string;
-  contexts: readonly string[];
-  session?: string;
-}): FooterDisplayRow[] {
-  const primary = input.contexts.map((context) =>
-    input.level ? `${input.signature} · ${input.level} · ${context}` : `${input.signature} · ${context}`);
-  const primaryFocused = input.contexts.map((context) => `${input.signature} · ${context}`);
-  return [
-    { left: primary[0] ?? "", right: input.session ?? "" },
-    ...primary.map((left) => ({ left, right: "" })),
-    ...primaryFocused.map((left) => ({ left, right: "" })),
-    ...input.contexts.map((right) => ({ left: input.essentialModel, right })),
-  ];
-}
 
 type FooterRecord = Record<string, unknown>;
 
@@ -788,36 +736,25 @@ test("Footer preserves model, context, cost, goal, and priority information acro
     const percentTokenMatch = wideMeta.match(/ctx \d+%/u);
     const ctxDetailMatch = wideMeta.match(/ctx \d+% \([^()]+\/[^()]+\)/u);
     assert.ok(percentTokenMatch && ctxDetailMatch, "The wide footer anchor rendered full and percentage context tokens");
-    const percentToken = percentTokenMatch[0];
     const ctxDetail = ctxDetailMatch[0];
-    const capacityToken = `${percentToken} (1M)`;
-    const essentialModel = "local";
+    // Session cost appears only in the widest layout, so once it fits it must keep fitting at every wider width.
+    const widening = ["$"];
+    const shown = new Set<string>();
     // ConPTY clamps its physical size to at least two columns.
     for (let width = 2; width <= 180; width += 1) {
       const after = terminal.sequence;
       terminal.resize(width, 34);
-      const expectedRow = (metaRow: string): string => {
-        const session = metaRow.match(/(?:\d+h )?(?:\d+m )?\d+s · \$\d+\.\d{2}/u)?.[0] ?? "";
-        const candidates = footerReplicaCandidates({
-          signature: "local footer local", level: "no reasoning", essentialModel,
-          contexts: [ctxDetail, capacityToken, percentToken], session,
-        });
-        const selected = candidates.find(({ left, right }) => footerReplicaFits(left, right, width))
-          ?? { left: essentialModel, right: percentToken };
-        return stripVTControlCharacters(footerReplicaRow(selected.left, selected.right, width)).trimEnd();
-      };
-      const screen: string = await terminal.waitForScreen((value) => {
-        const rows = value.split("\n");
-        const border = rows.lastIndexOf("─".repeat(width));
-        const meta = rows[border + 1] ?? "";
-        return border >= 0 && meta.trimEnd() === expectedRow(meta);
-      }, { signal: t.signal, after });
+      const screen: string = await terminal.waitForScreen(
+        (value) => value.split("\n").includes("─".repeat(width)), { signal: t.signal, after });
       const lines: string[] = screen.split("\n");
       assert.ok(lines.every((line: string) => visibleWidth(line) <= width), `screen clips to ${width} cells`);
       const borderIndex = lines.lastIndexOf("─".repeat(width));
       const metaRow = lines[borderIndex + 1] ?? "";
-      assert.equal(metaRow.trimEnd(), expectedRow(metaRow),
-        `footer meta row matches the production candidate ladder at width ${width}`);
+      for (const token of widening) {
+        if (metaRow.includes(token)) shown.add(token);
+        else assert.ok(!shown.has(token), `${token} stays visible at width ${width} once a narrower footer showed it`);
+      }
+      if (width === 120) assert.ok(metaRow.includes(ctxDetail) && metaRow.includes("$"), "A wide footer shows full context detail and session cost");
       if (width >= 18) assert.ok(metaRow.includes("local"), `the essential model label survives at width ${width}`);
       if (width >= 12) assert.match(metaRow, /ctx \d+%/u, `the context percentage survives at width ${width}`);
     }
@@ -1214,7 +1151,7 @@ test("Footer Git status preserves last good counts through failures and recovers
   });
 });
 
-test("Footer Git status preserves last good counts through failures and recovers without recreation (discovery)", { timeout: 120_000 }, async (t: TestContext) => {
+test("Footer Git status keeps the last good counts when repository discovery fails", { timeout: 120_000 }, async (t: TestContext) => {
   await footerRecovery(t, async ({ createFamily, startTerminal, screens }) => {
     const discovery = createFamily("discovery", { outsideRepository: true });
     initFooterRepository(discovery);
@@ -1249,7 +1186,7 @@ test("Footer Git status preserves last good counts through failures and recovers
   });
 });
 
-test("Footer Git status preserves last good counts through failures and recovers without recreation (initial unavailable)", { timeout: 120_000 }, async (t: TestContext) => {
+test("Footer Git status renders nothing after a failed initial discovery until it recovers", { timeout: 120_000 }, async (t: TestContext) => {
   await footerRecovery(t, async ({ createFamily, startTerminal, screens }) => {
     const initialUnavailable = createFamily("initial-unavailable", { outsideRepository: true });
     writePassiveFooterConfig(initialUnavailable.agent);

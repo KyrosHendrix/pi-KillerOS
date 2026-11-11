@@ -5,7 +5,6 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { PiRpcProcess } from "./support/PiRpcProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
@@ -410,7 +409,6 @@ async function reportFailure(options: {
 // Catalog ID: PI-01.
 test("Personal instruction imports remain inside Pi's agent directory and reject linked files", {
   timeout: 240_000,
-  skip: piRpcShutdownSkip,
 }, async (t) => {
   const scenarioId = "PI-01";
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-personal-instructions-"));
@@ -493,7 +491,6 @@ test("Personal instruction imports remain inside Pi's agent directory and reject
 // Catalog ID: PI-02.
 test("Personal instruction truncation preserves valid UTF-8", {
   timeout: 120_000,
-  skip: piRpcShutdownSkip,
 }, async (t) => {
   const scenarioId = "PI-02";
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-personal-instructions-utf8-"));

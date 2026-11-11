@@ -47,9 +47,3 @@ export function subscribeCodexFast(listener: CodexFastStateListener): () => void
   state.listeners.add(listener);
   return () => state.listeners.delete(listener);
 }
-
-/** Test-only reset for the process-global state between isolated harnesses. */
-export function resetCodexFastState(): void {
-  state.enabled = false;
-  state.listeners.clear();
-}

@@ -1,20 +1,23 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import type { StopReason } from "@earendil-works/pi-ai";
-import { Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { WidthCachedComponent } from "./bounded-text.ts";
 import {
   beginChangeReceipt,
   disposeChangeReceipts,
-  recognizedCheck,
-  CHECK_LABELS,
+  CHANGE_UNAVAILABLE_REASONS,
+  MAX_RECEIPT_FILES,
   type ChangeReceiptCollection,
   type ChangeSummary,
   type ChangedFile,
-  type CheckAttempt,
 } from "./change-receipt.ts";
+import { MAX_RECEIPT_CHECKS, parseCheckLabel, recognizedCheck, type CheckAttempt } from "./checks.ts";
+import { entryUsage, lastAssistantMessage, wasAborted } from "./pi-context.ts";
 import { formatTokens, modelDisplayName } from "./display.ts";
 import { errorMessage } from "./errors.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
+import { isRecord } from "./guards.ts";
 
 const WORKED_FOR_ENTRY_TYPE = "killeros-worked-for";
 const MAX_PAYLOAD_BYTES = 64 * 1024;
@@ -24,7 +27,7 @@ interface WorkedForEntryDataV1 {
   milliseconds: number;
 }
 
-export type WorkedForOutcome = "done" | "stopped" | "failed";
+type WorkedForOutcome = "done" | "stopped" | "failed";
 
 interface WorkedForEntryDataV2 {
   version: 2;
@@ -39,7 +42,7 @@ interface WorkedForEntryDataV3 {
   tokens: number;
 }
 
-export interface WorkedForEntryDataV4 {
+interface WorkedForEntryDataV4 {
   version: 4;
   milliseconds: number;
   outcome: WorkedForOutcome;
@@ -77,10 +80,6 @@ function positiveDuration(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function validPath(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.includes("\0")) return false;
   if (path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) return false;
@@ -88,7 +87,7 @@ function validPath(value: unknown): value is string {
 }
 
 function parseFile(value: unknown): ChangedFile | undefined {
-  if (!record(value) || !validPath(value.path) || !integer(value.additions) || !integer(value.deletions)) return undefined;
+  if (!isRecord(value) || !validPath(value.path) || !integer(value.additions) || !integer(value.deletions)) return undefined;
   if (value.detail !== undefined && value.detail !== "binary" && value.detail !== "mode") return undefined;
   const detail: "binary" | "mode" | undefined = value.detail === "binary" || value.detail === "mode" ? value.detail : undefined;
   if (detail && (value.additions !== 0 || value.deletions !== 0)) return undefined;
@@ -107,14 +106,13 @@ function parseFile(value: unknown): ChangedFile | undefined {
 }
 
 function parseChanges(value: unknown): ChangeSummary | undefined {
-  if (!record(value)) return undefined;
+  if (!isRecord(value)) return undefined;
   if (value.state === "unavailable") {
-    return value.reason === "not-git" || value.reason === "timeout" || value.reason === "too-large" || value.reason === "error"
-      ? { state: "unavailable", reason: value.reason }
-      : undefined;
+    const reason = CHANGE_UNAVAILABLE_REASONS.find((candidate) => candidate === value.reason);
+    return reason && { state: "unavailable", reason };
   }
   if (value.state !== "available" || !integer(value.totalFiles) || !integer(value.additions) || !integer(value.deletions)
-    || !integer(value.omittedFiles) || !Array.isArray(value.files) || value.files.length > 20) return undefined;
+    || !integer(value.omittedFiles) || !Array.isArray(value.files) || value.files.length > MAX_RECEIPT_FILES) return undefined;
   const files = value.files.map(parseFile);
   if (files.some((file) => !file)) return undefined;
   const parsed = files as ChangedFile[];
@@ -147,14 +145,13 @@ function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefine
   }
   if (!integer(data.milliseconds) || !integer(data.tokens) || !isWorkedForOutcome(data.outcome)) return undefined;
   const changes = parseChanges(data.changes);
-  if (!changes || !Array.isArray(data.checks) || data.checks.length > 20 || !record(data.omittedChecks)
+  if (!changes || !Array.isArray(data.checks) || data.checks.length > MAX_RECEIPT_CHECKS || !isRecord(data.omittedChecks)
     || !integer(data.omittedChecks.passed) || !integer(data.omittedChecks.failed)) return undefined;
-  if (data.omittedChecks.passed + data.omittedChecks.failed > 0 && data.checks.length !== 20) return undefined;
+  if (data.omittedChecks.passed + data.omittedChecks.failed > 0 && data.checks.length !== MAX_RECEIPT_CHECKS) return undefined;
   const checks: CheckAttempt[] = [];
   for (const check of data.checks) {
-    if (!record(check) || check.outcome !== "passed" && check.outcome !== "failed") return undefined;
-    const label = CHECK_LABELS.find((candidate) => candidate === check.label)
-      ?? (check.label === "node --test (focused)" ? "node --test (focused)" : undefined);
+    if (!isRecord(check) || check.outcome !== "passed" && check.outcome !== "failed") return undefined;
+    const label = parseCheckLabel(check.label);
     if (!label) return undefined;
     checks.push({ label, outcome: check.outcome });
   }
@@ -181,11 +178,7 @@ function sessionTokenTotal(ctx: ExtensionContext): number | undefined {
   try {
     let total = 0;
     for (const entry of ctx.sessionManager.getEntries()) {
-      const tokens = entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "toolResult")
-        ? entry.message.usage?.totalTokens
-        : (entry.type === "compaction" || entry.type === "branch_summary")
-          ? entry.usage?.totalTokens
-          : undefined;
+      const tokens = entryUsage(entry)?.totalTokens;
       if (typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0) total += tokens;
     }
     return total;
@@ -194,7 +187,7 @@ function sessionTokenTotal(ctx: ExtensionContext): number | undefined {
   }
 }
 
-export function formatWorkedForDuration(milliseconds: number): string {
+function formatWorkedForDuration(milliseconds: number): string {
   const boundedMilliseconds = Number.isFinite(milliseconds) ? Math.max(0, milliseconds) : 0;
   const totalSeconds = Math.max(1, Math.floor(boundedMilliseconds / 1_000));
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -204,7 +197,7 @@ export function formatWorkedForDuration(milliseconds: number): string {
 }
 
 function parseWorkedForEntryData(data: unknown): WorkedForEntryData | undefined {
-  if (!record(data) || !("version" in data) || !("milliseconds" in data)) return undefined;
+  if (!isRecord(data) || !("version" in data) || !("milliseconds" in data)) return undefined;
   if (data.version === 4) return parseV4(data);
   if (typeof data.milliseconds !== "number" || !Number.isFinite(data.milliseconds) || data.milliseconds < 0) return undefined;
   if (data.version === 1) return { version: 1, milliseconds: data.milliseconds };
@@ -218,36 +211,24 @@ function safePath(value: string): string {
   return safeTerminalText(value).replaceAll("\n", "⏎");
 }
 
-/** A settled v4 receipt. Pi renders every transcript component on every frame, so the lines are cached per width until the theme invalidates them. */
-class WorkedForV4Component implements Component {
+/** A settled v4 receipt, laid out once per width until the theme invalidates it. */
+class WorkedForV4Component extends WidthCachedComponent {
   private readonly data: WorkedForEntryDataV4;
   private readonly expanded: boolean;
   private readonly theme: Theme;
-  private cached?: { width: number; lines: string[] };
-
   constructor(
     data: WorkedForEntryDataV4,
     expanded: boolean,
     theme: Theme,
   ) {
+    super();
     this.data = data;
     this.expanded = expanded;
     this.theme = theme;
   }
 
-  /** Returns the receipt laid out for `width`, reusing the last layout while the width is unchanged. */
-  render(width: number): string[] {
-    if (width <= 0) return [];
-    if (this.cached?.width !== width) this.cached = { width, lines: this.layout(width) };
-    return this.cached.lines;
-  }
-
-  invalidate(): void {
-    this.cached = undefined;
-  }
-
   /** Lays out the receipt for `width`: the outcome headline followed by its timing, usage, and change details. */
-  private layout(width: number): string[] {
+  protected layout(width: number): string[] {
     const { data, theme } = this;
     const outcome = OUTCOMES[data.outcome];
     const headline = theme.fg(outcome.color, outcome.label);
@@ -306,7 +287,7 @@ class WorkedForV4Component implements Component {
   }
 }
 
-export function workedForOutcome(stopReason: StopReason | undefined): WorkedForOutcome {
+function workedForOutcome(stopReason: StopReason | undefined): WorkedForOutcome {
   if (stopReason === "stop") return "done";
   if (stopReason === "aborted") return "stopped";
   return "failed";
@@ -361,11 +342,7 @@ function fitPayload(data: WorkedForEntryDataV4): WorkedForEntryDataV4 {
   return fitted;
 }
 
-export function registerWorkedFor(
-  pi: ExtensionAPI,
-  now: () => number = Date.now,
-  collect: (cwd: string) => Promise<ChangeReceiptCollection> = beginChangeReceipt,
-): void {
+export function registerWorkedFor(pi: ExtensionAPI): void {
   let active: ActiveReceipt | undefined;
   let lifecycleGeneration = 0;
   let collectionNoticeShown = false;
@@ -395,10 +372,10 @@ export function registerWorkedFor(
     if (ctx.mode !== "tui" || active || !ctx.isProjectTrusted()) return;
     const state: ActiveReceipt = {
       leafId: ctx.sessionManager.getLeafId(),
-      startedAt: now(),
+      startedAt: Date.now(),
       startedTokens: sessionTokenTotal(ctx),
       stopReason: undefined,
-      collection: collect(ctx.cwd),
+      collection: beginChangeReceipt(ctx.cwd),
       checks: [],
       omittedChecks: { passed: 0, failed: 0 },
       modelProvider: undefined,
@@ -417,7 +394,7 @@ export function registerWorkedFor(
   pi.on("message_start", (event, ctx) => {
     if (ctx.mode !== "tui" || !active || event.message.role !== "assistant") return;
     if (active.responseStartedAt !== undefined) active.throughputInvalid = true;
-    active.responseStartedAt = now();
+    active.responseStartedAt = Date.now();
   });
 
   pi.on("message_end", (event, ctx) => {
@@ -440,7 +417,7 @@ export function registerWorkedFor(
     finishAssistantStream(
       active,
       event.message.usage?.output,
-      now(),
+      Date.now(),
       event.message.stopReason === "error" || event.message.stopReason === "aborted",
     );
   });
@@ -449,7 +426,7 @@ export function registerWorkedFor(
     if (ctx.mode !== "tui" || !active || event.toolName !== "bash" && event.toolName !== "powershell") return;
     const check = recognizedCheck(event.input.command, event.isError);
     if (!check) return;
-    if (active.checks.length < 20) active.checks.push(check);
+    if (active.checks.length < MAX_RECEIPT_CHECKS) active.checks.push(check);
     else active.omittedChecks[check.outcome] += 1;
   });
 
@@ -457,12 +434,8 @@ export function registerWorkedFor(
     if (ctx.mode !== "tui" || !active) return;
     // Pi is not idle yet; later settlement handlers can overlap tree navigation.
     active.leafId = ctx.sessionManager.getLeafId();
-    for (let index = event.messages.length - 1; index >= 0; index -= 1) {
-      const message = event.messages[index];
-      if (message?.role !== "assistant") continue;
-      active.stopReason = message.stopReason;
-      break;
-    }
+    const finalAssistant = lastAssistantMessage(event.messages);
+    if (finalAssistant) active.stopReason = finalAssistant.stopReason;
   });
 
   pi.on("agent_settled", async (event, ctx) => {
@@ -480,14 +453,14 @@ export function registerWorkedFor(
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");
     }
     const settledTokens = sessionTokenTotal(ctx);
-    const outcome = "aborted" in event && event.aborted === true ? "stopped" : workedForOutcome(settled.stopReason);
+    const outcome = wasAborted(event) ? "stopped" : workedForOutcome(settled.stopReason);
     const throughput = outcome === "done" && !settled.throughputInvalid && settled.responseStartedAt === undefined
       && positiveInteger(settled.outputTokens) && positiveDuration(settled.responseMilliseconds)
       ? { outputTokens: settled.outputTokens, responseMilliseconds: settled.responseMilliseconds }
       : {};
     const data = fitPayload({
       version: 4,
-      milliseconds: Math.max(0, now() - settled.startedAt),
+      milliseconds: Math.max(0, Date.now() - settled.startedAt),
       outcome,
       tokens: settled.startedTokens === undefined || settledTokens === undefined ? 0 : Math.max(0, settledTokens - settled.startedTokens),
       changes,

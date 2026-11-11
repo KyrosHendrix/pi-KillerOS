@@ -1,18 +1,17 @@
-import { spawn } from "node:child_process";
 import { createReadStream, watch } from "node:fs";
-import { hideGitConsole, inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, passiveWorktreeMode, passiveWorktreeSettings, resolvePassiveHead, type PassiveWorktreeFile as DirtyFile, type PassiveWorktreeSnapshot } from "./passive-git-status.ts";
-import { lstat, open, readlink } from "node:fs/promises";
+import { hasErrorCode } from "./errors.ts";
+import { decode, inspectWorktreeWithoutFilters, PassiveGitFailure, passiveWorktreeMode, passiveWorktreeSettings, readWorktreeFile, resolvePassiveHead, runPassiveGit, WORKTREE_CONTENT_LIMIT, type PassiveWorktreeFile as DirtyFile, type PassiveWorktreeSnapshot } from "./passive-git-status.ts";
 import path from "node:path";
 import { createInflate } from "node:zlib";
 
-const GIT_TIMEOUT_MS = 5_000;
-const GIT_OUTPUT_LIMIT = 16 * 1024 * 1024;
-const SNAPSHOT_CONTENT_LIMIT = 128 * 1024 * 1024;
 const MAX_DIFF_OPERATIONS = 500_000;
-const MAX_FILES = 20;
+/** Most changed files a receipt lists individually; later ones are only counted. */
+export const MAX_RECEIPT_FILES = 20;
 const GIT_OBJECT_HEADER_LIMIT = 1_024;
 
-export type ChangeUnavailableReason = "not-git" | "timeout" | "too-large" | "error";
+/** Every reason a receipt can record for missing change data; persisted receipts are checked against this list. */
+export const CHANGE_UNAVAILABLE_REASONS = ["not-git", "timeout", "too-large", "error"] as const satisfies readonly ("not-git" | PassiveGitFailure["reason"])[];
+type ChangeUnavailableReason = typeof CHANGE_UNAVAILABLE_REASONS[number];
 
 export type ChangedFile =
   | { kind: "added" | "modified" | "deleted"; path: string; additions: number; deletions: number; detail?: "binary" | "mode" }
@@ -22,115 +21,9 @@ export type ChangeSummary =
   | { state: "available"; totalFiles: number; additions: number; deletions: number; files: ChangedFile[]; omittedFiles: number }
   | { state: "unavailable"; reason: ChangeUnavailableReason };
 
-export type CheckAttempt = { label: CheckLabel; outcome: "passed" | "failed" };
-
-const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"] as const;
-const PACKAGE_SCRIPTS = ["test", "check", "lint", "typecheck", "build"] as const;
-const GRADLE_COMMANDS = ["gradle", "gradlew", "gradlew.bat", "./gradlew", "./gradlew.bat", ".\\gradlew", ".\\gradlew.bat"] as const;
-const PACKAGE_CHECK_LABELS = PACKAGE_MANAGERS.flatMap((manager) => [
-  `${manager} test`,
-  ...PACKAGE_SCRIPTS.map((script) => `${manager} run ${script}` as const),
-] as const);
-const GRADLE_CHECK_LABELS = GRADLE_COMMANDS.flatMap((command) => [
-  `${command} test`,
-  `${command} check`,
-] as const);
-
-export const CHECK_LABELS = [
-  ...PACKAGE_CHECK_LABELS,
-  "python -m pytest", "py -m pytest", "node --test", "cargo clippy", "cargo check", "cargo test",
-  "dotnet test", "mvn verify", "mvn test", "go test", "go vet", "pytest",
-  ...GRADLE_CHECK_LABELS,
-] as const;
-
-const FOCUSED_CHECK_LABEL = "node --test (focused)";
-const FOCUSED_TEST_UNSAFE_CHARACTERS = [
-  '"', "'", "`", "$", ";", "&", "|", "<", ">", "*", "?", "[", "]", "{", "}", "(", ")", "#", "!",
-] as const;
-
-export type CheckLabel = typeof CHECK_LABELS[number] | typeof FOCUSED_CHECK_LABEL;
-
 export interface ChangeReceiptCollection {
   finish(): Promise<ChangeSummary>;
   dispose(): Promise<void>;
-}
-
-class GitFailure extends Error {
-  readonly reason: Exclude<ChangeUnavailableReason, "not-git">;
-  readonly stderr: Buffer;
-
-  constructor(reason: Exclude<ChangeUnavailableReason, "not-git">, stderr = Buffer.alloc(0)) {
-    super(reason);
-    this.reason = reason;
-    this.stderr = stderr;
-  }
-}
-
-/** Runs the passive Git binary in `cwd` with optional stdin and bounded stdout, rejecting with a GitFailure when Git is unavailable or fails. */
-function runGit(cwd: string, args: readonly string[], input?: Buffer, stdoutLimit = GIT_OUTPUT_LIMIT): Promise<Buffer> {
-  let gitCommand: string;
-  try {
-    const found = passiveGitCommand(cwd);
-    if (!found) return Promise.reject(new GitFailure("error"));
-    gitCommand = found;
-  } catch {
-    return Promise.reject(new GitFailure("error"));
-  }
-  return new Promise((resolve, reject) => {
-    const child = spawn(gitCommand, args, {
-      cwd,
-      env: passiveGitEnv(),
-      stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
-      windowsHide: hideGitConsole(),
-    });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let failure: GitFailure | undefined;
-    let settled = false;
-    const timer = setTimeout(() => {
-      failure = new GitFailure("timeout");
-      child.kill();
-    }, GIT_TIMEOUT_MS);
-    timer.unref();
-    const capture = (chunks: Buffer[], isStdout: boolean) => (chunk: Buffer): void => {
-      const nextBytes = (isStdout ? stdoutBytes : stderrBytes) + chunk.length;
-      if (nextBytes > (isStdout ? stdoutLimit : GIT_OUTPUT_LIMIT)) {
-        failure = new GitFailure("too-large");
-        child.kill();
-        return;
-      }
-      if (isStdout) stdoutBytes = nextBytes;
-      else stderrBytes = nextBytes;
-      chunks.push(chunk);
-    };
-    child.stdout!.on("data", capture(stdout, true));
-    child.stderr!.on("data", capture(stderr, false));
-    if (input) child.stdin?.end(input);
-    child.once("error", () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(new GitFailure("error"));
-    });
-    child.once("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (failure) reject(failure);
-      else if (code === 0) resolve(Buffer.concat(stdout));
-      else reject(new GitFailure("error", Buffer.concat(stderr)));
-    });
-  });
-}
-
-function decode(buffer: Buffer): string {
-  return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-}
-
-function missingFile(error: unknown): boolean {
-  return error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
 }
 
 type Repository = {
@@ -142,11 +35,11 @@ type Repository = {
   blobCacheBytes: number;
 };
 async function repository(cwd: string): Promise<Repository> {
-  const result = decode(await runGit(cwd, [
+  const result = decode(await runPassiveGit(cwd, [
     "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir", "--git-path", "objects",
   ])).trimEnd().split(/\r?\n/u);
   const [root, gitDirectory, commonDirectory, objectDirectory] = result;
-  if (!root || !gitDirectory || !commonDirectory || !objectDirectory) throw new GitFailure("error");
+  if (!root || !gitDirectory || !commonDirectory || !objectDirectory) throw new PassiveGitFailure("error");
   return {
     root,
     gitDirectory,
@@ -155,26 +48,6 @@ async function repository(cwd: string): Promise<Repository> {
     blobCache: new Map(),
     blobCacheBytes: 0,
   };
-}
-
-async function readBoundedFile(filePath: string, limit: number): Promise<Buffer> {
-  const handle = await open(filePath, "r");
-  try {
-    const stats = await handle.stat();
-    if (!stats.isFile()) throw new GitFailure("error");
-    if (stats.size > limit) throw new GitFailure("too-large");
-    const content = Buffer.alloc(stats.size + 1);
-    let length = 0;
-    while (length < content.length) {
-      const { bytesRead } = await handle.read(content, length, content.length - length, length);
-      if (bytesRead === 0) break;
-      length += bytesRead;
-    }
-    if (length > stats.size) throw new GitFailure("error");
-    return content.subarray(0, length);
-  } finally {
-    await handle.close();
-  }
 }
 
 type Snapshot = PassiveWorktreeSnapshot;
@@ -201,13 +74,8 @@ function sameRepository(left: Repository, right: Repository): boolean {
     && left.objectDirectory === right.objectDirectory;
 }
 
-async function snapshot(repo: Repository): Promise<Snapshot> {
-  try {
-    return await inspectWorktreeWithoutFilters(repo.root, (args) => runGit(repo.root, args));
-  } catch (error) {
-    if (error instanceof Error && error.message === "worktree content limit exceeded") throw new GitFailure("too-large");
-    throw error;
-  }
+function snapshot(repo: Repository): Promise<Snapshot> {
+  return inspectWorktreeWithoutFilters(repo.root, (args) => runPassiveGit(repo.root, args));
 }
 
 async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: readonly string[]): Promise<Snapshot | undefined> {
@@ -217,21 +85,12 @@ async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: r
     const previous = baseline.files.get(filePath);
     if (!previous) return undefined;
     try {
-      const absolutePath = path.join(repo.root, ...filePath.split("/"));
-      const stats = await lstat(absolutePath);
-      const mode = passiveWorktreeMode(
-        stats.isSymbolicLink() ? "120000" : stats.mode & 0o111 ? "100755" : "100644",
-        previous.indexMode,
-        baseline,
-      );
-      const content = stats.isSymbolicLink()
-        ? Buffer.from(await readlink(absolutePath))
-        : await readBoundedFile(absolutePath, SNAPSHOT_CONTENT_LIMIT - totalBytes);
-      totalBytes += content.length;
-      if (totalBytes > SNAPSHOT_CONTENT_LIMIT) throw new GitFailure("too-large");
-      files.set(filePath, { ...previous, mode, content, contentObjectId: undefined });
+      const file = await readWorktreeFile(repo.root, filePath, WORKTREE_CONTENT_LIMIT - totalBytes);
+      totalBytes += file.content.length;
+      if (totalBytes > WORKTREE_CONTENT_LIMIT) throw new PassiveGitFailure("too-large");
+      files.set(filePath, { ...previous, mode: passiveWorktreeMode(file.mode, previous.indexMode, baseline), content: file.content, contentObjectId: undefined });
     } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+      if (!hasErrorCode(error, "ENOENT")) throw error;
       files.set(filePath, { ...previous, mode: undefined, content: undefined });
     }
   }
@@ -239,7 +98,7 @@ async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: r
 }
 
 function currentHead(repo: Repository): Promise<string> {
-  return resolvePassiveHead((args) => runGit(repo.root, args, undefined, 4_096));
+  return resolvePassiveHead((args) => runPassiveGit(repo.root, args, { stdoutLimit: 4_096 }));
 }
 
 function observes(filePath: string, observedPaths: readonly string[]): boolean {
@@ -300,7 +159,7 @@ function createMonitor(repo: Repository, initialSnapshot: Snapshot): RepositoryM
 
 function boundedBlobSize(value: string, limit: number): number {
   const size = Number(value);
-  if (!Number.isSafeInteger(size) || size > limit) throw new GitFailure("too-large");
+  if (!Number.isSafeInteger(size) || size > limit) throw new PassiveGitFailure("too-large");
   return size;
 }
 
@@ -338,7 +197,7 @@ async function looseBlob(objectDirectory: string, id: string, limit: number): Pr
     if (expectedSize === undefined || !body || bodyBytes !== expectedSize) throw new Error("invalid blob");
     return body;
   } catch (error) {
-    if (missingFile(error)) return undefined;
+    if (hasErrorCode(error, "ENOENT")) return undefined;
     throw error;
   } finally {
     source.destroy();
@@ -347,8 +206,8 @@ async function looseBlob(objectDirectory: string, id: string, limit: number): Pr
 }
 
 function cacheBlob(repo: Repository, id: string, content: Buffer): void {
-  if (content.length > SNAPSHOT_CONTENT_LIMIT) return;
-  if (repo.blobCacheBytes + content.length > SNAPSHOT_CONTENT_LIMIT) {
+  if (content.length > WORKTREE_CONTENT_LIMIT) return;
+  if (repo.blobCacheBytes + content.length > WORKTREE_CONTENT_LIMIT) {
     repo.blobCache.clear();
     repo.blobCacheBytes = 0;
   }
@@ -363,12 +222,12 @@ async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<
   for (const id of new Set(ids)) {
     const cached = repo.blobCache.get(id);
     if (cached !== undefined) {
-      if (cached.length > SNAPSHOT_CONTENT_LIMIT - blobBytes) throw new GitFailure("too-large");
+      if (cached.length > WORKTREE_CONTENT_LIMIT - blobBytes) throw new PassiveGitFailure("too-large");
       blobBytes += cached.length;
       blobs.set(id, cached);
       continue;
     }
-    const content = await looseBlob(repo.objectDirectory, id, SNAPSHOT_CONTENT_LIMIT - blobBytes);
+    const content = await looseBlob(repo.objectDirectory, id, WORKTREE_CONTENT_LIMIT - blobBytes);
     if (content !== undefined) {
       blobBytes += content.length;
       blobs.set(id, content);
@@ -376,15 +235,15 @@ async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<
     } else missing.push(id);
   }
   if (missing.length > 0) {
-    const batchOutputLimit = SNAPSHOT_CONTENT_LIMIT + missing.reduce((total, id) => total + id.length + 32, 0);
-    const output = await runGit(repo.root, ["cat-file", "--batch"], Buffer.from(`${missing.join("\n")}\n`), batchOutputLimit);
+    const batchOutputLimit = WORKTREE_CONTENT_LIMIT + missing.reduce((total, id) => total + id.length + 32, 0);
+    const output = await runPassiveGit(repo.root, ["cat-file", "--batch"], { input: Buffer.from(`${missing.join("\n")}\n`), stdoutLimit: batchOutputLimit });
     let offset = 0;
     for (const id of missing) {
       const headerEnd = output.indexOf(10, offset);
       if (headerEnd < 0 || headerEnd - offset > GIT_OBJECT_HEADER_LIMIT) throw new Error("invalid batch blob");
       const match = /^([0-9a-f]+) blob ([0-9]+)$/u.exec(output.subarray(offset, headerEnd).toString("ascii"));
       if (!match || match[1] !== id) throw new Error("invalid batch blob");
-      const size = boundedBlobSize(match[2], SNAPSHOT_CONTENT_LIMIT - blobBytes);
+      const size = boundedBlobSize(match[2], WORKTREE_CONTENT_LIMIT - blobBytes);
       const start = headerEnd + 1;
       const end = start + size;
       if (output[end] !== 10) throw new Error("invalid batch body");
@@ -432,7 +291,7 @@ function lineDelta(before: Buffer, after: Buffer): { additions: number; deletion
     const next = new Map<number, number>();
     for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
       operations += 1;
-      if (operations > MAX_DIFF_OPERATIONS) throw new GitFailure("too-large");
+      if (operations > MAX_DIFF_OPERATIONS) throw new PassiveGitFailure("too-large");
       let x = diagonal === -distance || diagonal !== distance && (frontier.get(diagonal - 1) ?? -1) < (frontier.get(diagonal + 1) ?? -1)
         ? frontier.get(diagonal + 1) ?? 0
         : (frontier.get(diagonal - 1) ?? 0) + 1;
@@ -475,29 +334,26 @@ async function compare(repo: Repository, baseline: Snapshot, settlement: Snapsho
     return sources.flatMap((source) => [source?.headObjectId, source?.indexObjectId, source?.contentObjectId].filter((id): id is string => Boolean(id)));
   });
   const headBlobs = await loadHeadBlobs(repo, ids);
-  const current = (file: DirtyFile | undefined, fallback: DirtyFile | undefined): FileState | undefined => {
-    if (file) {
-      if (!file.mode) return undefined;
-      const content = file.content ?? (file.contentObjectId ? headBlobs.get(file.contentObjectId) : undefined);
-      if (!content) throw new Error("missing selected blob");
-      return { mode: file.mode, content };
-    }
+  /** A path absent from one snapshot was clean there, so its HEAD entry from the other snapshot stands in. */
+  const unchanged = (fallback: DirtyFile | undefined): FileState | undefined => {
     if (!fallback?.headMode || !fallback.headObjectId) return undefined;
     const content = headBlobs.get(fallback.headObjectId);
     if (!content) throw new Error("missing HEAD blob");
     return { mode: fallback.headMode, content };
   };
+  const current = (file: DirtyFile | undefined, fallback: DirtyFile | undefined): FileState | undefined => {
+    if (!file) return unchanged(fallback);
+    if (!file.mode) return undefined;
+    const content = file.content ?? (file.contentObjectId ? headBlobs.get(file.contentObjectId) : undefined);
+    if (!content) throw new Error("missing selected blob");
+    return { mode: file.mode, content };
+  };
   const indexed = (file: DirtyFile | undefined, fallback: DirtyFile | undefined): FileState | undefined => {
-    if (file) {
-      if (!file.indexMode || !file.indexObjectId) return undefined;
-      const content = headBlobs.get(file.indexObjectId);
-      if (!content) throw new Error("missing index blob");
-      return { mode: file.indexMode, content };
-    }
-    if (!fallback?.headMode || !fallback.headObjectId) return undefined;
-    const content = headBlobs.get(fallback.headObjectId);
-    if (!content) throw new Error("missing HEAD blob");
-    return { mode: fallback.headMode, content };
+    if (!file) return unchanged(fallback);
+    if (!file.indexMode || !file.indexObjectId) return undefined;
+    const content = headBlobs.get(file.indexObjectId);
+    if (!content) throw new Error("missing index blob");
+    return { mode: file.indexMode, content };
   };
   const removed: Array<{ path: string; file: FileState }> = [];
   const added: Array<{ path: string; file: FileState }> = [];
@@ -570,39 +426,10 @@ async function compare(repo: Repository, baseline: Snapshot, settlement: Snapsho
   changes.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
   const additions = changes.reduce((total, file) => total + file.additions, 0);
   const deletions = changes.reduce((total, file) => total + file.deletions, 0);
-  return { state: "available", totalFiles: changes.length, additions, deletions, files: changes.slice(0, MAX_FILES), omittedFiles: Math.max(0, changes.length - MAX_FILES) };
+  return { state: "available", totalFiles: changes.length, additions, deletions, files: changes.slice(0, MAX_RECEIPT_FILES), omittedFiles: Math.max(0, changes.length - MAX_RECEIPT_FILES) };
 }
 
-function isFocusedTestFile(value: string): boolean {
-  if (value.startsWith("-") || value.startsWith("~") || path.posix.isAbsolute(value) || path.win32.isAbsolute(value)
-    || /^[A-Za-z][A-Za-z\d+.-]*:/u.test(value) || /[\s\p{Cc}]/u.test(value)
-    || FOCUSED_TEST_UNSAFE_CHARACTERS.some((character) => value.includes(character))) return false;
-  const segments = value.split(/[\\/]/u);
-  const filename = segments.at(-1);
-  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..")
-    && filename !== undefined
-    && filename.includes(".test.")
-    && /\.(?:js|cjs|mjs|ts|cts|mts)$/u.test(filename);
-}
-
-export function recognizedCheck(command: unknown, failed: boolean): CheckAttempt | undefined {
-  if (typeof command !== "string") return undefined;
-  const normalized = command.replace(/^[\t ]+|[\t ]+$/gu, "");
-  const outcome = failed ? "failed" : "passed";
-  const label = CHECK_LABELS.find((candidate) => normalized === candidate);
-  if (label) return { label, outcome };
-  const focused = /^node --test(?: --experimental-strip-types)? ([^ \t]+)$/u.exec(normalized);
-  if (!focused?.[1] || !isFocusedTestFile(focused[1])) return undefined;
-  return { label: FOCUSED_CHECK_LABEL, outcome };
-}
-
-export async function beginChangeReceipt(cwd: string, trusted = true): Promise<ChangeReceiptCollection> {
-  if (!trusted) {
-    return {
-      finish: async () => ({ state: "unavailable", reason: "error" }),
-      dispose: async () => undefined,
-    };
-  }
+export async function beginChangeReceipt(cwd: string): Promise<ChangeReceiptCollection> {
   try {
     let repo = await repository(cwd);
     let monitor = repositoryMonitors.get(repo.root);
@@ -622,7 +449,7 @@ export async function beginChangeReceipt(cwd: string, trusted = true): Promise<C
     try {
       const [head, settings] = await Promise.all([
         currentHead(repo),
-        passiveWorktreeSettings((args) => runGit(repo.root, args)),
+        passiveWorktreeSettings((args) => runPassiveGit(repo.root, args)),
       ]);
       monitor.snapshot = head !== monitor.snapshot.head
         || settings.fileMode !== monitor.snapshot.fileMode || settings.symlinks !== monitor.snapshot.symlinks
@@ -653,7 +480,7 @@ export async function beginChangeReceipt(cwd: string, trusted = true): Promise<C
           return summary;
         } catch (error) {
           discardMonitor(monitor);
-          return { state: "unavailable", reason: error instanceof GitFailure ? error.reason : "error" };
+          return { state: "unavailable", reason: error instanceof PassiveGitFailure ? error.reason : "error" };
         } finally {
           monitor.inUse = false;
         }
@@ -664,9 +491,9 @@ export async function beginChangeReceipt(cwd: string, trusted = true): Promise<C
       },
     };
   } catch (error) {
-    const reason = error instanceof GitFailure && decode(error.stderr).includes("not a git repository")
+    const reason = error instanceof PassiveGitFailure && decode(error.stderr).includes("not a git repository")
       ? "not-git" as const
-      : error instanceof GitFailure ? error.reason : "error";
+      : error instanceof PassiveGitFailure ? error.reason : "error";
     return { finish: async () => ({ state: "unavailable", reason }), dispose: async () => undefined };
   }
 }

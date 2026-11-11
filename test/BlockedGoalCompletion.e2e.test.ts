@@ -2171,20 +2171,24 @@ test(`${racesCatalogId}: clear resume and reload invalidate pending completion`,
       return { divergence: "none" };
     });
     await runMutationRaceVector(t.signal, artifactDirectory, observations, "session_start", async (ctx) => {
-      // Observe committed shutdown before releasing file verification, so the stale
-      // completion cannot win merely because the reload command has not run yet.
-      const reloadOutcome = sendMidRunPrompt(ctx.fixture, "/fixture-reload", `${ctx.label}: reload prompt`);
-      await waitForProbeEvent(ctx.fixture,
-        (event) => event.type === "session_shutdown" && event.reason === "reload", 45_000, `${ctx.label}: reload shutdown`);
+      const reloadOutcome = await sendMidRunPrompt(ctx.fixture, "/fixture-reload", `${ctx.label}: reload prompt`);
+      if (reloadOutcome.kind === "rejected") throw reloadOutcome.error;
+      const refused = await waitForProbeEvent(ctx.fixture,
+        (event) => event.type === "reload_result" && event.outcome === "rejected", 45_000, `${ctx.label}: active reload refused`);
+      assert.equal(refused.message, "Wait for the current response to finish before reloading.");
+      const abortOutcome = outcome(goalRpcCommand(ctx.fixture, "abort", {}, 60_000));
+      await waitForProbeEvent(ctx.fixture, (event) => event.type === "goal_signal_aborted", 60_000,
+        `${ctx.label}: cancellation reaches verification`);
       writeReleaseFile(verifyBarrierPaths(ctx.fixture).release, `${ctx.label}: release`);
-      const reloadResponse = await reloadOutcome;
-      if (reloadResponse.kind === "rejected") throw reloadResponse.error;
-      assert.equal(record(reloadResponse.value.data ?? reloadResponse.value, `${ctx.label}: reload prompt response`).disposition, "handled");
-      await waitForGoalSettled(ctx.fixture, ctx.fixture.acknowledgedSequence, `${ctx.label}: settlement during reload`);
-      toolResultError(goalToolResults(await goalEntriesOf(ctx.fixture)), /Goal changed while completion was being verified/u,
-        `${ctx.label}: committed reload must reject the stale verified completion`);
+      const aborted = await abortOutcome;
+      if (aborted.kind === "rejected") throw aborted.error;
+      assert.equal(aborted.value.success, true);
+      await waitForGoalSettled(ctx.fixture, ctx.fixture.acknowledgedSequence, `${ctx.label}: cancelled settlement`);
+      toolResultError(goalToolResults(await goalEntriesOf(ctx.fixture)), /This operation was aborted/u,
+        `${ctx.label}: cancellation rejects the pending completion`);
+      await promptGoalCommand(ctx.fixture, "/fixture-reload", `${ctx.label}: idle reload`);
       assert.equal(savedGoalEntries(await goalEntriesOf(ctx.fixture)).filter((entry) => entry.event === "complete").length, 0,
-        `${ctx.label}: the reload must append no complete event`);
+        `${ctx.label}: reload after cancellation appends no complete event`);
       const settledProbe = readProbeEvents(ctx.fixture.observerPath, ctx.label);
       const shutdown = settledProbe.filter((event) => event.type === "session_shutdown").at(-1);
       assert.ok(shutdown, `${ctx.label}: the reload must deliver a real session_shutdown`);
@@ -2351,8 +2355,8 @@ const raceMutationProfiles: Record<string, { expectedRequests: number; settleAft
   clear: { expectedRequests: 2, settleAfterRelease: true },
   resume: { expectedRequests: 3, settleAfterRelease: true },
   replace: { expectedRequests: 2, settleAfterRelease: true },
-  // Reload invalidates completion but lets the ordinary request settle once.
-  session_start: { expectedRequests: 2, settleAfterRelease: true },
+  // Active reload is refused; cancel verification before reloading the idle session.
+  session_start: { expectedRequests: 1, settleAfterRelease: false },
   // Explicit cancellation discards the parked run without a settling model turn.
   "cancelled-navigation": { expectedRequests: 1, settleAfterRelease: false },
   session_tree: { expectedRequests: 2, settleAfterRelease: true },
@@ -2471,16 +2475,17 @@ async function runParkedShutdownFixture(
   try {
     await initializeBlockedGoalFixture(featureFixture, label);
     await parkParkedCompletion(featureFixture, target, label, "Old snapshot", false);
-    // stdin end starts the real teardown; the parked tool cannot unwind until the release.
+    // Teardown first cancels active work and waits for the verifier to unwind.
     const closeOutcome = outcome(featureFixture.rpc!.close(90_000));
-    await waitForProbeEvent(featureFixture, (event) => event.type === "session_shutdown", 90_000,
-      `${label}: the quit teardown while the verification is parked`);
+    await waitForProbeEvent(featureFixture, (event) => event.type === "goal_signal_aborted", 60_000,
+      `${label}: quit cancels the parked verification`);
+    writeReleaseFile(paths.release, `${label}: release`);
+    await waitForProbeEvent(featureFixture, (event) => event.type === "session_shutdown", 60_000,
+      `${label}: teardown follows cancellation`);
     const lastShutdown = readProbeEvents(featureFixture.observerPath, label)
       .filter((event) => event.type === "session_shutdown").at(-1);
     assert.ok(lastShutdown, `${label}: the probe must record the quit teardown`);
-    assert.equal(stringField(lastShutdown, "reason"), "quit",
-      `${label}: orderly stdin end must dispose the runtime with the quit reason`);
-    writeReleaseFile(paths.release, `${label}: release`);
+    assert.equal(stringField(lastShutdown, "reason"), "quit");
     const closeResult = await closeOutcome;
     if (closeResult.kind === "rejected") throw closeResult.error;
     assert.equal(closeResult.value.forced, false, `${label}: the parked shutdown must exit naturally without forced process escalation`);

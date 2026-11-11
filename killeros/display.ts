@@ -58,3 +58,8 @@ export function modelDisplayName(model: { name?: string; id?: string }): string 
   if (id) return id.toLowerCase();
   return safeTerminalText(model.name ?? "").replaceAll("\n", "").trim().toLowerCase();
 }
+
+/** Colors a directory or branch label with KillerOS's fixed path accent. */
+export function colorDirectory(text: string): string {
+  return `\x1B[38;2;240;248;154m${text}\x1B[39m`;
+}

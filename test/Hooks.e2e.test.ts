@@ -6,7 +6,6 @@ import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { PiRpcProcess } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
@@ -277,7 +276,7 @@ export default function(pi) {
 
 // Catalog ID: HK-01.
 test("Project hook configuration enforces trust, file identity, size, and schema before execution", {
-  timeout: 240_000, skip: piRpcShutdownSkip,
+  timeout: 240_000,
 }, async t => withHooks(t, "HK-01", async fixture => {
   const { project, config, command, launch, reload, write } = fixture;
   const marker = path.join(project, "accepted");
@@ -390,7 +389,7 @@ test("Project hook configuration enforces trust, file identity, size, and schema
 
 // Catalog ID: HK-02.
 test("Hook payloads and output remain valid JSON, bounded, and UTF-8 safe", {
-  timeout: 120_000, skip: piRpcShutdownSkip,
+  timeout: 120_000,
 }, async t => withHooks(t, "HK-02", async ({ project, config, command, launch, reload, write }) => {
   const payloadCommand = command(`const assert=require('node:assert/strict');const fs=require('node:fs');
 const value=process.env.KILLEROS_PAYLOAD;const payload=JSON.parse(value);

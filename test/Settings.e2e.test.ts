@@ -870,7 +870,7 @@ async function waitForTuiNotificationSelection(owner: TerminalOwner, signal: Abo
 
 async function startTuiNotificationSelection(owner: TerminalOwner, signal: AbortSignal): Promise<number> {
   const after = owner.process.sequence;
-  owner.process.write("/notification\r");
+  await owner.process.submitEditorText("/notification", { signal });
   const dialog = await waitForTuiScreen(
     owner,
     (screen) => screen.includes("Completion sound") && screen.includes("On") && screen.includes("Off"),
@@ -896,7 +896,7 @@ async function runTuiCommand(
   label: string,
 ): Promise<string> {
   const after = owner.process.sequence;
-  owner.process.write(`${command}\r`);
+  await owner.process.submitEditorText(command, { signal });
   return await waitForTuiScreen(owner, predicate, after, signal, label);
 }
 

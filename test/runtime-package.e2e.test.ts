@@ -107,7 +107,7 @@ test("packed KillerOS activates, reloads, and preserves Pi display preferences",
 import assert from "node:assert/strict";
 import {appendFileSync, readFileSync} from "node:fs";
 import * as entry from "killeros/Killeros.ts";
-import {createGitStatusRefresh} from "killeros/killeros/footer.ts";
+import {resolveGitFileChanges} from "killeros/killeros/passive-git-status.ts";
 const history = ${JSON.stringify(history)};
 const save = value => appendFileSync(history, JSON.stringify(value) + "\\n");
 export default function(pi) {
@@ -157,19 +157,7 @@ export default function(pi) {
   pi.on("session_start", async (event,ctx)=>{
     try {
     if (ctx.mode === "tui" && event.reason === "startup") {
-      let refresh;
-      let timer;
-      try {
-        const count = await new Promise((resolve, reject) => {
-          timer = setTimeout(() => reject(new Error("Git count callback timed out")), 10000);
-          refresh = createGitStatusRefresh(${JSON.stringify(gitFixture)}, resolve);
-          refresh.request();
-        });
-        assert.equal(count, 1);
-      } finally {
-        clearTimeout(timer);
-        refresh?.dispose();
-      }
+      assert.deepEqual(await resolveGitFileChanges(${JSON.stringify(gitFixture)}, true), {modified:0,added:1,deleted:0});
     }
     assert.equal(ctx.mode, ${JSON.stringify(mode)});
     const settings = pi.getSettings();

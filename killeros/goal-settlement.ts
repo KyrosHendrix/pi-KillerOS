@@ -1,18 +1,21 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutoCompactionGoalHandlers } from "./auto-compaction.ts";
-import { reportError } from "./errors.ts";
+import { errorMessage, reportError } from "./errors.ts";
+import { isAutomationMode, wasAborted } from "./pi-context.ts";
 import {
-  isGoalModeSupported,
   isSavedSession,
+  pauseGoal,
   pauseGoalAfterFailure,
+  pauseGoalUnsaved,
+  pauseGoalWithoutDecision,
   pauseGoalAtTurnLimit,
   resumeInterruptedGoalTurn,
   scheduleGoalContinuation,
   syncGoalUpdateTool,
   transitionGoal,
 } from "./goal-runtime.ts";
-import { boundGoalText, pauseGoalState } from "./goal-state.ts";
-import type { GoalRuntime, GoalState } from "./runtime.ts";
+import { boundGoalText } from "./goal-state.ts";
+import type { GoalRuntime, GoalState } from "./goal-model.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
 function pauseGoalForPossibleManualCompaction(
@@ -23,21 +26,9 @@ function pauseGoalForPossibleManualCompaction(
 ): void {
   if (runtime.state?.status !== "active") return;
   const safeReason = boundGoalText(reason) || "the agent turn was aborted";
-  try {
-    transitionGoal(pi, runtime, "error", "paused", safeReason, {
-      resumeAfterManualCompaction: true,
-      keepTurnForRecovery: true,
-      preserveTurnAuthorization: true,
-    });
-  } catch {
-    const current = runtime.state;
-    runtime.state = current ? pauseGoalState(current, safeReason, Date.now(), true, true) : undefined;
-    syncGoalUpdateTool(pi, runtime);
-    runtime.persistenceRetryNeeded = true;
-    runtime.continuationScheduled = false;
-    runtime.automaticCompaction = undefined;
-    runtime.requestRender?.();
-  }
+  pauseGoal(pi, runtime, "error", safeReason, {
+    hold: "manual-compaction",
+  });
   ctx.ui.notify(
     "Goal paused because the turn was aborted. If /compact is running, KillerOS will resume the same goal turn after Pi saves the summary. Run /goal pause to keep it paused.",
     "warning",
@@ -57,16 +48,12 @@ function recoverGoalAfterManualCompaction(
   const generation = runtime.lifecycleGeneration;
   let resumed: GoalState;
   try {
-    resumed = transitionGoal(pi, runtime, "resume", "active", undefined, {
-      ...(sameTurn ? { resumeInterruptedTurn: true as const } : {}),
-      preserveTurnAuthorization: true,
-    });
+    resumed = transitionGoal(pi, runtime, "resume", "active", undefined, { resume: sameTurn ? "same-turn" : "next-turn" });
   } catch (error) {
     runtime.persistenceRetryNeeded = true;
     reportError(ctx, "Manual compaction succeeded, but the goal could not be resumed", error);
     return false;
   }
-  runtime.continuationScheduled = false;
   runtime.automaticCompaction = undefined;
   if (sameTurn) {
     runtime.goalTurn = { turn, revision: runtime.state?.revision ?? state.revision };
@@ -78,15 +65,21 @@ function recoverGoalAfterManualCompaction(
       resumeInterruptedGoalTurn(pi, runtime, ctx);
     });
   } else {
-    runtime.goalTurn = undefined;
-    runtime.goalTurnInFlight = false;
     if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") ctx.ui.notify("Manual compaction complete. Goal resumed.", "info");
   }
   return true;
 }
 
+/** Ends a command's continuation hold if it still owns it, then lets any parked compaction recovery resume. Returns whether it released the hold. */
+export function releaseContinuationHold(pi: ExtensionAPI, runtime: GoalRuntime, ctx: ExtensionContext, hold: symbol): boolean {
+  if (runtime.continuationHeld !== hold) return false;
+  runtime.continuationHeld = undefined;
+  finalizeAutomaticCompaction(pi, runtime, ctx);
+  return true;
+}
+
 /** Resumes the paused revision after compaction, settlement, and any owning command's continuation hold. */
-export function finalizeAutomaticCompaction(
+function finalizeAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   ctx: ExtensionContext,
@@ -104,10 +97,7 @@ export function finalizeAutomaticCompaction(
   runtime.automaticCompaction = undefined;
   let resumed: GoalState;
   try {
-    resumed = transitionGoal(pi, runtime, "resume", "active", undefined, {
-      ...(sameTurn ? { resumeInterruptedTurn: true as const } : {}),
-      ...(!sameTurn && state.turnDecision !== undefined ? { preserveTurnAuthorization: true as const } : {}),
-    });
+    resumed = transitionGoal(pi, runtime, "resume", "active", undefined, { resume: sameTurn ? "same-turn" : "next-turn" });
   } catch (error) {
     runtime.persistenceRetryNeeded = true;
     reportError(ctx, sameTurn
@@ -115,7 +105,6 @@ export function finalizeAutomaticCompaction(
       : "Automatic compaction succeeded, but the goal could not be resumed", error);
     return;
   }
-  runtime.continuationScheduled = false;
   if (sameTurn) {
     runtime.goalTurn = { turn: recovery.turn, revision: runtime.state?.revision ?? state.revision };
     runtime.goalTurnInFlight = false;
@@ -129,8 +118,6 @@ export function finalizeAutomaticCompaction(
     });
     return;
   }
-  runtime.goalTurn = undefined;
-  runtime.goalTurnInFlight = false;
   if (pauseGoalAtTurnLimit(pi, runtime, ctx)) return;
   setImmediate(() => scheduleGoalContinuation(pi, runtime, ctx, { generation, state: resumed }));
 }
@@ -165,17 +152,7 @@ function stopAutomaticCompactionRecovery(
   runtime.automaticCompaction = undefined;
   const safeReason = boundGoalText(reason) || "automatic compaction failed";
   if (runtime.state?.status !== "paused" || runtime.state.revision !== recovery?.pausedRevision) return;
-  try {
-    transitionGoal(pi, runtime, "error", "paused", safeReason);
-  } catch {
-    runtime.state = pauseGoalState(runtime.state, safeReason, Date.now());
-    syncGoalUpdateTool(pi, runtime);
-    runtime.persistenceRetryNeeded = true;
-    runtime.continuationScheduled = false;
-    runtime.goalTurn = undefined;
-    runtime.goalTurnInFlight = false;
-    runtime.requestRender?.();
-  }
+  pauseGoal(pi, runtime, "error", safeReason);
   ctx.ui.notify(
     `Goal paused: ${safeReason}\nAutomatic continuation is stopped. Run /goal resume after resolving the compaction problem.`,
     "error",
@@ -188,10 +165,10 @@ function failAutomaticCompaction(
   ctx: ExtensionContext,
   error: unknown,
 ): void {
-  const reason = error instanceof Error ? error.message : String(error);
+  const reason = errorMessage(error);
   if (!runtime.automaticCompaction) {
     if (runtime.persistenceRetryNeeded) {
-      ctx.ui.notify(`Automatic compaction did not start: ${safeTerminalText(reason)}`, "error");
+      ctx.ui.notify(`Automatic compaction did not start: ${reason}`, "error");
     }
     return;
   }
@@ -208,7 +185,7 @@ function settleGoalTurn(
   if (state?.status !== "active") return;
   const decision = state.turnDecision;
   if (!decision || decision.turn !== settledTurn) {
-    pauseGoalAfterFailure(pi, runtime, ctx, "no turn decision");
+    pauseGoalWithoutDecision(pi, runtime, ctx);
     return;
   }
   if (pauseGoalAtTurnLimit(pi, runtime, ctx)) return;
@@ -232,7 +209,7 @@ export function registerGoalSettlement(
 
     // ctx.compact() also aborts the request. An owned compaction must settle through
     // its success/error callback; its cancellation cannot authorize recovery.
-    if ("aborted" in event && event.aborted === true && !runtime.automaticCompaction
+    if (wasAborted(event) && !runtime.automaticCompaction
       && runtime.lastStopReason !== "aborted") {
       runtime.lastStopReason = undefined;
       runtime.lastError = undefined;
@@ -327,7 +304,7 @@ export function registerGoalSettlement(
   return {
     hasAcceptedTerminalDecision: (): boolean => runtime.blockedCompletion?.kind === "accepted"
       && runtime.blockedCompletion.generation === runtime.lifecycleGeneration,
-    isActive: (ctx: ExtensionContext): boolean => isGoalModeSupported(ctx)
+    isActive: (ctx: ExtensionContext): boolean => isAutomationMode(ctx)
       && isSavedSession(ctx)
       && runtime.state?.status === "active",
     onRequested: (): void => {
@@ -338,8 +315,7 @@ export function registerGoalSettlement(
       const resumeSameTurn = runtime.goalTurnInFlight && current.turnDecision === undefined;
       try {
         const paused = transitionGoal(pi, runtime, "pause", "paused", undefined, {
-          keepTurnForRecovery: true,
-          preserveTurnAuthorization: true,
+          hold: "automatic-compaction",
         });
         runtime.automaticCompaction = {
           pausedRevision: paused.revision,
@@ -349,15 +325,7 @@ export function registerGoalSettlement(
           resumeSameTurn,
         };
       } catch (error) {
-        const reason = boundGoalText(`automatic compaction pause could not be saved: ${error instanceof Error ? error.message : String(error)}`);
-        runtime.state = current ? pauseGoalState(current, reason, Date.now()) : undefined;
-        syncGoalUpdateTool(pi, runtime);
-        runtime.persistenceRetryNeeded = true;
-        runtime.continuationScheduled = false;
-        runtime.automaticCompaction = undefined;
-        runtime.goalTurn = undefined;
-        runtime.goalTurnInFlight = false;
-        runtime.requestRender?.();
+        pauseGoalUnsaved(pi, runtime, boundGoalText(`automatic compaction pause could not be saved: ${errorMessage(error)}`));
         throw error;
       }
     },

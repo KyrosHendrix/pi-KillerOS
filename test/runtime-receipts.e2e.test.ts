@@ -10,7 +10,6 @@ import { promisify } from "node:util";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { PiRpcProcess } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
@@ -904,7 +903,7 @@ test("real Pi persists and renders complete worked-for receipt data", { timeout:
   await removeDirectoryEventually(family.directory);
 });
 
-test("real Pi receipt lifecycle settles, discards, and survives navigation at the correct boundary", { timeout: 300_000, skip: piRpcShutdownSkip }, async (t: TestContext) => {
+test("real Pi receipt lifecycle settles, discards, and survives navigation at the correct boundary", { timeout: 300_000 }, async (t: TestContext) => {
   const failures: unknown[] = [];
   const diagnostics: RecordValue[] = [];
   const directories: string[] = [];

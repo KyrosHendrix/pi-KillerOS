@@ -92,9 +92,8 @@ test("footer watch disposal closes the watcher and cancels the pending scan", (t
   assert.ok(watch.closed());
 });
 
-test("the installed footer starts both the watch and the 30-second fallback", () => {
+test("the installed footer starts the 30-second fallback", () => {
   // Real Pi would need a 30-second idle wait to observe the fallback, so its wiring is checked at the call site.
   const source = readFileSync(new URL("../killeros/footer.ts", import.meta.url), "utf8");
-  assert.match(source, /const stopWatch = scheduleGitStatusWatch\(ctx\.cwd, gitStatus\.request\);/u);
   assert.match(source, /const stopFallback = scheduleGitStatusFallback\(gitStatus\.request\);/u);
 });

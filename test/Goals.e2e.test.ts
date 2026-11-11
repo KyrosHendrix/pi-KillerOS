@@ -8,7 +8,6 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
@@ -1499,7 +1498,7 @@ const nearControlObjectives = [
   "resume now",
 ] as const;
 
-test(scenarioTitle, { timeout: 120_000, skip: piRpcShutdownSkip }, async (t: TestContext) => {
+test(scenarioTitle, { timeout: 120_000 }, async (t: TestContext) => {
   const artifactDirectory = mkdtempSync(path.join(os.tmpdir(), "killeros-goals-command-grammar-"));
   const fixtures: PiFixture[] = [];
   let primaryError: unknown;
@@ -1638,7 +1637,7 @@ function savedLimitedGoal(objective: string, turns: number, maxTurns: number): R
 }
 
 // Catalog ID: goals.turn-limits.
-test("turn budgets renew explicitly and stop silently at the limit", { timeout: 150_000, skip: piRpcShutdownSkip }, async (t) => {
+test("turn budgets renew explicitly and stop silently at the limit", { timeout: 150_000 }, async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-budgets-"));
   const fixtures: PiFixture[] = [];
   const observations: RecordValue[] = [];
@@ -1809,7 +1808,7 @@ function codemodeScriptCall(code: string): ProviderToolCall {
   return { name: "codemode", arguments: { code } };
 }
 
-test("the goal tool is model-only, schema-bounded, and sequential", { timeout: 240_000, skip: piRpcShutdownSkip }, async (t) => {
+test("the goal tool is model-only, schema-bounded, and sequential", { timeout: 240_000 }, async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-goal-tool-contract-"));
   const fixtures: PiFixture[] = [];
   const observations: RecordValue[] = [];
@@ -2310,7 +2309,7 @@ function providerToolNames(request: ProviderRequest, label: string): string[] {
     .map((tool) => stringField(record(tool.function, `${label} tool entry`), "name"));
 }
 
-test("only an accepted goal decision advances or finishes a turn", { timeout: 300_000, skip: piRpcShutdownSkip }, async (t) => {
+test("only an accepted goal decision advances or finishes a turn", { timeout: 300_000 }, async (t) => {
   const directory = await isolatedGoalRoot("killeros-goal-turn-authority-");
   const fixtures: PiFixture[] = [];
   const terminalFixtures: TerminalFixture[] = [];
@@ -2611,7 +2610,7 @@ test("only an accepted goal decision advances or finishes a turn", { timeout: 30
 // Catalog ID: goals.dispatch-gates.
 // ---------------------------------------------------------------------------
 
-test("continuation dispatch respects idle, pending, and cancellation gates", { timeout: 300_000, skip: piRpcShutdownSkip }, async (t) => {
+test("continuation dispatch respects idle, pending, and cancellation gates", { timeout: 300_000 }, async (t) => {
   const directory = await isolatedGoalRoot("killeros-goal-dispatch-gates-");
   const fixtures: PiFixture[] = [];
   const terminalFixtures: TerminalFixture[] = [];
@@ -2936,7 +2935,7 @@ test("continuation dispatch respects idle, pending, and cancellation gates", { t
     providerRequests: 19, naturalExits: fixtures.length + terminalFixtures.length, observations, ownedScratchRemoved: true }));
 });
 
-test("pause and clear persist before stopping a run and survive write failure", { timeout: 240_000, skip: piRpcShutdownSkip }, async (t) => {
+test("pause and clear persist before stopping a run and survive write failure", { timeout: 240_000 }, async (t) => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-goal-pause-clear-"));
   const fixtures: PiFixture[] = [];
   const errors: unknown[] = [];
@@ -2995,7 +2994,7 @@ test("pause and clear persist before stopping a run and survive write failure", 
     uncovered: "goal pause and clear first-write-failure and recovery vectors: no working fault injection at this boundary yet (child fs adapter is bypassed by the bundled CLI; read-only session files block Pi's own appends before the goal command runs)" }));
 });
 
-test("pending goal commands cannot overwrite newer state", { timeout: 240_000, skip: piRpcShutdownSkip }, async (t) => {
+test("pending goal commands cannot overwrite newer state", { timeout: 240_000 }, async (t) => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-goal-command-races-"));
   const errors: unknown[] = [];
   let fixture: PiFixture | undefined;
@@ -3362,7 +3361,7 @@ export default function(pi) {
     httpRequests: 0, naturalExit: true, scratchRemoved: true }));
 });
 
-test("stale native replacements release the authorized goal continuation", { timeout: 60_000, skip: piRpcShutdownSkip }, async t => {
+test("stale native replacements release the authorized goal continuation", { timeout: 60_000 }, async t => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-stale-held-"));
   const errors: unknown[] = [];
   let rpc: PiFixture | undefined;

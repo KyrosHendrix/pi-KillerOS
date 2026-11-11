@@ -1425,7 +1425,7 @@ test("Session replacement and forking leave real compaction continuations exactl
     await switchRpcSession(fixture, fileB.file);
     staleBarrier.release();
     await assertCancellationNotificationsThroughState(fixture, notificationCursor6, "native failure replacement",
-      "Automatic compaction failed: Turn prefix summarization failed: This operation was aborted");
+      "Automatic compaction failed: Compaction cancelled");
     assert.equal(fixture.provider.requests.length, 10, "stale-native: no recovery POST before the state response");
     assert.equal(countSavedMessages(fileB.file, "killeros-auto-compaction"), destinationContinuations,
       "stale-native: the destination gains no continuation beyond its earlier cancelled-fork recovery");
@@ -1452,7 +1452,7 @@ test("Session replacement and forking leave real compaction continuations exactl
       await settle(fixture, start, 1, `goal ${mode} interrupted settlement`);
       const interrupted: ProbeEvent = last(probeEvents(fixture).filter((event) => event.sequence > start && event.type === "agent_end"),
         `goal ${mode} interrupted agent`);
-      assert.equal(interrupted.stopReason, "error");
+      assert.equal(interrupted.stopReason, "aborted");
       assert.equal(interrupted.errorMessage, "This operation was aborted");
       const paused: Json = last(goalStates(fixture), `goal ${mode} paused state`);
       assert.equal(paused.status, "paused");
@@ -1644,8 +1644,8 @@ test("TUI ordinary and goal continuations survive reload and committed tree boun
     await settle(goalTui, pE, 1, "goal-recovery interrupted request settlement", "continuing");
     const afterInterrupted = probeCursor(goalTui);
     const interrupted = last(probeEvents(goalTui).filter((event) => event.type === "agent_end" && event.sequence > pE), "goal-recovery interrupted agent_end");
-    assert.equal(interrupted.stopReason, "error", "goal-recovery: the compaction interruption surfaces Pi's abort-error result");
-    assert.equal(interrupted.errorMessage, "This operation was aborted", "goal-recovery: the interruption is exact, not an arbitrary failure");
+    assert.equal(interrupted.stopReason, "aborted", "goal-recovery: Pi classifies the interruption as aborted");
+    assert.equal(interrupted.errorMessage, "Operation aborted", "goal-recovery: the interruption is exact, not an arbitrary failure");
     await releaseSummary(goalTui, 5);
     await waitForProvider(goalTui, 2);
     const resumed = await waitForProbe(goalTui.probeFile, (event) => event.type === "message_start"

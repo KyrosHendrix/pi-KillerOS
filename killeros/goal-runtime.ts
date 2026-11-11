@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { reportError } from "./errors.ts";
+import { errorMessage, reportError } from "./errors.ts";
+import { entryUsage, isAutomationMode, lastAssistantMessage } from "./pi-context.ts";
 import {
   beginGoalTurnState,
   boundGoalText,
@@ -10,29 +11,24 @@ import {
   transitionGoalState,
   type GoalTransitionOptions,
 } from "./goal-state.ts";
-import type { GoalRuntime, GoalState, GoalStatus } from "./runtime.ts";
+import { GOAL_CONTINUATION_TYPE, notifyGoalChange, type GoalRuntime, type GoalState, type GoalStatus } from "./goal-model.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
+import { isRecord } from "./guards.ts";
 
 export const GOAL_ENTRY_TYPE = "killeros-goal";
-export const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
 export const GOAL_UPDATE_TOOL = "killeros_goal_update";
 
-export type GoalEntryEvent = "set" | "replace" | "edit" | "limit" | "turn" | "continue" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
+type GoalEntryEvent = "set" | "replace" | "edit" | "limit" | "turn" | "continue" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
+/** Entry events that change the goal itself, as opposed to recording turn progress or clearing it. */
+type GoalChangeEvent = Exclude<GoalEntryEvent, "continue" | "blocker-audit" | "clear">;
+
 export interface GoalEntryData {
   version: 1;
   event: GoalEntryEvent;
   state: GoalState | null;
 }
 
-function isUnknownRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-interface RestoredGoalState {
-  state?: GoalState;
-}
-
-export function goalBranchEntries(ctx: ExtensionContext): ReturnType<ExtensionContext["sessionManager"]["getEntries"]> {
+function goalBranchEntries(ctx: ExtensionContext): ReturnType<ExtensionContext["sessionManager"]["getEntries"]> {
   try {
     return ctx.sessionManager.getBranch();
   } catch {
@@ -40,44 +36,40 @@ export function goalBranchEntries(ctx: ExtensionContext): ReturnType<ExtensionCo
   }
 }
 
-function restoreGoalState(ctx: ExtensionContext): RestoredGoalState {
+function restoreGoalState(ctx: ExtensionContext): GoalState | undefined {
   const entries = goalBranchEntries(ctx);
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry?.type !== "custom" || entry.customType !== GOAL_ENTRY_TYPE) continue;
     const data: unknown = entry.data;
-    if (!isUnknownRecord(data) || data.version !== GOAL_VERSION || data.state === null) {
-      return { state: undefined };
+    if (!isRecord(data) || data.version !== GOAL_VERSION || data.state === null) {
+      return undefined;
     }
     // v2.0.18 shutdown checkpoints stopped active clocks by omitting activeStartedAt.
     const savedState = data.event === "checkpoint"
-      && isUnknownRecord(data.state)
+      && isRecord(data.state)
       && data.state.status === "active"
       && data.state.activeStartedAt === undefined
       ? { ...data.state, activeStartedAt: Date.now() }
       : data.state;
     const restored = parseGoalState(savedState);
-    if (!restored) return { state: undefined };
+    if (!restored) return undefined;
     if (restored.status === "active") {
-      return { state: { ...restored, activeStartedAt: Date.now() } };
+      return { ...restored, activeStartedAt: Date.now() };
     }
     if (restored.status === "paused") {
       const { resumeAfterManualCompaction: _resume, ...state } = restored;
-      return { state };
+      return state;
     }
-    return { state: restored };
+    return restored;
   }
-  return { state: undefined };
+  return undefined;
 }
 
 export function sumGoalTokens(ctx: ExtensionContext): number {
   let total = 0;
   for (const entry of goalBranchEntries(ctx)) {
-    if (entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "toolResult")) {
-      total += entry.message.usage?.totalTokens ?? 0;
-    } else if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
-      total += entry.usage.totalTokens;
-    }
+    total += entryUsage(entry)?.totalTokens ?? 0;
   }
   return total;
 }
@@ -113,31 +105,51 @@ function goalUpdateToolIsAvailable(pi: ExtensionAPI): boolean {
   }
 }
 
-export function persistGoalState(
-  pi: ExtensionAPI,
-  runtime: GoalRuntime,
-  event: GoalEntryEvent,
-  state: GoalState | undefined,
-): void {
+/** Appends a goal entry and makes its state current. */
+function saveGoalEntry(pi: ExtensionAPI, runtime: GoalRuntime, event: GoalEntryEvent, state: GoalState | undefined): void {
   const data: GoalEntryData = { version: GOAL_VERSION, event, state: state ?? null };
   pi.appendEntry(GOAL_ENTRY_TYPE, data);
   runtime.state = state;
-  // Accepted progress must not invalidate an edit waiting for the current turn.
-  if (event !== "continue" && event !== "blocker-audit") runtime.mutation = Symbol();
   runtime.blockedCompletion = undefined;
-  if (event === "clear") {
-    runtime.lifecycleGeneration += 1;
-    runtime.continuationHeld = undefined;
-  }
   syncGoalUpdateTool(pi, runtime);
   runtime.persistenceRetryNeeded = false;
-  runtime.requestRender?.();
+  notifyGoalChange(runtime);
+}
+
+/** Saves a goal change; a command that captured the previous goal while it waited no longer owns it. */
+export function persistGoalState(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  event: GoalChangeEvent,
+  state: GoalState,
+): void {
+  saveGoalEntry(pi, runtime, event, state);
+  runtime.mutation = Symbol();
+}
+
+/** Records accepted progress for the current turn, so an edit waiting for that turn stays valid. */
+export function recordGoalProgress(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  event: "continue" | "blocker-audit",
+  state: Extract<GoalState, { status: "active" }>,
+): void {
+  saveGoalEntry(pi, runtime, event, state);
+  runtime.goalTurn = { turn: state.turns, revision: state.revision };
+}
+
+/** Removes the goal and starts a new lifecycle, so work still pending for the old goal is stale. */
+export function clearGoalState(pi: ExtensionAPI, runtime: GoalRuntime): void {
+  saveGoalEntry(pi, runtime, "clear", undefined);
+  runtime.mutation = Symbol();
+  runtime.lifecycleGeneration += 1;
+  runtime.continuationHeld = undefined;
 }
 
 export function transitionGoal(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
-  event: GoalEntryEvent,
+  event: GoalChangeEvent,
   status: GoalStatus,
   result?: string,
   options: GoalTransitionOptions = {},
@@ -146,20 +158,65 @@ export function transitionGoal(
   if (!current) throw new Error("No goal is set");
   const next = transitionGoalState(current, status, result, options, Date.now());
   persistGoalState(pi, runtime, event, next);
-  if (status !== "active") {
-    runtime.continuationScheduled = false;
-    runtime.automaticCompaction = undefined;
-    if (!options.keepTurnForRecovery) {
-      runtime.goalTurn = undefined;
-      runtime.goalTurnInFlight = false;
-      runtime.agentEndObserved = false;
-    }
-  } else if (!options.resumeInterruptedTurn) {
-    runtime.goalTurn = undefined;
-    runtime.goalTurnInFlight = false;
-    runtime.agentEndObserved = false;
-  }
+  settleExecutionFlags(runtime, status, options);
   return next;
+}
+
+/** Detaches Pi's current request from any goal turn. */
+export function endGoalTurn(runtime: GoalRuntime): void {
+  runtime.goalTurn = undefined;
+  runtime.goalTurnInFlight = false;
+  runtime.agentEndObserved = false;
+}
+
+/** Applies the execution state that follows a status change, saved or not; recovery options keep the interrupted turn. */
+function settleExecutionFlags(runtime: GoalRuntime, status: GoalStatus, options: GoalTransitionOptions): void {
+  runtime.continuationScheduled = false;
+  if (status !== "active") {
+    runtime.automaticCompaction = undefined;
+    if (!options.hold) endGoalTurn(runtime);
+  } else if (options.resume !== "same-turn") {
+    endGoalTurn(runtime);
+  }
+}
+
+/** Pauses the goal in memory after its save failed, so automation stops while the save waits for a retry. */
+export function pauseGoalUnsaved(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  reason: string | undefined,
+  options: GoalTransitionOptions = {},
+): void {
+  const current = runtime.state;
+  // Build the paused state first: a goal whose clock cannot stop safely must keep its execution state.
+  const paused = current && pauseGoalState(current, reason, Date.now(), options.hold);
+  settleExecutionFlags(runtime, "paused", options);
+  runtime.lastStopReason = undefined;
+  runtime.lastError = undefined;
+  holdUnsavedGoal(pi, runtime, paused);
+}
+
+/** Keeps a goal state that could not be saved, so the next goal command retries the save. */
+export function holdUnsavedGoal(pi: ExtensionAPI, runtime: GoalRuntime, state: GoalState | undefined): void {
+  runtime.state = state;
+  syncGoalUpdateTool(pi, runtime);
+  runtime.persistenceRetryNeeded = true;
+  notifyGoalChange(runtime);
+}
+
+/** Saves a paused goal, or pauses it unsaved when the session cannot record the pause. */
+export function pauseGoal(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+  event: GoalChangeEvent,
+  reason: string | undefined,
+  options: GoalTransitionOptions = {},
+): void {
+  try {
+    transitionGoal(pi, runtime, event, "paused", reason, options);
+  } catch {
+    pauseGoalUnsaved(pi, runtime, reason, options);
+  }
 }
 
 export function pauseGoalAtTurnLimit(
@@ -173,16 +230,14 @@ export function pauseGoalAtTurnLimit(
   try {
     transitionGoal(pi, runtime, "limit", "paused", result);
   } catch (error) {
-    pauseGoalAfterFailure(pi, runtime, ctx, `turn limit pause could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+    pauseGoalAfterFailure(pi, runtime, ctx, `turn limit pause could not be saved: ${errorMessage(error)}`);
   }
   return true;
 }
 
 function clearGoalExecutionFlags(runtime: GoalRuntime): void {
   runtime.continuationScheduled = false;
-  runtime.goalTurnInFlight = false;
-  runtime.agentEndObserved = false;
-  runtime.goalTurn = undefined;
+  endGoalTurn(runtime);
   runtime.automaticCompaction = undefined;
   runtime.lastStopReason = undefined;
   runtime.lastError = undefined;
@@ -202,33 +257,38 @@ function safeFailureReason(reason: string): string {
   return boundGoalText(reason) || "an unspecified goal failure";
 }
 
+/** Pauses an active goal after a failure without telling the user, for callers that report it themselves. */
+export function pauseFailedGoal(pi: ExtensionAPI, runtime: GoalRuntime, reason: string): string | undefined {
+  if (runtime.state?.status !== "active") return undefined;
+  const safeReason = safeFailureReason(reason);
+  pauseGoal(pi, runtime, "error", safeReason);
+  return safeReason;
+}
+
+/** Pauses an active goal after a failure and tells the user how to recover. */
 export function pauseGoalAfterFailure(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
   ctx: ExtensionContext,
   reason: string,
   recoveryInstruction = "Run /goal resume after resolving the problem.",
-  notify = true,
 ): void {
-  if (runtime.state?.status !== "active") return;
-  const safeReason = safeFailureReason(reason);
-  const safeRecoveryInstruction = safeReason === "no turn decision"
-    && recoveryInstruction === "Run /goal resume after resolving the problem."
-    ? "The agent ended without choosing continue, complete, or blocked. Run /goal resume only after choosing to continue."
-    : safeTerminalText(recoveryInstruction);
-  try {
-    transitionGoal(pi, runtime, "error", "paused", safeReason);
-  } catch {
-    const current = runtime.state;
-    runtime.state = current ? pauseGoalState(current, safeReason, Date.now()) : undefined;
-    syncGoalUpdateTool(pi, runtime);
-    runtime.persistenceRetryNeeded = true;
-    clearGoalExecutionFlags(runtime);
-    runtime.requestRender?.();
-  }
-  if (notify) ctx.ui.notify(`Goal paused: ${safeReason}\n${safeRecoveryInstruction}`, "error");
+  const safeReason = pauseFailedGoal(pi, runtime, reason);
+  if (safeReason !== undefined) ctx.ui.notify(`Goal paused: ${safeReason}\n${safeTerminalText(recoveryInstruction)}`, "error");
 }
 
+/** Pauses a goal whose turn ended without an accepted continue, complete, or blocked decision. */
+export function pauseGoalWithoutDecision(pi: ExtensionAPI, runtime: GoalRuntime, ctx: ExtensionContext): void {
+  pauseGoalAfterFailure(
+    pi,
+    runtime,
+    ctx,
+    "no turn decision",
+    "The agent ended without choosing continue, complete, or blocked. Run /goal resume only after choosing to continue.",
+  );
+}
+
+/** Pauses an active goal whose tool is unavailable. */
 function pauseGoalBeforeTurn(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -238,19 +298,20 @@ function pauseGoalBeforeTurn(
   if (state?.status !== "active") return;
   const nextTurn = state.turns + 1;
   const reason = "killeros_goal_update is unavailable";
-  try {
-    transitionGoal(pi, runtime, "error", "paused", reason);
-  } catch {
-    runtime.state = pauseGoalState(state, reason, Date.now());
-    syncGoalUpdateTool(pi, runtime);
-    runtime.persistenceRetryNeeded = true;
-    clearGoalExecutionFlags(runtime);
-    runtime.requestRender?.();
-  }
+  pauseGoal(pi, runtime, "error", reason);
   ctx.ui.notify(
     `Goal paused before turn ${nextTurn}: ${reason}\nEnable the goal tool, then run /goal resume.`,
     "error",
   );
+}
+
+/** Aborts the request a paused goal was about to own. */
+function abortGoalRequest(ctx: ExtensionContext): void {
+  try {
+    ctx.abort();
+  } catch {
+    // The goal is already paused; a host abort may be unavailable during startup.
+  }
 }
 
 function beginGoalTurn(
@@ -258,13 +319,13 @@ function beginGoalTurn(
   runtime: GoalRuntime,
   ctx: ExtensionContext,
   current: Extract<GoalState, { status: "active" }>,
-): GoalState | undefined {
-  let next: GoalState;
+): Extract<GoalState, { status: "active" }> | undefined {
+  let next: Extract<GoalState, { status: "active" }>;
   try {
     next = beginGoalTurnState(current, Date.now());
     persistGoalState(pi, runtime, "turn", next);
   } catch (error) {
-    pauseGoalAfterFailure(pi, runtime, ctx, `turn state could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+    pauseGoalAfterFailure(pi, runtime, ctx, `turn state could not be saved: ${errorMessage(error)}`);
     return undefined;
   }
   runtime.goalTurn = { revision: next.revision, turn: next.turns };
@@ -291,9 +352,8 @@ function sendGoalTurn(
     return true;
   } catch (error) {
     runtime.continuationScheduled = false;
-    runtime.goalTurnInFlight = false;
-    runtime.goalTurn = undefined;
-    pauseGoalAfterFailure(pi, runtime, ctx, `continuation could not start: ${error instanceof Error ? error.message : String(error)}`);
+    endGoalTurn(runtime);
+    pauseGoalAfterFailure(pi, runtime, ctx, `continuation could not start: ${errorMessage(error)}`);
     return false;
   }
 }
@@ -322,8 +382,8 @@ export function scheduleGoalContinuation(
   guard?: { generation: number; state: GoalState },
 ): boolean {
   if (guard && (guard.generation !== runtime.lifecycleGeneration || runtime.state !== guard.state)) return false;
-  if (isGoalModeSupported(ctx) && isSavedSession(ctx) && pauseGoalAtTurnLimit(pi, runtime, ctx)) return false;
-  if (!isGoalModeSupported(ctx)
+  if (isAutomationMode(ctx) && isSavedSession(ctx) && pauseGoalAtTurnLimit(pi, runtime, ctx)) return false;
+  if (!isAutomationMode(ctx)
     || !isSavedSession(ctx)
     || runtime.state?.status !== "active"
     || runtime.continuationScheduled
@@ -343,7 +403,7 @@ export function scheduleGoalContinuation(
     return false;
   }
   const next = beginGoalTurn(pi, runtime, ctx, current);
-  return next !== undefined && sendGoalTurn(pi, runtime, ctx, next as Extract<GoalState, { status: "active" }>);
+  return next !== undefined && sendGoalTurn(pi, runtime, ctx, next);
 }
 
 function goalInstructions(state: GoalState, heading: string): string {
@@ -402,10 +462,6 @@ function goalContinuationMessage(state: GoalState): string {
   return goalInstructions(state, "KillerOS long-running goal turn");
 }
 
-export function isGoalModeSupported(ctx: ExtensionContext): boolean {
-  return ctx.mode === "tui" || ctx.mode === "rpc";
-}
-
 export function isSavedSession(ctx: ExtensionContext): boolean {
   try {
     return Boolean(ctx.sessionManager.getSessionFile());
@@ -422,23 +478,17 @@ export function registerGoalRuntime(
     runtime.lifecycleGeneration += 1;
     const generation = runtime.lifecycleGeneration;
     const restored = restoreGoalState(ctx);
-    runtime.state = isGoalModeSupported(ctx) ? restored.state : undefined;
+    runtime.state = isAutomationMode(ctx) ? restored : undefined;
     runtime.blockedCompletion = undefined;
     syncGoalUpdateTool(pi, runtime);
-    runtime.continuationScheduled = false;
+    clearGoalExecutionFlags(runtime);
     runtime.continuationHeld = undefined;
-    runtime.goalTurnInFlight = false;
-    runtime.goalTurn = undefined;
-    runtime.agentEndObserved = false;
-    runtime.automaticCompaction = undefined;
     runtime.persistenceRetryNeeded = false;
-    runtime.lastStopReason = undefined;
-    runtime.lastError = undefined;
-    runtime.requestRender?.();
+    notifyGoalChange(runtime);
     const state = runtime.state;
     if (state?.status !== "active") return;
     if ((state.turnPhase === "in-flight") || (state.turnPhase === undefined && state.turns > 0)) {
-      pauseGoalAfterFailure(pi, runtime, ctx, "no turn decision");
+      pauseGoalWithoutDecision(pi, runtime, ctx);
       return;
     }
     setImmediate(() => {
@@ -470,9 +520,9 @@ export function registerGoalRuntime(
 
   pi.on("before_agent_start", (event, ctx) => {
     runtime.continuationScheduled = false;
-    if (!runtime.goalTurnInFlight && isGoalModeSupported(ctx) && isSavedSession(ctx) && pauseGoalAtTurnLimit(pi, runtime, ctx)) return;
+    if (!runtime.goalTurnInFlight && isAutomationMode(ctx) && isSavedSession(ctx) && pauseGoalAtTurnLimit(pi, runtime, ctx)) return;
     const current = runtime.state;
-    if (!isGoalModeSupported(ctx) || !isSavedSession(ctx) || !current) return;
+    if (!isAutomationMode(ctx) || !isSavedSession(ctx) || !current) return;
     if (current.status === "blocked") {
       runtime.blockedCompletion ??= { kind: "eligible", state: current, generation: runtime.lifecycleGeneration };
       syncGoalUpdateTool(pi, runtime);
@@ -482,26 +532,18 @@ export function registerGoalRuntime(
     if (runtime.goalTurnInFlight) {
       if (!goalUpdateToolIsAvailable(pi)) {
         pauseGoalBeforeTurn(pi, runtime, ctx);
-        try {
-          ctx.abort();
-        } catch {
-          // The state is already paused; a host abort may be unavailable during startup.
-        }
+        abortGoalRequest(ctx);
         return;
       }
       return { systemPrompt: `${event.systemPrompt}\n\n${goalSystemPrompt(current)}` };
     }
     if (current.turnPhase === "in-flight") {
-      pauseGoalAfterFailure(pi, runtime, ctx, "no turn decision");
+      pauseGoalWithoutDecision(pi, runtime, ctx);
       return;
     }
     if (!goalUpdateToolIsAvailable(pi)) {
       pauseGoalBeforeTurn(pi, runtime, ctx);
-      try {
-        ctx.abort();
-      } catch {
-        // See the in-flight branch above.
-      }
+      abortGoalRequest(ctx);
       return;
     }
     const next = beginGoalTurn(pi, runtime, ctx, current);
@@ -511,7 +553,7 @@ export function registerGoalRuntime(
 
   pi.on("agent_end", (event) => {
     if (!runtime.goalTurnInFlight) return;
-    const finalAssistant = [...event.messages].reverse().find((message) => message.role === "assistant");
+    const finalAssistant = lastAssistantMessage(event.messages);
     runtime.agentEndObserved = finalAssistant !== undefined;
     runtime.lastStopReason = finalAssistant?.stopReason;
     runtime.lastError = finalAssistant?.errorMessage;

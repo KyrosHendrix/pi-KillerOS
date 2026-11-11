@@ -1,3 +1,6 @@
+/** Custom message type of the hidden prompt that starts each automatic goal turn. */
+export const GOAL_CONTINUATION_TYPE = "killeros-goal-continuation";
+
 export type GoalStatus = "active" | "paused" | "blocked" | "complete";
 
 export type GoalTurnPhase = "ready" | "in-flight" | "authorized";
@@ -106,9 +109,9 @@ export type GoalState = GoalStateCommon & (
 );
 
 /** Pi request outcomes for goal recovery: awaiting result, compacted, or rejected as session-too-small. */
-export type AutomaticGoalCompactionOutcome = "pending" | "completed" | "skipped";
+type AutomaticGoalCompactionOutcome = "pending" | "completed" | "skipped";
 
-export interface AutomaticGoalCompaction {
+interface AutomaticGoalCompaction {
   pausedRevision: number;
   outcome: AutomaticGoalCompactionOutcome;
   turnSettled: boolean;
@@ -116,7 +119,7 @@ export interface AutomaticGoalCompaction {
   resumeSameTurn: boolean;
 }
 
-export interface GoalTurnExecution {
+interface GoalTurnExecution {
   turn: number;
   revision: number;
 }
@@ -139,7 +142,7 @@ export interface GoalRuntime {
   lastStopReason?: string;
   lastError?: string;
   lifecycleGeneration: number;
-  requestRender?: () => void;
+  readonly changeListeners: Set<() => void>;
 }
 
 export function createGoalRuntime(): GoalRuntime {
@@ -152,5 +155,16 @@ export function createGoalRuntime(): GoalRuntime {
     automaticCompaction: undefined,
     persistenceRetryNeeded: false,
     lifecycleGeneration: 0,
+    changeListeners: new Set(),
   };
+}
+
+/** Calls `listener` whenever the visible goal state may have changed. */
+export function onGoalChange(runtime: GoalRuntime, listener: () => void): void {
+  runtime.changeListeners.add(listener);
+}
+
+/** Tells every subscriber that the visible goal state may have changed. */
+export function notifyGoalChange(runtime: GoalRuntime): void {
+  for (const listener of runtime.changeListeners) listener();
 }

@@ -1,20 +1,27 @@
-import { execFile } from "node:child_process";
 import { watch } from "node:fs";
-import path from "node:path";
 import { type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import { readAutoCompactionPreference, type AutoCompactionPreference } from "./auto-compaction.ts";
-import { createKillerosSettingsStore, type KillerosSettingsStore } from "./settings.ts";
 import { isCodexFastEnabled, isCodexFastModel, subscribeCodexFast } from "./codex-fast-state.ts";
-import { formatCwd, formatTime, modelDisplayName, padRight } from "./display.ts";
-import { hideGitConsole, inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv, type PassiveGitRunner } from "./passive-git-status.ts";
+import { colorDirectory, formatCwd, formatTime, modelDisplayName, padRight } from "./display.ts";
+import { entryUsage, readContextUsage } from "./pi-context.ts";
+import { resolveGitFileChanges, type GitFileChanges } from "./passive-git-status.ts";
 import { goalElapsedMilliseconds } from "./goal-state.ts";
-import type { GoalRuntime, GoalState } from "./runtime.ts";
+import { onGoalChange, type GoalRuntime, type GoalState } from "./goal-model.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
-import { LEVEL_COLORS, type ThinkingLevel } from "./variants.ts";
+
+type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
+
+const LEVEL_COLORS: Readonly<Record<ThinkingLevel, ThemeColor>> = {
+  off: "thinkingOff",
+  minimal: "thinkingMinimal",
+  low: "thinkingLow",
+  medium: "thinkingMedium",
+  high: "thinkingHigh",
+  xhigh: "thinkingXhigh",
+  max: "thinkingMax",
+};
 
 const GIT_STATUS_REFRESH_INTERVAL_MS = 30_000;
-const GIT_STATUS_TIMEOUT_MS = 5_000;
 const GIT_STATUS_WATCH_DEBOUNCE_MS = 250;
 /**
  * Minimum time between watch-triggered scans. KILLEROS_FOOTER_WATCH_INTERVAL_MS can only shorten it, so end-to-end
@@ -23,91 +30,11 @@ const GIT_STATUS_WATCH_DEBOUNCE_MS = 250;
 const watchIntervalOverride = Number(process.env.KILLEROS_FOOTER_WATCH_INTERVAL_MS);
 const GIT_STATUS_WATCH_INTERVAL_MS = Number.isSafeInteger(watchIntervalOverride) && watchIntervalOverride > 0
   ? Math.min(watchIntervalOverride, 5_000) : 5_000;
-export const colorDirectory = (text: string): string => `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 
-export interface GitFileChanges {
-  modified: number;
-  added: number;
-  deleted: number;
-}
-
-type GitStatusExecutor = (
-  file: string,
-  args: string[],
-  options: {
-    encoding: "utf8";
-    env: NodeJS.ProcessEnv;
-    maxBuffer: number;
-    timeout: number;
-    windowsHide: boolean;
-  },
-  callback: (error: Error | null, stdout: string) => void,
-) => unknown;
-
-/** Resolves changed-file counts without asking Git to inspect worktree content. */
-export async function resolveGitFileChanges(
-  cwd: string,
-  execute: GitStatusExecutor = execFile,
-  trusted = true,
-): Promise<GitFileChanges | undefined> {
-  if (!trusted) return undefined;
-  try {
-    const gitCommand = passiveGitCommand(cwd);
-    if (!gitCommand) return undefined;
-    const options = {
-      encoding: "utf8" as const,
-      env: passiveGitEnv(),
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: GIT_STATUS_TIMEOUT_MS,
-      windowsHide: hideGitConsole(),
-    };
-    const runAt = (directory: string): PassiveGitRunner => (args) => new Promise((resolve, reject) => {
-      execute(gitCommand, ["-C", directory, ...args], options, (error, stdout) => {
-        if (error) reject(error);
-        else resolve(Buffer.from(stdout));
-      });
-    });
-    const initialRunner = runAt(cwd);
-    const root = new TextDecoder("utf-8", { fatal: true }).decode(
-      await initialRunner(["rev-parse", "--path-format=absolute", "--show-toplevel"]),
-    ).trim();
-    if (!path.isAbsolute(root)) return undefined;
-    const snapshot = await inspectWorktreeWithoutFilters(root, runAt(root));
-    const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
-    const deletedObjectIds: string[] = [];
-    const addedObjectIds: string[] = [];
-    for (const file of snapshot.files.values()) {
-      if (!file.mode) {
-        changes.deleted += 1;
-        if (!file.indexMode && file.headObjectId) deletedObjectIds.push(file.headObjectId);
-      } else if (!file.headMode) {
-        changes.added += 1;
-        if (file.indexObjectId) addedObjectIds.push(file.indexObjectId);
-      } else changes.modified += 1;
-    }
-    for (const objectId of deletedObjectIds) {
-      const match = addedObjectIds.indexOf(objectId);
-      if (match < 0) continue;
-      addedObjectIds.splice(match, 1);
-      changes.deleted -= 1;
-      changes.added -= 1;
-      changes.modified += 1;
-    }
-    return changes;
-  } catch {
-    return undefined;
-  }
-}
-
-async function resolveUncommittedFileCount(cwd: string): Promise<number | undefined> {
-  const changes = await resolveGitFileChanges(cwd);
-  return changes && changes.modified + changes.added + changes.deleted;
-}
-
-function createGitRefresh<T>(
-  cwd: string,
-  onResult: (result: T | undefined) => void,
-  resolveResult: (cwd: string) => Promise<T | undefined>,
+/** Coalesces file-change scans to one active scan and one queued follow-up, and emits only successful results. */
+function createGitFileChangesRefresh(
+  resolveChanges: () => Promise<GitFileChanges | undefined>,
+  onChanges: (changes: GitFileChanges) => void,
 ): { request: () => void; dispose: () => void } {
   let disposed = false;
   let pending = false;
@@ -119,15 +46,9 @@ function createGitRefresh<T>(
       return;
     }
     pending = true;
-    let result: Promise<T | undefined>;
-    try {
-      result = resolveResult(cwd);
-    } catch {
-      result = Promise.resolve(undefined);
-    }
-    void result.then(
-      (value) => { if (!disposed) onResult(value); },
-      () => { if (!disposed) onResult(undefined); },
+    void resolveChanges().then(
+      (changes) => { if (!disposed && changes !== undefined) onChanges(changes); },
+      () => undefined,
     ).finally(() => {
       pending = false;
       if (!disposed && queued) {
@@ -143,26 +64,6 @@ function createGitRefresh<T>(
       queued = false;
     },
   };
-}
-
-/** Coalesces Git status requests to one active scan and one queued follow-up. */
-export function createGitStatusRefresh(
-  cwd: string,
-  onCount: (count: number | undefined) => void,
-  resolveCount: (cwd: string) => Promise<number | undefined> = resolveUncommittedFileCount,
-): { request: () => void; dispose: () => void } {
-  return createGitRefresh(cwd, onCount, resolveCount);
-}
-
-/** Coalesces file-change scans and emits only successful results. */
-export function createGitFileChangesRefresh(
-  cwd: string,
-  onChanges: (changes: GitFileChanges) => void,
-  resolveChanges: (cwd: string) => Promise<GitFileChanges | undefined> = resolveGitFileChanges,
-): { request: () => void; dispose: () => void } {
-  return createGitRefresh(cwd, (changes) => {
-    if (changes !== undefined) onChanges(changes);
-  }, resolveChanges);
 }
 
 type ScheduleFallback = (refresh: () => void, intervalMs: number) => () => void;
@@ -249,13 +150,8 @@ export function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
-export function contextPercentRemaining(ctx: ExtensionContext): number | null {
-  let usage: ReturnType<ExtensionContext["getContextUsage"]>;
-  try {
-    usage = ctx.getContextUsage();
-  } catch {
-    return null;
-  }
+export function contextPercentRemaining(ctx: Pick<ExtensionContext, "getContextUsage">): number | null {
+  const usage = readContextUsage(ctx);
   if (!usage || !Number.isFinite(usage.contextWindow) || usage.contextWindow <= 0) return null;
   if (usage.tokens === null || !Number.isFinite(usage.tokens)) return null;
 
@@ -294,14 +190,7 @@ export function formatContextProgress(
 
 function sumSessionCost(ctx: ExtensionContext): number {
   let total = 0;
-  for (const entry of ctx.sessionManager.getEntries()) {
-    if (entry.type === "message" && entry.message.role === "assistant") total += entry.message.usage.cost.total;
-    else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
-      total += entry.message.usage.cost.total;
-    } else if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
-      total += entry.usage.cost.total;
-    }
-  }
+  for (const entry of ctx.sessionManager.getEntries()) total += entryUsage(entry)?.cost.total ?? 0;
   return total;
 }
 
@@ -326,7 +215,7 @@ function formatProviderName(provider: string): string {
   return normalized.toLowerCase().split(/[-_]+/u).filter(Boolean).join(" ") || "unknown provider";
 }
 
-export function formatModel(
+function formatModel(
   model: ExtensionContext["model"],
   theme: Theme,
   includeProvider = true,
@@ -397,10 +286,9 @@ function formatGitFileChanges(changes: GitFileChanges, theme: Theme): string {
 export function registerFooter(
   pi: ExtensionAPI,
   goalRuntime: GoalRuntime,
-  settingsStore: KillerosSettingsStore = createKillerosSettingsStore(),
-): (preference: AutoCompactionPreference | undefined) => void {
+): (preference: { enabled: boolean } | undefined) => void {
   let autoCompactionEnabled: boolean | undefined;
-  const updatePreference = (preference: AutoCompactionPreference | undefined): void => {
+  const updatePreference = (preference: { enabled: boolean } | undefined): void => {
     autoCompactionEnabled = preference?.enabled;
     activeTui?.requestRender();
   };
@@ -425,16 +313,11 @@ export function registerFooter(
     }
     return cachedSessionCost;
   };
-  goalRuntime.requestRender = () => activeTui?.requestRender();
+  onGoalChange(goalRuntime, () => activeTui?.requestRender());
 
   pi.on("session_start", (_event, ctx) => {
     resetSessionCost();
     if (ctx.mode !== "tui") return;
-    try {
-      autoCompactionEnabled = readAutoCompactionPreference(settingsStore.load()).enabled;
-    } catch {
-      autoCompactionEnabled = undefined;
-    }
     unsubscribeCodexFast?.();
     unsubscribeCodexFast = subscribeCodexFast(() => activeTui?.requestRender());
     const sessionStart = Date.now();
@@ -445,11 +328,11 @@ export function registerFooter(
     ctx.ui.setFooter((tui, theme, footerData) => {
       activeTui = tui;
       let gitFileChanges: GitFileChanges | undefined;
-      const gitStatus = createGitFileChangesRefresh(ctx.cwd, (changes) => {
+      const gitStatus = createGitFileChangesRefresh(() => resolveGitFileChanges(ctx.cwd, ctx.isProjectTrusted()), (changes) => {
         if (JSON.stringify(changes) === JSON.stringify(gitFileChanges)) return;
         gitFileChanges = changes;
         tui.requestRender();
-      }, (cwd) => resolveGitFileChanges(cwd, execFile, ctx.isProjectTrusted()));
+      });
       const unsubscribe = footerData.onBranchChange(() => {
         gitStatus.request();
         tui.requestRender();
@@ -472,12 +355,7 @@ export function registerFooter(
           const level = model?.reasoning === false
             ? theme.fg("thinkingOff", "no reasoning")
             : theme.fg(LEVEL_COLORS[thinkingLevel], thinkingLevel);
-          let usage: ReturnType<ExtensionContext["getContextUsage"]>;
-          try {
-            usage = ctx.getContextUsage();
-          } catch {
-            usage = undefined;
-          }
+          const usage = readContextUsage(ctx);
           const contextWindow = validCapacity(usage?.contextWindow)
             ? usage.contextWindow : validCapacity(model?.contextWindow) ? model.contextWindow : Number.NaN;
           const contexts = (["full", "capacity", "percentage"] as const).map((detail) =>
@@ -538,7 +416,6 @@ export function registerFooter(
     unsubscribeCodexFast = undefined;
     resetSessionCost();
     activeTui = undefined;
-    goalRuntime.requestRender = undefined;
   });
   return updatePreference;
 }

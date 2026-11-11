@@ -5,6 +5,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { errorMessage } from "./errors.ts";
+import { lastAssistantMessage, wasAborted } from "./pi-context.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 import { createKillerosSettingsStore } from "./settings.ts";
 
@@ -18,12 +19,10 @@ export interface CompletionNotificationDependencies {
   ring(): void;
 }
 
-export const COMPLETION_BELL_GLYPH = "󰂚";
+const COMPLETION_BELL_GLYPH = "󰂚";
 
-export function createNotificationPreferenceStore(
-  settingsPath?: string,
-): NotificationPreferenceStore {
-  const settings = createKillerosSettingsStore(settingsPath);
+function createNotificationPreferenceStore(): NotificationPreferenceStore {
+  const settings = createKillerosSettingsStore();
   return {
     load: () => settings.load().completionSound === true,
     save: (enabled) => {
@@ -32,7 +31,7 @@ export function createNotificationPreferenceStore(
   };
 }
 
-export function formatNotificationTitle(
+function formatNotificationTitle(
   cwd: string,
   sessionName: string | undefined,
   enabled: boolean,
@@ -42,10 +41,18 @@ export function formatNotificationTitle(
   return safeTerminalText(enabled ? `${base} ${COMPLETION_BELL_GLYPH}` : base).replaceAll("\n", "");
 }
 
-export function registerCompletionNotifications(
+/** The completion sound preference and the terminal title that shows it. */
+interface CompletionNotifications {
+  /** Rewrites the terminal title; the shell header calls it because Pi resets the title after session binding. */
+  applyTitle: (ctx: ExtensionContext) => void;
+  /** Registers the /notification command and the request handlers that ring on settlement. */
+  register: () => void;
+}
+
+export function createCompletionNotifications(
   pi: ExtensionAPI,
   dependencies?: CompletionNotificationDependencies,
-): (ctx: ExtensionContext) => void {
+): CompletionNotifications {
   const runtime = dependencies ?? {
     store: createNotificationPreferenceStore(),
     ring: () => { process.stdout.write("\x07"); },
@@ -59,78 +66,75 @@ export function registerCompletionNotifications(
     ctx.ui.setTitle(formatNotificationTitle(ctx.cwd, pi.getSessionName(), enabled));
   };
 
-  pi.registerCommand("notification", {
-    description: "Configure the completion sound",
-    handler: async (_args, ctx) => {
-      if (ctx.mode !== "tui") {
-        ctx.ui.notify("/notification requires TUI mode", "error");
-        return;
-      }
-      const selected = await ctx.ui.select("Completion sound", [
-        enabled ? "On ← current" : "On",
-        enabled ? "Off" : "Off ← current",
-      ]);
-      if (!selected) return;
-      const nextEnabled = selected.startsWith("On");
+  const register = (): void => {
+    pi.registerCommand("notification", {
+      description: "Configure the completion sound",
+      handler: async (_args, ctx) => {
+        if (ctx.mode !== "tui") {
+          ctx.ui.notify("/notification requires TUI mode", "error");
+          return;
+        }
+        const selected = await ctx.ui.select("Completion sound", [
+          enabled ? "On ← current" : "On",
+          enabled ? "Off" : "Off ← current",
+        ]);
+        if (!selected) return;
+        const nextEnabled = selected.startsWith("On");
+        try {
+          runtime.store.save(nextEnabled);
+        } catch (error) {
+          ctx.ui.notify(`Completion sound setting could not be saved: ${errorMessage(error)}`, "error");
+          return;
+        }
+        enabled = nextEnabled;
+        applyTitle(ctx);
+        ctx.ui.notify(`Completion sound: ${enabled ? "On" : "Off"}`, "info");
+      },
+    });
+
+    pi.on("session_start", (_event, ctx) => {
+      requestPending = false;
+      lastStopReason = undefined;
+      if (ctx.mode !== "tui") return;
       try {
-        runtime.store.save(nextEnabled);
+        enabled = runtime.store.load();
       } catch (error) {
-        ctx.ui.notify(`Completion sound setting could not be saved: ${errorMessage(error)}`, "error");
-        return;
+        enabled = false;
+        ctx.ui.notify(`Completion sound settings could not be read: ${errorMessage(error)}`, "error");
       }
-      enabled = nextEnabled;
       applyTitle(ctx);
-      ctx.ui.notify(`Completion sound: ${enabled ? "On" : "Off"}`, "info");
-    },
-  });
+    });
 
-  pi.on("session_start", (_event, ctx) => {
-    requestPending = false;
-    lastStopReason = undefined;
-    if (ctx.mode !== "tui") return;
-    try {
-      enabled = runtime.store.load();
-    } catch (error) {
-      enabled = false;
-      ctx.ui.notify(`Completion sound settings could not be read: ${errorMessage(error)}`, "error");
-    }
-    applyTitle(ctx);
-  });
+    pi.on("session_info_changed", (_event, ctx) => applyTitle(ctx));
 
-  pi.on("session_info_changed", (_event, ctx) => applyTitle(ctx));
+    pi.on("agent_start", (_event, ctx) => {
+      if (ctx.mode !== "tui") return;
+      requestPending = true;
+      lastStopReason = undefined;
+    });
 
-  pi.on("agent_start", (_event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    requestPending = true;
-    lastStopReason = undefined;
-  });
+    pi.on("agent_end", (event, ctx) => {
+      if (ctx.mode !== "tui" || !requestPending) return;
+      lastStopReason = lastAssistantMessage(event.messages)?.stopReason;
+    });
 
-  pi.on("agent_end", (event, ctx) => {
-    if (ctx.mode !== "tui" || !requestPending) return;
-    lastStopReason = undefined;
-    for (let index = event.messages.length - 1; index >= 0; index -= 1) {
-      const message = event.messages[index];
-      if (message?.role !== "assistant") continue;
-      lastStopReason = message.stopReason;
-      break;
-    }
-  });
+    pi.on("agent_settled", (event, ctx) => {
+      if (!requestPending || ctx.mode !== "tui") return;
+      if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
+      requestPending = false;
+      if (!enabled || wasAborted(event) || lastStopReason === "aborted") return;
+      try {
+        runtime.ring();
+      } catch (error) {
+        ctx.ui.notify(`Completion sound failed: ${errorMessage(error)}`, "error");
+      }
+    });
 
-  pi.on("agent_settled", (event, ctx) => {
-    if (!requestPending || ctx.mode !== "tui") return;
-    if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
-    requestPending = false;
-    if (!enabled || "aborted" in event && event.aborted === true || lastStopReason === "aborted") return;
-    try {
-      runtime.ring();
-    } catch (error) {
-      ctx.ui.notify(`Completion sound failed: ${errorMessage(error)}`, "error");
-    }
-  });
+    pi.on("session_shutdown", () => {
+      requestPending = false;
+      lastStopReason = undefined;
+    });
+  };
 
-  pi.on("session_shutdown", () => {
-    requestPending = false;
-    lastStopReason = undefined;
-  });
-  return applyTitle;
+  return { applyTitle, register };
 }

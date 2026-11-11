@@ -20,6 +20,17 @@ export default [
     },
   },
   {
+    files: ["Killeros.ts", "killeros/**/*.ts"],
+    rules: {
+      // Pi runs extension handlers on its terminal thread, so a synchronous child process freezes the UI.
+      "no-restricted-imports": ["error", { paths: [{
+        name: "node:child_process",
+        importNames: ["execSync", "execFileSync", "spawnSync"],
+        message: "Start child processes asynchronously; a synchronous call freezes Pi's terminal.",
+      }] }],
+    },
+  },
+  {
     files: ["test/**/*.ts"],
     rules: {
       // node:test registration returns the runner-owned promise for every test block.

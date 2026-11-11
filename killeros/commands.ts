@@ -19,7 +19,7 @@ interface CommandInfo {
   syntaxHint?: string;
 }
 
-export interface SlashCommandToken {
+interface SlashCommandToken {
   name: string;
   start: number;
   end: number;
@@ -57,10 +57,8 @@ const BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
   { name: "quit", description: "Quit Pi" },
 ];
 
-const COMMAND_SYNTAX_HINTS: Readonly<Record<string, string>> = {
-  "auto-compact": "/auto-compact [status|on|off|<percent>]",
-  goal: "/goal [objective|pause|resume|clear]",
-  handoff: "/handoff [next-session focus]",
+/** Argument hints for Pi's own commands; KillerOS commands bring their hints from the modules that parse them. */
+const BUILTIN_SYNTAX_HINTS: Readonly<Record<string, string>> = {
   model: "/model [provider/model]",
   "scoped-models": "/scoped-models",
   login: "/login [provider]",
@@ -81,7 +79,7 @@ function safeCommandName(name: string): string | undefined {
   return safe === name && safe && !/[\s/]/u.test(safe) ? safe : undefined;
 }
 
-export function getSlashCommandPrefix(line: string): { prefix: string; slashIndex: number } | undefined {
+function getSlashCommandPrefix(line: string): { prefix: string; slashIndex: number } | undefined {
   const match = SLASH_COMMAND_PREFIX_PATTERN.exec(line);
   if (!match || match.index === undefined) return undefined;
   const prefix = match[1] ?? "";
@@ -107,7 +105,9 @@ function commandNameFromAutocompleteItem(item: AutocompleteItem): string {
 
 export function createSlashCommandResolver(
   pi: Pick<ExtensionAPI, "getCommands">,
+  extensionSyntaxHints: Readonly<Record<string, string>>,
 ): SlashCommandResolver {
+  const syntaxHints: Readonly<Record<string, string>> = { ...BUILTIN_SYNTAX_HINTS, ...extensionSyntaxHints };
   let fallbackCommands = new Map<string, string | undefined>();
 
   const getCommandCatalog = (baseSuggestions: readonly AutocompleteItem[] = []): ReadonlyMap<string, CommandInfo> => {
@@ -115,7 +115,7 @@ export function createSlashCommandResolver(
     BUILTIN_COMMANDS.forEach((command) => commands.set(command.name, {
       ...command,
       category: "Built-in",
-      syntaxHint: COMMAND_SYNTAX_HINTS[command.name],
+      syntaxHint: syntaxHints[command.name],
     }));
 
     for (const command of pi.getCommands()) {
@@ -132,7 +132,7 @@ export function createSlashCommandResolver(
           ? undefined
           : safeTerminalText(command.description).replaceAll("\n", " "),
         category,
-        syntaxHint: COMMAND_SYNTAX_HINTS[name],
+        syntaxHint: syntaxHints[name],
       });
     }
 
@@ -180,8 +180,8 @@ function scoreCommandMatch(name: string, prefix: string): number {
 
 export function registerSlashAutocomplete(
   pi: ExtensionAPI,
-  resolver: SlashCommandResolver = createSlashCommandResolver(pi),
-): SlashCommandResolver {
+  resolver: SlashCommandResolver,
+): void {
   const usage = new Map<string, number>();
   pi.on("session_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
@@ -243,5 +243,4 @@ export function registerSlashAutocomplete(
       },
     }));
   });
-  return resolver;
 }

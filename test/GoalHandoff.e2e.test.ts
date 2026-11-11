@@ -7,13 +7,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { parseGoalState } from "../killeros/goal-state.ts";
-import type { GoalState } from "../killeros/runtime.ts";
+import type { GoalState } from "../killeros/goal-model.ts";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { PiRpcProcess } from "./support/PiRpcProcess.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const options = { timeout: 40_000, skip: piRpcShutdownSkip };
+const options = { timeout: 40_000 };
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
 type RecordValue = Record<string, unknown>;

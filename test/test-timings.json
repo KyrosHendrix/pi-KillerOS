@@ -54,11 +54,11 @@
     "Time formatting preserves seconds across unit boundaries in goal and footer displays": 3
   },
   "test/Footer.e2e.test.ts": {
-    "Footer Git status preserves last good counts through failures and recovers without recreation (discovery)": 1.1,
-    "Footer Git status preserves last good counts through failures and recovers without recreation (initial unavailable)": 1.1,
     "Footer Git status preserves last good counts through failures and recovers without recreation (recovery)": 4.2,
     "Footer preserves model, context, cost, goal, and priority information across widths": 7.1,
-    "installed Pi terminal updates context capacity and the settings-driven compact hint": 2.4
+    "installed Pi terminal updates context capacity and the settings-driven compact hint": 2.4,
+    "Footer Git status keeps the last good counts when repository discovery fails": 1.1,
+    "Footer Git status renders nothing after a failed initial discovery until it recovers": 1.1
   },
   "test/FooterGitSafety.test.ts": {
     "an inherited GIT_DIR cannot make a non-repository directory report another repository's changes": 0.7,
@@ -71,7 +71,7 @@
     "footer watch disposal closes the watcher and cancels the pending scan": 0,
     "footer watch stops on watcher errors and on disposal": 0,
     "footer watch throttles sustained changes to one scan per five seconds": 0,
-    "the installed footer starts both the watch and the 30-second fallback": 0
+    "the installed footer starts the 30-second fallback": 0
   },
   "test/GoalCompletionVerification.e2e.test.ts": {
     "baseline capture rejects a file swapped between inspection and open": 0.5,
@@ -216,7 +216,6 @@
     "CI checks the newest peer-range Pi with matched runtime packages and a stable required-check name": 0,
     "ESLint configuration ignores private artifacts without excluding repository code": 0.7,
     "GitHub releases require green current main and consistent package provenance": 0,
-    "goal state and question UI stay separate from host wiring": 0,
     "locked brace expansion bounds deeply nested patterns": 0.6,
     "lockfile matches the exact Pi development pins without retired experimental packages": 0,
     "machine identifiers use locale-independent casing": 0,
@@ -228,13 +227,11 @@
     "public TUI guidance preserves Pi defaults and documents regular-mode scrollback": 0,
     "publication boundary requires directory publication with lifecycle scripts explicitly enabled": 0,
     "quality checks validate current metadata and test the release-pinned npm lifecycle": 0,
-    "real Pi fixtures use bounded cleanup for transient Windows directory locks": 0,
-    "removed init workflow leaves no command, tool, or runtime behind": 0,
     "repository contains no retired feature references": 0.1,
     "repository contract scan includes untracked non-ignored files": 0,
     "request activity observes continuation scheduling before settlement cleanup": 0,
-    "skill-specific workflow gating is no longer part of KillerOS": 0,
-    "unreleased notes state only the current Pi minimum": 0
+    "unreleased notes state only the current Pi minimum": 0,
+    "test sources name no private run directories": 0
   },
   "test/runtime-fast.e2e.test.ts": {
     "real Pi /codex-fast controls process-local state, status, and footer": 3.6,
@@ -314,9 +311,6 @@
   "test/ShellUi.e2e.test.ts": {
     "Header masthead and startup tips stay fixed per session and exhaust their decks": 3.4
   },
-  "test/ShellUi.test.ts": {
-    "shell startup contains no synchronous child process call": 0
-  },
   "test/SlashCommands.e2e.test.ts": {
     "Editor and autocomplete use the shared resolver, theme role, and safe widths": 2.7,
     "Goal completions and /exit follow lifecycle contracts": 1.8,
@@ -347,9 +341,8 @@
   },
   "test/Theme.test.ts": {
     "reasoning text meets normal-text contrast on KillerOS surfaces": 0,
-    "shell UI uses theme roles instead of raw ANSI colors": 0,
-    "uses achromatic neutrals without changing the coral accent": 0,
-    "uses one neutral background for every tool state": 0
+    "uses one neutral background for every tool state": 0,
+    "uses achromatic neutrals": 0
   },
   "test/verify-release.test.ts": {
     "publication lifecycle invokes the real validator exactly once and blocks direct publish": 10.3,

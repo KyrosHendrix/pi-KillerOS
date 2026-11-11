@@ -3,13 +3,14 @@ import {
   type SpawnOptionsWithStdioTuple,
 } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { errorMessage, reportError } from "./errors.ts";
-import { sameFileIdentity } from "./file-identity.ts";
+import { readUnlinkedFile, UnstableFileError } from "./file-identity.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
+import { isRecord } from "./guards.ts";
 
 type KillerosHookEvent = "tool_call" | "tool_result" | "agent_settled";
 
@@ -57,6 +58,7 @@ export interface ExecuteHookOptions {
 }
 
 const HOOK_EVENTS: readonly KillerosHookEvent[] = ["tool_call", "tool_result", "agent_settled"];
+const HOOK_CONFIG_FILE = "killeros-hooks.json";
 const HOOK_CONFIG_LIMIT = 64 * 1024;
 const HOOK_OUTPUT_LIMIT = 16 * 1024;
 const HOOK_PAYLOAD_LIMIT = 8_000;
@@ -66,52 +68,25 @@ const HOOK_TIMEOUT_MAX_MS = 300_000;
 // Reads executable project configuration through a bounded, project-local file descriptor.
 function readHookConfig(configPath: string, projectRoot: string): string {
   const actualPath = realpathSync(configPath);
-  const expectedPath = path.join(realpathSync(projectRoot), CONFIG_DIR_NAME, "killeros-hooks.json");
+  const expectedPath = path.join(realpathSync(projectRoot), CONFIG_DIR_NAME, HOOK_CONFIG_FILE);
   const samePath = actualPath.toLowerCase() === expectedPath.toLowerCase();
   if (!samePath) {
     throw new Error("Hook config must be stored in the real project .pi directory");
   }
 
-  const linkedFile = lstatSync(configPath, { bigint: true });
-  if (!linkedFile.isFile() || linkedFile.nlink !== 1n) {
-    throw new Error("Hook config must be a regular, non-linked file");
-  }
-  if (linkedFile.size > BigInt(HOOK_CONFIG_LIMIT)) {
-    throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
-  }
-
-  const descriptor = openSync(configPath, "r");
+  let read: ReturnType<typeof readUnlinkedFile>;
   try {
-    const openedFile = fstatSync(descriptor, { bigint: true });
-    if (!openedFile.isFile() || openedFile.nlink !== 1n) {
-      throw new Error("Hook config must be a regular, non-linked file");
-    }
-    if (!sameFileIdentity(openedFile, linkedFile)) {
-      throw new Error("Hook config changed while being opened");
-    }
-
-    const contents = Buffer.alloc(HOOK_CONFIG_LIMIT + 1);
-    let bytesRead = 0;
-    while (bytesRead < contents.length) {
-      const count = readSync(descriptor, contents, bytesRead, contents.length - bytesRead, null);
-      if (count === 0) break;
-      bytesRead += count;
-    }
-    if (bytesRead > HOOK_CONFIG_LIMIT) {
-      throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
-    }
-    return contents.toString("utf8", 0, bytesRead);
-  } finally {
-    closeSync(descriptor);
+    read = readUnlinkedFile(configPath, HOOK_CONFIG_LIMIT);
+  } catch (error) {
+    if (!(error instanceof UnstableFileError)) throw error;
+    throw new Error(error.reason === "changed" ? "Hook config changed while being opened" : "Hook config must be a regular, non-linked file");
   }
-}
-
-function isUnknownRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (read.truncated) throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
+  return read.content.toString("utf8");
 }
 
 function loadKillerosConfig(ctx: ExtensionContext): KillerosHookConfig {
-  const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "killeros-hooks.json");
+  const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, HOOK_CONFIG_FILE);
   if (!existsSync(configPath)) return {};
   const displayPath = safeTerminalText(configPath).replaceAll("\n", "");
   if (!ctx.isProjectTrusted()) {
@@ -121,9 +96,9 @@ function loadKillerosConfig(ctx: ExtensionContext): KillerosHookConfig {
 
   try {
     const parsed: unknown = JSON.parse(readHookConfig(configPath, ctx.cwd));
-    if (!isUnknownRecord(parsed)) throw new Error("Hook config must contain a JSON object");
+    if (!isRecord(parsed)) throw new Error("Hook config must contain a JSON object");
     const parsedHooks = parsed.hooks;
-    if (parsedHooks !== undefined && !isUnknownRecord(parsedHooks)) {
+    if (parsedHooks !== undefined && !isRecord(parsedHooks)) {
       throw new Error("Hook config hooks must contain a JSON object");
     }
 
@@ -133,7 +108,7 @@ function loadKillerosConfig(ctx: ExtensionContext): KillerosHookConfig {
       if (!Array.isArray(candidates)) continue;
       const accepted: KillerosHook[] = [];
       for (const [index, candidate] of candidates.entries()) {
-        if (!isUnknownRecord(candidate)) {
+        if (!isRecord(candidate)) {
           ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${displayPath}`, "warning");
           continue;
         }
@@ -170,7 +145,7 @@ function loadKillerosConfig(ctx: ExtensionContext): KillerosHookConfig {
 
     return { hooks };
   } catch (error) {
-    reportError(ctx, `Invalid ${CONFIG_DIR_NAME}/killeros-hooks.json`, error);
+    reportError(ctx, `Invalid ${CONFIG_DIR_NAME}/${HOOK_CONFIG_FILE}`, error);
     return {};
   }
 }
@@ -384,6 +359,19 @@ function hookFailureMessage(result: HookExecutionResult): string {
   return safeTerminalText(`Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}\n${detail}`);
 }
 
+function runHook(hook: KillerosHook, ctx: ExtensionContext, environment: Record<string, string>): Promise<HookExecutionResult> {
+  return executeHook({ command: hook.command, cwd: ctx.cwd, environment, timeoutMs: hook.timeoutMs, signal: ctx.signal });
+}
+
+/** Runs hooks that observe an event: failures are reported, and cancellation of the parent request stops the rest. */
+async function runObserverHooks(hooks: readonly KillerosHook[], ctx: ExtensionContext, environment: Record<string, string>): Promise<void> {
+  for (const hook of hooks) {
+    const result = await runHook(hook, ctx, environment);
+    if (result.cancelled) break;
+    if (result.code !== 0) ctx.ui.notify(hookFailureMessage(result), "error");
+  }
+}
+
 export function registerLifecycleHooks(pi: ExtensionAPI): void {
   let config: KillerosHookConfig = {};
   pi.on("session_start", (_event, ctx) => { config = loadKillerosConfig(ctx); });
@@ -391,14 +379,7 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     for (const hook of config.hooks?.tool_call ?? []) {
       if (!matchesHook(hook, event.toolName)) continue;
-      const result = await executeHook({
-        command: hook.command,
-        cwd: ctx.cwd,
-        environment: hookEnvironment("tool_call", event.toolName, event.input),
-        timeoutMs: hook.timeoutMs,
-        spawnProcess: spawn,
-        signal: ctx.signal,
-      });
+      const result = await runHook(hook, ctx, hookEnvironment("tool_call", event.toolName, event.input));
       if (result.cancelled) return { block: true, reason: "Hook cancelled because the parent request was aborted" };
       if (result.code !== 0) {
         const reason = hookFailureMessage(result);
@@ -409,36 +390,13 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", async (event, ctx) => {
-    for (const hook of config.hooks?.tool_result ?? []) {
-      if (!matchesHook(hook, event.toolName)) continue;
-      const result = await executeHook({
-        command: hook.command,
-        cwd: ctx.cwd,
-        environment: hookEnvironment("tool_result", event.toolName, {
-          input: event.input,
-          isError: event.isError,
-        }),
-        timeoutMs: hook.timeoutMs,
-        spawnProcess: spawn,
-        signal: ctx.signal,
-      });
-      if (result.cancelled) break;
-      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(result), "error");
-    }
+    const hooks = (config.hooks?.tool_result ?? []).filter((hook) => matchesHook(hook, event.toolName));
+    if (hooks.length === 0) return;
+    await runObserverHooks(hooks, ctx, hookEnvironment("tool_result", event.toolName, { input: event.input, isError: event.isError }));
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
-    for (const hook of config.hooks?.agent_settled ?? []) {
-      const result = await executeHook({
-        command: hook.command,
-        cwd: ctx.cwd,
-        environment: hookEnvironment("agent_settled"),
-        timeoutMs: hook.timeoutMs,
-        spawnProcess: spawn,
-        signal: ctx.signal,
-      });
-      if (result.cancelled) break;
-      if (result.code !== 0) ctx.ui.notify(hookFailureMessage(result), "error");
-    }
+    const hooks = config.hooks?.agent_settled ?? [];
+    if (hooks.length > 0) await runObserverHooks(hooks, ctx, hookEnvironment("agent_settled"));
   });
 }

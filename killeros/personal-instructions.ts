@@ -1,39 +1,22 @@
-import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { sameFileIdentity } from "./file-identity.ts";
+import { readUnlinkedFile } from "./file-identity.ts";
 
 const PERSONAL_INSTRUCTIONS_FILE = "AGENTS.local.md";
 const PERSONAL_INSTRUCTIONS_LIMIT = 32 * 1024;
 
-function readBoundedText(filePath: string, limit = PERSONAL_INSTRUCTIONS_LIMIT): string | undefined {
-  let descriptor: number | undefined;
+/** Reads the project instructions file, keeping the first `limit` bytes of an oversized file with a truncation note. */
+function readBoundedText(filePath: string): string | undefined {
   try {
-    const pathStat = lstatSync(filePath, { bigint: true });
-    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n) return undefined;
-    descriptor = openSync(filePath, "r");
-    const openedStat = fstatSync(descriptor, { bigint: true });
-    if (!openedStat.isFile() || openedStat.nlink !== 1n || !sameFileIdentity(openedStat, pathStat)) return undefined;
-    const buffer = Buffer.alloc(limit + 1);
-    const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
-    const decoder = new StringDecoder("utf8");
-    const content = decoder.write(buffer.subarray(0, Math.min(bytesRead, limit)));
-    if (!content.trim()) return undefined;
-    return bytesRead > limit
-      ? `${content}\n\n[Personal instructions truncated by KillerOS]`
-      : content;
+    const { content, truncated } = readUnlinkedFile(filePath, PERSONAL_INSTRUCTIONS_LIMIT);
+    const text = new StringDecoder("utf8").write(content);
+    if (!text.trim()) return undefined;
+    return truncated ? `${text}\n\n[Personal instructions truncated by KillerOS]` : text;
   } catch {
     return undefined;
-  } finally {
-    if (descriptor !== undefined) {
-      try {
-        closeSync(descriptor);
-      } catch {
-        // Ignore cleanup failures after a bounded best-effort read.
-      }
-    }
   }
 }
 
@@ -47,7 +30,6 @@ function pathInside(root: string, candidate: string): boolean {
 
 /** Reads one stable, unlinked import from inside Pi's agent directory. */
 function readImportedText(filePath: string): string | undefined {
-  let descriptor: number | undefined;
   try {
     const allowedPath = path.resolve(getAgentDir());
     const requestedPath = path.resolve(filePath);
@@ -63,31 +45,16 @@ function readImportedText(filePath: string): string | undefined {
       if (lstatSync(current).isSymbolicLink()) return undefined;
     }
 
-    const pathStat = lstatSync(requestedPath, { bigint: true });
-    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n) return undefined;
-    descriptor = openSync(requestedPath, "r");
-    const openedStat = fstatSync(descriptor, { bigint: true });
-    if (!openedStat.isFile() || openedStat.nlink !== 1n || !sameFileIdentity(openedStat, pathStat)) return undefined;
-
-    const buffer = Buffer.alloc(PERSONAL_INSTRUCTIONS_LIMIT + 1);
-    const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
-    if (bytesRead > PERSONAL_INSTRUCTIONS_LIMIT) return undefined;
-    const content = new StringDecoder("utf8").write(buffer.subarray(0, bytesRead));
-    return content.trim() ? content : undefined;
+    const { content, truncated } = readUnlinkedFile(requestedPath, PERSONAL_INSTRUCTIONS_LIMIT);
+    if (truncated) return undefined;
+    const text = new StringDecoder("utf8").write(content);
+    return text.trim() ? text : undefined;
   } catch {
     return undefined;
-  } finally {
-    if (descriptor !== undefined) {
-      try {
-        closeSync(descriptor);
-      } catch {
-        // Ignore cleanup failures after rejecting or reading an import.
-      }
-    }
   }
 }
 
-export function resolvePersonalInstructions(cwd: string): string | undefined {
+function resolvePersonalInstructions(cwd: string): string | undefined {
   const local = readBoundedText(path.join(cwd, PERSONAL_INSTRUCTIONS_FILE));
   if (!local) return undefined;
 

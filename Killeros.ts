@@ -1,26 +1,26 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerRequestActivity } from "./killeros/activity.ts";
-import { registerAutoCompaction } from "./killeros/auto-compaction.ts";
+import { AUTO_COMPACT_COMMAND_SYNTAX, registerAutoCompaction } from "./killeros/auto-compaction.ts";
 import {
   createSlashCommandResolver,
   registerAliases,
   registerSlashAutocomplete,
 } from "./killeros/commands.ts";
 import { registerFooter } from "./killeros/footer.ts";
+import { GOAL_COMMAND_SYNTAX, registerGoalCommand } from "./killeros/goal-command.ts";
 import { registerGoalInterface } from "./killeros/goal-interface.ts";
 import { registerGoalRuntime } from "./killeros/goal-runtime.ts";
 import { registerGoalSettlement } from "./killeros/goal-settlement.ts";
-import { registerHandoff } from "./killeros/handoff.ts";
+import { HANDOFF_COMMAND_SYNTAX, registerHandoff } from "./killeros/handoff.ts";
 import { registerLifecycleHooks } from "./killeros/hooks.ts";
 import {
-  registerCompletionNotifications,
+  createCompletionNotifications,
   type CompletionNotificationDependencies,
 } from "./killeros/notifications.ts";
 import { registerCodexFastMode } from "./killeros/codex-fast.ts";
 import { registerPersonalInstructions } from "./killeros/personal-instructions.ts";
 import { registerQuestionTool } from "./killeros/question.ts";
-import { createGoalRuntime } from "./killeros/runtime.ts";
-import { createKillerosSettingsStore } from "./killeros/settings.ts";
+import { createGoalRuntime } from "./killeros/goal-model.ts";
 import { registerShellUi } from "./killeros/shell-ui.ts";
 import { registerWorkedFor } from "./killeros/worked-for.ts";
 
@@ -35,23 +35,27 @@ export interface KillerosOptions {
 export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}): void {
   if (process.platform !== "win32") throw new Error("KillerOS supports Windows only.");
   const goalRuntime = createGoalRuntime();
-  const commandResolver = createSlashCommandResolver(pi);
-  let refreshTitle: ReturnType<typeof registerCompletionNotifications> | undefined;
-  registerShellUi(pi, commandResolver, (ctx) => refreshTitle?.(ctx));
+  const commandResolver = createSlashCommandResolver(pi, {
+    "auto-compact": AUTO_COMPACT_COMMAND_SYNTAX,
+    goal: GOAL_COMMAND_SYNTAX,
+    handoff: HANDOFF_COMMAND_SYNTAX,
+  });
+  const completionNotifications = createCompletionNotifications(pi, options.completionNotifications);
+  registerShellUi(pi, commandResolver, completionNotifications.applyTitle);
   registerGoalInterface(pi, goalRuntime);
+  registerGoalCommand(pi, goalRuntime);
   registerGoalRuntime(pi, goalRuntime);
   registerPersonalInstructions(pi);
   registerQuestionTool(pi);
   registerAliases(pi);
   registerHandoff(pi, goalRuntime, options.handoffMaxTokens);
   registerSlashAutocomplete(pi, commandResolver);
-  const settingsStore = createKillerosSettingsStore();
-  const updateFooterPreference = registerFooter(pi, goalRuntime, settingsStore);
+  const updateFooterPreference = registerFooter(pi, goalRuntime);
   registerCodexFastMode(pi);
   registerLifecycleHooks(pi);
   registerWorkedFor(pi);
   const goalCompaction = registerGoalSettlement(pi, goalRuntime);
-  registerAutoCompaction(pi, { goal: goalCompaction, settingsStore, onPreferenceChange: updateFooterPreference });
+  registerAutoCompaction(pi, { goal: goalCompaction, onPreferenceChange: updateFooterPreference });
   registerRequestActivity(pi);
-  refreshTitle = registerCompletionNotifications(pi, options.completionNotifications);
+  completionNotifications.register();
 }
