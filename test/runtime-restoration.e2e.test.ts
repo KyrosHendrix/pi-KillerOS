@@ -6,7 +6,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { PiRpcProcess } from "./support/PiRpcProcess.ts";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -26,7 +25,7 @@ type ToolTraceEvent =
   | { kind: "question-result"; toolName: "question"; isError: true };
 
 test("installed Pi restores saved tools without reviving goals", {
-  timeout: 90_000, skip: piRpcShutdownSkip,
+  timeout: 90_000,
 }, async (t) => {
   const directory = mkdtempSync(path.join(root, "node_modules/.killeros-restore-"));
   const cwd = path.join(directory, "project");

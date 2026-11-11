@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   CustomEditor,
@@ -16,15 +15,13 @@ import {
   type EditorTheme,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { formatCwd, modelDisplayName, padRight } from "./display.ts";
-import { colorDirectory } from "./footer.ts";
+import { colorDirectory, formatCwd, modelDisplayName, padRight } from "./display.ts";
 import {
-  createSlashCommandResolver,
   findSlashCommandTokens,
   type SlashCommandResolver,
 } from "./commands.ts";
 import { reportError } from "./errors.ts";
-import { hideGitConsole, passiveGitCommand, passiveGitEnv } from "./passive-git-status.ts";
+import { resolveGitBranch } from "./passive-git-status.ts";
 
 function readPackageVersion(path: string | URL): string | undefined {
   try {
@@ -67,39 +64,6 @@ const EDITOR_SUGGESTIONS = [
   'Try "draft an implementation plan for <feature>"',
 ] as const;
 
-/** Resolves the current branch with passive Git, or undefined for an untrusted project, no safe Git binary, or a failed lookup. */
-export function resolveGitBranch(cwd: string, trusted = true): Promise<string | undefined> {
-  if (!trusted) return Promise.resolve(undefined);
-  let gitCommand: string | undefined;
-  try {
-    gitCommand = passiveGitCommand(cwd);
-  } catch {
-    return Promise.resolve(undefined);
-  }
-  if (!gitCommand) return Promise.resolve(undefined);
-  return new Promise((resolve) => {
-    execFile(
-      gitCommand,
-      ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
-      {
-        encoding: "utf8",
-        env: passiveGitEnv(),
-        maxBuffer: 64 * 1024,
-        timeout: 5_000,
-        windowsHide: hideGitConsole(),
-      },
-      (error, stdout) => {
-        if (error) {
-          resolve(undefined);
-          return;
-        }
-        const branch = stdout.trim();
-        resolve(branch ? branch === "HEAD" ? "detached" : branch : undefined);
-      },
-    );
-  });
-}
-
 function shuffledDeck(values: readonly string[]): string[] {
   const deck = [...values];
   for (let index = deck.length - 1; index > 0; index -= 1) {
@@ -134,11 +98,11 @@ class PiStartupHeader {
   private readonly ctx: ExtensionContext;
   private readonly tip: string;
   private readonly tui: TUI;
-  private readonly refreshTitle: ((ctx: ExtensionContext) => void) | undefined;
+  private readonly refreshTitle: (ctx: ExtensionContext) => void;
   private branch: string | undefined;
   private disposed = false;
 
-  constructor(pi: ExtensionAPI, ctx: ExtensionContext, tip: string, tui: TUI, refreshTitle?: (ctx: ExtensionContext) => void) {
+  constructor(pi: ExtensionAPI, ctx: ExtensionContext, tip: string, tui: TUI, refreshTitle: (ctx: ExtensionContext) => void) {
     this.pi = pi;
     this.ctx = ctx;
     this.tip = tip;
@@ -158,7 +122,7 @@ class PiStartupHeader {
 
   render(width: number): string[] {
     // Pi resets the terminal title after session binding, before the next render.
-    if (!this.disposed) this.refreshTitle?.(this.ctx);
+    if (!this.disposed) this.refreshTitle(this.ctx);
     if (width <= 0) return [];
     const theme = this.ctx.ui.theme;
     if (width < 28) return [truncateToWidth(theme.fg("text", theme.bold("KillerOS")), width, "")];
@@ -228,7 +192,7 @@ function extractTerminalSequence(text: string, position: number): { code: string
 }
 
 /** Styles valid slash-command tokens while preserving embedded terminal control sequences. */
-export function highlightSlashCommands(
+function highlightSlashCommands(
   line: string,
   isValidCommand: (name: string) => boolean,
   styleCommand: (token: string) => string,
@@ -385,8 +349,8 @@ let killerosEditorFactory: ReturnType<ExtensionContext["ui"]["getEditorComponent
 
 export function registerShellUi(
   pi: ExtensionAPI,
-  commandResolver: SlashCommandResolver = createSlashCommandResolver(pi),
-  refreshTitle?: (ctx: ExtensionContext) => void,
+  commandResolver: SlashCommandResolver,
+  refreshTitle: (ctx: ExtensionContext) => void,
 ): void {
   let activeHeader: PiStartupHeader | undefined;
 

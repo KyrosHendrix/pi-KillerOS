@@ -6,7 +6,6 @@ import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { PiRpcProcess } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
@@ -130,7 +129,7 @@ function stringField(value: RecordValue, key: string): string {
   return field;
 }
 
-test("real Pi /codex-fast controls process-local state, status, and footer", { timeout: 240_000, skip: piRpcShutdownSkip }, async (t: TestContext) => {
+test("real Pi /codex-fast controls process-local state, status, and footer", { timeout: 240_000 }, async (t: TestContext) => {
   const family = createFamily(repositoryRoot, "local");
   const provider = new FastProvider();
   const oneShotResults: RecordValue = {};

@@ -23,7 +23,7 @@ A Windows terminal UI for the [Pi coding agent](https://github.com/earendil-work
 
 ## Install
 
-KillerOS supports Windows only. Requires native Windows Node.js 26.13.0 or later within Node 26 and Pi 1.5.0 or later below 2.0.0. Users on older Node or Pi versions must upgrade.
+KillerOS supports Windows only. Requires native Windows Node.js 26.13.0 or later within Node 26 and Pi 1.5.2 or later below 2.0.0. Users on older Node or Pi versions must upgrade.
 
 ```bash
 pi install npm:killeros
@@ -36,7 +36,7 @@ Run `/login` if needed, then start a conversation.
 <summary>GitHub install and version pinning</summary>
 
 - GitHub: `pi install git:github.com/KyrosHendrix/pi-KillerOS`.
-- Pin a version: `npm:killeros@4.0.0` or `git:github.com/KyrosHendrix/pi-KillerOS@v4.0.0`.
+- Pin a version: `npm:killeros@4.0.1` or `git:github.com/KyrosHendrix/pi-KillerOS@v4.0.1`.
 - Add `-l` for a project-only install.
 
 </details>

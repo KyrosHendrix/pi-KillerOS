@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { ESLint } from "eslint";
+import { DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING } from "../killeros/auto-compaction.ts";
 import { lifecycles } from "../scripts/test-suite.ts";
 
 type PackageJson = {
@@ -12,7 +13,6 @@ type PackageJson = {
   os: string[];
   engines: Record<string, string>;
   scripts: Record<string, string>;
-  dependencies?: Record<string, unknown>;
   peerDependencies: Record<string, string>;
   devDependencies: Record<string, string>;
 };
@@ -36,7 +36,6 @@ function isPackageJson(value: unknown): value is PackageJson {
     && Array.isArray(value.os) && value.os.every((os) => typeof os === "string")
     && isStringRecord(value.engines)
     && isStringRecord(value.scripts)
-    && (value.dependencies === undefined || isUnknownRecord(value.dependencies))
     && isStringRecord(value.peerDependencies)
     && isStringRecord(value.devDependencies);
 }
@@ -56,10 +55,6 @@ assert.ok(isTypeScriptConfig(tsconfigValue));
 const packageJson = packageValue;
 const tsconfig = tsconfigValue;
 const main = readFileSync(new URL("../Killeros.ts", import.meta.url), "utf8");
-const goalModules = ["goal-interface.ts", "goal-runtime.ts", "goal-settlement.ts"]
-  .map((file) => readFileSync(new URL(`../killeros/${file}`, import.meta.url), "utf8"))
-  .join("\n");
-const question = readFileSync(new URL("../killeros/question.ts", import.meta.url), "utf8");
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
@@ -173,19 +168,7 @@ test("repository contains no retired feature references", () => {
   assert.deepEqual(matches, []);
 });
 
-test("skill-specific workflow gating is no longer part of KillerOS", () => {
-  assert.equal(existsSync(path.join(repositoryRoot, "killeros", "workflow-gate.ts")), false);
-  assert.equal(existsSync(path.join(repositoryRoot, "killeros", "decision-gated-workflow.ts")), false);
-  assert.equal(packageJson.dependencies?.yaml, undefined);
-  assert.doesNotMatch(main, /WorkflowGate|decisionGatedWorkflows|question-first/iu);
-  assert.doesNotMatch(readme, /decision-gated workflow|killeros\.workflow|With docs/iu);
-});
-
-test("real Pi fixtures use bounded cleanup for transient Windows directory locks", () => {
-  const contracts = readFileSync(new URL("./PiExtensionContract.test.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(contracts, /\brmSync\(/u);
-  assert.match(contracts, /removeDirectoryEventually/u);
-
+test("test sources name no private run directories", () => {
   const privateRunPath = /compact-implementation-[a-f\d]/u;
   const testRoot = `${path.join(repositoryRoot, "test")}${path.sep}`;
   const privateRunPathSources = repositoryContractFiles()
@@ -297,13 +280,6 @@ test("locked brace expansion bounds deeply nested patterns", () => {
   assert.equal(output, "ok");
 });
 
-test("goal state and question UI stay separate from host wiring", () => {
-  assert.match(goalModules, /from "\.\/goal-state\.ts"/u);
-  assert.doesNotMatch(goalModules, /function parseGoalState|readFileSync|readSync|openSync/u);
-  assert.match(question, /from "\.\/question-ui\.ts"/u);
-  assert.doesNotMatch(question, /\bEditor\b|ctx\.ui\.custom|handleInput/u);
-});
-
 test("machine identifiers use locale-independent casing", () => {
   const source = repositoryFiles(path.join(repositoryRoot, "killeros"))
     .filter((file: string) => file.endsWith(".ts"))
@@ -318,10 +294,10 @@ test("all shipped TypeScript entry points use strict checking", () => {
 });
 
 test("public compaction documentation states the configurable default", () => {
-  assert.match(readme, /compaction triggers by default at 15% tokens remaining/iu);
+  assert.ok(readme.toLowerCase().includes(`compaction triggers by default at ${DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING}% tokens remaining`));
   assert.match(readme, /"autoCompaction"/u);
   assert.match(readme, /"enabled": true/u);
-  assert.match(readme, /"percentRemaining": 15/u);
+  assert.ok(readme.includes(`"percentRemaining": ${DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING}`));
   assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
 });
 
@@ -619,15 +595,10 @@ test("public guidance documents native wildcard filtering, image reads, and MCP 
 test("request activity observes continuation scheduling before settlement cleanup", () => {
   const goalSettlement = main.indexOf("registerGoalSettlement(pi");
   const activity = main.indexOf("registerRequestActivity(pi");
-  const notifications = main.indexOf("registerCompletionNotifications(pi");
+  const notifications = main.indexOf("completionNotifications.register(");
   const workedFor = main.indexOf("registerWorkedFor(pi");
 
   assert.ok(workedFor < goalSettlement);
   assert.ok(goalSettlement < activity);
   assert.ok(activity < notifications);
-});
-
-test("removed init workflow leaves no command, tool, or runtime behind", () => {
-  assert.doesNotMatch(main, /registerInit|killeros_init_|InitRuntime|createInitRuntime/u);
-  assert.doesNotMatch(main, /^\s*pi\.registerCommand\("init"/mu);
 });

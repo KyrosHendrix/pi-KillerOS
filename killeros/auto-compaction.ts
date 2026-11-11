@@ -7,14 +7,18 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { errorMessage } from "./errors.ts";
-import { GOAL_CONTINUATION_TYPE } from "./goal-runtime.ts";
-import { createKillerosSettingsStore, type KillerosSettingsStore } from "./settings.ts";
+import { GOAL_CONTINUATION_TYPE } from "./goal-model.ts";
+import { isAutomationMode, readContextUsage, wasAborted } from "./pi-context.ts";
+import { createKillerosSettingsStore } from "./settings.ts";
+import { isRecord } from "./guards.ts";
 
 export const DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING = 15;
-export const AUTO_COMPACTION_MESSAGE_TYPE = "killeros-auto-compaction";
-export const AUTO_COMPACTION_MESSAGE = "Continue the interrupted task from the compacted context.";
+/** Shown by slash-command autocomplete next to /auto-compact. */
+export const AUTO_COMPACT_COMMAND_SYNTAX = "/auto-compact [status|on|off|<percent>]";
+const AUTO_COMPACTION_MESSAGE_TYPE = "killeros-auto-compaction";
+const AUTO_COMPACTION_MESSAGE = "Continue the interrupted task from the compacted context.";
 /** Pi's exact rejection when a session has no eligible history to summarize; an expected skip, not a failure. */
-export const SESSION_TOO_SMALL_COMPACTION_ERROR = "Nothing to compact (session too small)";
+const SESSION_TOO_SMALL_COMPACTION_ERROR = "Nothing to compact (session too small)";
 
 export interface AutoCompactionPreference {
   enabled: boolean;
@@ -31,12 +35,10 @@ export interface AutoCompactionGoalHandlers {
   onSkipped(ctx: ExtensionContext): void;
 }
 
-export interface AutoCompactionDependencies {
-  loadPreference?: (ctx: ExtensionContext) => AutoCompactionPreference;
-  getCompactionSettings?: (ctx: ExtensionContext) => CompactionSettings;
-  settingsStore?: KillerosSettingsStore;
-  onPreferenceChange?: (preference: AutoCompactionPreference | undefined) => void;
-  goal?: AutoCompactionGoalHandlers;
+interface AutoCompactionDependencies {
+  /** Receives the current preference, or undefined when killeros.json cannot be read. */
+  onPreferenceChange: (preference: AutoCompactionPreference | undefined) => void;
+  goal: AutoCompactionGoalHandlers;
 }
 
 type AutoCompactionRequest = {
@@ -50,11 +52,7 @@ type AutoCompactionRequest = {
   goal: false;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-export function readAutoCompactionPreference(
+function readAutoCompactionPreference(
   settings: Readonly<Record<string, unknown>>,
 ): AutoCompactionPreference {
   const raw = isRecord(settings.autoCompaction) ? settings.autoCompaction : {};
@@ -70,11 +68,7 @@ export function readAutoCompactionPreference(
   };
 }
 
-function defaultPreference(store: KillerosSettingsStore): AutoCompactionPreference {
-  return readAutoCompactionPreference(store.load());
-}
-
-function defaultCompactionSettings(ctx: ExtensionContext): CompactionSettings {
+function compactionSettings(ctx: ExtensionContext): CompactionSettings {
   return SettingsManager.create(ctx.cwd, getAgentDir(), {
     projectTrusted: ctx.isProjectTrusted(),
   }).getCompactionSettings();
@@ -87,46 +81,58 @@ function reserveTokens(settings: Pick<CompactionSettings, "reserveTokens">): num
 }
 
 /** Matches only Pi's exact rejection text on a real Error; near-matches and stringified values stay failures. */
-export function isSessionTooSmallCompactionError(error: unknown): boolean {
+function isSessionTooSmallCompactionError(error: unknown): boolean {
   return error instanceof Error && error.message === SESSION_TOO_SMALL_COMPACTION_ERROR;
 }
 
-/** Triggers at the stricter of the user's percentage and Pi's token reserve. */
-export function shouldTriggerAutoCompaction(
+/** Whether remaining context is at or below the stricter of the user's percentage and Pi's token reserve; undefined without a usable reading. */
+function isAtThreshold(
   usage: Pick<ContextUsage, "tokens" | "contextWindow"> | undefined,
   preference: AutoCompactionPreference,
-  compactionSettings: Pick<CompactionSettings, "enabled" | "reserveTokens">,
-): boolean {
-  if (!preference.enabled || !compactionSettings.enabled || usage?.tokens === undefined || usage.tokens === null) {
-    return false;
-  }
-  if (!Number.isFinite(usage.tokens) || !Number.isFinite(usage.contextWindow) || usage.contextWindow <= 0) {
-    return false;
-  }
-  const remainingTokens = usage.contextWindow - usage.tokens;
-  const threshold = Math.max(
-    usage.contextWindow * preference.percentRemaining / 100,
-    reserveTokens(compactionSettings),
-  );
-  return remainingTokens <= threshold;
+  settings: Pick<CompactionSettings, "reserveTokens">,
+): boolean | undefined {
+  if (usage?.tokens === undefined || usage.tokens === null || !Number.isFinite(usage.tokens)
+    || !Number.isFinite(usage.contextWindow) || usage.contextWindow <= 0) return undefined;
+  const threshold = Math.max(usage.contextWindow * preference.percentRemaining / 100, reserveTokens(settings));
+  return usage.contextWindow - usage.tokens <= threshold;
 }
 
-function supportedMode(ctx: ExtensionContext): boolean {
-  return ctx.mode === "tui" || ctx.mode === "rpc";
+function shouldTriggerAutoCompaction(
+  usage: Pick<ContextUsage, "tokens" | "contextWindow"> | undefined,
+  preference: AutoCompactionPreference,
+  settings: Pick<CompactionSettings, "enabled" | "reserveTokens">,
+): boolean {
+  return preference.enabled && settings.enabled === true && isAtThreshold(usage, preference, settings) === true;
+}
+
+function describePreference(preference: AutoCompactionPreference): string {
+  return preference.enabled
+    ? `Automatic compaction: on at ${preference.percentRemaining}% remaining`
+    : `Automatic compaction: off (threshold ${preference.percentRemaining}%)`;
 }
 
 export function registerAutoCompaction(
   pi: ExtensionAPI,
-  dependencies: AutoCompactionDependencies = {},
+  { onPreferenceChange, goal: goalHandlers }: AutoCompactionDependencies,
 ): void {
-  const settingsStore = dependencies.settingsStore ?? createKillerosSettingsStore();
-  const loadPreference = dependencies.loadPreference ?? (() => defaultPreference(settingsStore));
-  const getCompactionSettings = dependencies.getCompactionSettings ?? defaultCompactionSettings;
+  const settingsStore = createKillerosSettingsStore();
   let request: AutoCompactionRequest | undefined;
   let goalRequestOwned = false;
   let armed = true;
   let rearmOnNextLogicalRequest = false;
   let settingsErrorReported = false;
+
+  /** Reads the saved preference and publishes it, or publishes undefined and rethrows when killeros.json cannot be read. */
+  const loadPreference = (): AutoCompactionPreference => {
+    try {
+      const preference = readAutoCompactionPreference(settingsStore.load());
+      onPreferenceChange(preference);
+      return preference;
+    } catch (error) {
+      onPreferenceChange(undefined);
+      throw error;
+    }
+  };
 
   const resetForLifecycle = (): void => {
     request = undefined;
@@ -142,13 +148,8 @@ export function registerAutoCompaction(
       const argument = args.trim();
       if (!argument || argument === "status") {
         try {
-          const preference = readAutoCompactionPreference(settingsStore.load());
-          dependencies.onPreferenceChange?.(preference);
-          ctx.ui.notify(preference.enabled
-            ? `Automatic compaction: on at ${preference.percentRemaining}% remaining`
-            : `Automatic compaction: off (threshold ${preference.percentRemaining}%)`, "info");
+          ctx.ui.notify(describePreference(loadPreference()), "info");
         } catch (error) {
-          dependencies.onPreferenceChange?.(undefined);
           ctx.ui.notify(`Automatic compaction setting could not be read: ${errorMessage(error)}`, "error");
         }
         return;
@@ -170,11 +171,9 @@ export function registerAutoCompaction(
           return { autoCompaction: updated };
         });
         if (!updated) throw new Error("Settings update did not apply the preference");
-        dependencies.onPreferenceChange?.(updated);
+        onPreferenceChange(updated);
         ctx.ui.notify(percent === undefined
-          ? updated.enabled
-            ? `Automatic compaction: on at ${updated.percentRemaining}% remaining`
-            : `Automatic compaction: off (threshold ${updated.percentRemaining}%)`
+          ? describePreference(updated)
           : `Automatic compaction threshold: ${percent}% remaining (${updated.enabled ? "on" : "off"})`, "info");
       } catch (error) {
         ctx.ui.notify(`Automatic compaction setting could not be saved: ${errorMessage(error)}`, "error");
@@ -188,9 +187,9 @@ export function registerAutoCompaction(
 
   const finishFailure = (ctx: ExtensionContext, goal: boolean, error: unknown): void => {
     request = undefined;
-    if (goal && dependencies.goal) {
+    if (goal) {
       try {
-        dependencies.goal.onFailed(ctx, error);
+        goalHandlers.onFailed(ctx, error);
       } catch (callbackError) {
         notifyFailure(ctx, callbackError);
       }
@@ -205,7 +204,7 @@ export function registerAutoCompaction(
     armed = true;
     if (!goal) return;
     try {
-      dependencies.goal?.onSkipped(ctx);
+      goalHandlers.onSkipped(ctx);
     } catch (callbackError) {
       notifyFailure(ctx, callbackError);
     }
@@ -248,13 +247,13 @@ export function registerAutoCompaction(
 
   pi.on("agent_start", (_event, ctx) => {
     // Terminal decisions clear active status before turn_end, but still own this run.
-    goalRequestOwned = dependencies.goal?.isActive(ctx) === true;
+    goalRequestOwned = goalHandlers.isActive(ctx);
   });
 
   // Capture later blocked completion before goal settlement discards its permission.
   // A compaction already pending as ordinary work must also stop after that decision.
   const observeTerminalDecision = (): void => {
-    if (!dependencies.goal?.hasAcceptedTerminalDecision()) return;
+    if (!goalHandlers.hasAcceptedTerminalDecision()) return;
     goalRequestOwned = true;
     if (request?.phase === "compacting") {
       request.goal = true;
@@ -265,46 +264,29 @@ export function registerAutoCompaction(
 
   pi.on("turn_end", (_event, ctx) => {
     observeTerminalDecision();
-    if (!supportedMode(ctx) || request) return;
+    if (!isAutomationMode(ctx) || request) return;
 
     let preference: AutoCompactionPreference;
-    let compactionSettings: CompactionSettings;
-    let usage: ContextUsage | undefined;
+    let settings: CompactionSettings;
     try {
-      preference = loadPreference(ctx);
-      compactionSettings = getCompactionSettings(ctx);
-      dependencies.onPreferenceChange?.(preference);
+      preference = loadPreference();
+      settings = compactionSettings(ctx);
     } catch (error) {
-      dependencies.onPreferenceChange?.(undefined);
+      onPreferenceChange(undefined);
       if (!settingsErrorReported) {
         settingsErrorReported = true;
         ctx.ui.notify(`Automatic compaction settings could not be read: ${errorMessage(error)}`, "error");
       }
       return;
     }
-    try {
-      usage = ctx.getContextUsage();
-    } catch {
-      return;
-    }
+    const usage = readContextUsage(ctx);
     if (!usage) return;
-    if (usage.tokens !== null && usage.tokens !== undefined && Number.isFinite(usage.tokens)
-      && Number.isFinite(usage.contextWindow) && usage.contextWindow > 0) {
-      const remainingTokens = usage.contextWindow - usage.tokens;
-      const threshold = Math.max(
-        usage.contextWindow * preference.percentRemaining / 100,
-        reserveTokens(compactionSettings),
-      );
-      if (remainingTokens > threshold) {
-        armed = true;
-      }
-    }
-    if (!armed) return;
-    if (!shouldTriggerAutoCompaction(usage, preference, compactionSettings)) return;
+    if (isAtThreshold(usage, preference, settings) === false) armed = true;
+    if (!armed || !shouldTriggerAutoCompaction(usage, preference, settings)) return;
 
     armed = false;
     const token = Symbol();
-    const activeGoal = dependencies.goal?.isActive(ctx) === true;
+    const activeGoal = goalHandlers.isActive(ctx);
     const goal = goalRequestOwned || activeGoal;
     request = {
       phase: "compacting",
@@ -313,9 +295,9 @@ export function registerAutoCompaction(
       turnSettled: false,
       compactionCompleted: false,
     };
-    if (activeGoal && dependencies.goal) {
+    if (activeGoal) {
       try {
-        dependencies.goal.onRequested();
+        goalHandlers.onRequested();
       } catch (error) {
         finishFailure(ctx, true, error);
         return;
@@ -330,9 +312,9 @@ export function registerAutoCompaction(
           rearmOnNextLogicalRequest = preference.percentRemaining === 100;
           if (goal || request.goal) {
             request = undefined;
-            if (activeGoal && dependencies.goal) {
+            if (activeGoal) {
               try {
-                dependencies.goal.onCompleted(ctx);
+                goalHandlers.onCompleted(ctx);
               } catch (error) {
                 notifyFailure(ctx, error);
               }
@@ -353,7 +335,7 @@ export function registerAutoCompaction(
     goalRequestOwned = false;
     // Pi aborts the agent when our pending compaction starts. Its callback owns
     // recovery, including cancellation; the settlement flag alone is ambiguous.
-    if ("aborted" in event && event.aborted === true && request?.phase !== "compacting") {
+    if (wasAborted(event) && request?.phase !== "compacting") {
       request = undefined;
       return;
     }
@@ -378,7 +360,15 @@ export function registerAutoCompaction(
     }
   });
 
-  pi.on("session_start", resetForLifecycle);
+  pi.on("session_start", (_event, ctx) => {
+    resetForLifecycle();
+    if (ctx.mode !== "tui") return;
+    try {
+      loadPreference();
+    } catch {
+      // loadPreference already published the unreadable state; turn_end reports the error.
+    }
+  });
   pi.on("session_shutdown", resetForLifecycle);
   pi.on("session_tree", resetForLifecycle);
 }

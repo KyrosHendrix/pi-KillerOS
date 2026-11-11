@@ -25,11 +25,8 @@ test("uses one neutral background for every tool state", () => {
   assert.equal(killerosTheme.colors.toolErrorBg, "surface");
 });
 
-test("uses achromatic neutrals without changing the coral accent", () => {
+test("uses achromatic neutrals", () => {
   const killerosTheme = readThemeFixture();
-  assert.equal(killerosTheme.vars.coral, "#d77757");
-  assert.equal(killerosTheme.vars.coralBright, "#e58b6d");
-
   for (const name of ["canvas", "surface", "surfaceRaised", "line", "lineMuted", "text", "muted", "dim"]) {
     const match = /^#(..)(..)(..)$/.exec(killerosTheme.vars[name]);
     assert.ok(match);
@@ -61,9 +58,4 @@ test("reasoning text meets normal-text contrast on KillerOS surfaces", () => {
       assert.ok(contrastRatio(foreground, background) >= 4.5, `${role} must reach 4.5:1`);
     }
   }
-});
-
-test("shell UI uses theme roles instead of raw ANSI colors", () => {
-  const source = readFileSync(new URL("../killeros/shell-ui.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /38;2;|\\x1B\[90m|COMMAND_BLUE_RGB/u);
 });

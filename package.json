@@ -1,6 +1,6 @@
 {
   "name": "killeros",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "A Windows terminal UI for the Pi coding agent with session handoff, configurable auto-compaction, OpenAI fast mode, and persistent goals.",
   "type": "module",
   "keywords": [
@@ -55,15 +55,15 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=1.5.0 <2",
-    "@earendil-works/pi-coding-agent": ">=1.5.0 <2",
-    "@earendil-works/pi-tui": ">=1.5.0 <2",
+    "@earendil-works/pi-ai": ">=1.5.2 <2",
+    "@earendil-works/pi-coding-agent": ">=1.5.2 <2",
+    "@earendil-works/pi-tui": ">=1.5.2 <2",
     "typebox": ">=1.1.38 <2"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.5.0",
-    "@earendil-works/pi-coding-agent": "1.5.0",
-    "@earendil-works/pi-tui": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@earendil-works/pi-tui": "1.5.2",
     "@types/node": "24.12.4",
     "@xterm/headless": "6.0.0",
     "eslint": "^10.9.1",

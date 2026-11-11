@@ -250,7 +250,7 @@ test("RPC /auto-compact status, updates, normalization, and settings failure pre
     const terminal = await fixture.startTerminal();
     assert.equal(existsSync(fixture.settings), false, "Native startup must leave settings absent before the first write");
     let after = terminal.sequence;
-    terminal.write("/notification\r");
+    await terminal.submitEditorText("/notification", { signal: t.signal });
     await terminal.waitForScreen((screen) => screen.includes("Completion sound") && screen.includes("Off ← current"),
       { after, signal: t.signal });
     after = terminal.sequence;
@@ -263,7 +263,7 @@ test("RPC /auto-compact status, updates, normalization, and settings failure pre
       { command: "/auto-compact off", notice: "Automatic compaction: off (threshold 22%)", enabled: false },
     ]) {
       after = terminal.sequence;
-      terminal.write(command + "\r");
+      await terminal.submitEditorText(command, { signal: t.signal });
       await terminal.waitForScreen((screen) => screen.includes(notice), { after, signal: t.signal });
       assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), {
         completionSound: true, autoCompaction: { enabled, percentRemaining: 22 },
@@ -349,7 +349,7 @@ test("RPC /auto-compact status, updates, normalization, and settings failure pre
       seed({ enabled, percentRemaining });
       const unchanged = readFileSync(fixture.settings, "utf8");
       const after = terminal.sequence;
-      terminal.write(command + "\r");
+      await terminal.submitEditorText(command, { signal: t.signal });
       // Every result differs from earlier screens, so an old notification cannot satisfy the wait.
       const screen = await terminal.waitForScreen((value) => value.includes(expected), { after, signal: t.signal });
       assert.ok(screen.includes(expected), "TUI status comes through native terminal command dispatch");

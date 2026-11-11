@@ -1,7 +1,8 @@
 import { contentText } from "@earendil-works/pi-ai";
 import { BorderedLoader, convertToLlm, type ExtensionAPI, type ExtensionCommandContext, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { errorMessage, reportError } from "./errors.ts";
-import type { GoalRuntime, GoalState } from "./runtime.ts";
+import { readContextUsage } from "./pi-context.ts";
+import type { GoalRuntime, GoalState } from "./goal-model.ts";
 import { createKillerosSettingsStore, type KillerosSettings } from "./settings.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 import { containsLikelySecret } from "./secret-detector.ts";
@@ -9,7 +10,9 @@ import { containsLikelySecret } from "./secret-detector.ts";
 const HANDOFF_UNAVAILABLE = "/handoff is not available while an agent or /goal is running.";
 const HANDOFF_REQUEST_RESERVE_TOKENS = 1_024;
 /** Output-token budget with headroom for reasoning traces plus all ten sections. */
-export const DEFAULT_HANDOFF_MAX_TOKENS = 8_192;
+const DEFAULT_HANDOFF_MAX_TOKENS = 8_192;
+/** Shown by slash-command autocomplete next to /handoff. */
+export const HANDOFF_COMMAND_SYNTAX = "/handoff [next-session focus]";
 const HANDOFF_SECTIONS = [
   "Objective",
   "Current state",
@@ -34,7 +37,7 @@ const HANDOFF_SYSTEM_PROMPT = [
   "When sourceGoal is present, the Objective section must contain only its exact objective, unchanged, optionally inside a fenced code block. Use a fence longer than any fence in the objective. Put any requested focus in Exact next action instead.",
   "Start Current state with the exact line 'Saved goal status: ' followed by sourceGoal.status. Do not contradict that status or repeat this status label elsewhere.",
   "Preserve sourceGoal.lastDecision, including its next action or blocker, and sourceGoal.deliverablePath when present. Transfer context only; do not activate a goal.",
-  "Use exactly these second-level Markdown headings: Objective, Current state, Decisions, Constraints, Completed work, Relevant artifacts, Verification, Blockers or open questions, Exact next action, and Suggested skills.",
+  `Use exactly these second-level Markdown headings: ${HANDOFF_SECTIONS.slice(0, -1).join(", ")}, and ${HANDOFF_SECTIONS.at(-1)}.`,
 ].join("\n");
 type HandoffGoalSnapshot = Pick<GoalState, "objective" | "status" | "lastDecision"> & { deliverablePath?: string };
 
@@ -95,7 +98,7 @@ function positiveIntOr(value: unknown, fallback: number): number {
 }
 
 /** Resolves the summary budget: explicit option first, then killeros.json, then the default. */
-export function resolveHandoffMaxTokens(settings: Readonly<KillerosSettings>, override?: number): number {
+function resolveHandoffMaxTokens(settings: Readonly<KillerosSettings>, override?: number): number {
   return positiveIntOr(override, positiveIntOr(settings.handoffMaxTokens, DEFAULT_HANDOFF_MAX_TOKENS));
 }
 
@@ -192,12 +195,7 @@ function notifyHandoffUnavailable(ctx: ExtensionCommandContext): void {
 }
 
 function assertHandoffContextReserve(ctx: ExtensionCommandContext, maxTokens: number): void {
-  let usage: ReturnType<ExtensionCommandContext["getContextUsage"]>;
-  try {
-    usage = ctx.getContextUsage();
-  } catch {
-    return;
-  }
+  const usage = readContextUsage(ctx);
   const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow;
   if (!usage || usage.tokens === null || !Number.isFinite(usage.tokens)
     || typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0) return;
@@ -208,7 +206,7 @@ function assertHandoffContextReserve(ctx: ExtensionCommandContext, maxTokens: nu
 }
 
 /** Generates a handoff summary; throws named errors for truncation and provider failures. */
-export async function generateHandoffSummary(
+async function generateHandoffSummary(
   ctx: ExtensionCommandContext,
   conversation: string,
   focus: string,

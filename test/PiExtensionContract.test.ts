@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import { passiveGitCommand, passiveGitEnv } from "../killeros/passive-git-status.ts";
 import { parseGoalState } from "../killeros/goal-state.ts";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
@@ -317,7 +316,6 @@ test("installed Pi terminal accepts resized questions, cancels partial selection
 
 test("installed Pi CLI completes a goal and restores it without unsolicited model work", {
   timeout: 120_000,
-  skip: piRpcShutdownSkip,
 }, async (t) => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-installed-cli-"));
   const packDirectory = path.join(directory, "pack");

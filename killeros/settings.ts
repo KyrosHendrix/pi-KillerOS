@@ -3,25 +3,22 @@ import { linkSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, write
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { hasErrorCode } from "./errors.ts";
+import { isRecord } from "./guards.ts";
 
 export type KillerosSettings = Record<string, unknown>;
-export type KillerosSettingsUpdate = Readonly<Record<string, unknown>>
+type KillerosSettingsUpdate = Readonly<Record<string, unknown>>
   | ((current: Readonly<KillerosSettings>) => Readonly<Record<string, unknown>>);
 
-export interface KillerosSettingsStore {
+interface KillerosSettingsStore {
   load(): KillerosSettings;
   /** Derive a field update from the latest settings while holding the writer lock. */
   update(patch: KillerosSettingsUpdate): void;
 }
 
-function isSettings(value: unknown): value is KillerosSettings {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function readStoredSettings(settingsPath: string): KillerosSettings {
   try {
     const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf8"));
-    if (!isSettings(parsed)) throw new Error("KillerOS settings must contain a JSON object");
+    if (!isRecord(parsed)) throw new Error("KillerOS settings must contain a JSON object");
     return parsed;
   } catch (error) {
     if (hasErrorCode(error, "ENOENT")) return {};
@@ -35,7 +32,7 @@ const LOCK_TIMEOUT_MILLISECONDS = 10_000;
 function readLockOwnerPid(lockPath: string): number | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(lockPath, "utf8"));
-    if (!isSettings(value) || typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0) return undefined;
+    if (!isRecord(value) || typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0) return undefined;
     return value.pid;
   } catch {
     return undefined;
@@ -115,9 +112,9 @@ function acquireSettingsLock(settingsPath: string): () => void {
   };
 }
 
-export function createKillerosSettingsStore(
-  settingsPath = join(getAgentDir(), "killeros.json"),
-): KillerosSettingsStore {
+/** Reads and updates killeros.json in Pi's agent directory. */
+export function createKillerosSettingsStore(): KillerosSettingsStore {
+  const settingsPath = join(getAgentDir(), "killeros.json");
   return {
     load: () => readStoredSettings(settingsPath),
     update: (patch) => {

@@ -10,14 +10,14 @@ export interface DisplayOption {
   originalIndex: number;
 }
 
-export type QuestionSelection =
+type QuestionSelection =
   | { kind: "selected"; answer: string; originalIndex: number }
   | { kind: "custom"; answer: string }
   | { kind: "multiple"; answers: string[]; selectedIndices: number[]; customAnswer?: string }
   | { kind: "cancelled" }
   | { kind: "aborted" };
 
-export const CUSTOM_INPUT_MAX_CHARACTERS = 4_000;
+const CUSTOM_INPUT_MAX_CHARACTERS = 4_000;
 export const CUSTOM_INPUT_HISTORY_LIMIT = 100;
 export const CUSTOM_INPUT_HISTORY_BYTES = 64 * 1024;
 export const FILTER_QUERY_MAX_CHARACTERS = 4_000;

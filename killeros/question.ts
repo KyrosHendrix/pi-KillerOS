@@ -185,12 +185,11 @@ export function registerQuestionTool(pi: ExtensionAPI): void {
         description: option.description === undefined ? undefined : safeTerminalText(option.description),
         preview: option.preview === undefined ? undefined : safeTerminalText(option.preview),
       }));
+      const title = multiple ? "question (multi-select) " : "question ";
       if (!context.expanded) {
-        const title = multiple ? "question (multi-select) " : "question ";
         const detail = multiple ? `${options.length} options · choose ${minimum}–${maximum}` : `${options.length} option${options.length === 1 ? "" : "s"}`;
         return new BoundedText(`${theme.fg("toolTitle", theme.bold(title))}${theme.fg("muted", oneLine(question))}\n${theme.fg("dim", `  ${detail}`)}`, 3);
       }
-      const title = multiple ? "question (multi-select) " : "question ";
       const lines = [`${theme.fg("toolTitle", theme.bold(title))}${theme.fg("muted", question)}`];
       if (multiple) lines.push(theme.fg("dim", `${options.length} options · choose ${minimum}–${maximum}`));
       options.forEach((option, index) => {

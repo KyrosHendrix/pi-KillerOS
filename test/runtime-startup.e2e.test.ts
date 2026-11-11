@@ -6,7 +6,6 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { PiRpcProcess, type PiRpcRecord } from "./support/PiRpcProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
@@ -357,7 +356,6 @@ export default function (pi) {
 // Catalog ID: runtime.startup-trust.
 test("installed Pi preserves continuation, startup-abort, trust, and reload", {
   timeout: 240_000,
-  skip: piRpcShutdownSkip,
 }, async (t) => {
   const histories: StartupHistory[] = [];
   for (const [scenario, trusted] of [

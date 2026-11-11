@@ -4,9 +4,18 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-11-12
+
+### Changed
+
+- Raised the minimum supported Pi version to 1.5.2 and aligned development dependencies and CI targets.
+
 ### Fixed
 
 - Start less than half as many processes for footer Git status and change receipts. Each scan reads its three Git settings with one Git call instead of three, and Git calls share Pi's console instead of each starting a hidden console process when Pi has one. A receipt-heavy session used about 40% less CPU.
+- List `edit` in the `/goal` autocomplete hint, which had omitted it.
+- Stop warning that change receipts are unavailable when Pi runs outside a Git repository with a translated Git. KillerOS's background Git calls now always print untranslated messages.
+- Show footer file-change counts in large repositories whose Git index listing exceeds 4 MB. The footer now uses the same 16 MB output bound as change receipts instead of reporting the counts as unavailable.
 - Cache the lines of KillerOS transcript entries, such as question, goal, and worked-for receipts, so each frame no longer rewraps every entry. Long sessions repaint with far less CPU; in a 100-answer question history, Pi's CPU time fell by 70%.
 
 ## [4.0.0] - 2026-11-03

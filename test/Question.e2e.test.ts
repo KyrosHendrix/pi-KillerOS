@@ -12,7 +12,6 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
-import { piRpcShutdownSkip } from "./support/PiCliCompatibility.ts";
 import { PiRpcProcess } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
@@ -31,7 +30,7 @@ const expandToggle = "\x0f";
 const pageUp = "\x1b[5~";
 const jumpLatest = "\x1b[1;5F";
 const abortedMessage = /Question cancelled because the agent operation was aborted/u;
-const nativeAbortNotice = /Error: This operation was aborted/u;
+const nativeAbortNotice = /Operation aborted/u;
 const fixtureAbort = "\x1b[24~";
 const fixtureNew = "\x1b[23~";
 const fixtureNavigate = "\x1b[21~";
@@ -446,7 +445,7 @@ function assertSingleCall(screen: string, question: string): void {
 }
 
 // Catalog ID: Q-01.
-test("Question schema, bounds, model-only exposure, and non-TUI rejection", { timeout: 300_000, skip: piRpcShutdownSkip }, async (t: TestContext) => {
+test("Question schema, bounds, model-only exposure, and non-TUI rejection", { timeout: 300_000 }, async (t: TestContext) => {
   const family = createFamily(repositoryRoot, "schema");
   const provider = new QuestionProvider();
   const providers = [provider];

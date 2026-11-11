@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { hideGitConsole, passiveWorktreeSettings, type PassiveGitRunner } from "../killeros/passive-git-status.ts";
+import { hideGitConsole, passiveGitEnv, passiveWorktreeSettings, type PassiveGitRunner } from "../killeros/passive-git-status.ts";
 
 // Hiding a console child starts a second process, conhost.exe, per Git call. A process with a console lets
 // its Git children share it, so only a process without one may hide them.
@@ -49,4 +49,12 @@ test("worktree settings fail closed on values Git cannot read as booleans or on 
     "Like --type=bool, any unreadable value fails the scan even when a later value is valid");
   await assert.rejects(passiveWorktreeSettings(async () => Buffer.from("core.filemode\ntrue\0")), /incomplete/u,
     "Output without the probe key was cut short");
+});
+
+// Receipts recognize a folder outside every repository by Git's English "not a git repository" message.
+test("automatic Git children print untranslated messages whatever locale Pi inherits", () => {
+  const env = passiveGitEnv({ LANG: "de_DE.UTF-8", Lc_All: "de_DE.UTF-8", LANGUAGE: "de:fr", LC_MESSAGES: "fr_FR.UTF-8", Path: "C:\\bin" });
+  const localeKeys = Object.keys(env).filter((key) => /^(?:lc_all|language)$/iu.test(key));
+  assert.deepEqual(localeKeys, ["LC_ALL"], "One LC_ALL remains and no LANGUAGE list can override it");
+  assert.equal(env.LC_ALL, "C");
 });

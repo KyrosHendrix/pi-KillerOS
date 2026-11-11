@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, w
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import { resolveGitFileChanges } from "../killeros/footer.ts";
+import { resolveGitFileChanges } from "../killeros/passive-git-status.ts";
 
 // The footer scans every trusted session's repository automatically, so a hostile checkout must not run code through it.
 // These call the footer's real scan against real Git; no Pi launch is needed to reach that boundary.
@@ -82,7 +82,7 @@ test("the footer counts a hostile repository's changes without running its filte
   const repository = hostileRepository(t);
   hostileEnvironment(t, repository);
   // modified.txt and the rename (same blob, new path) are modified, added.txt is added, and deleted.txt is deleted.
-  assert.deepEqual(await resolveGitFileChanges(repository.project), { modified: 2, added: 1, deleted: 1 });
+  assert.deepEqual(await resolveGitFileChanges(repository.project, true), { modified: 2, added: 1, deleted: 1 });
   assert.deepEqual(repository.sentinels.filter(existsSync).map((file) => path.basename(file)), [],
     "Repository-owned filters, fsmonitor, textconv, and Git shims never run");
 });
@@ -90,18 +90,11 @@ test("the footer counts a hostile repository's changes without running its filte
 test("an inherited GIT_DIR cannot make a non-repository directory report another repository's changes", async (t) => {
   const repository = hostileRepository(t);
   hostileEnvironment(t, repository);
-  assert.equal(await resolveGitFileChanges(repository.outside), undefined, "A directory outside every repository has no Git status");
+  assert.equal(await resolveGitFileChanges(repository.outside, true), undefined, "A directory outside every repository has no Git status");
   assert.deepEqual(repository.sentinels.filter(existsSync), []);
 });
 
-test("an untrusted project starts no Git process", async (t) => {
+test("an untrusted project reports no Git status even with changes", async (t) => {
   const repository = hostileRepository(t);
-  const started: string[][] = [];
-  // The scan swallows executor errors, so the spy records calls instead of throwing.
-  const execute = (_file: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string) => void): void => {
-    started.push(args);
-    callback(new Error("recorded"), "");
-  };
-  assert.equal(await resolveGitFileChanges(repository.project, execute, false), undefined);
-  assert.deepEqual(started, [], "An untrusted project must not start Git");
+  assert.equal(await resolveGitFileChanges(repository.project, false), undefined);
 });

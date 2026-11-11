@@ -3,28 +3,36 @@ import type { BigIntStats, Stats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { sameFileIdentity } from "./file-identity.ts";
-import type { GoalBlockerAudit, GoalContinueReport, GoalFileBaseline, GoalFileVerification, GoalPendingDecision, GoalState, GoalStateCommon, GoalStatus, GoalTurnDecision, GoalTurnPhase } from "./runtime.ts";
+import type { GoalBlockerAudit, GoalContinueReport, GoalFileBaseline, GoalFileVerification, GoalPendingDecision, GoalState, GoalStateCommon, GoalStatus, GoalTurnDecision, GoalTurnPhase } from "./goal-model.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
+import { isRecord } from "./guards.ts";
+import { hasErrorCode } from "./errors.ts";
 
 export const DEFAULT_GOAL_MAX_TURNS = 20;
-export const GOAL_OBJECTIVE_LIMIT = 4_000;
+const GOAL_OBJECTIVE_LIMIT = 4_000;
 export const GOAL_EVIDENCE_LIMIT = 2_000;
 export const GOAL_MAX_TURNS = 10_000;
 export const GOAL_VERSION = 1;
+/** Stable lowercase blocker identity; the goal tool schema publishes the same pattern to the model. */
+export const GOAL_BLOCKER_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,119}$/u;
 const FILE_HASH_CHUNK_SIZE = 64 * 1024;
-export const FILE_HASH_LIMIT = 64 * 1024 * 1024;
+const FILE_HASH_LIMIT = 64 * 1024 * 1024;
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-type OpenGoalFile = (filePath: string) => Promise<FileHandle>;
-const openGoalFile: OpenGoalFile = (filePath) => open(filePath, "r");
+
+/** Why a pause keeps the interrupted turn: compaction will resume it, and manual compaction resumes when Pi saves the summary. */
+type GoalTurnHold = "manual-compaction" | "automatic-compaction";
+
+/** How a resume after compaction continues: the interrupted turn itself, or the next turn under any decision already accepted. */
+type GoalTurnResume = "same-turn" | "next-turn";
 
 export interface GoalTransitionOptions {
   resetBlockedAudit?: boolean;
-  resumeAfterManualCompaction?: true;
   blockerAudit?: GoalBlockerAudit;
-  keepTurnForRecovery?: true;
-  resumeInterruptedTurn?: true;
-  preserveTurnAuthorization?: true;
   decision?: GoalTurnDecision;
+  hold?: GoalTurnHold;
+  resume?: GoalTurnResume;
+  /** Replaces the turn budget when a resume renews an exhausted limit. */
+  maxTurns?: number;
 }
 
 function isGoalStatus(value: unknown): value is GoalStatus {
@@ -47,10 +55,6 @@ function addGoalMilliseconds(accumulated: number, interval: number): number {
   const total = accumulated + interval;
   if (!safeNonNegativeInteger(total)) throw new Error("Goal active duration exceeds the safe integer range");
   return total;
-}
-
-function isUnknownRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // Goal text limits count Unicode code points, as JSON Schema `maxLength` does when Pi validates tool arguments.
@@ -77,29 +81,33 @@ export function normalizeGoalText(value: string, limit: number, label: string): 
   return normalized;
 }
 
+function isBlockerKey(value: unknown): value is string {
+  return typeof value === "string" && GOAL_BLOCKER_KEY_PATTERN.test(value);
+}
+
 function isGoalTurnPhase(value: unknown): value is GoalTurnPhase {
   return value === "ready" || value === "in-flight" || value === "authorized";
 }
 
-function isGoalContinueReport(value: unknown, turns: number): value is GoalContinueReport {
-  return isUnknownRecord(value)
+/** Checks the turn and evidence that every recorded decision and report carries. */
+function isTurnEvidence(value: unknown, turns: number): value is Record<string, unknown> & { turn: number; evidence: string } {
+  return isRecord(value)
     && safeNonNegativeInteger(value.turn)
     && value.turn >= 1
     && value.turn <= turns
-    && isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)
+    && isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT);
+}
+
+function isGoalContinueReport(value: unknown, turns: number): value is GoalContinueReport {
+  return isTurnEvidence(value, turns)
     && isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT);
 }
 
 function isGoalPendingDecision(value: unknown, turns: number): value is GoalPendingDecision {
-  if (!isUnknownRecord(value)
-    || !safeNonNegativeInteger(value.turn)
-    || value.turn < 1
-    || value.turn > turns
-    || !isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)) return false;
+  if (!isTurnEvidence(value, turns)) return false;
   if (value.kind === "continue") return isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT);
   return value.kind === "blocker-audit"
-    && typeof value.blockerKey === "string"
-    && /^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.blockerKey)
+    && isBlockerKey(value.blockerKey)
     && typeof value.streak === "number"
     && Number.isInteger(value.streak)
     && value.streak >= 1
@@ -107,28 +115,14 @@ function isGoalPendingDecision(value: unknown, turns: number): value is GoalPend
 }
 
 function isGoalTurnDecision(value: unknown, turns: number): value is GoalTurnDecision {
-  if (!isUnknownRecord(value)
-    || !safeNonNegativeInteger(value.turn)
-    || value.turn < 1
-    || value.turn > turns
-    || !isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)) return false;
-  if (value.kind === "continue") return isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT);
+  if (isGoalPendingDecision(value, turns)) return true;
+  if (!isTurnEvidence(value, turns)) return false;
   if (value.kind === "complete") return value.verification === "file" || value.verification === "model-reported";
-  return (value.kind === "blocker-audit"
-    && typeof value.blockerKey === "string"
-    && /^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.blockerKey)
-    && typeof value.streak === "number"
-    && Number.isInteger(value.streak)
-    && value.streak >= 1
-    && value.streak < 3)
-    || (value.kind === "blocked"
-      && typeof value.blockerKey === "string"
-      && /^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.blockerKey)
-      && value.streak === 3);
+  return value.kind === "blocked" && isBlockerKey(value.blockerKey) && value.streak === 3;
 }
 
 function isGoalFileBaseline(value: unknown): value is GoalFileBaseline {
-  if (!isUnknownRecord(value)) return false;
+  if (!isRecord(value)) return false;
   if (value.exists === false) {
     return value.size === undefined && value.mtimeMs === undefined && value.contentHash === undefined;
   }
@@ -162,7 +156,7 @@ function stripUnquotedPathPunctuation(value: string): string {
 }
 
 function isGoalFileVerification(value: unknown): value is GoalFileVerification {
-  return isUnknownRecord(value)
+  return isRecord(value)
     && value.kind === "file"
     && isSafePersistedText(value.path, GOAL_OBJECTIVE_LIMIT)
     && isAbsoluteFilePath(value.path)
@@ -174,9 +168,8 @@ function isMaxTurns(value: unknown): value is number {
 }
 
 function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): value is GoalBlockerAudit {
-  if (!isUnknownRecord(value)
-    || typeof value.key !== "string"
-    || !/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(value.key)
+  if (!isRecord(value)
+    || !isBlockerKey(value.key)
     || typeof value.streak !== "number" || !Number.isInteger(value.streak) || value.streak < 1 || value.streak > 3
     || typeof value.lastTurn !== "number" || !Number.isInteger(value.lastTurn) || value.lastTurn < 1 || value.lastTurn > turns
     || value.evidence !== undefined && !isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)) {
@@ -187,7 +180,7 @@ function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): 
 }
 
 export function parseGoalState(value: unknown): GoalState | undefined {
-  if (!isUnknownRecord(value)) return undefined;
+  if (!isRecord(value)) return undefined;
   const {
     version,
     revision,
@@ -301,6 +294,12 @@ export function parseGoalState(value: unknown): GoalState | undefined {
   }
 }
 
+class GoalDeliverableChangedError extends Error {
+  constructor() {
+    super("Goal deliverable changed while it was being inspected");
+  }
+}
+
 function sameFile(left: BigIntStats, right: BigIntStats): boolean {
   return sameFileIdentity(left, right)
     && left.size === right.size
@@ -326,26 +325,23 @@ async function hashFile(handle: FileHandle, inspected: BigIntStats): Promise<str
   while (position < size) {
     const length = Math.min(buffer.length, size - position);
     const { bytesRead } = await handle.read(buffer, 0, length, position);
-    if (bytesRead === 0) throw new Error("Goal deliverable changed while it was being inspected");
+    if (bytesRead === 0) throw new GoalDeliverableChangedError();
     hash.update(buffer.subarray(0, bytesRead));
     position += bytesRead;
   }
   if (!sameFile(inspected, await snapshotHandle(handle))) {
-    throw new Error("Goal deliverable changed while it was being inspected");
+    throw new GoalDeliverableChangedError();
   }
   return hash.digest("hex");
 }
 
 /** Captures a file baseline with bounded asynchronous I/O and descriptor identity checks. */
-export async function captureGoalFileBaseline(
-  filePath: string,
-  openFile: OpenGoalFile = openGoalFile,
-): Promise<GoalFileBaseline> {
+async function captureGoalFileBaseline(filePath: string): Promise<GoalFileBaseline> {
   let inspected: BigIntStats;
   try {
     inspected = await lstat(filePath, { bigint: true });
   } catch (error) {
-    if (isUnknownRecord(error) && error.code === "ENOENT") return { exists: false };
+    if (hasErrorCode(error, "ENOENT")) return { exists: false };
     throw error;
   }
   const size = Number(inspected.size);
@@ -354,13 +350,13 @@ export async function captureGoalFileBaseline(
 
   let handle: FileHandle | undefined;
   try {
-    handle = await openFile(filePath);
+    handle = await open(filePath, "r");
     if (!sameFile(inspected, await snapshotHandle(handle))) {
-      throw new Error("Goal deliverable changed while it was being inspected");
+      throw new GoalDeliverableChangedError();
     }
     return { ...baseline, contentHash: await hashFile(handle, inspected) };
   } catch (error) {
-    if (error instanceof Error && error.message === "Goal deliverable changed while it was being inspected") throw error;
+    if (error instanceof GoalDeliverableChangedError) throw error;
     return { ...baseline, contentHash: null };
   } finally {
     await handle?.close();
@@ -483,8 +479,6 @@ export async function inferGoalVerification(objective: string, cwd: string): Pro
     });
   }
   if (operands.size !== 1 || resolved.size !== 1) return undefined;
-  // A goal that names several files must not verify from one file alone.
-  // Repeated references to the same file count as one target.
   const target = resolved.values().next().value;
   if (target === undefined || countGoalTargetFiles(objective, cwd, target.filePath, target.quoted) > 1) return undefined;
   return { kind: "file", path: target.filePath, baseline: await captureGoalFileBaseline(target.filePath) };
@@ -543,7 +537,7 @@ export function goalElapsedMilliseconds(state: GoalState, now: number): number {
   return addGoalMilliseconds(state.activeMilliseconds, activeInterval);
 }
 
-export function commonGoalState(state: GoalState): GoalStateCommon {
+function commonGoalState(state: GoalState): GoalStateCommon {
   return {
     version: state.version,
     revision: state.revision,
@@ -564,7 +558,7 @@ export function commonGoalState(state: GoalState): GoalStateCommon {
   };
 }
 
-export function stopGoalClock(state: GoalState, now: number): GoalStateCommon {
+function stopGoalClock(state: GoalState, now: number): GoalStateCommon {
   const common = commonGoalState(state);
   return state.status === "active"
     ? { ...common, activeMilliseconds: addGoalMilliseconds(common.activeMilliseconds, Math.max(0, now - state.activeStartedAt)) }
@@ -606,7 +600,7 @@ function nextRevision(current: { revision: number }): number {
 export function beginGoalTurnState(
   current: Extract<GoalState, { status: "active" }>,
   now: number,
-): GoalState {
+): Extract<GoalState, { status: "active" }> {
   if (!incrementableNonNegativeInteger(current.turns)) throw new Error("Goal turn counter cannot advance safely");
   const { turnDecision: _decision, turnPhase: _phase, ...withoutPending } = current;
   return {
@@ -638,20 +632,19 @@ export function pauseGoalState(
   current: GoalState,
   result: string | undefined,
   now: number,
-  resumeAfterManualCompaction = false,
-  preserveTurnAuthorization = false,
+  hold?: GoalTurnHold,
 ): GoalState {
   const common = stopGoalClock(current, now);
   const { turnDecision: _decision, turnPhase: _phase, ...withoutPending } = common;
   return {
     ...withoutPending,
     status: "paused",
-    turnPhase: preserveTurnAuthorization ? current.turnPhase : "ready",
-    ...(preserveTurnAuthorization && current.turnDecision !== undefined ? { turnDecision: current.turnDecision } : {}),
+    turnPhase: hold ? current.turnPhase : "ready",
+    ...(hold && current.turnDecision !== undefined ? { turnDecision: current.turnDecision } : {}),
     ...(result === undefined ? {} : { result }),
     ...(result === undefined ? {} : { stopReason: boundGoalText(result) }),
     ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
-    ...(resumeAfterManualCompaction ? { resumeAfterManualCompaction: true as const } : {}),
+    ...(hold === "manual-compaction" ? { resumeAfterManualCompaction: true as const } : {}),
   };
 }
 
@@ -726,7 +719,7 @@ export function transitionGoalState(
     blockedAuditStartTurn: options.resetBlockedAudit ? stopped.turns : stopped.blockedAuditStartTurn,
   };
   const blockerAudit = options.resetBlockedAudit ? undefined : options.blockerAudit ?? current.blockerAudit;
-  const pending = options.preserveTurnAuthorization ? current.turnDecision : undefined;
+  const pending = options.resume === "next-turn" ? current.turnDecision : undefined;
   const { turnDecision: _decision, turnPhase: _phase, stopReason: _stopReason, ...withoutPending } = common;
   switch (status) {
     case "active":
@@ -735,7 +728,8 @@ export function transitionGoalState(
         ...(current.status === "blocked" ? { lastDecision: undefined } : {}),
         status,
         activeStartedAt: now,
-        turnPhase: pending !== undefined ? "authorized" : options.resumeInterruptedTurn ? "in-flight" : "ready",
+        turnPhase: pending !== undefined ? "authorized" : options.resume === "same-turn" ? "in-flight" : "ready",
+        ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
         ...(pending === undefined ? {} : { turnDecision: pending }),
         ...(blockerAudit === undefined ? {} : { blockerAudit }),
       };
@@ -743,11 +737,11 @@ export function transitionGoalState(
       return {
         ...withoutPending,
         status,
-        turnPhase: options.keepTurnForRecovery ? current.turnPhase : "ready",
-        ...(options.keepTurnForRecovery && current.turnDecision !== undefined ? { turnDecision: current.turnDecision } : {}),
+        turnPhase: options.hold ? current.turnPhase : "ready",
+        ...(options.hold && current.turnDecision !== undefined ? { turnDecision: current.turnDecision } : {}),
         ...(result === undefined ? {} : { result, stopReason: boundGoalText(result) }),
         ...(blockerAudit === undefined ? {} : { blockerAudit }),
-        ...(options.resumeAfterManualCompaction === undefined ? {} : { resumeAfterManualCompaction: true }),
+        ...(options.hold === "manual-compaction" ? { resumeAfterManualCompaction: true } : {}),
       };
     case "blocked":
       if (result === undefined) throw new Error("A blocked goal requires a result");

@@ -3,7 +3,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { modelDisplayName } from "./display.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
-export type ActivityMessage =
+type ActivityMessage =
   | { kind: "prompt" }
   | { kind: "tool"; toolName: string }
   | { kind: "tool-result"; failed: boolean }
@@ -14,7 +14,7 @@ function safeToolName(toolName: string): string {
   return truncateToWidth(normalized || "tool", 32, "…");
 }
 
-export function formatActivityMessage(message: ActivityMessage, theme: Theme, modelId?: string): string {
+function formatActivityMessage(message: ActivityMessage, theme: Theme, modelId?: string): string {
   let verb: string;
   let detail: string;
 

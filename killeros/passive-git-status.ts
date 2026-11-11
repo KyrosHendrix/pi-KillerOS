@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, openSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, realpathSync, statSync, type BigIntStats } from "node:fs";
+import { spawn } from "node:child_process";
 import { lstat, open, readlink } from "node:fs/promises";
 import path from "node:path";
+import { hasErrorCode } from "./errors.ts";
 
-const WORKTREE_CONTENT_LIMIT = 128 * 1024 * 1024;
+export const WORKTREE_CONTENT_LIMIT = 128 * 1024 * 1024;
 const PASSIVE_METADATA_ARGS = ["-c", "core.fsmonitor=false"] as const;
 
 export type PassiveGitRunner = (args: readonly string[]) => Promise<Buffer>;
@@ -54,7 +56,7 @@ export type PassiveWorktreeSnapshot = {
 };
 
 /** Settings that decide how worktree bytes and modes compare with the index. */
-export type PassiveWorktreeSettings = Pick<PassiveWorktreeSnapshot, "fileMode" | "symlinks"> & { autoCrlf: string };
+type PassiveWorktreeSettings = Pick<PassiveWorktreeSnapshot, "fileMode" | "symlinks"> & { autoCrlf: string };
 
 /**
  * Reads core.autocrlf, core.filemode, and core.symlinks in one Git process instead of one each, because
@@ -168,7 +170,7 @@ function inspectedRoot(cwd: string): string | undefined {
         }
       }
     } catch {
-      // Unreadable directory: keep walking toward the filesystem root.
+      // An unreadable directory cannot hold the repository marker we look for.
     }
     const parent = path.dirname(current);
     if (parent === current) break;
@@ -232,7 +234,7 @@ export function passiveGitCommand(cwd: string, env: NodeJS.ProcessEnv = process.
   return undefined;
 }
 
-/** Environment for automatic Git children, without inherited repository selection or PATH command resolution. */
+/** Environment for automatic Git children, without inherited repository selection or PATH command resolution, and with untranslated messages. */
 export function passiveGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
   const selectors = [
@@ -251,7 +253,9 @@ export function passiveGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Pro
     const normalized = key.toUpperCase();
     if (selectors.includes(normalized)
       || normalized === "GIT_OPTIONAL_LOCKS"
-      || normalized === "GIT_NO_LAZY_FETCH") {
+      || normalized === "GIT_NO_LAZY_FETCH"
+      || normalized === "LC_ALL"
+      || normalized === "LANGUAGE") {
       delete env[key];
     } else if (normalized === "PATH") {
       env[key] = "";
@@ -261,10 +265,12 @@ export function passiveGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Pro
   if (!hasPath) env.PATH = "";
   env.GIT_OPTIONAL_LOCKS = "0";
   env.GIT_NO_LAZY_FETCH = "1";
+  // Receipts recognize "not a git repository" by its text, and translated Git prints it in the user's language.
+  env.LC_ALL = "C";
   return env;
 }
 
-function decode(buffer: Buffer): string {
+export function decode(buffer: Buffer): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
 }
 
@@ -311,27 +317,45 @@ function parsePaths(output: Buffer): string[] {
   return records.slice(0, -1);
 }
 
+function worktreeMode(stats: BigIntStats): string {
+  if (stats.isSymbolicLink()) return "120000";
+  if (!stats.isFile()) throw new Error("unsupported worktree entry");
+  return stats.mode & 0o111n ? "100755" : "100644";
+}
+
+async function worktreeContent(absolutePath: string, stats: BigIntStats, limit: number): Promise<Buffer> {
+  if (stats.isSymbolicLink()) return Buffer.from(await readlink(absolutePath));
+  if (stats.size > BigInt(limit)) throw new PassiveGitFailure("too-large");
+  return readBoundedFile(absolutePath, limit);
+}
+
+/** Reads one worktree file's mode and bytes, within `limit` bytes for regular files. */
+export async function readWorktreeFile(root: string, filePath: string, limit: number): Promise<{ mode: string; content: Buffer }> {
+  const absolutePath = path.join(root, ...filePath.split("/"));
+  const stats = await lstat(absolutePath, { bigint: true });
+  return { mode: worktreeMode(stats), content: await worktreeContent(absolutePath, stats, limit) };
+}
+
 async function readFileState(root: string, entry: IndexEntry | undefined, filePath: string, remaining: number): Promise<{ mode: string; content?: Buffer; statsMatch: boolean }> {
   const absolutePath = path.join(root, ...filePath.split("/"));
   const stats = await lstat(absolutePath, { bigint: true });
-  const mode = stats.isSymbolicLink() ? "120000" : stats.isFile() ? stats.mode & 0o111n ? "100755" : "100644" : "";
-  if (!mode) throw new Error("unsupported worktree entry");
+  const mode = worktreeMode(stats);
   const statsMatch = entry !== undefined
     && entry.mode === mode
     && entry.size === stats.size
     && entry.ctimeNanoseconds === stats.ctimeNs
     && entry.mtimeNanoseconds === stats.mtimeNs;
   if (statsMatch) return { mode, statsMatch };
-  if (!stats.isSymbolicLink() && stats.size > BigInt(remaining)) throw new Error("worktree content limit exceeded");
-  const content = stats.isSymbolicLink() ? Buffer.from(await readlink(absolutePath)) : await readBounded(absolutePath, remaining);
-  return { mode, content, statsMatch };
+  return { mode, content: await worktreeContent(absolutePath, stats, remaining), statsMatch };
 }
 
-async function readBounded(filePath: string, limit: number): Promise<Buffer> {
+/** Reads a regular file of at most `limit` bytes, failing if it grows while being read. */
+async function readBoundedFile(filePath: string, limit: number): Promise<Buffer> {
   const handle = await open(filePath, "r");
   try {
     const stats = await handle.stat();
-    if (!stats.isFile() || stats.size > limit) throw new Error("worktree content limit exceeded");
+    if (!stats.isFile()) throw new PassiveGitFailure("error");
+    if (stats.size > limit) throw new PassiveGitFailure("too-large");
     const content = Buffer.alloc(stats.size + 1);
     let length = 0;
     while (length < content.length) {
@@ -339,7 +363,7 @@ async function readBounded(filePath: string, limit: number): Promise<Buffer> {
       if (bytesRead === 0) break;
       length += bytesRead;
     }
-    if (length > stats.size) throw new Error("worktree changed while reading");
+    if (length > stats.size) throw new PassiveGitFailure("error");
     return content.subarray(0, length);
   } finally {
     await handle.close();
@@ -409,7 +433,7 @@ export async function inspectWorktreeWithoutFilters(root: string, runGit: Passiv
         if (content) contentBytes += content.length;
         worktreeChanged = !state.statsMatch && (mode !== indexEntry.mode || !content || !matchesIndex(content, indexEntry, autoCrlf));
       } catch (error) {
-        if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") worktreeChanged = true;
+        if (hasErrorCode(error, "ENOENT")) worktreeChanged = true;
         else throw error;
       }
     }
@@ -433,4 +457,136 @@ export async function inspectWorktreeWithoutFilters(root: string, runGit: Passiv
     files.set(filePath, { ...previous, path: filePath, mode: state.mode, content: state.content, contentObjectId: undefined });
   }
   return { head, files, ...settings };
+}
+
+const GIT_TIMEOUT_MS = 5_000;
+const GIT_OUTPUT_LIMIT = 16 * 1024 * 1024;
+
+/** Why passive Git metadata is unavailable: the command failed, ran past its timeout, or exceeded an output or content bound. */
+export class PassiveGitFailure extends Error {
+  readonly reason: "error" | "timeout" | "too-large";
+  readonly stderr: Buffer;
+
+  constructor(reason: PassiveGitFailure["reason"], stderr = Buffer.alloc(0)) {
+    super(reason);
+    this.reason = reason;
+    this.stderr = stderr;
+  }
+}
+
+/** Resolves the passive Git binary, treating a failed PATH inspection as no safe binary. */
+function safeGitCommand(cwd: string): string | undefined {
+  try {
+    return passiveGitCommand(cwd);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Runs the passive Git binary in `cwd` with optional stdin and bounded output, rejecting with a PassiveGitFailure. Pass `command` to reuse one lookup across a scan. */
+export function runPassiveGit(
+  cwd: string,
+  args: readonly string[],
+  { input, stdoutLimit = GIT_OUTPUT_LIMIT, command = safeGitCommand(cwd) }: { input?: Buffer; stdoutLimit?: number; command?: string } = {},
+): Promise<Buffer> {
+  if (!command) return Promise.reject(new PassiveGitFailure("error"));
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: passiveGitEnv(),
+      stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
+      windowsHide: hideGitConsole(),
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let failure: PassiveGitFailure | undefined;
+    let settled = false;
+    const timer = setTimeout(() => {
+      failure = new PassiveGitFailure("timeout");
+      child.kill();
+    }, GIT_TIMEOUT_MS);
+    timer.unref();
+    const capture = (chunks: Buffer[], isStdout: boolean) => (chunk: Buffer): void => {
+      const nextBytes = (isStdout ? stdoutBytes : stderrBytes) + chunk.length;
+      if (nextBytes > (isStdout ? stdoutLimit : GIT_OUTPUT_LIMIT)) {
+        failure = new PassiveGitFailure("too-large");
+        child.kill();
+        return;
+      }
+      if (isStdout) stdoutBytes = nextBytes;
+      else stderrBytes = nextBytes;
+      chunks.push(chunk);
+    };
+    child.stdout?.on("data", capture(stdout, true));
+    child.stderr?.on("data", capture(stderr, false));
+    if (input) child.stdin?.end(input);
+    child.once("error", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new PassiveGitFailure("error"));
+    });
+    child.once("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (failure) reject(failure);
+      else if (code === 0) resolve(Buffer.concat(stdout));
+      else reject(new PassiveGitFailure("error", Buffer.concat(stderr)));
+    });
+  });
+}
+
+export interface GitFileChanges {
+  modified: number;
+  added: number;
+  deleted: number;
+}
+
+/** Counts changed files for a trusted project without asking Git to inspect worktree content; undefined when unavailable. */
+export async function resolveGitFileChanges(cwd: string, trusted: boolean): Promise<GitFileChanges | undefined> {
+  if (!trusted) return undefined;
+  try {
+    const command = safeGitCommand(cwd);
+    if (!command) return undefined;
+    const root = decode(await runPassiveGit(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel"], { command })).trim();
+    if (!path.isAbsolute(root)) return undefined;
+    const snapshot = await inspectWorktreeWithoutFilters(root, (args) => runPassiveGit(root, args, { command }));
+    const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
+    const deletedObjectIds: string[] = [];
+    const addedObjectIds: string[] = [];
+    for (const file of snapshot.files.values()) {
+      if (!file.mode) {
+        changes.deleted += 1;
+        if (!file.indexMode && file.headObjectId) deletedObjectIds.push(file.headObjectId);
+      } else if (!file.headMode) {
+        changes.added += 1;
+        if (file.indexObjectId) addedObjectIds.push(file.indexObjectId);
+      } else changes.modified += 1;
+    }
+    for (const objectId of deletedObjectIds) {
+      const match = addedObjectIds.indexOf(objectId);
+      if (match < 0) continue;
+      addedObjectIds.splice(match, 1);
+      changes.deleted -= 1;
+      changes.added -= 1;
+      changes.modified += 1;
+    }
+    return changes;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resolves the current branch for a trusted project, "detached" for a detached HEAD, or undefined when unavailable. */
+export async function resolveGitBranch(cwd: string, trusted: boolean): Promise<string | undefined> {
+  if (!trusted) return undefined;
+  try {
+    const branch = (await runPassiveGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"], { stdoutLimit: 64 * 1024 })).toString("utf8").trim();
+    return branch === "HEAD" ? "detached" : branch || undefined;
+  } catch {
+    return undefined;
+  }
 }
