@@ -10,6 +10,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
+import { gitReadersFinished } from "./support/GitTrace.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
@@ -1117,7 +1118,9 @@ test("Footer Git status preserves last good counts through failures and recovers
       { signal: t.signal, after: recoveryStartupSequence });
 
     // The head-states test covers committed HEAD failures; this history covers repository config failures.
-    const recoveryBeforeConfigFailure = events;
+    // The startup scan's echo may still be reading .git/config, and Windows cannot rename an open file.
+    await gitReadersFinished(recovery.trace, t.signal);
+    const recoveryBeforeConfigFailure = readFooterTrace(recovery.trace);
     const recoveryGitConfig = path.join(recovery.project, ".git", "config");
     const savedRecoveryGitConfig = path.join(recovery.directory, "saved-git-config");
     renameSync(recoveryGitConfig, savedRecoveryGitConfig);
@@ -1171,7 +1174,9 @@ test("Footer Git status keeps the last good counts when repository discovery fai
     screens.discoveryDirty = await discoveryTerminal.waitForScreen((screen) => /±1 \[~1 \+0 −0\]/u.test(footerRenderedGitLine(screen)),
       { signal: t.signal, after: discoveryStartupSequence });
 
-    const discoveryBeforeFailure = events;
+    // The startup scan's echo may still be reading .git, and Windows cannot move a directory with an open file.
+    await gitReadersFinished(discovery.trace, t.signal);
+    const discoveryBeforeFailure = readFooterTrace(discovery.trace);
     const removedGitDirectory = path.join(discovery.directory, "saved-git-directory");
     renameSync(path.join(discovery.project, ".git"), removedGitDirectory);
     writeFileSync(discoveryTracked, "dirty\n", "utf8");
