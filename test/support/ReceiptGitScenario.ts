@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -209,8 +209,26 @@ type Turn = {
   receiptDelta?: 0 | 1;
   screenMarker?: string;
   afterSettlement?: () => void;
-  verify: (receipt: RecordValue, screen: string) => void;
+  verify: (receipt: RecordValue, screen: string) => void | Promise<void>;
 };
+
+/**
+ * Renames a path that a running Pi may be reading. Windows refuses to move a directory while a file
+ * inside it is open, so a Git scan still in flight fails the move with EPERM or EBUSY until it exits.
+ * Scans are short and coalesced, so the move is retried for two seconds before the denial is reported.
+ */
+async function renameWhenReleased(from: string, to: string, signal?: AbortSignal): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const held = error instanceof Error && "code" in error && (error.code === "EPERM" || error.code === "EBUSY");
+      if (!held || attempt === 40) throw error;
+      await delay(50, undefined, { signal });
+    }
+  }
+}
 
 // Loaded after KillerOS: Pi awaits settlement handlers in extension order, including receipt persistence.
 const settlementObserverSource = String.raw`import { writeFileSync, renameSync } from "node:fs";
@@ -289,7 +307,7 @@ async function runTurns(options: { family: Family; provider: ReceiptGitProvider;
       const receipts = sessionReceipts(sessionFile);
       assert.equal(receipts.length, receiptsBefore + (turn.receiptDelta ?? 1), `Turn "${turn.label}" appends its expected receipt count`);
       if (turn.screenMarker) await terminal.waitForScreen(screen => screen.includes(turn.screenMarker ?? ""), { signal: options.signal });
-      turn.verify(receipts.at(-1) as RecordValue, terminal.screen());
+      await turn.verify(receipts.at(-1) as RecordValue, terminal.screen());
     }
   } catch (error) {
     failures.push(error);
@@ -312,5 +330,5 @@ async function runTurns(options: { family: Family; provider: ReceiptGitProvider;
 }
 
 
-export { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns };
+export { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns, renameWhenReleased };
 export type { Family, RecordValue };
