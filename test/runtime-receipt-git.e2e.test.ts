@@ -8,9 +8,10 @@ import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
+import { gitReadersFinished } from "./support/GitTrace.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
-import { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns, traceGit, gitReadersFinished, type Family, type RecordValue } from "./support/ReceiptGitScenario.ts";
+import { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns, traceGit, type Family, type RecordValue } from "./support/ReceiptGitScenario.ts";
 
 test("real Pi receipts report only the response delta with bounded Git metadata", { timeout: 420_000 }, async (t: TestContext) => {
   const failures: unknown[] = [];
@@ -365,7 +366,7 @@ test("real Pi receipts report only the response delta with bounded Git metadata"
         verify: async receipt => {
           assert.equal(fileSummary(receipt.changes).state, "available");
           // Pi's startup footer scans can outlast this short response, and Windows cannot move .git under them.
-          await gitReadersFinished(trace, t.signal);
+          t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-metadata-replacement", gitReaders: await gitReadersFinished(trace, t.signal) }));
           renameSync(path.join(family.project, ".git"), path.join(family.directory, "original.git"));
           git(family.directory, "init", "-q", "--separate-git-dir", path.join(family.directory, "replacement.git"), family.project);
           git(family.project, "config", "core.autocrlf", "false");

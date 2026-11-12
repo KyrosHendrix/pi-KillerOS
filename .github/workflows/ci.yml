@@ -120,19 +120,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Branch protection requires this check name.
-  quality:
-    name: Quality
-    needs: [quality-checks, quality-tests]
-    if: always()
-    runs-on: windows-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require every quality job
-        run: |
-          test "${{ needs.quality-checks.result }}" = success
-          test "${{ needs.quality-tests.result }}" = success
-
   pi-latest:
     # Quality tests the locked Pi minimum. This job type-checks the newest Pi in the peer range;
     # pi-latest-tests repeats the runtime suites, sharded like Quality, only when that install differs from the lockfile.
@@ -243,15 +230,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  pi-latest-suite:
-    # Branch protection requires this check: the shards may skip only when the newest Pi matches the lockfile.
-    name: Pi compatibility (latest) suite
-    needs: [pi-latest, pi-latest-tests]
+  # Branch protection requires this check name. It fails unless every quality job passed, the newest-Pi
+  # check passed, and the newest-Pi shards either all passed or were skipped because that Pi matches the lockfile.
+  quality:
+    name: Quality
+    needs: [quality-checks, quality-tests, pi-latest, pi-latest-tests]
     if: always()
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
-      - name: Require the compatibility check and every shard it started
+      - name: Require every quality job
+        run: |
+          test "${{ needs.quality-checks.result }}" = success
+          test "${{ needs.quality-tests.result }}" = success
+
+      - name: Require the newest-Pi check and every shard it started
+        if: always()
         env:
           FULL_SUITE: ${{ needs.pi-latest.outputs.full-suite }}
           LATEST: ${{ needs.pi-latest.result }}
