@@ -314,8 +314,11 @@ test("ESLint configuration ignores private artifacts without excluding repositor
 test("CI blocks moderate dependency advisories without running lifecycle scripts", () => {
   assert.match(ci, /npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund/u);
   assert.match(ci, /npm ci --ignore-scripts/u);
-  // Every job that runs repository code runs on Windows. Static analysis runs none, so it uses Linux.
-  const staticAnalysis = new Set(["audit", "codeql"]);
+  // The audit needs no install, so it runs in Quality checks before one and fails fast.
+  const checks = ciJob("quality-checks");
+  assert.ok(checks.indexOf("npm audit --audit-level=moderate") < checks.indexOf("run: npm ci --ignore-scripts"));
+  // Every job that runs repository code runs on Windows. The gate and static analysis run none, so they use Linux.
+  const staticAnalysis = new Set(["quality", "codeql"]);
   for (const workflow of [ci, release]) {
     const jobs = [...workflow.slice(workflow.search(/^jobs:\s*$/mu)).matchAll(/^  ([\w-]+):\r?\n(?:(?: {4,}.*)?\r?\n)*/gmu)];
     assert.ok(jobs.length > 0);
@@ -337,7 +340,7 @@ function ciJob(name: string): string {
   return source;
 }
 
-test("CI and releases use the pinned Node.js version with one aggregated Windows quality check", () => {
+test("CI and releases use the pinned Node.js version with one aggregated quality check", () => {
   const nodeVersion = readFileSync(new URL("../.node-version", import.meta.url), "utf8").trim();
   assert.equal(nodeVersion, "26.13.0");
   assert.equal(packageJson.engines.node, `>=${nodeVersion} <27`);
@@ -350,7 +353,7 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
   assert.deepEqual([...ci.slice(jobsStart).matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
-    ["quality-checks", "quality-tests", "pi-latest", "pi-latest-tests", "quality", "audit", "codeql"]);
+    ["quality-checks", "quality-tests", "pi-latest", "pi-latest-tests", "quality", "codeql"]);
 
   // Branch protection requires "Quality", the only gate. It passes only when every quality job passed, the newest-Pi
   // check passed, and the newest-Pi shards either all passed or skipped because that Pi matches the lockfile.
@@ -401,6 +404,36 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
     assert.match(source, /^          retention-days: 7$/mu);
     assert.ok(source.indexOf("Upload test failure reports") > source.indexOf(suite));
   }
+});
+
+test("a push to main skips only work its pull request already ran on the same files", () => {
+  const action = readFileSync(new URL("../.github/actions/tested-tree/action.yml", import.meta.url), "utf8");
+  // Skipping requires a push to main, a merge whose files equal its second parent's, that parent being the
+  // merged pull request's head, and a successful pull request run of this workflow on it.
+  assert.match(action, /\[ "\$GITHUB_EVENT_NAME" = push \] && \[ "\$GITHUB_REF" = refs\/heads\/main \]/u);
+  assert.match(action, /\.parents\[1\]\.sha \/\/ empty/u);
+  assert.match(action, /\.merge_commit_sha == \\"\$GITHUB_SHA\\" and \.base\.ref == \\"main\\" and \.head\.sha == \\"\$head\\"/u);
+  assert.match(action, /actions\/workflows\/ci\.yml\/runs\?head_sha=\$head&event=pull_request&status=success/u);
+  assert.match(action, /\[ -n "\$tree" \] && \[ "\$tree" = "\$head_tree" \] && \[ "\$\{merged:-0\}" -ge 1 \] && \[ "\$\{passed:-0\}" -ge 1 \]; then skip=true; fi/u);
+  // A failed lookup must leave skip false instead of failing or skipping the job.
+  assert.equal((action.match(/\|\| true\)/gu) ?? []).length, 5, "Every lookup tolerates failure");
+  assert.match(action, /^        skip=false$/mu);
+  assert.match(ci, /^permissions:\r?\n  actions: read\r?\n  contents: read\r?\n  pull-requests: read\r?$/mu);
+
+  // The three jobs that start the pull request's work look the tree up right after checkout, and every later
+  // step except the failure upload runs only without a match. The newest-Pi shards follow pi-latest's output.
+  for (const job of ["quality-checks", "quality-tests", "pi-latest"]) {
+    const steps = ciJob(job).split(/\r?\n(?= {6}- name: )/u).slice(1);
+    assert.match(steps[0] ?? "", /^ {6}- name: Check out source/u, job);
+    assert.match(steps[1] ?? "", /^ {6}- name: Skip a tree its pull request already tested\r?\n {8}id: tested\r?\n {8}uses: \.\/\.github\/actions\/tested-tree/u, job);
+    for (const step of steps.slice(2)) {
+      const condition = /^ {6}- name: (.+)\r?\n {8}if: (.+?)\r?$/mu.exec(step);
+      assert.equal(condition?.[2], condition?.[1] === "Upload test failure reports" ? "failure()" : "steps.tested.outputs.skip != 'true'",
+        `${job}: ${step.split(/\r?\n/u)[0]}`);
+    }
+  }
+  for (const job of ["pi-latest-tests", "quality", "codeql"]) assert.doesNotMatch(ciJob(job), /tested-tree|steps\.tested/u, job);
+  assert.match(readme, /A merge to `main` whose files already passed CI on its pull request skips the repeat/u);
 });
 
 test("CI checks the newest peer-range Pi with matched runtime packages and a stable required-check name", () => {
@@ -475,7 +508,7 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
 
 test("quality checks validate current metadata and test the release-pinned npm lifecycle", () => {
   const qualityJob = ciJob("quality-checks");
-  assert.match(qualityJob, /- name: Validate release metadata\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
+  assert.match(qualityJob, /- name: Validate release metadata\s+if: .+\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
   assert.equal((qualityJob.match(/KILLEROS_RELEASE:/gu) ?? []).length, 1);
   assert.doesNotMatch(ci.split("jobs:")[0], /KILLEROS_RELEASE/u);
   assert.doesNotMatch(qualityJob.split("steps:")[0], /KILLEROS_RELEASE/u);
@@ -483,9 +516,9 @@ test("quality checks validate current metadata and test the release-pinned npm l
   assert.ok(publishingNpm);
   assert.match(release, /npm prefix --global >> "\$GITHUB_PATH"/u);
   assert.ok(qualityJob.includes(`npm@${publishingNpm}`));
-  assert.match(qualityJob, /- name: Provision publishing npm\s+run: npm install/u);
+  assert.match(qualityJob, /- name: Provision publishing npm\s+if: .+\s+run: npm install/u);
   assert.match(qualityJob, /npm install --prefix "\$RUNNER_TEMP\/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@/u);
-  assert.match(qualityJob, /- name: Test publication lifecycle with publishing npm\s+env:\s+KILLEROS_TEST_NPM_CLI: \$\{\{ runner\.temp \}\}\/killeros-publishing-npm\/node_modules\/npm\/bin\/npm-cli\.js\s+run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test\/verify-release\.test\.ts/u);
+  assert.match(qualityJob, /- name: Test publication lifecycle with publishing npm\s+if: .+\s+env:\s+KILLEROS_TEST_NPM_CLI: \$\{\{ runner\.temp \}\}\/killeros-publishing-npm\/node_modules\/npm\/bin\/npm-cli\.js\s+run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test\/verify-release\.test\.ts/u);
   assert.doesNotMatch(qualityJob, /npm install --global/u);
   const lifecycleTests = readFileSync(new URL("./verify-release.test.ts", import.meta.url), "utf8");
   assert.match(lifecycleTests, /test\("publication lifecycle /u, "The pinned-npm entry point must select a retained test");
