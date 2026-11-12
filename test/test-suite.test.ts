@@ -142,8 +142,9 @@ test("dry run prints every shard without running tests", () => {
   const output = execFileSync(process.execPath, ["--experimental-strip-types", "scripts/test-suite.ts", "--shard", "2/3", "--dry-run"], { cwd: root, encoding: "utf8" });
   assert.match(output, /^shard 1\/3: ~\d+s$/mu);
   assert.match(output, /^shard 3\/3: ~\d+s$/mu);
-  assert.match(output, /^ {2}Footer\.e2e#1 ~\d+s$/mu);
-  assert.match(output, /^ {2}Footer\.e2e#rest ~\d+s$/mu);
+  // Which files split depends on the recorded timings, so match any split file's listed and remaining units.
+  assert.match(output, /^ {2}\S+#1 ~\d+s$/mu);
+  assert.match(output, /^ {2}\S+#rest ~\d+s$/mu);
   assert.doesNotMatch(output, /ℹ tests/u, "A dry run must not start the test runner");
 });
 
