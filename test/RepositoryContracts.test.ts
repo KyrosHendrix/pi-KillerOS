@@ -368,7 +368,7 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
   assert.match(checks, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
   assert.match(checks, /^        run: npm run check$/mu);
 
-  // npm test and every shard run through scripts/test-suite.ts; shards run three units at a time and add
+  // npm test and every shard run through scripts/test-suite.ts; shards run two units at a time and add
   // the lifecycle repeats. Quality and pi-latest-tests run the same shards with the same command.
   const shardCommands = (["quality-tests", "pi-latest-tests"] as const).map((job) => {
     const source = ciJob(job);
@@ -379,7 +379,7 @@ test("CI and releases use the pinned Node.js version with one aggregated Windows
     assert.match(source, new RegExp(`^    name: .+ \\(\\$\\{\\{ matrix\\.shard \\}\\}/${shards.length}\\)$`, "mu"));
     assert.match(source, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
     const matrixShard = ["$", "{{ matrix.shard }}"].join("");
-    const command = `node --experimental-strip-types scripts/test-suite.ts --shard ${matrixShard}/${shards.length} --concurrency 3 --lifecycle-repeats 2`;
+    const command = `node --experimental-strip-types scripts/test-suite.ts --shard ${matrixShard}/${shards.length} --concurrency 2 --lifecycle-repeats 2`;
     assert.ok(source.split(/\r?\n/u).includes(`        run: ${command}`), `${job} must run: ${command}`);
     assert.doesNotMatch(source, /--test-force-exit/u, `${job}: lifecycle flags belong to scripts/test-suite.ts`);
     return command;

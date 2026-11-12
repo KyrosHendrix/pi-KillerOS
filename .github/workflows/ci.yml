@@ -80,7 +80,7 @@ jobs:
           retention-days: 7
 
   # scripts/test-suite.ts balances test units by measured duration across the shards, and each runner
-  # runs three units at a time. --lifecycle-repeats adds two runs of each lifecycle listed in scripts/test-suite.ts,
+  # runs two units at a time. --lifecycle-repeats adds two runs of each lifecycle listed in scripts/test-suite.ts,
   # without --test-force-exit, so a leaked handle or child process hangs that repeat.
   quality-tests:
     name: Quality tests (${{ matrix.shard }}/3)
@@ -108,7 +108,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test shard
-        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/3 --concurrency 3 --lifecycle-repeats 2
+        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/3 --concurrency 2 --lifecycle-repeats 2
 
       - name: Upload test failure reports
         if: failure()
@@ -218,7 +218,7 @@ jobs:
         run: git diff --exit-code -- package.json package-lock.json
 
       - name: Test shard against matched Pi
-        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/3 --concurrency 3 --lifecycle-repeats 2
+        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/3 --concurrency 2 --lifecycle-repeats 2
 
       - name: Upload test failure reports
         if: failure()
