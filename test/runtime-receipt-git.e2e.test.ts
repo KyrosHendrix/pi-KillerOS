@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createPipeServer, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
-import { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns, type Family, type RecordValue } from "./support/ReceiptGitScenario.ts";
+import { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns, traceGit, gitReadersFinished, type Family, type RecordValue } from "./support/ReceiptGitScenario.ts";
 
 test("real Pi receipts report only the response delta with bounded Git metadata", { timeout: 420_000 }, async (t: TestContext) => {
   const failures: unknown[] = [];
@@ -355,14 +355,17 @@ test("real Pi receipts report only the response delta with bounded Git metadata"
     const family = createFamily(repositoryRoot, "metadata-replacement");
     directories.push(family.directory);
     initRepository(family.project);
+    const trace = traceGit(family);
     const provider = new ReceiptGitProvider();
     try {
       writeProviderConfig(family.agent, await provider.listen());
       await runTurns({ family, provider, signal: t.signal, turns: [{
         label: "original metadata turn", step: { kind: "text", content: "Original metadata response." },
         doneWhen: screen => screen.includes("Original metadata response."), mutate: () => {},
-        verify: receipt => {
+        verify: async receipt => {
           assert.equal(fileSummary(receipt.changes).state, "available");
+          // Pi's startup footer scans can outlast this short response, and Windows cannot move .git under them.
+          await gitReadersFinished(trace, t.signal);
           renameSync(path.join(family.project, ".git"), path.join(family.directory, "original.git"));
           git(family.directory, "init", "-q", "--separate-git-dir", path.join(family.directory, "replacement.git"), family.project);
           git(family.project, "config", "core.autocrlf", "false");
@@ -385,6 +388,26 @@ test("real Pi receipts report only the response delta with bounded Git metadata"
       errors: failures, diagnostics: JSON.stringify({ platform: process.platform, node: process.version, pi: piVersion, diagnostics }) });
   }
   for (const directory of directories) await removeDirectoryEventually(directory);
+});
+
+test("the Git reader wait holds while a traced Git process runs and through the quiet period after it exits", async t => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-receipt-trace-"));
+  t.after(() => removeDirectoryEventually(directory));
+  const trace = path.join(directory, "git-trace2.jsonl");
+  const event = (name: string, sid: string): void => appendFileSync(trace, JSON.stringify({ event: name, sid }) + "\n");
+  let finishedAt: number | undefined;
+  const finished = gitReadersFinished(trace, t.signal, 200).then(() => { finishedAt = Date.now(); });
+  await delay(300);
+  assert.equal(finishedAt, undefined, "No Git process has been traced yet");
+  event("start", "first");
+  event("exit", "first");
+  event("start", "second");
+  await delay(300);
+  assert.equal(finishedAt, undefined, "A second scan that is still running holds the wait");
+  const exitedAt = Date.now();
+  event("exit", "second");
+  await finished;
+  assert.ok(finishedAt !== undefined && finishedAt - exitedAt >= 200, "The wait outlasts the quiet period after the last exit");
 });
 
 test("real Pi receipt never executes repository-controlled Git code or filters", { timeout: 420_000 }, async (t: TestContext) => {

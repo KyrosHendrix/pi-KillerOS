@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { parseGoalState } from "../killeros/goal-state.ts";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { PiRpcProcess } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
@@ -503,7 +504,10 @@ test("a native provider failure saves a sanitized paused goal and one error noti
   });
 });
 
-/** Saved goal states for goals.restore-validation. Each vector is its own test, with one Pi launch. */
+/**
+ * Saved goal states for goals.restore-validation. Restore accepts exactly what parseGoalState accepts, so
+ * every vector is checked against the parser in-process. Two vectors also launch Pi to prove the wiring.
+ */
 const restoreValidationVectors = (() => {
   const now = Date.now();
   const common = { version: 1, revision: 1, objective: "Reject contradictory state", createdAt: now, updatedAt: now,
@@ -540,15 +544,27 @@ const restoreValidationVectors = (() => {
   return vectors;
 })();
 
-test("malformed saved goal vectors cover every rejected and accepted shape", t => {
-  assert.equal(restoreValidationVectors.length, 20, "Persisted report vectors are independently selectable in goals.report-validation");
-  assert.equal(new Set(restoreValidationVectors.map(vector => vector.label)).size, 20, "Vector labels name one test each");
-  assert.equal(restoreValidationVectors.filter(vector => vector.valid).length, 5);
+test("the saved goal parser rejects every malformed vector and accepts every legacy shape", t => {
+  assert.equal(restoreValidationVectors.length, 20);
+  assert.equal(new Set(restoreValidationVectors.map(vector => vector.label)).size, 20, "Vector labels are distinct");
+  for (const vector of restoreValidationVectors) {
+    const parsed = parseGoalState(vector.state);
+    if (!vector.valid) {
+      assert.equal(parsed, undefined, `${vector.label} must be rejected`);
+      continue;
+    }
+    assert.ok(parsed, `${vector.label} must be accepted`);
+    assert.equal(parsed.objective, vector.state.objective, vector.label);
+    assert.deepEqual(parsed.verification, vector.state.verification, `${vector.label} keeps its file proof`);
+    assert.equal(parsed.maxTurns, vector.state.maxTurns, vector.label);
+    assert.ok(!Object.hasOwn(parsed, "completionCheck"), `${vector.label} drops the retired completion check`);
+  }
   t.diagnostic(JSON.stringify({ scenarioId: "goals.restore-validation", validationVectors: 20,
-    piLaunches: 20, providerRequests: 15, fixtureGitLaunches: 0, nestedChildAccounting: "pending" }));
+    piLaunches: 2, providerRequests: 2, fixtureGitLaunches: 0, nestedChildAccounting: "pending" }));
 });
 
-for (const vector of restoreValidationVectors) {
+// One rejected and one accepted vector prove that restore applies the parser's verdict in a real Pi.
+for (const vector of restoreValidationVectors.filter(candidate => ["contradiction-1", "legacy-check"].includes(candidate.label))) {
   test(`malformed saved goals and unsafe reports fail closed before dispatch (${vector.label})`, { timeout: 60_000 }, async t => {
     const probeRejectedGoal = vector.label.startsWith("contradiction-")
       || ["unsafe-revision", "unsafe-turns", "unsafe-duration"].includes(vector.label);

@@ -209,8 +209,43 @@ type Turn = {
   receiptDelta?: 0 | 1;
   screenMarker?: string;
   afterSettlement?: () => void;
-  verify: (receipt: RecordValue, screen: string) => void;
+  verify: (receipt: RecordValue, screen: string) => void | Promise<void>;
 };
+
+/** Records the Git children this family's Pi starts in a trace2 event file and returns its path. */
+function traceGit(family: Family): string {
+  const trace = path.join(family.directory, "git-trace2.jsonl");
+  family.env.GIT_TRACE2_EVENT = trace;
+  return trace;
+}
+
+/**
+ * Resolves once every Git child in `trace` has exited and none has started for `quietMs`.
+ *
+ * Windows refuses to move a directory while a Git child has a file inside it open, so a scenario that
+ * moves .git under a running Pi waits here first. Pi's first footer scan of a new repository changes
+ * .git/objects, which its own watcher answers with a second scan 250 ms later. The quiet period
+ * outlasts that debounce, so the wait cannot end in the gap between the two scans.
+ */
+async function gitReadersFinished(trace: string, signal: AbortSignal, quietMs = 750): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let seen = "";
+  let changedAt = Date.now();
+  while (true) {
+    const contents = existsSync(trace) ? readFileSync(trace, "utf8") : "";
+    if (contents !== seen) {
+      seen = contents;
+      changedAt = Date.now();
+    }
+    // Git appends whole lines; a line still being written is counted on the next read.
+    const events = contents.slice(0, contents.lastIndexOf("\n") + 1).split("\n").filter(Boolean)
+      .map((line): unknown => JSON.parse(line)).filter(isRecord).map((entry) => entry.event);
+    const running = events.filter((event) => event === "start").length - events.filter((event) => event === "exit").length;
+    if (events.length > 0 && running === 0 && Date.now() - changedAt >= quietMs) return;
+    assert.ok(Date.now() < deadline, `Git readers did not finish: ${running} still running after ${events.length} trace events`);
+    await delay(25, undefined, { signal });
+  }
+}
 
 // Loaded after KillerOS: Pi awaits settlement handlers in extension order, including receipt persistence.
 const settlementObserverSource = String.raw`import { writeFileSync, renameSync } from "node:fs";
@@ -289,7 +324,7 @@ async function runTurns(options: { family: Family; provider: ReceiptGitProvider;
       const receipts = sessionReceipts(sessionFile);
       assert.equal(receipts.length, receiptsBefore + (turn.receiptDelta ?? 1), `Turn "${turn.label}" appends its expected receipt count`);
       if (turn.screenMarker) await terminal.waitForScreen(screen => screen.includes(turn.screenMarker ?? ""), { signal: options.signal });
-      turn.verify(receipts.at(-1) as RecordValue, terminal.screen());
+      await turn.verify(receipts.at(-1) as RecordValue, terminal.screen());
     }
   } catch (error) {
     failures.push(error);
@@ -312,5 +347,5 @@ async function runTurns(options: { family: Family; provider: ReceiptGitProvider;
 }
 
 
-export { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns };
+export { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns, traceGit, gitReadersFinished };
 export type { Family, RecordValue };
