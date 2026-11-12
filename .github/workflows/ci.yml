@@ -83,13 +83,13 @@ jobs:
   # runs two units at a time. --lifecycle-repeats adds two runs of each lifecycle listed in scripts/test-suite.ts,
   # without --test-force-exit, so a leaked handle or child process hangs that repeat.
   quality-tests:
-    name: Quality tests (${{ matrix.shard }}/15)
+    name: Quality tests (${{ matrix.shard }}/3)
     runs-on: windows-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [1, 2, 3]
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,7 +108,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test shard
-        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/15 --concurrency 2 --lifecycle-repeats 2
+        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/3 --concurrency 2 --lifecycle-repeats 2
 
       - name: Upload test failure reports
         if: failure()
@@ -193,7 +193,7 @@ jobs:
         run: npm run check
 
   pi-latest-tests:
-    name: Pi compatibility (latest) tests (${{ matrix.shard }}/15)
+    name: Pi compatibility (latest) tests (${{ matrix.shard }}/3)
     needs: pi-latest
     if: needs.pi-latest.outputs.full-suite == 'true'
     runs-on: windows-latest
@@ -201,7 +201,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [1, 2, 3]
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -231,7 +231,7 @@ jobs:
         run: git diff --exit-code -- package.json package-lock.json
 
       - name: Test shard against matched Pi
-        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/15 --concurrency 2 --lifecycle-repeats 2
+        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/3 --concurrency 2 --lifecycle-repeats 2
 
       - name: Upload test failure reports
         if: failure()
