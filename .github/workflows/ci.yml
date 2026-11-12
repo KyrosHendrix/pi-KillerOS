@@ -15,8 +15,11 @@ on:
   workflow_dispatch:
 
 # Keep the default token read-only. Jobs that need an additional scope declare it locally.
+# The tested-tree lookup reads this push's pull request and that pull request's workflow runs.
 permissions:
+  actions: read
   contents: read
+  pull-requests: read
 
 # Cancel obsolete runs for the same event ref.
 concurrency:
@@ -43,28 +46,42 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Skip a tree its pull request already tested
+        id: tested
+        uses: ./.github/actions/tested-tree
+
       - name: Set up Node.js
+        if: steps.tested.outputs.skip != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26.13.0'
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Audit locked dependencies
+        if: steps.tested.outputs.skip != 'true'
+        run: npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund
+
       - name: Install dependencies
+        if: steps.tested.outputs.skip != 'true'
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Type-check
+        if: steps.tested.outputs.skip != 'true'
         run: npm run check
 
       - name: Validate release metadata
+        if: steps.tested.outputs.skip != 'true'
         env:
           KILLEROS_RELEASE: 'true'
         run: node --experimental-strip-types scripts/verify-release.ts
 
       - name: Provision publishing npm
+        if: steps.tested.outputs.skip != 'true'
         run: npm install --prefix "$RUNNER_TEMP/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@11.5.1
 
       - name: Test publication lifecycle with publishing npm
+        if: steps.tested.outputs.skip != 'true'
         env:
           KILLEROS_TEST_NPM_CLI: ${{ runner.temp }}/killeros-publishing-npm/node_modules/npm/bin/npm-cli.js
         run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test/verify-release.test.ts
@@ -83,13 +100,13 @@ jobs:
   # runs two units at a time. --lifecycle-repeats adds two runs of each lifecycle listed in scripts/test-suite.ts,
   # without --test-force-exit, so a leaked handle or child process hangs that repeat.
   quality-tests:
-    name: Quality tests (${{ matrix.shard }}/3)
+    name: Quality tests (${{ matrix.shard }}/6)
     runs-on: windows-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,7 +114,12 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Skip a tree its pull request already tested
+        id: tested
+        uses: ./.github/actions/tested-tree
+
       - name: Set up Node.js
+        if: steps.tested.outputs.skip != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26.13.0'
@@ -105,10 +127,12 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
+        if: steps.tested.outputs.skip != 'true'
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test shard
-        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/3 --concurrency 2 --lifecycle-repeats 2
+        if: steps.tested.outputs.skip != 'true'
+        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/6 --concurrency 2 --lifecycle-repeats 2
 
       - name: Upload test failure reports
         if: failure()
@@ -136,7 +160,12 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Skip a tree its pull request already tested
+        id: tested
+        uses: ./.github/actions/tested-tree
+
       - name: Set up Node.js
+        if: steps.tested.outputs.skip != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26.13.0'
@@ -144,9 +173,11 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install locked dependencies
+        if: steps.tested.outputs.skip != 'true'
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Install matched Pi packages
+        if: steps.tested.outputs.skip != 'true'
         id: pi
         env:
           PI_TARGET: '>=1.5.2 <2'
@@ -174,13 +205,15 @@ jobs:
           '
 
       - name: Verify package files are unchanged
+        if: steps.tested.outputs.skip != 'true'
         run: git diff --exit-code -- package.json package-lock.json
 
       - name: Type-check against matched Pi
+        if: steps.tested.outputs.skip != 'true'
         run: npm run check
 
   pi-latest-tests:
-    name: Pi compatibility (latest) tests (${{ matrix.shard }}/3)
+    name: Pi compatibility (latest) tests (${{ matrix.shard }}/6)
     needs: pi-latest
     if: needs.pi-latest.outputs.full-suite == 'true'
     runs-on: windows-latest
@@ -188,7 +221,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -218,7 +251,7 @@ jobs:
         run: git diff --exit-code -- package.json package-lock.json
 
       - name: Test shard against matched Pi
-        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/3 --concurrency 2 --lifecycle-repeats 2
+        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/6 --concurrency 2 --lifecycle-repeats 2
 
       - name: Upload test failure reports
         if: failure()
@@ -236,7 +269,8 @@ jobs:
     name: Quality
     needs: [quality-checks, quality-tests, pi-latest, pi-latest-tests]
     if: always()
-    runs-on: windows-latest
+    # The gate runs no repository code, so it uses the faster Linux runner.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every quality job
@@ -253,26 +287,6 @@ jobs:
         run: |
           test "$LATEST" = success
           if [ "$FULL_SUITE" = true ]; then test "$SHARDS" = success; else test "$SHARDS" = skipped; fi
-
-  audit:
-    name: Dependency audit
-    # Static analysis runs no repository code, so it uses the faster Linux runner.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '26.13.0'
-
-      - name: Audit locked dependencies
-        run: npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund
 
   codeql:
     name: CodeQL

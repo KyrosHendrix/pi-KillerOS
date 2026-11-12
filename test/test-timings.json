@@ -194,7 +194,7 @@
   },
   "test/RepositoryContracts.test.ts": {
     "all shipped TypeScript entry points use strict checking": 0,
-    "CI and releases use the pinned Node.js version with one aggregated Windows quality check": 0,
+    "CI and releases use the pinned Node.js version with one aggregated quality check": 0,
     "CI blocks moderate dependency advisories without running lifecycle scripts": 0,
     "CI checks the newest peer-range Pi with matched runtime packages and a stable required-check name": 0,
     "ESLint configuration ignores private artifacts without excluding repository code": 0.7,
