@@ -163,6 +163,13 @@ function createFamily(name: string): Family {
     const value = Object.entries(process.env).find(([entry]) => entry.toLowerCase() === key.toLowerCase())?.[1];
     if (value !== undefined) env[key] = value;
   }
+  // An owned npm stand-in keeps a scripted check to one shell start instead of a real npm launch of about a second.
+  // `npm test` passes and writes the two-line checked.txt the lifecycle receipts count; any other npm command fails.
+  // KillerOS still observes real bash tool results. It sits outside the project so the receipt deltas stay exact.
+  const bin = path.join(directory, "check-bin");
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, "npm"), "#!/bin/sh\n[ \"$1\" = test ] || exit 1\nprintf 'one\\ntwo\\n' > checked.txt\n");
+  env.PATH = bin + path.delimiter + env.PATH;
   return { directory, project, agent, temporary, env };
 }
 
@@ -183,9 +190,7 @@ function initRepository(project: string): void {
   git(project, "init", "-q");
   git(project, "config", "core.autocrlf", "false");
   writeFileSync(path.join(project, "baseline.txt"), "baseline\n");
-  // Local scripts keep fixture checks from resolving the repository root's manifest upward.
-  writeFileSync(path.join(project, "package.json"), JSON.stringify({ name: "receipt-fixture", private: true,
-    scripts: { test: "node -e \"require('node:fs').writeFileSync('checked.txt', 'one\\ntwo\\n')\"", check: "node -e \"process.exit(1)\"" } }));
+  writeFileSync(path.join(project, "package.json"), JSON.stringify({ name: "receipt-fixture", private: true }));
   git(project, "add", ".");
   git(project, "commit", "-q", "-m", "baseline");
 }
