@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -212,21 +212,38 @@ type Turn = {
   verify: (receipt: RecordValue, screen: string) => void | Promise<void>;
 };
 
+/** Records the Git children this family's Pi starts in a trace2 event file and returns its path. */
+function traceGit(family: Family): string {
+  const trace = path.join(family.directory, "git-trace2.jsonl");
+  family.env.GIT_TRACE2_EVENT = trace;
+  return trace;
+}
+
 /**
- * Renames a path that a running Pi may be reading. Windows refuses to move a directory while a file
- * inside it is open, so a Git scan still in flight fails the move with EPERM or EBUSY until it exits.
- * Scans are short and coalesced, so the move is retried for two seconds before the denial is reported.
+ * Resolves once every Git child in `trace` has exited and none has started for `quietMs`.
+ *
+ * Windows refuses to move a directory while a Git child has a file inside it open, so a scenario that
+ * moves .git under a running Pi waits here first. Pi's first footer scan of a new repository changes
+ * .git/objects, which its own watcher answers with a second scan 250 ms later. The quiet period
+ * outlasts that debounce, so the wait cannot end in the gap between the two scans.
  */
-async function renameWhenReleased(from: string, to: string, signal?: AbortSignal): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      renameSync(from, to);
-      return;
-    } catch (error) {
-      const held = error instanceof Error && "code" in error && (error.code === "EPERM" || error.code === "EBUSY");
-      if (!held || attempt === 40) throw error;
-      await delay(50, undefined, { signal });
+async function gitReadersFinished(trace: string, signal: AbortSignal, quietMs = 750): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let seen = "";
+  let changedAt = Date.now();
+  while (true) {
+    const contents = existsSync(trace) ? readFileSync(trace, "utf8") : "";
+    if (contents !== seen) {
+      seen = contents;
+      changedAt = Date.now();
     }
+    // Git appends whole lines; a line still being written is counted on the next read.
+    const events = contents.slice(0, contents.lastIndexOf("\n") + 1).split("\n").filter(Boolean)
+      .map((line): unknown => JSON.parse(line)).filter(isRecord).map((entry) => entry.event);
+    const running = events.filter((event) => event === "start").length - events.filter((event) => event === "exit").length;
+    if (events.length > 0 && running === 0 && Date.now() - changedAt >= quietMs) return;
+    assert.ok(Date.now() < deadline, `Git readers did not finish: ${running} still running after ${events.length} trace events`);
+    await delay(25, undefined, { signal });
   }
 }
 
@@ -330,5 +347,5 @@ async function runTurns(options: { family: Family; provider: ReceiptGitProvider;
 }
 
 
-export { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns, renameWhenReleased };
+export { repositoryRoot, piVersion, ReceiptGitProvider, createFamily, git, initRepository, writeProviderConfig, isRecord, sessionReceipts, fileSummary, runTurns, traceGit, gitReadersFinished };
 export type { Family, RecordValue };

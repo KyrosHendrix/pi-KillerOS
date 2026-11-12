@@ -246,7 +246,7 @@
     "native receipt paths agree with Git across the conversion matrix (autocrlf true)": 1.3
   },
   "test/runtime-receipt-git.e2e.test.ts": {
-    "a repository move waits for a reader to release it and reports any other failure at once": 0.2,
+    "the Git reader wait holds while a traced Git process runs and through the quiet period after it exits": 0.8,
     "native receipt timeouts stay quiet and denied timing saves recover": 2.2,
     "native receipts preserve Windows alias and symlink safety": 3.9,
     "real Pi receipt bounds diff work, blob storage, and repository formats": 9.5,
