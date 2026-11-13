@@ -372,7 +372,13 @@ async function runObserverHooks(hooks: readonly KillerosHook[], ctx: ExtensionCo
   }
 }
 
-export function registerLifecycleHooks(pi: ExtensionAPI): void {
+/**
+ * Registers tool hooks now and returns the registration for `agent_settled` hooks.
+ * Pi awaits settled handlers in registration order, so the caller registers those hooks after KillerOS's own
+ * settlement handlers. A slow hook then cannot delay the receipt or completion sound, and files it edits stay out of the
+ * agent's change receipt.
+ */
+export function registerLifecycleHooks(pi: ExtensionAPI): () => void {
   let config: KillerosHookConfig = {};
   pi.on("session_start", (_event, ctx) => { config = loadKillerosConfig(ctx); });
 
@@ -395,8 +401,10 @@ export function registerLifecycleHooks(pi: ExtensionAPI): void {
     await runObserverHooks(hooks, ctx, hookEnvironment("tool_result", event.toolName, { input: event.input, isError: event.isError }));
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
-    const hooks = config.hooks?.agent_settled ?? [];
-    if (hooks.length > 0) await runObserverHooks(hooks, ctx, hookEnvironment("agent_settled"));
-  });
+  return () => {
+    pi.on("agent_settled", async (_event, ctx) => {
+      const hooks = config.hooks?.agent_settled ?? [];
+      if (hooks.length > 0) await runObserverHooks(hooks, ctx, hookEnvironment("agent_settled"));
+    });
+  };
 }

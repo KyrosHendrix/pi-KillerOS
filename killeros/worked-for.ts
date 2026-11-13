@@ -243,7 +243,7 @@ class WorkedForV4Component extends WidthCachedComponent {
     const lines = [
       `${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)} · ↑ ${formatTokens(data.tokens)} tokens${speedSuffix}${modelSuffix}`)}`,
     ];
-    if (data.changes.state === "unavailable") lines.push(theme.fg("dim", "Changes unavailable"));
+    if (data.changes.state === "unavailable") lines.push(theme.fg("dim", data.changes.reason === "head-changed" ? "Changes unavailable · HEAD moved" : "Changes unavailable"));
     else if (data.changes.totalFiles === 0) lines.push(theme.fg("dim", "No files changed"));
     else {
       const count = `${data.changes.totalFiles} ${data.changes.totalFiles === 1 ? "file" : "files"}`;
@@ -448,7 +448,8 @@ export function registerWorkedFor(pi: ExtensionAPI): void {
     // Earlier async session_tree handlers can delay our reset after Pi switches branches.
     if (generation !== lifecycleGeneration
       || !ctx.sessionManager.getBranch().some((entry) => entry.id === settled.leafId)) return;
-    if (changes.state === "unavailable" && changes.reason !== "not-git" && changes.reason !== "timeout" && !collectionNoticeShown) {
+    // A commit during the response moves HEAD. That is normal agent work, so the receipt line reports it without a warning.
+    if (changes.state === "unavailable" && changes.reason !== "not-git" && changes.reason !== "head-changed" && changes.reason !== "timeout" && !collectionNoticeShown) {
       collectionNoticeShown = true;
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");
     }

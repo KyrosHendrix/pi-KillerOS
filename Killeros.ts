@@ -52,10 +52,12 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerSlashAutocomplete(pi, commandResolver);
   const updateFooterPreference = registerFooter(pi, goalRuntime);
   registerCodexFastMode(pi);
-  registerLifecycleHooks(pi);
+  const registerSettledHooks = registerLifecycleHooks(pi);
   registerWorkedFor(pi);
   const goalCompaction = registerGoalSettlement(pi, goalRuntime);
   registerAutoCompaction(pi, { goal: goalCompaction, onPreferenceChange: updateFooterPreference });
   registerRequestActivity(pi);
   completionNotifications.register();
+  // Project agent_settled hooks run last, after the receipt, goal settlement, and completion sound.
+  registerSettledHooks();
 }
