@@ -1041,7 +1041,7 @@ for (const group of unsafeGroups) test(`handoff rejects ${group.name} output wit
     await f.prompt("/handoff");
     await f.assertSourceOnly(source.file);
     const notice = await f.waitForNotice(cursor, "unsafe content", `vector ${index + 1}`);
-    assert.equal(notice, "Handoff failed: The handoff summary contained unsafe content");
+    assert.match(notice, /^Handoff failed: The handoff summary contained unsafe content: (?:a recognized credential|a key: value line that names a password, token, secret, or API key|copied request or role framing)$/u);
     assert.equal(notice.includes(unsafe), false, "The notice never echoes the unsafe value");
     assert.deepEqual(SessionManager.open(source.file).getEntries(), before, "Rejected output leaves the source unchanged");
     assert.equal((await f.state()).sessionFile, source.file, "The source stays selected after each rejection");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { containsLikelySecret } from "../killeros/secret-detector.ts";
+import { containsLikelySecret, likelySecretCategory } from "../killeros/secret-detector.ts";
 
 // Handoff refuses to save a summary this detector flags, so each pattern needs a value that must match
 // and a near miss that must not. Handoff.e2e.test.ts covers the refusal in real Pi.
@@ -55,6 +55,15 @@ test("Markdown quotes and tables cannot hide an assignment", () => {
   assert.equal(containsLikelySecret(`> > password: ${"hunter2"}`), true, "Nested blockquote");
   assert.equal(containsLikelySecret(`| password | ${"hunter2"} |`), true, "Table row");
   assert.equal(containsLikelySecret(`| Setting | Value |\n| --- | --- |\n| api_key | ${"abc123"} |`), true, "Table body row");
+  assert.equal(containsLikelySecret(`| password | ${"hunter2"} | rotate after the release |`), true, "Table row with a third column");
+  assert.equal(containsLikelySecret(`- **password:** ${"hunter2"}`), true, "Colon inside the bold marker");
+  assert.equal(containsLikelySecret(`password: ${"hunter2"} # production`), true, "Trailing comment");
+});
+
+test("the category names the kind of match, never the value", () => {
+  assert.equal(likelySecretCategory(`ghp_${repeat("a", 36)}`), "a recognized credential");
+  assert.equal(likelySecretCategory(`password: ${"hunter2"}`), "a key: value line that names a password, token, secret, or API key");
+  assert.equal(likelySecretCategory("The token budget is 4,000."), undefined);
 });
 
 test("near misses and ordinary handoff prose are not credentials", () => {
@@ -71,6 +80,13 @@ test("near misses and ordinary handoff prose are not credentials", () => {
     "https://user@example.test/repo.git",
     "-----BEGIN PUBLIC KEY-----",
     "password:",
+    // A credential key followed by prose or a plain number is a summary line, not an assignment.
+    "- maxTokens: raised the handoff budget to 8192",
+    "- **Password**: reset flow now hashes with bcrypt",
+    "- Token: refresh rotation added in auth.ts",
+    "- `secretName`: references the vault entry, not the value",
+    "handoffMaxTokens: 8192",
+    "| Setting | Meaning |\n| --- | --- |\n| handoffMaxTokens | output budget for the summary |",
   ];
   for (const text of ordinary) assert.equal(containsLikelySecret(text), false, JSON.stringify(text));
 });

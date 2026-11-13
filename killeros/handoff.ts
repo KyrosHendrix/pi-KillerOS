@@ -5,7 +5,7 @@ import { readContextUsage } from "./pi-context.ts";
 import type { GoalRuntime, GoalState } from "./goal-model.ts";
 import { createKillerosSettingsStore, type KillerosSettings } from "./settings.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
-import { containsLikelySecret } from "./secret-detector.ts";
+import { likelySecretCategory } from "./secret-detector.ts";
 
 const HANDOFF_UNAVAILABLE = "/handoff is not available while an agent or /goal is running.";
 const HANDOFF_REQUEST_RESERVE_TOKENS = 1_024;
@@ -77,15 +77,18 @@ function sessionName(sourceName: string | undefined, focus: string, document: st
   return `${shortBase || "Handoff"} · handoff`;
 }
 
-/** Rejects credentials and copied request or role framing in generated output. */
-function containsUnsafeHandoffOutput(summary: string): boolean {
-  return containsLikelySecret(summary)
-    || /<\/?source-conversation>/iu.test(summary)
+/** Names what makes generated output unsafe: credentials, or copied request or role framing. Never returns the matched text. */
+function unsafeHandoffOutput(summary: string): string | undefined {
+  const secret = likelySecretCategory(summary);
+  if (secret) return secret;
+  return /<\/?source-conversation>/iu.test(summary)
     || /^[\t ]*(?:system|developer|assistant|user|tool)[\t ]*:/imu.test(summary)
     || /^[\t ]*#{1,6}[\t ]+(?:system|developer|assistant|user|tool)\b/imu.test(summary)
     || /<\|(?:system|developer|assistant|user|tool|im_start|im_end)\|>/iu.test(summary)
     || /\[(?:system|developer|assistant|user|tool)\]/iu.test(summary)
-    || /["']role["'][\t ]*:[\t ]*["'](?:system|developer|assistant|user|tool)["']/iu.test(summary);
+    || /["']role["'][\t ]*:[\t ]*["'](?:system|developer|assistant|user|tool)["']/iu.test(summary)
+    ? "copied request or role framing"
+    : undefined;
 }
 
 /** Accepts only positive integers. */
@@ -236,7 +239,8 @@ async function generateHandoffSummary(
 
   const summary = safeTerminalText(contentText(response.content)).trim();
   if (!summary) throw new Error("The handoff summary was empty");
-  if (containsUnsafeHandoffOutput(summary)) throw new Error("The handoff summary contained unsafe content");
+  const unsafe = unsafeHandoffOutput(summary);
+  if (unsafe) throw new Error(`The handoff summary contained unsafe content: ${unsafe}`);
   return summary;
 }
 
