@@ -119,6 +119,8 @@ interface GoalCommandScope {
   generation: number;
   initiatingState: GoalState | undefined;
   ownsGoal: () => boolean;
+  /** True until navigation, reload, a clear, or a later /goal command supersedes this one. The running turn settling does not. */
+  ownsCommand: () => boolean;
 }
 
 /** Shows the goal; in TUI mode it offers the controls that fit its status and runs the chosen one. */
@@ -330,7 +332,9 @@ async function editGoal(scope: GoalCommandScope, objective: string): Promise<voi
 
 /** Starts a goal, or replaces an unfinished one after confirmation, once Pi is idle. */
 async function startGoal(scope: GoalCommandScope, objective: string): Promise<void> {
-  const { pi, runtime, ctx, generation, ownsGoal } = scope;
+  // A confirmed replacement outlives the running turn: that turn records a decision or pauses the goal when it
+  // settles, which swaps the state object, so ownsGoal() would drop what the user just confirmed.
+  const { pi, runtime, ctx, generation, ownsCommand: ownsGoal } = scope;
   const unfinished = runtime.state && runtime.state.status !== "complete";
   if (unfinished) {
     if (!ctx.hasUI) {
@@ -373,12 +377,16 @@ async function startGoal(scope: GoalCommandScope, objective: string): Promise<vo
       const state = createNewGoalState(objective, sumGoalTokens(ctx), verification, Date.now(), {
         maxTurns: DEFAULT_GOAL_MAX_TURNS,
       });
-      persistGoalState(pi, runtime, unfinished ? "replace" : "set", state);
-      // The replacement supersedes any recovery still parked after waitForIdle().
+      // The settled turn may have completed the old goal while this command waited.
+      const replaced = runtime.state !== undefined && runtime.state.status !== "complete";
+      persistGoalState(pi, runtime, replaced ? "replace" : "set", state);
+      // The replacement supersedes the old goal's turn and any recovery still parked after waitForIdle().
+      endGoalTurn(runtime);
+      runtime.continuationScheduled = false;
       if (unfinished) runtime.automaticCompaction = undefined;
       if (runtime.continuationHeld === hold) runtime.continuationHeld = undefined;
       if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") {
-        ctx.ui.notify(`${unfinished ? "Goal replaced" : "Goal started"}. Each turn must record continue, complete, or a blocker decision before another turn starts.`, "info");
+        ctx.ui.notify(`${replaced ? "Goal replaced" : "Goal started"}. Each turn must record continue, complete, or a blocker decision before another turn starts.`, "info");
       }
     } catch (error) {
       if (!unfinished) {
@@ -421,6 +429,9 @@ export function registerGoalCommand(pi: ExtensionAPI, runtime: GoalRuntime): voi
     const generation = runtime.lifecycleGeneration;
     const initiatingState = runtime.state;
     const ownsGoal = (): boolean => runtime.lifecycleGeneration === generation && runtime.state === initiatingState;
+    if (command.kind !== "status") runtime.commandEpoch += 1;
+    const epoch = runtime.commandEpoch;
+    const ownsCommand = (): boolean => runtime.lifecycleGeneration === generation && runtime.commandEpoch === epoch;
 
     if (command.kind === "edit" && initiatingState?.status !== "active" && initiatingState?.status !== "paused") {
       const fallback = parseGoalObjectiveText(args.trim());
@@ -430,7 +441,7 @@ export function registerGoalCommand(pi: ExtensionAPI, runtime: GoalRuntime): voi
       }
       command = fallback;
     }
-    const scope: GoalCommandScope = { pi, runtime, ctx, generation, initiatingState, ownsGoal };
+    const scope: GoalCommandScope = { pi, runtime, ctx, generation, initiatingState, ownsGoal, ownsCommand };
     switch (command.kind) {
       case "status": return showGoalStatus(scope, (control) => handleGoalCommand(control, ctx));
       case "clear": return clearGoal(scope);

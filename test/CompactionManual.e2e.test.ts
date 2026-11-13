@@ -1373,7 +1373,7 @@ test("Manual compaction resumes only the exact marked goal after the interrupted
     await waitForCompactEvent(fixture, 2, "threshold", thresholdHook.sequence);
     await waitForSettlement(fixture, thresholdTurn, "native threshold prompt settlement");
     assertIdle(await currentState(fixture), "native threshold completion");
-    assertPausedMarker(fixture.sessionFile, "threshold compaction preserves manual eligibility");
+    const movedOn = assertNoManualMarker(fixture.sessionFile, "paused", "an ordinary request after the abort ends manual eligibility");
     assert.equal(continuationCount(fixture), primaryContinuation + 1, "threshold compaction sends no goal continuation");
     batch = await collectRpcBatch(fixture, rpcCursor);
     allNotifications.push(...notifications(batch));
@@ -1395,7 +1395,7 @@ test("Manual compaction resumes only the exact marked goal after the interrupted
     await waitForProvider(fixture, 7);
     await waitForSettlement(fixture, overflowTurn, "native overflow retry settlement");
     assertIdle(await currentState(fixture), "native overflow retry completion");
-    assertPausedMarker(fixture.sessionFile, "overflow compaction preserves manual eligibility");
+    assertNoManualMarker(fixture.sessionFile, "paused", "overflow compaction grants no manual eligibility");
     assert.equal(continuationCount(fixture), primaryContinuation + 1, "overflow compaction sends no goal continuation");
     batch = await collectRpcBatch(fixture, rpcCursor);
     allNotifications.push(...notifications(batch));
@@ -1408,39 +1408,33 @@ test("Manual compaction resumes only the exact marked goal after the interrupted
       `Record ordinary work before the later manual summary. ${"Keep this independent work in the history. ".repeat(40)}`, 8);
     await waitForSettlement(fixture, freshTurn, "fresh ordinary history after overflow");
     assertIdle(await currentState(fixture), "fresh ordinary history after overflow");
-    assertPausedMarker(fixture.sessionFile, "ordinary work preserves manual eligibility");
+    assertNoManualMarker(fixture.sessionFile, "paused", "later ordinary work grants no manual eligibility");
     batch = await collectRpcBatch(fixture, rpcCursor);
     allNotifications.push(...notifications(batch));
     assertNotifications(batch, [], "ordinary work before manual recovery");
     rpcCursor = fixture.rpc.currentSequence;
 
     fixture.provider.enqueue(textPlan("Pi completed the later manual summary."));
-    fixture.provider.enqueue(textPlan("The original marked logical turn resumed once."));
     const recoveryCursor = lastProbeSequence(fixture);
     const manualRecovery = beginManualCompact(fixture);
     const manualHook = await waitForBeforeCompact(fixture, 4, "manual", recoveryCursor);
     assertSummaryRequest(await waitForProvider(fixture, 9), "manual recovery after threshold and overflow");
     await waitForCompactEvent(fixture, 4, "manual", manualHook.sequence);
-    const recovered = await waitForProvider(fixture, 10);
-    assert.ok(JSON.stringify(recovered.body.messages).includes("Preserve this marked goal"));
-    assertResponseSuccess(await manualRecovery.result, "manual recovery after automatic compactions");
-    await waitForSettlement(fixture, manualHook.sequence, "goal settlement after automatic compactions");
-    assertIdle(await currentState(fixture), "manual recovery after threshold and overflow");
-    const recoveredState = assertNoManualMarker(fixture.sessionFile, "paused", "manual marker consumed only by successful manual compaction");
-    assert.equal(recoveredState.turns, 1);
-    assert.equal(continuationCount(fixture), primaryContinuation + 2,
-      "initial authorization and one same-turn recovery are the only goal continuations");
+    assertResponseSuccess(await manualRecovery.result, "manual compact after the user moved on");
+    assertIdle(await currentState(fixture), "manual compact after the user moved on");
+    assert.deepEqual(lastGoalState(fixture.sessionFile, "manual compact after the user moved on"), movedOn,
+      "a manual compaction that does not directly follow the abort leaves the paused goal untouched");
+    assert.equal(continuationCount(fixture), primaryContinuation + 1,
+      "the initial authorization is the only goal continuation; the old aborted turn never restarts");
     assert.equal(autoCompactionMessageCount(fixture), 0);
     batch = await collectRpcBatch(fixture, rpcCursor);
     allNotifications.push(...notifications(batch));
-    assertNotifications(batch, [expectedNotification("Manual compaction complete. The interrupted goal turn resumed.", "info"),
-      expectedNotification("Goal paused: no turn decision\nThe agent ended without choosing continue, complete, or blocked. Run /goal resume only after choosing to continue.", "error")],
-    "same-turn recovery after threshold and overflow");
+    assertNotifications(batch, [], "manual compact after the user moved on");
     rpcCursor = fixture.rpc.currentSequence;
 
     await switchSession(fixture, "marked-pause");
     fixture.provider.enqueue(heldPlan());
-    const markedTurn = await startGoal(fixture, "Pause this marked objective explicitly.", 11);
+    const markedTurn = await startGoal(fixture, "Pause this marked objective explicitly.", 10);
     const cancelledMarkedCompact = beginManualCompact(fixture);
     const markedHook = await waitForBeforeCompact(fixture, 5, "manual", markedTurn);
     await waitForSettlement(fixture, markedTurn, "marked goal settlement before explicit pause");
@@ -1458,12 +1452,12 @@ test("Manual compaction resumes only the exact marked goal after the interrupted
     const explicitPauseCompactCursor = lastProbeSequence(fixture);
     const explicitPauseCompact = beginManualCompact(fixture);
     const explicitPauseHook = await waitForBeforeCompact(fixture, 6, "manual", explicitPauseCompactCursor);
-    assertSummaryRequest(await waitForProvider(fixture, 12), "manual compact after explicit pause");
+    assertSummaryRequest(await waitForProvider(fixture, 11), "manual compact after explicit pause");
     await waitForCompactEvent(fixture, 6, "manual", explicitPauseHook.sequence);
     assertResponseSuccess(await explicitPauseCompact.result, "manual compact after explicit pause");
     assertIdle(await currentState(fixture), "manual compact after explicit pause");
     assertNoManualMarker(fixture.sessionFile, "paused", "later manual compact cannot revive an explicitly paused goal");
-    assert.equal(continuationCount(fixture), primaryContinuation + 3, "explicit pause and later compact add no continuation");
+    assert.equal(continuationCount(fixture), primaryContinuation + 2, "explicit pause and later compact add no continuation");
     batch = await collectRpcBatch(fixture, rpcCursor);
     allNotifications.push(...notifications(batch));
     assertNotifications(batch, [expectedGoalStart, expectedManualPause,
@@ -1473,7 +1467,7 @@ test("Manual compaction resumes only the exact marked goal after the interrupted
 
     await switchSession(fixture, "active-pause");
     fixture.provider.enqueue(heldPlan());
-    const activePauseTurn = await startGoal(fixture, "Pause this active goal before its request settles.", 13);
+    const activePauseTurn = await startGoal(fixture, "Pause this active goal before its request settles.", 12);
     const activePauseContinuations = continuationCount(fixture);
     const activePauseResponse = await commandResponse(fixture, "prompt", { message: "/goal pause" });
     assert.equal(responseData(activePauseResponse, "active goal pause").disposition, "handled");
@@ -1484,14 +1478,14 @@ test("Manual compaction resumes only the exact marked goal after the interrupted
     const activePauseCompactCursor = lastProbeSequence(fixture);
     const activePauseCompact = beginManualCompact(fixture);
     const activePauseHook = await waitForBeforeCompact(fixture, 7, "manual", activePauseCompactCursor);
-    assertSummaryRequest(await waitForProvider(fixture, 14), "manual compact after active user pause");
+    assertSummaryRequest(await waitForProvider(fixture, 13), "manual compact after active user pause");
     await waitForCompactEvent(fixture, 7, "manual", activePauseHook.sequence);
     assertResponseSuccess(await activePauseCompact.result, "manual compact after active user pause");
     assertIdle(await currentState(fixture), "manual compact after active user pause");
     assertNoManualMarker(fixture.sessionFile, "paused", "manual compaction cannot revive an active request cancelled by /goal pause");
     assert.equal(continuationCount(fixture), activePauseContinuations,
       "explicit pause cancellation and subsequent manual compaction send no additional continuation");
-    assert.equal(continuationCount(fixture), primaryContinuation + 4);
+    assert.equal(continuationCount(fixture), primaryContinuation + 3);
     batch = await collectRpcBatch(fixture, rpcCursor);
     allNotifications.push(...notifications(batch));
     assertNotifications(batch, [expectedGoalStart, expectedNotification("Goal paused. Run /goal resume to continue.", "info")],
@@ -1502,19 +1496,19 @@ test("Manual compaction resumes only the exact marked goal after the interrupted
     fixture.provider.enqueue({ kind: "complete", evidence: "The public goal tool accepted completion.", usageTokens: 500 });
     fixture.provider.enqueue(heldPlan());
     fixture.provider.enqueue(textPlan("Manual compaction after a terminal goal."));
-    const completeTurn = await startGoal(fixture, "Complete this goal through the real goal tool.", 15);
-    await waitForProvider(fixture, 16);
+    const completeTurn = await startGoal(fixture, "Complete this goal through the real goal tool.", 14);
+    await waitForProvider(fixture, 15);
     const completed = lastGoalState(fixture.sessionFile, "terminal goal before manual compaction");
     assert.equal(completed.status, "complete");
     assert.equal(completed.resumeAfterManualCompaction, undefined);
     const terminalContinuationCount = continuationCount(fixture);
-    assert.equal(terminalContinuationCount, primaryContinuation + 5);
+    assert.equal(terminalContinuationCount, primaryContinuation + 4);
     const terminalCompactCursor = lastProbeSequence(fixture);
     const terminalCompact = beginManualCompact(fixture);
     const terminalHook = await waitForBeforeCompact(fixture, 8, "manual", terminalCompactCursor);
     const terminalSettlement = await waitForSettlement(fixture, completeTurn, "completed goal request aborted for manual compaction");
     assert.equal(terminalSettlement.aborted, true);
-    assertSummaryRequest(await waitForProvider(fixture, 17), "manual compact after terminal completion");
+    assertSummaryRequest(await waitForProvider(fixture, 16), "manual compact after terminal completion");
     await waitForCompactEvent(fixture, 8, "manual", terminalHook.sequence);
     assertResponseSuccess(await terminalCompact.result, "manual compact after terminal goal");
     assertIdle(await currentState(fixture), "manual compact after terminal goal");
@@ -1527,7 +1521,7 @@ test("Manual compaction resumes only the exact marked goal after the interrupted
 
     await switchSession(fixture, "provider-error");
     fixture.provider.enqueue({ kind: "error", status: 503, message: "provider unavailable" });
-    const failedTurn = await startGoal(fixture, "Pause after a real provider error without a manual marker.", 18);
+    const failedTurn = await startGoal(fixture, "Pause after a real provider error without a manual marker.", 17);
     await waitForSettlement(fixture, failedTurn, "provider-error goal settlement");
     const providerFailed = assertNoManualMarker(fixture.sessionFile, "paused", "provider error leaves an unmarked paused goal");
     assert.equal(providerFailed.result, '503: {"message":"provider unavailable","type":"server_error"}');
@@ -1535,29 +1529,29 @@ test("Manual compaction resumes only the exact marked goal after the interrupted
     const errorCompactCursor = lastProbeSequence(fixture);
     const errorCompact = beginManualCompact(fixture);
     const errorHook = await waitForBeforeCompact(fixture, 9, "manual", errorCompactCursor);
-    assertSummaryRequest(await waitForProvider(fixture, 19), "manual compact after provider error");
+    assertSummaryRequest(await waitForProvider(fixture, 18), "manual compact after provider error");
     await waitForCompactEvent(fixture, 9, "manual", errorHook.sequence);
     assertResponseSuccess(await errorCompact.result, "manual compact after provider error");
     assertIdle(await currentState(fixture), "manual compact after provider error");
     assertNoManualMarker(fixture.sessionFile, "paused", "unmarked provider error cannot resume after manual compact");
-    assert.equal(continuationCount(fixture), primaryContinuation + 6);
+    assert.equal(continuationCount(fixture), primaryContinuation + 5);
     batch = await collectRpcBatch(fixture, rpcCursor);
     allNotifications.push(...notifications(batch));
     assertNotifications(batch, [expectedGoalStart,
       expectedNotification('Goal paused: 503: {"message":"provider unavailable","type":"server_error"}\nRun /goal resume after resolving the problem.', "error")],
     "provider error remains unmarked after manual compact");
 
-    assert.equal(fixture.provider.requests.length, 19, "native compactions, fresh ordinary history, and five goal workflows use the exact planned requests");
+    assert.equal(fixture.provider.requests.length, 18, "native compactions, fresh ordinary history, and five goal workflows use the exact planned requests");
     assert.equal(fixture.provider.remainingPlans, 0);
-    assert.deepEqual(fixture.provider.abortedRequests, [1, 11, 13, 16],
+    assert.deepEqual(fixture.provider.abortedRequests, [1, 10, 12, 15],
       "only the explicitly interrupted loopback requests are abandoned by manual compaction or /goal pause");
     assert.equal(compactionCount(addSessionPath(fixture, "primary")), 3,
       "the primary history records threshold, overflow, and later manual compactions");
     assert.equal(allNotifications.filter((notice) => notice.type === "warning" && notice.message === expectedManualPause.message).length, 2);
   }));
 
-  assert.deepEqual(histories.map((history) => history.providerRequests), [4, 19]);
-  assert.deepEqual(histories.map((history) => history.goalContinuations), [2, 6], "exact goal continuation counts survive orderly exit");
+  assert.deepEqual(histories.map((history) => history.providerRequests), [4, 18]);
+  assert.deepEqual(histories.map((history) => history.goalContinuations), [2, 5], "exact goal continuation counts survive orderly exit");
   assert.deepEqual(histories.map((history) => history.piLaunches), [1, 1]);
   assert.deepEqual(histories.map((history) => history.otherChildLaunches), [0, 0]);
   assert.ok(histories.every((history) => history.providerPlansRemaining === 0 && history.naturalExit && history.scratchRemoved));

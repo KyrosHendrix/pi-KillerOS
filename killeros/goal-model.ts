@@ -142,6 +142,8 @@ export interface GoalRuntime {
   lastStopReason?: string;
   lastError?: string;
   lifecycleGeneration: number;
+  /** Counts /goal commands that can change the goal, so a command waiting on a dialog or an idle Pi can tell a later one superseded it. */
+  commandEpoch: number;
   readonly changeListeners: Set<() => void>;
 }
 
@@ -155,6 +157,7 @@ export function createGoalRuntime(): GoalRuntime {
     automaticCompaction: undefined,
     persistenceRetryNeeded: false,
     lifecycleGeneration: 0,
+    commandEpoch: 0,
     changeListeners: new Set(),
   };
 }
