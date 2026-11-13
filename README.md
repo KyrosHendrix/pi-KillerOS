@@ -89,9 +89,36 @@ Or give the agent a checkable goal:
 - For supported single-file objectives such as the quoted `Create` example above, KillerOS requires the file to exist, or its content to change if it already existed. Multiple distinct file targets do not receive single-file proof. This does not prove every natural-language requirement. Saved goals without file proof keep that contract until you edit or replace the objective.
 - `/handoff` requires an idle saved session with no active goal. It saves a structured continuation summary, not the full transcript. The current saved objective and status become context in the linked child; no goal or agent turn starts automatically.
 - Missing or changed goal details, committed navigation, reload, or session replacement invalidate a pending handoff. Cancelled and no-op navigation preserve valid work.
-- Handoff rejects recognized credentials in generated output, including password assignments in Markdown blockquotes and tables. It cannot detect every secret or redact source context before it reaches your provider.
+- Handoff rejects recognized credentials in generated output, including password assignments in Markdown blockquotes and tables, and names the kind of match without showing it. It cannot detect every secret or redact source context before it reaches your provider.
 - Compaction triggers by default at 15% tokens remaining. Turning KillerOS compaction off doesn't disable Pi's own compaction.
 - Fast mode's footer label doesn't confirm OpenAI accepted the priority tier or guarantee faster responses.
+
+</details>
+
+<details>
+<summary>Project hooks and personal instructions</summary>
+
+Both features work only in a project you trust. KillerOS ignores them elsewhere and warns about ignored hooks.
+
+Project hooks run shell commands on Pi events. Put them in `.pi/killeros-hooks.json` inside the project, in a file of at most 64 KiB:
+
+```json
+{
+  "hooks": {
+    "tool_call": [{ "matcher": "^bash$", "command": "node scripts/check-command.js" }],
+    "tool_result": [{ "matcher": "^(write|edit)$", "command": "npm run lint --silent", "timeoutMs": 60000 }],
+    "agent_settled": [{ "command": "npm run format --silent" }]
+  }
+}
+```
+
+- `command` is required and runs in the project folder. `timeoutMs` is optional, from 1 to 300000, and defaults to 30000.
+- `matcher` is an optional regular expression tested against the tool name. Omit it or use `"*"` to match every tool. It is valid only for `tool_call` and `tool_result`.
+- A `tool_call` hook that exits with a nonzero code, or times out, blocks that tool call and shows its output. A failing `tool_result` or `agent_settled` hook is reported and blocks nothing.
+- Each hook receives `KILLEROS_EVENT`, `KILLEROS_TOOL`, and `KILLEROS_PAYLOAD`. The payload is JSON: the tool input for `tool_call`, and `{ "input", "isError" }` for `tool_result`. A payload over 8000 characters arrives as a truncated preview.
+- `agent_settled` hooks run after KillerOS saves the change receipt and plays the completion sound, so files a hook edits are not counted as the agent's changes. The next goal turn waits for these hooks to finish.
+
+Personal instructions are private additions to the system prompt. KillerOS appends `AGENTS.local.md` from the project folder, up to 32 KiB. If the file holds a single `@path` line, KillerOS appends that file in its place. The path must point inside Pi's agent directory and may start with `~/`. Keep `AGENTS.local.md` out of version control.
 
 </details>
 
@@ -100,6 +127,7 @@ Or give the agent a checkable goal:
 
 - KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged. Pi defaults to fullscreen. Use `--tui-mode regular` or `"tuiMode": "regular"` for terminal-owned scrollback. Your keybindings still apply.
 - Settings live in `%USERPROFILE%\.pi\agent\killeros.json`. The compaction defaults are `"autoCompaction": { "enabled": true, "percentRemaining": 15 }`. Fast mode isn't persisted.
+- `"handoffMaxTokens"` in `killeros.json` sets the output budget for a `/handoff` summary. It must be a positive integer and defaults to 8192. Lower it when `/handoff` reports that the session lacks context space.
 - Completion sounds are off by default. The tab-title indicator requires a Nerd Font.
 - Pi's native `--tools` and `--exclude-tools` support `*` patterns. Quote patterns such as `"killeros_*"` so the shell does not expand them. An explicit allowlist must include `question` for questions and permit `killeros_goal_update` for goals. Excluding the goal tool pauses goals. Use `--exclude-tools` rather than `-name` modifiers. See [tool selection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md#tools).
 - In Pi codemode, `tools.read()` returns an image block for images that you can pass to `image()`. See [codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md#call-tools).

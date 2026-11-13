@@ -150,9 +150,12 @@ test("real Pi receipts report only the response delta with bounded Git metadata"
               // Prepare commits before collection so this HEAD move emits no worktree event.
               git(family.project, "update-ref", "HEAD", nextHead);
             },
-            verify: (receipt) => {
-              assert.deepEqual(receipt.changes, { state: "unavailable", reason: "error" },
+            // The runner waits for the rendered receipt line, which names the HEAD move.
+            screenMarker: "Changes unavailable · HEAD moved",
+            verify: (receipt, screen) => {
+              assert.deepEqual(receipt.changes, { state: "unavailable", reason: "head-changed" },
                 "A HEAD update without worktree events fails the receipt closed");
+              assert.doesNotMatch(screen, /Change receipt unavailable/u, "A commit during the response is not a warning");
             },
           },
           {
@@ -788,7 +791,7 @@ test("real Pi receipt bounds diff work, blob storage, and repository formats", {
             verify: (receipt) => {
               const summary = fileSummary(receipt.changes);
               assert.equal(summary.state, "unavailable", "A HEAD update without worktree events invalidates the receipt");
-              assert.equal(summary.reason, "error", "The bounded error reason is reported");
+              assert.equal(summary.reason, "head-changed", "The HEAD move is reported as its own reason");
             },
           },
           {
@@ -1311,4 +1314,34 @@ export default function(pi){
   }
   t.diagnostic(JSON.stringify({ scenarioId: "runtime.receipt-timeout-save", piLaunches: 1, providerRequests: 4,
     blockedGitConnections: connections, nativeTimeout: true, writableRestored: true, cleanup: "natural" }));
+});
+
+test("an agent_settled project hook runs after the receipt, so its file edits stay out of the agent's changes", { timeout: 120_000 }, async (t: TestContext) => {
+  const family = createFamily(repositoryRoot, "settled-hook");
+  const provider = new ReceiptGitProvider();
+  try {
+    initRepository(family.project);
+    // The hook stands in for a formatter: it writes into the project every time the agent settles.
+    const script = path.join(family.directory, "settled-hook.cjs");
+    writeFileSync(script, "require('node:fs').writeFileSync('formatted.txt', 'formatted');\n");
+    mkdirSync(path.join(family.project, ".pi"), { recursive: true });
+    writeFileSync(path.join(family.project, ".pi", "killeros-hooks.json"),
+      JSON.stringify({ hooks: { agent_settled: [{ command: `"${process.execPath}" "${script}"` }] } }));
+    writeProviderConfig(family.agent, await provider.listen());
+    await runTurns({ family, provider, signal: t.signal, turns: [{
+      label: "hooked turn", step: { kind: "text", content: "Hooked response." },
+      doneWhen: (screen) => screen.includes("Hooked response."),
+      mutate: () => writeFileSync(path.join(family.project, "agent.txt"), "agent\n"),
+      verify: (receipt) => {
+        // The settlement observer loads after KillerOS, so the hook has finished by the time this runs.
+        assert.equal(readFileSync(path.join(family.project, "formatted.txt"), "utf8"), "formatted", "The hook ran at settlement");
+        assert.deepEqual(fileSummary(receipt.changes).files, [{ kind: "added", path: "agent.txt", additions: 1, deletions: 0 }],
+          "Only the agent's change is in the receipt");
+      },
+    }] });
+    assert.equal(provider.requests.length, 1);
+  } finally {
+    await provider.close();
+    await removeDirectoryEventually(family.directory);
+  }
 });

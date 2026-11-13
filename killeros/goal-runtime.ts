@@ -5,6 +5,7 @@ import {
   beginGoalTurnState,
   boundGoalText,
   checkpointActiveGoalState,
+  checkpointPausedGoalState,
   GOAL_VERSION,
   parseGoalState,
   pauseGoalState,
@@ -523,6 +524,17 @@ export function registerGoalRuntime(
     if (!runtime.goalTurnInFlight && isAutomationMode(ctx) && isSavedSession(ctx) && pauseGoalAtTurnLimit(pi, runtime, ctx)) return;
     const current = runtime.state;
     if (!isAutomationMode(ctx) || !isSavedSession(ctx) || !current) return;
+    if (current.status === "paused" && current.resumeAfterManualCompaction === true) {
+      // The aborted turn may resume only when /compact follows the abort directly. A request in between means
+      // the user moved on, so a later /compact must not restart the old turn.
+      const checkpoint = checkpointPausedGoalState(current, Date.now());
+      try {
+        persistGoalState(pi, runtime, "checkpoint", checkpoint);
+      } catch {
+        holdUnsavedGoal(pi, runtime, checkpoint);
+      }
+      return;
+    }
     if (current.status === "blocked") {
       runtime.blockedCompletion ??= { kind: "eligible", state: current, generation: runtime.lifecycleGeneration };
       syncGoalUpdateTool(pi, runtime);

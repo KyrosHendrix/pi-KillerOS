@@ -638,3 +638,9 @@ test("request activity observes continuation scheduling before settlement cleanu
   assert.ok(goalSettlement < activity);
   assert.ok(activity < notifications);
 });
+
+test("project agent_settled hooks register after every KillerOS settlement handler", () => {
+  const settledHooks = main.indexOf("registerSettledHooks();");
+  assert.ok(settledHooks > main.indexOf("completionNotifications.register("),
+    "A slow hook must not delay the receipt or sound, and its file edits must stay out of the agent's receipt");
+});

@@ -10,8 +10,11 @@ export const MAX_RECEIPT_FILES = 20;
 const GIT_OBJECT_HEADER_LIMIT = 1_024;
 
 /** Every reason a receipt can record for missing change data; persisted receipts are checked against this list. */
-export const CHANGE_UNAVAILABLE_REASONS = ["not-git", "timeout", "too-large", "error"] as const satisfies readonly ("not-git" | PassiveGitFailure["reason"])[];
+export const CHANGE_UNAVAILABLE_REASONS = ["not-git", "head-changed", "timeout", "too-large", "error"] as const satisfies readonly ("not-git" | "head-changed" | PassiveGitFailure["reason"])[];
 type ChangeUnavailableReason = typeof CHANGE_UNAVAILABLE_REASONS[number];
+
+/** HEAD moved during the response, for example because the agent committed. The dirty-file delta no longer describes the response. */
+class HeadChanged extends Error {}
 
 export type ChangedFile =
   | { kind: "added" | "modified" | "deleted"; path: string; additions: number; deletions: number; detail?: "binary" | "mode" }
@@ -326,7 +329,7 @@ function binarySimilarity(left: Buffer, right: Buffer): number {
 
 // ponytail: fuzzy rename matching is quadratic up to 400 pairs; use Git's diff engine if larger rename batches matter.
 async function compare(repo: Repository, baseline: Snapshot, settlement: Snapshot): Promise<ChangeSummary> {
-  if (baseline.head !== settlement.head) throw new Error("HEAD changed during response");
+  if (baseline.head !== settlement.head) throw new HeadChanged();
   const paths = new Set([...baseline.files.keys(), ...settlement.files.keys()]
     .filter((filePath) => !sameDirtyFile(baseline.files.get(filePath), settlement.files.get(filePath))));
   const ids = [...paths].flatMap((filePath) => {
@@ -474,13 +477,13 @@ export async function beginChangeReceipt(cwd: string): Promise<ChangeReceiptColl
             monitor.changedPaths.clear();
             settlement = await refreshSnapshot(monitor, observedPaths, settlement);
           }
-          if (await currentHead(repo) !== baseline.head) throw new Error("HEAD changed during response");
+          if (await currentHead(repo) !== baseline.head) throw new HeadChanged();
           const summary = await compare(repo, baseline, settlement);
           monitor.snapshot = settlement;
           return summary;
         } catch (error) {
           discardMonitor(monitor);
-          return { state: "unavailable", reason: error instanceof PassiveGitFailure ? error.reason : "error" };
+          return { state: "unavailable", reason: error instanceof HeadChanged ? "head-changed" : error instanceof PassiveGitFailure ? error.reason : "error" };
         } finally {
           monitor.inUse = false;
         }

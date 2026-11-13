@@ -1999,8 +1999,9 @@ test(`${racesCatalogId}: blocked completion stays single-owner across mutations 
     artifactDirectory = createArtifactDirectory("killeros-blocked-goal-races-");
 
     await runMutationRaceVector(t.signal, artifactDirectory, observations, "replace", async (ctx) => {
-      // Replacement waits for idle while completion owns the parked verification.
-      // Completion changes the captured state, invalidating the pending replacement.
+      // Replacement waits for idle while completion owns the parked verification. The confirmed replacement
+      // cannot invalidate that in-flight verification, so completion lands first and the new objective then
+      // starts as its own goal. Its decisionless first turn pauses it.
       const replaceOutcome = sendMidRunPrompt(ctx.fixture, "/goal Replacement objective", `${ctx.label}: replace prompt`);
       const confirmation = await ctx.fixture.rpc!.waitFor(
         (entry) => entry.type === "extension_ui_request" && entry.method === "confirm",
@@ -2009,23 +2010,28 @@ test(`${racesCatalogId}: blocked completion stays single-owner across mutations 
       assert.equal(record(confirmation, `${ctx.label}: confirm`).title, "Replace active goal",
         "the replacement of an unfinished goal must require confirmation");
       await ctx.fixture.rpc!.send({ type: "extension_ui_response", id: stringField(confirmation, "id"), confirmed: true });
+      ctx.fixture.provider.queuePlainStop();
       writeReleaseFile(verifyBarrierPaths(ctx.fixture).release, `${ctx.label}: release`);
-      await waitForGoalSettled(ctx.fixture, ctx.fixture.acknowledgedSequence, `${ctx.label}: settlement before replace persistence`);
+      await waitForGoalSettlements(ctx.fixture, ctx.fixture.acknowledgedSequence, 2, `${ctx.label}: completion, then the replacement's first turn`);
       const replaceResponse = await replaceOutcome;
       if (replaceResponse.kind === "rejected") throw replaceResponse.error;
       assert.equal(record(replaceResponse.value.data ?? replaceResponse.value, `${ctx.label}: replace prompt response`).disposition, "handled");
       const goalEntries = await goalEntriesOf(ctx.fixture);
       divergences.push(
-        `${ctx.label}: completion lands before idle and invalidates the stale confirmed replacement`,
+        `${ctx.label}: completion lands before idle; the confirmed replacement then starts as a new goal`,
       );
-      assert.equal(savedGoalEntries(goalEntries).filter((entry) => entry.event === "complete").length, 1,
-        `${ctx.label}: the confirmed replacement cannot invalidate an in-flight verification; completion lands first (documented divergence)`);
-      assert.equal(savedGoalEntries(goalEntries).some((entry) => entry.event === "replace"), false,
-        `${ctx.label}: completion must invalidate the stale confirmed replacement`);
       const completedState = assertCompletedGoal(goalEntries, ctx.label);
-      assert.equal(completedState.objective, ctx.seed.objective, "the original objective must survive the stale replacement");
-      assertGoalIdle(await goalState(ctx.fixture), `${ctx.label}: stale replacement released`);
-      return { divergence: "completion invalidates stale replacement" };
+      assert.equal(completedState.objective, ctx.seed.objective, "the original objective completes before the replacement starts");
+      const saved = savedGoalEntries(goalEntries);
+      assert.equal(saved.some((entry) => entry.event === "replace"), false,
+        `${ctx.label}: the old goal was already complete, so the new objective is saved as a start, not a replacement`);
+      const started = record(savedGoalEvent(saved, "set", ctx.label).state ?? {}, `${ctx.label}: started state`);
+      assert.equal(started.objective, "Replacement objective", "the confirmed replacement is not dropped");
+      const replacement = record(lastSavedGoal(saved, `${ctx.label}: replacement`).state ?? {}, `${ctx.label}: replacement state`);
+      assert.deepEqual([replacement.objective, replacement.status, replacement.turns, replacement.result],
+        ["Replacement objective", "paused", 1, "no turn decision"]);
+      assertGoalIdle(await goalState(ctx.fixture), `${ctx.label}: replacement turn settled`);
+      return { divergence: "completion lands before the confirmed replacement starts" };
     });
     await runMutationRaceVector(t.signal, artifactDirectory, observations, "session_tree", async (ctx) => {
       const entries = savedGoalEntries(await goalEntriesOf(ctx.fixture));
@@ -2354,7 +2360,7 @@ test(`${racesCatalogId}: failed completion snapshot permits completion after reo
 const raceMutationProfiles: Record<string, { expectedRequests: number; settleAfterRelease: boolean }> = {
   clear: { expectedRequests: 2, settleAfterRelease: true },
   resume: { expectedRequests: 3, settleAfterRelease: true },
-  replace: { expectedRequests: 2, settleAfterRelease: true },
+  replace: { expectedRequests: 3, settleAfterRelease: true },
   // Active reload is refused; cancel verification before reloading the idle session.
   session_start: { expectedRequests: 1, settleAfterRelease: false },
   // Explicit cancellation discards the parked run without a settling model turn.

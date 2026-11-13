@@ -403,8 +403,9 @@ function matchesIndex(content: Buffer, entry: IndexEntry, autoCrlf: string): boo
 /**
  * Reads index and tree metadata with Git, then inspects worktree files with Node.
  * No Git command in this path asks Git to convert worktree content, so clean and process filters cannot start.
+ * With `untracked` set to "paths", untracked files are listed with their mode and their bytes stay unread.
  */
-export async function inspectWorktreeWithoutFilters(root: string, runGit: PassiveGitRunner): Promise<PassiveWorktreeSnapshot> {
+export async function inspectWorktreeWithoutFilters(root: string, runGit: PassiveGitRunner, untracked: "content" | "paths" = "content"): Promise<PassiveWorktreeSnapshot> {
   const [indexOutput, untrackedOutput, head, { autoCrlf, ...settings }] = await Promise.all([
     runGit([...PASSIVE_METADATA_ARGS, "ls-files", "--cached", "--debug", "-z", "--full-name",
       "--format=%(objectmode) %(objectname) %(stage)%x09%(eolattr)%x09%(path)"]),
@@ -450,6 +451,11 @@ export async function inspectWorktreeWithoutFilters(root: string, runGit: Passiv
   }
 
   for (const filePath of parsePaths(untrackedOutput)) {
+    if (untracked === "paths") {
+      const stats = await lstat(path.join(root, ...filePath.split("/")), { bigint: true });
+      files.set(filePath, { ...files.get(filePath), path: filePath, mode: worktreeMode(stats), contentObjectId: undefined });
+      continue;
+    }
     const state = await readFileState(root, undefined, filePath, WORKTREE_CONTENT_LIMIT - contentBytes);
     if (!state.content) throw new Error("missing untracked content");
     contentBytes += state.content.length;
@@ -553,7 +559,8 @@ export async function resolveGitFileChanges(cwd: string, trusted: boolean): Prom
     if (!command) return undefined;
     const root = decode(await runPassiveGit(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel"], { command })).trim();
     if (!path.isAbsolute(root)) return undefined;
-    const snapshot = await inspectWorktreeWithoutFilters(root, (args) => runPassiveGit(root, args, { command }));
+    // Counting needs each untracked path, not its bytes, so large untracked files cost nothing and cannot exceed the content limit.
+    const snapshot = await inspectWorktreeWithoutFilters(root, (args) => runPassiveGit(root, args, { command }), "paths");
     const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
     const deletedObjectIds: string[] = [];
     const addedObjectIds: string[] = [];

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
@@ -97,4 +97,13 @@ test("an inherited GIT_DIR cannot make a non-repository directory report another
 test("an untrusted project reports no Git status even with changes", async (t) => {
   const repository = hostileRepository(t);
   assert.equal(await resolveGitFileChanges(repository.project, false), undefined);
+});
+
+test("the footer counts an untracked file larger than the receipt content limit without reading it", async (t) => {
+  const repository = hostileRepository(t);
+  // One byte over the 128 MiB limit that change receipts enforce. Truncation sets the size without writing the bytes.
+  const large = path.join(repository.project, "large-untracked.bin");
+  writeFileSync(large, "");
+  truncateSync(large, 128 * 1024 * 1024 + 1);
+  assert.deepEqual(await resolveGitFileChanges(repository.project, true), { modified: 2, added: 2, deleted: 1 });
 });

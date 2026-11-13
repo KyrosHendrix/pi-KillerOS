@@ -3361,7 +3361,7 @@ export default function(pi) {
     httpRequests: 0, naturalExit: true, scratchRemoved: true }));
 });
 
-test("stale native replacements release the authorized goal continuation", { timeout: 60_000 }, async t => {
+test("a confirmed replacement survives the running turn's accepted decision", { timeout: 60_000 }, async t => {
   const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-stale-held-"));
   const errors: unknown[] = [];
   let rpc: PiFixture | undefined;
@@ -3389,17 +3389,19 @@ test("stale native replacements release the authorized goal continuation", { tim
     const replaced = await replacement;
     if (replaced.kind === "rejected") throw replaced.error;
     const secondTurn = await rpc.provider.waitForRequest(3, t.signal);
-    assert.match(JSON.stringify(secondTurn.body.messages), /Original objective/u);
-    const active = goalState(lastGoal(goalEntries(await getEntries(rpc)), "held continuation"), "held continuation");
-    assert.equal(active.objective, "Original objective");
-    assert.equal(active.turns, 2);
+    assert.match(JSON.stringify(secondTurn.body.messages), /Replacement objective/u);
+    const replacedEntries = goalEntries(await getEntries(rpc));
+    assert.ok(replacedEntries.some(entry => entry.event === "replace"), "The confirmed replacement is saved as a replace entry");
+    const active = goalState(lastGoal(replacedEntries, "held replacement"), "held replacement");
+    assert.equal(active.objective, "Replacement objective");
+    assert.equal(active.turns, 1);
     assert.equal(rpc.provider.requestCount, 3);
     const finalCursor = rpc.rpc.currentSequence;
     next.release();
     await rpc.provider.waitForRequest(4, t.signal);
     await waitForSettled(rpc, finalCursor, "held RPC final");
     const final = goalState(lastGoal(goalEntries(await getEntries(rpc)), "held final"), "held final");
-    assert.deepEqual([final.objective, final.status, final.turns], ["Original objective", "complete", 2]);
+    assert.deepEqual([final.objective, final.status, final.turns], ["Replacement objective", "complete", 1]);
     assertIdle(await getState(rpc), "held RPC complete");
     assert.equal(rpc.provider.requestCount, 4);
 
@@ -3422,19 +3424,19 @@ test("stale native replacements release the authorized goal continuation", { tim
     await tui.provider.waitForRequest(3, t.signal);
     const tuiActive = (await readSessionGoalEntries(tui.sessionFile)).at(-1)?.state;
     assert.ok(tuiActive);
-    assert.deepEqual([tuiActive.objective, tuiActive.turns], ["Original objective", 2]);
+    assert.deepEqual([tuiActive.objective, tuiActive.turns], ["Replacement objective", 1]);
     tuiNext.release();
     await tui.provider.waitForRequest(4, t.signal);
     await tui.terminal.waitForScreen(screen => screen.includes("Goal completed") && !screen.includes("/goal active"), { signal: t.signal });
     const tuiFinal = (await readSessionGoalEntries(tui.sessionFile)).at(-1)?.state;
     assert.ok(tuiFinal);
-    assert.deepEqual([tuiFinal.objective, tuiFinal.status, tuiFinal.turns], ["Original objective", "complete", 2]);
+    assert.deepEqual([tuiFinal.objective, tuiFinal.status, tuiFinal.turns], ["Replacement objective", "complete", 1]);
     assert.equal(tui.provider.requestCount, 4);
   } catch (error) { errors.push(error); }
   if (rpc) errors.push(...await closeFixture(rpc));
   if (tui) errors.push(...await closeTerminalFixture(tui));
   await removeDirectoryEventually(directory);
-  if (errors.length) throw new AggregateError(errors, "Stale native replacement failed");
+  if (errors.length) throw new AggregateError(errors, "Confirmed replacement during a held turn failed");
   t.diagnostic(JSON.stringify({ scenarioId: "goals.stale-held-continuation", piLaunches: 2, providerRequests: 8,
     modes: ["rpc", "tui"], exactGoalTurns: 2, cleanup: "natural" }));
 });
