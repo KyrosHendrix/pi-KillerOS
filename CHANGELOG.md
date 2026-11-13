@@ -4,6 +4,19 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+### Changed
+
+- Run project `agent_settled` hooks after KillerOS saves the change receipt and plays the completion sound. A slow hook no longer lengthens the "Worked for" time or delays the sound, and files a hook edits, such as a formatter's, no longer appear as the agent's changes. The next goal turn still waits for these hooks.
+- Name what `/handoff` found when it rejects a summary as unsafe: a recognized credential, a `key: value` line that names a password, token, secret, or API key, or copied request or role framing. The message never includes the matched text.
+
+### Fixed
+
+- Keep a goal replacement you confirmed while a goal turn was running. The turn's decision or pause used to discard the replacement without a message. Navigation, reload, `/goal clear`, or a later `/goal` command still cancel it.
+- Stop a later `/compact` from restarting a goal turn you aborted earlier. Only a `/compact` that directly follows the abort resumes the turn; any request in between leaves the goal paused.
+- Accept `/handoff` summaries that mention tokens, passwords, or secrets in ordinary lines such as `- maxTokens: raised the budget to 8192`. A line counts as a credential assignment only when its value is a quoted string or a single word that is not a plain number.
+- Stop warning that the change receipt is unavailable when the agent commits during a response. The receipt line now reads "Changes unavailable · HEAD moved".
+- Show footer file-change counts in repositories with more than 128 MB of untracked files. The footer now counts untracked files without reading their content.
+
 ## [4.0.1] - 2026-11-12
 
 ### Changed
