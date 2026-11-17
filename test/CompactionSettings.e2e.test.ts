@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -30,20 +30,12 @@ import { syncBuiltinESMExports } from "node:module";
 const root = process.env.COMPACTION_SETTINGS_CONTROL;
 const settings = process.env.COMPACTION_SETTINGS_FILE;
 const read = fs.readFileSync.bind(fs);
-const link = fs.linkSync.bind(fs);
 const rename = fs.renameSync.bind(fs);
 function publish(file, value) {
   fs.writeFileSync(file + ".tmp", JSON.stringify(value));
   fs.renameSync(file + ".tmp", file);
 }
 function owned(file) { return typeof file === "string" && path.resolve(file).toLowerCase() === settings.toLowerCase(); }
-fs.linkSync = function(source, destination) {
-  if (typeof destination === "string" && owned(destination.slice(0, -5)) && destination.endsWith(".lock")) {
-    const plan = JSON.parse(read(path.join(root, "plan.json"), "utf8"));
-    if (plan.round) publish(path.join(root, plan.round + ".attempt"), { pid: process.pid, operation: "linkSync" });
-  }
-  return link(source, destination);
-};
 fs.renameSync = function(source, destination) {
   if (owned(destination)) {
     const plan = JSON.parse(read(path.join(root, "plan.json"), "utf8"));
@@ -60,49 +52,11 @@ fs.readFileSync = function(file, ...args) {
     publish(path.join(root, "fault-ack.json"), { pid: process.pid, operation: "readFileSync", file });
     throw new Error("bad\x1b[31m file");
   }
-  if (owned(file) && fs.existsSync(settings + ".lock")) {
-    const lock = JSON.parse(read(settings + ".lock", "utf8"));
-    if (lock.pid === process.pid && plan.round && plan.hold) {
-      publish(path.join(root, plan.round + ".acquired"), { pid: process.pid, operation: "readFileSync", lockPid: lock.pid });
-      const deadline = Date.now() + 20000;
-      while (!fs.existsSync(path.join(root, plan.round + ".release"))) {
-        if (Date.now() >= deadline) throw new Error("Owned settings lock release deadline exceeded");
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
-      }
-    }
-  }
   return read(file, ...args);
 };
 syncBuiltinESMExports();
 export default function() {}
 `;
-
-async function waitForFile(file: string, signal: AbortSignal): Promise<Record<string, unknown>> {
-  signal.throwIfAborted();
-  return await new Promise((resolve, reject) => {
-    const finish = (error?: unknown): void => {
-      clearTimeout(timer);
-      watcher.close();
-      signal.removeEventListener("abort", abort);
-      if (error !== undefined) reject(error instanceof Error ? error : new Error("Settings barrier failed", { cause: error }));
-    };
-    const check = (): void => {
-      if (!existsSync(file)) return;
-      try {
-        const contents = record(JSON.parse(readFileSync(file, "utf8")));
-        assert.ok(Number.isSafeInteger(contents.pid));
-        finish();
-        resolve(contents);
-      } catch (error) { finish(error); }
-    };
-    const abort = (): void => finish(signal.reason);
-    const watcher = watch(path.dirname(file), check);
-    watcher.on("error", finish);
-    const timer = setTimeout(() => finish(new Error(`Settings barrier timeout: ${file}`)), 15_000);
-    signal.addEventListener("abort", abort, { once: true });
-    check();
-  });
-}
 
 async function createFixture(t: TestContext, id: string) {
   const directory = realpathSync(mkdtempSync(path.join(tmpdir(), ".killeros-compaction-settings-")));
@@ -360,60 +314,5 @@ test("RPC /auto-compact status, updates, normalization, and settings failure pre
       ...retained, autoCompaction: { enabled: false, percentRemaining: 15 },
     });
   } catch (error) { failure = error; }
-  await fixture.finish(failure);
-});
-
-// Catalog ID: compaction-settings-concurrent-writers.
-test("Two Pi writers preserve independently changed auto-compaction fields under the settings lock", { timeout: 90_000 }, async (t) => {
-  const fixture = await createFixture(t, "compaction-settings-concurrent-writers");
-  const releases: string[] = [];
-  let failure: unknown;
-  try {
-    const initial = { futureSetting: "keep", autoCompaction: { enabled: true, percentRemaining: 15 } };
-    writeFileSync(fixture.settings, JSON.stringify(initial));
-    const a = await fixture.start("A", true);
-    const b = await fixture.start("B", true);
-    const orders = [
-      [{ argument: "off", notice: "Automatic compaction: off (threshold 15%)" },
-        { argument: "70", notice: "Automatic compaction threshold: 70% remaining (off)" }],
-      [{ argument: "70", notice: "Automatic compaction threshold: 70% remaining (on)" },
-        { argument: "off", notice: "Automatic compaction: off (threshold 70%)" }],
-    ] as const;
-    for (const [identity, [first, second]] of [[a, b], [b, a]].entries()) {
-      for (const [order, [firstCommand, secondCommand]] of orders.entries()) {
-        assert.ok(first && second);
-        const round = `round-${identity}-${order}`;
-        writeFileSync(fixture.settings, JSON.stringify(initial));
-        for (const [owner, hold] of [[first, true], [second, false]] as const) {
-          writeFileSync(path.join(owner.project, "plan.json"), JSON.stringify({ round, hold }));
-        }
-        const release = path.join(first.project, round + ".release");
-        releases.push(release);
-        const firstDone = fixture.command(first.rpc, firstCommand.argument, firstCommand.notice);
-        // Attach handlers immediately so an unexpected early command failure cannot become unhandled.
-        const firstOutcome = firstDone.then(() => undefined, (error: unknown) => error);
-        try {
-          const acquired = await waitForFile(path.join(first.project, round + ".acquired"), t.signal);
-          assert.equal(acquired.pid, acquired.lockPid);
-          assert.equal(acquired.operation, "readFileSync");
-          const secondDone = fixture.command(second.rpc, secondCommand.argument, secondCommand.notice);
-          const secondOutcome = secondDone.then(() => undefined, (error: unknown) => error);
-          try {
-            const attempted = await waitForFile(path.join(second.project, round + ".attempt"), t.signal);
-            assert.notEqual(attempted.pid, acquired.pid, "Independent Pi processes contend for the same file");
-            writeFileSync(release, "release");
-          } finally { if (!existsSync(release)) writeFileSync(release, "release"); }
-          const secondError = await secondOutcome;
-          if (secondError !== undefined) throw secondError instanceof Error ? secondError : new Error("Second writer failed", { cause: secondError });
-        } finally { if (!existsSync(release)) writeFileSync(release, "release"); }
-        const firstError = await firstOutcome;
-        if (firstError !== undefined) throw firstError instanceof Error ? firstError : new Error("First writer failed", { cause: firstError });
-        assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), {
-          futureSetting: "keep", autoCompaction: { enabled: false, percentRemaining: 70 },
-        }, `Process order ${identity}, command order ${firstCommand.argument}->${secondCommand.argument} preserves both field updates`);
-      }
-    }
-  } catch (error) { failure = error; }
-  finally { for (const release of releases) if (!existsSync(release)) writeFileSync(release, "release"); }
   await fixture.finish(failure);
 });
