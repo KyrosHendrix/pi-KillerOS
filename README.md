@@ -143,7 +143,7 @@ Personal instructions are private additions to the system prompt. KillerOS appen
 
 Use Node.js 26.13.0, pinned in `.node-version`. Install dependencies with `npm ci --ignore-scripts --no-audit --no-fund`. Run the checkout with `npx pi -e .`, with any installed copy disabled. Run `npm run check` and `npm run test:changed`, which runs the test files that cover your changes. `npm test` runs the full suite, four test units at a time to bound child-process load, starting with the longest. CI runs the same suite across six runners. There is no build step.
 
-Automatic pre-merge CI requires a pull request, including a draft pull request. Open a draft PR for feedback or run the CI workflow manually. Standalone pushes to `dev` do not start automatic CI. Run local checks before pushing. CI also runs on pushes to `main` and on the weekly schedule. A merge to `main` whose files already passed CI on its pull request skips the repeat; the weekly run always tests everything.
+Automatic pre-merge CI requires a pull request, including a draft pull request. Open a draft PR for feedback or run the CI workflow manually. Standalone pushes to `dev` do not start automatic CI. Run local checks before pushing. CI also runs on pushes to `main` and on the weekly schedule. If a successful PR run recorded the exact tree merged to `main`, the push reuses that run's Windows checks. If CI cannot verify the match, it runs the Windows checks. CodeQL still runs on `main`, and the weekly run does its own validation.
 
 ### Release process
 

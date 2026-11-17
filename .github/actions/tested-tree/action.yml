@@ -1,7 +1,6 @@
 name: Tested tree
 description: >-
-  Reports whether this push to main is a pull request merge whose files already passed this workflow on
-  that pull request, so the caller can skip repeating the work.
+  Checks for a successful pull request run that recorded the exact tree of this push to main.
 
 outputs:
   skip:
@@ -17,16 +16,23 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         skip=false
-        if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
-          repo="repos/$GITHUB_REPOSITORY"
-          head=$(gh api "$repo/git/commits/$GITHUB_SHA" -q '.parents[1].sha // empty' || true)
-          if [ -n "$head" ]; then
-            tree=$(gh api "$repo/git/commits/$GITHUB_SHA" -q .tree.sha || true)
-            head_tree=$(gh api "$repo/git/commits/$head" -q .tree.sha || true)
-            merged=$(gh api "$repo/commits/$GITHUB_SHA/pulls" -q "[.[] | select(.merge_commit_sha == \"$GITHUB_SHA\" and .base.ref == \"main\" and .head.sha == \"$head\")] | length" || true)
-            passed=$(gh api "$repo/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&status=success&per_page=1" -q .total_count || true)
-            if [ -n "$tree" ] && [ "$tree" = "$head_tree" ] && [ "${merged:-0}" -ge 1 ] && [ "${passed:-0}" -ge 1 ]; then skip=true; fi
-          fi
+        repo="repos/$GITHUB_REPOSITORY"
+        if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] &&
+          tree=$(git rev-parse --verify 'HEAD^{tree}') &&
+          head=$(git rev-parse --verify -q HEAD^2) &&
+          pr=$(gh api "$repo/commits/$GITHUB_SHA/pulls" -q "[.[] | select(.merged_at != null and .merge_commit_sha == \"$GITHUB_SHA\" and .base.ref == \"main\" and .head.sha == \"$head\")] | .[0].number // empty") &&
+          [[ "$pr" =~ ^[0-9]+$ ]] &&
+          runs=$(gh api "$repo/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&status=success&per_page=5" -q '.workflow_runs[] | [.id, .run_attempt] | @tsv'); then
+          while IFS=$'\t' read -r run attempt; do
+            [[ "$run" =~ ^[0-9]+$ && "$attempt" =~ ^[0-9]+$ ]] || continue
+            name="tested-tree-$pr-$attempt-$tree"
+            if recorded=$(gh api "$repo/actions/runs/$run/artifacts?name=$name" -q "any(.artifacts[]; .name == \"$name\" and .expired == false)") &&
+              [[ "$recorded" == true ]]; then
+              skip=true
+              echo "Pull request #$pr already tested tree $tree in CI run $run, attempt $attempt."
+              break
+            fi
+          done <<< "$runs"
         fi
         echo "skip=$skip" >> "$GITHUB_OUTPUT"
         echo "Files already tested on their pull request: $skip"

@@ -34,8 +34,32 @@ env:
   NPM_CONFIG_FUND: 'false'
 
 jobs:
+  tested-tree:
+    name: Check for a tested tree
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.tested.outputs.skip }}
+    steps:
+      - name: Check out merge and parents
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check the pull request's recorded tree
+        id: tested
+        if: steps.checkout.outcome == 'success'
+        continue-on-error: true
+        uses: ./.github/actions/tested-tree
+
   quality-checks:
     name: Quality checks
+    needs: tested-tree
+    if: "!cancelled() && (needs.tested-tree.result != 'success' || needs.tested-tree.outputs.skip != 'true')"
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -45,12 +69,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Skip a tree its pull request already tested
-        id: tested
-        uses: ./.github/actions/tested-tree
-
       - name: Set up Node.js
-        if: steps.tested.outputs.skip != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26.13.0'
@@ -58,32 +77,45 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Audit locked dependencies
-        if: steps.tested.outputs.skip != 'true'
         run: npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund
 
       - name: Install dependencies
-        if: steps.tested.outputs.skip != 'true'
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Type-check
-        if: steps.tested.outputs.skip != 'true'
         run: npm run check
 
       - name: Validate release metadata
-        if: steps.tested.outputs.skip != 'true'
         env:
           KILLEROS_RELEASE: 'true'
         run: node --experimental-strip-types scripts/verify-release.ts
 
       - name: Provision publishing npm
-        if: steps.tested.outputs.skip != 'true'
         run: npm install --prefix "$RUNNER_TEMP/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@11.5.1
 
       - name: Test publication lifecycle with publishing npm
-        if: steps.tested.outputs.skip != 'true'
         env:
           KILLEROS_TEST_NPM_CLI: ${{ runner.temp }}/killeros-publishing-npm/node_modules/npm/bin/npm-cli.js
         run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test/verify-release.test.ts
+
+      - name: Record the checked-out PR tree
+        id: tree
+        if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        run: |
+          tree=$(git rev-parse --verify 'HEAD^{tree}')
+          echo "sha=$tree" >> "$GITHUB_OUTPUT"
+          echo "$tree" > "$RUNNER_TEMP/tested-tree.txt"
+
+      - name: Publish the checked-out PR tree
+        if: steps.tree.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tested-tree-${{ github.event.pull_request.number }}-${{ github.run_attempt }}-${{ steps.tree.outputs.sha }}
+          path: ${{ runner.temp }}/tested-tree.txt
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload test failure reports
         if: failure()
@@ -97,6 +129,8 @@ jobs:
 
   quality-tests:
     name: Quality tests (${{ matrix.shard }}/6)
+    needs: tested-tree
+    if: "!cancelled() && (needs.tested-tree.result != 'success' || needs.tested-tree.outputs.skip != 'true')"
     runs-on: windows-latest
     timeout-minutes: 25
     strategy:
@@ -110,12 +144,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Skip a tree its pull request already tested
-        id: tested
-        uses: ./.github/actions/tested-tree
-
       - name: Set up Node.js
-        if: steps.tested.outputs.skip != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26.13.0'
@@ -123,11 +152,9 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        if: steps.tested.outputs.skip != 'true'
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test shard
-        if: steps.tested.outputs.skip != 'true'
         run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/6 --concurrency 2 --lifecycle-repeats 2
 
       - name: Upload test failure reports
@@ -142,6 +169,8 @@ jobs:
 
   pi-latest:
     name: Pi compatibility (latest)
+    needs: tested-tree
+    if: "!cancelled() && (needs.tested-tree.result != 'success' || needs.tested-tree.outputs.skip != 'true')"
     runs-on: windows-latest
     timeout-minutes: 25
     outputs:
@@ -154,12 +183,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Skip a tree its pull request already tested
-        id: tested
-        uses: ./.github/actions/tested-tree
-
       - name: Set up Node.js
-        if: steps.tested.outputs.skip != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26.13.0'
@@ -167,11 +191,9 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install locked dependencies
-        if: steps.tested.outputs.skip != 'true'
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Install matched Pi packages
-        if: steps.tested.outputs.skip != 'true'
         id: pi
         env:
           PI_TARGET: '>=1.5.2 <2'
@@ -198,11 +220,9 @@ jobs:
           '
 
       - name: Verify package files are unchanged
-        if: steps.tested.outputs.skip != 'true'
         run: git diff --exit-code -- package.json package-lock.json
 
       - name: Type-check against matched Pi
-        if: steps.tested.outputs.skip != 'true'
         run: npm run check
 
   pi-latest-tests:
@@ -258,25 +278,35 @@ jobs:
 
   quality:
     name: Quality
-    needs: [quality-checks, quality-tests, pi-latest, pi-latest-tests]
+    needs: [tested-tree, quality-checks, quality-tests, pi-latest, pi-latest-tests]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every quality job
-        run: |
-          test "${{ needs.quality-checks.result }}" = success
-          test "${{ needs.quality-tests.result }}" = success
-
-      - name: Require the newest-Pi check and every shard it started
-        if: always()
         env:
-          FULL_SUITE: ${{ needs.pi-latest.outputs.full-suite }}
+          REUSE: ${{ needs.tested-tree.result == 'success' && needs.tested-tree.outputs.skip == 'true' }}
+          CHECKS: ${{ needs.quality-checks.result }}
+          TESTS: ${{ needs.quality-tests.result }}
           LATEST: ${{ needs.pi-latest.result }}
+          FULL_SUITE: ${{ needs.pi-latest.outputs.full-suite }}
           SHARDS: ${{ needs.pi-latest-tests.result }}
         run: |
-          test "$LATEST" = success
-          if [ "$FULL_SUITE" = true ]; then test "$SHARDS" = success; else test "$SHARDS" = skipped; fi
+          if [ "$REUSE" = true ]; then
+            test "$CHECKS" = skipped
+            test "$TESTS" = skipped
+            test "$LATEST" = skipped
+            test "$SHARDS" = skipped
+          else
+            test "$CHECKS" = success
+            test "$TESTS" = success
+            test "$LATEST" = success
+            case "$FULL_SUITE" in
+              true) test "$SHARDS" = success ;;
+              false) test "$SHARDS" = skipped ;;
+              *) exit 1 ;;
+            esac
+          fi
 
   codeql:
     name: CodeQL
