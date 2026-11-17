@@ -142,7 +142,6 @@ function changedFiles(base: string): string[] {
   return [...new Set([...tracked.split("\n"), ...untracked.split("\n")].filter(Boolean))];
 }
 
-/** Selects the tests that cover the changed files, prints them for --dry-run or runs them, and resolves to the exit code. */
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -152,7 +151,6 @@ async function main(): Promise<number> {
   const tests = selectTests(changed);
   console.log(`${changed.length} changed path(s) select ${tests.length} test file(s):\n${tests.map((test) => `  ${test}`).join("\n")}`);
   if (values["dry-run"]) return 0;
-  // The same units and concurrency as `npm test`, sized for the selected files so a small selection still fills four slots.
   const selected = Object.fromEntries(Object.entries(testTimings).filter(([file]) => tests.includes(file)));
   return await runSuite(testUnits(tests, unitTarget(4, selected)), 4);
 }

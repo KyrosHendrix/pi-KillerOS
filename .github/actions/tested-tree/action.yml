@@ -3,10 +3,6 @@ description: >-
   Reports whether this push to main is a pull request merge whose files already passed this workflow on
   that pull request, so the caller can skip repeating the work.
 
-# Branch protection requires a pull request to contain the latest main before it merges. A merge commit
-# then has exactly its second parent's files, and the pull request's own run already tested those files
-# merged with main. Any lookup that fails or does not match leaves skip false, and the caller runs
-# everything. Scheduled and manually started runs never skip.
 outputs:
   skip:
     description: "'true' when the pushed files already passed the full workflow on their pull request."

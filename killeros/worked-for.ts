@@ -211,7 +211,6 @@ function safePath(value: string): string {
   return safeTerminalText(value).replaceAll("\n", "⏎");
 }
 
-/** A settled v4 receipt, laid out once per width until the theme invalidates it. */
 class WorkedForV4Component extends WidthCachedComponent {
   private readonly data: WorkedForEntryDataV4;
   private readonly expanded: boolean;
@@ -227,7 +226,6 @@ class WorkedForV4Component extends WidthCachedComponent {
     this.theme = theme;
   }
 
-  /** Lays out the receipt for `width`: the outcome headline followed by its timing, usage, and change details. */
   protected layout(width: number): string[] {
     const { data, theme } = this;
     const outcome = OUTCOMES[data.outcome];
@@ -448,7 +446,6 @@ export function registerWorkedFor(pi: ExtensionAPI): void {
     // Earlier async session_tree handlers can delay our reset after Pi switches branches.
     if (generation !== lifecycleGeneration
       || !ctx.sessionManager.getBranch().some((entry) => entry.id === settled.leafId)) return;
-    // A commit during the response moves HEAD. That is normal agent work, so the receipt line reports it without a warning.
     if (changes.state === "unavailable" && changes.reason !== "not-git" && changes.reason !== "head-changed" && changes.reason !== "timeout" && !collectionNoticeShown) {
       collectionNoticeShown = true;
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");

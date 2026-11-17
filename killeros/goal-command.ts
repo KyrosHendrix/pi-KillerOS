@@ -111,7 +111,6 @@ function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
   return safeTerminalText(lines.join("\n"));
 }
 
-/** What a /goal command captured when it started, so code after an await can tell whether it still owns the goal. */
 interface GoalCommandScope {
   pi: ExtensionAPI;
   runtime: GoalRuntime;
@@ -119,11 +118,9 @@ interface GoalCommandScope {
   generation: number;
   initiatingState: GoalState | undefined;
   ownsGoal: () => boolean;
-  /** True until navigation, reload, a clear, or a later /goal command supersedes this one. The running turn settling does not. */
   ownsCommand: () => boolean;
 }
 
-/** Shows the goal; in TUI mode it offers the controls that fit its status and runs the chosen one. */
 async function showGoalStatus(scope: GoalCommandScope, rerun: (control: "pause" | "resume" | "clear") => Promise<void>): Promise<void> {
   const { runtime, ctx, ownsGoal } = scope;
   if (!runtime.state) {
@@ -145,7 +142,6 @@ async function showGoalStatus(scope: GoalCommandScope, rerun: (control: "pause" 
   return;
 }
 
-/** Removes the goal and stops its run; when the clear cannot be saved, the goal pauses instead. */
 async function clearGoal(scope: GoalCommandScope): Promise<void> {
   const { pi, runtime, ctx } = scope;
   if (!runtime.state) {
@@ -179,7 +175,6 @@ async function clearGoal(scope: GoalCommandScope): Promise<void> {
   return;
 }
 
-/** Pauses an active goal and stops its run, or saves again a pause that is still pending. */
 async function pauseGoalCommand(scope: GoalCommandScope): Promise<void> {
   const { pi, runtime, ctx } = scope;
   if (!runtime.state) {
@@ -232,7 +227,6 @@ async function pauseGoalCommand(scope: GoalCommandScope): Promise<void> {
   return;
 }
 
-/** Resumes a paused or blocked goal, renewing an exhausted turn budget up to the lifetime limit. */
 function resumeGoalCommand(scope: GoalCommandScope): void {
   const { pi, runtime, ctx } = scope;
   if (!runtime.state) {
@@ -265,7 +259,6 @@ function resumeGoalCommand(scope: GoalCommandScope): void {
   return;
 }
 
-/** Replaces the objective of an active or paused goal once Pi is idle, keeping its identity and status. */
 async function editGoal(scope: GoalCommandScope, objective: string): Promise<void> {
   const { pi, runtime, ctx, generation, initiatingState } = scope;
   const mutation = runtime.mutation;
@@ -283,7 +276,6 @@ async function editGoal(scope: GoalCommandScope, objective: string): Promise<voi
     releaseContinuationHold(pi, runtime, ctx, hold);
   }
   if (!ownsEdit()) {
-    // Settlement may have authorized a turn while this command held continuation.
     if (runtime.lifecycleGeneration === generation) scheduleGoalContinuation(pi, runtime, ctx);
     return;
   }
@@ -330,11 +322,8 @@ async function editGoal(scope: GoalCommandScope, objective: string): Promise<voi
   return;
 }
 
-/** Starts a goal, or replaces an unfinished one after confirmation, once Pi is idle. */
 async function startGoal(scope: GoalCommandScope, objective: string): Promise<void> {
-  // A confirmed replacement outlives the running turn: that turn records a decision or pauses the goal when it
-  // settles, which swaps the state object, so ownsGoal() would drop what the user just confirmed.
-  const { pi, runtime, ctx, generation, ownsCommand: ownsGoal } = scope;
+  const { pi, runtime, ctx, generation, ownsCommand } = scope;
   const unfinished = runtime.state && runtime.state.status !== "complete";
   if (unfinished) {
     if (!ctx.hasUI) {
@@ -342,10 +331,9 @@ async function startGoal(scope: GoalCommandScope, objective: string): Promise<vo
       return;
     }
     const replace = await ctx.ui.confirm("Replace active goal", "Replace the current unfinished goal and discard its continuation state?");
-    if (!replace || !ownsGoal()) return;
+    if (!replace || !ownsCommand()) return;
   }
 
-  // Recovery must not change the captured goal while replacement waits or infers file proof.
   const hold = Symbol();
   runtime.continuationHeld = hold;
   try {
@@ -355,7 +343,7 @@ async function startGoal(scope: GoalCommandScope, objective: string): Promise<vo
     } catch (error) {
       waitError = error;
     }
-    if (!ownsGoal()) return;
+    if (!ownsCommand()) return;
     if (waitError) {
       reportError(ctx, "Goal could not wait for the active turn", waitError);
       return;
@@ -364,7 +352,7 @@ async function startGoal(scope: GoalCommandScope, objective: string): Promise<vo
     try {
       verification = await inferGoalVerification(objective, ctx.cwd);
     } catch (error) {
-      if (!ownsGoal()) return;
+      if (!ownsCommand()) return;
       if (!unfinished) {
         reportError(ctx, "Goal could not be started", error);
       } else {
@@ -372,15 +360,13 @@ async function startGoal(scope: GoalCommandScope, objective: string): Promise<vo
       }
       return;
     }
-    if (!ownsGoal()) return;
+    if (!ownsCommand()) return;
     try {
       const state = createNewGoalState(objective, sumGoalTokens(ctx), verification, Date.now(), {
         maxTurns: DEFAULT_GOAL_MAX_TURNS,
       });
-      // The settled turn may have completed the old goal while this command waited.
       const replaced = runtime.state !== undefined && runtime.state.status !== "complete";
       persistGoalState(pi, runtime, replaced ? "replace" : "set", state);
-      // The replacement supersedes the old goal's turn and any recovery still parked after waitForIdle().
       endGoalTurn(runtime);
       runtime.continuationScheduled = false;
       if (unfinished) runtime.automaticCompaction = undefined;

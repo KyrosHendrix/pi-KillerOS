@@ -1999,9 +1999,6 @@ test(`${racesCatalogId}: blocked completion stays single-owner across mutations 
     artifactDirectory = createArtifactDirectory("killeros-blocked-goal-races-");
 
     await runMutationRaceVector(t.signal, artifactDirectory, observations, "replace", async (ctx) => {
-      // Replacement waits for idle while completion owns the parked verification. The confirmed replacement
-      // cannot invalidate that in-flight verification, so completion lands first and the new objective then
-      // starts as its own goal. Its decisionless first turn pauses it.
       const replaceOutcome = sendMidRunPrompt(ctx.fixture, "/goal Replacement objective", `${ctx.label}: replace prompt`);
       const confirmation = await ctx.fixture.rpc!.waitFor(
         (entry) => entry.type === "extension_ui_request" && entry.method === "confirm",
@@ -2361,7 +2358,6 @@ const raceMutationProfiles: Record<string, { expectedRequests: number; settleAft
   clear: { expectedRequests: 2, settleAfterRelease: true },
   resume: { expectedRequests: 3, settleAfterRelease: true },
   replace: { expectedRequests: 3, settleAfterRelease: true },
-  // Active reload is refused; cancel verification before reloading the idle session.
   session_start: { expectedRequests: 1, settleAfterRelease: false },
   // Explicit cancellation discards the parked run without a settling model turn.
   "cancelled-navigation": { expectedRequests: 1, settleAfterRelease: false },
@@ -2481,7 +2477,6 @@ async function runParkedShutdownFixture(
   try {
     await initializeBlockedGoalFixture(featureFixture, label);
     await parkParkedCompletion(featureFixture, target, label, "Old snapshot", false);
-    // Teardown first cancels active work and waits for the verifier to unwind.
     const closeOutcome = outcome(featureFixture.rpc!.close(90_000));
     await waitForProbeEvent(featureFixture, (event) => event.type === "goal_signal_aborted", 60_000,
       `${label}: quit cancels the parked verification`);

@@ -29,7 +29,6 @@ export class BoundedText extends WidthCachedComponent {
     this.maxRows = maxRows;
   }
 
-  /** Wraps the text to `width`; past `maxRows`, keeps the first rows and ends the last one with an ellipsis. */
   protected layout(width: number): string[] {
     const lines = new Text(this.text, 0, 0).render(width).map((line) => truncateToWidth(line, width, ""));
     if (this.maxRows === undefined || lines.length <= this.maxRows) return lines;

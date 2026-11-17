@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CUSTOM_INPUT_HISTORY_BYTES, CUSTOM_INPUT_HISTORY_LIMIT, createCustomInputHistory } from "../killeros/question-ui.ts";
 
-// Question.e2e.test.ts covers reuse, deduplication, and the Recent answers dialog in real Pi.
 
 test("custom answer history keeps the newest hundred distinct answers", () => {
   const history = createCustomInputHistory();

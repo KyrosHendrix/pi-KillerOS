@@ -20,7 +20,6 @@ export const GOAL_ENTRY_TYPE = "killeros-goal";
 export const GOAL_UPDATE_TOOL = "killeros_goal_update";
 
 type GoalEntryEvent = "set" | "replace" | "edit" | "limit" | "turn" | "continue" | "pause" | "resume" | "blocked" | "complete" | "error" | "clear" | "checkpoint" | "blocker-audit";
-/** Entry events that change the goal itself, as opposed to recording turn progress or clearing it. */
 type GoalChangeEvent = Exclude<GoalEntryEvent, "continue" | "blocker-audit" | "clear">;
 
 export interface GoalEntryData {
@@ -106,7 +105,6 @@ function goalUpdateToolIsAvailable(pi: ExtensionAPI): boolean {
   }
 }
 
-/** Appends a goal entry and makes its state current. */
 function saveGoalEntry(pi: ExtensionAPI, runtime: GoalRuntime, event: GoalEntryEvent, state: GoalState | undefined): void {
   const data: GoalEntryData = { version: GOAL_VERSION, event, state: state ?? null };
   pi.appendEntry(GOAL_ENTRY_TYPE, data);
@@ -170,7 +168,6 @@ export function endGoalTurn(runtime: GoalRuntime): void {
   runtime.agentEndObserved = false;
 }
 
-/** Applies the execution state that follows a status change, saved or not; recovery options keep the interrupted turn. */
 function settleExecutionFlags(runtime: GoalRuntime, status: GoalStatus, options: GoalTransitionOptions): void {
   runtime.continuationScheduled = false;
   if (status !== "active") {
@@ -189,7 +186,6 @@ export function pauseGoalUnsaved(
   options: GoalTransitionOptions = {},
 ): void {
   const current = runtime.state;
-  // Build the paused state first: a goal whose clock cannot stop safely must keep its execution state.
   const paused = current && pauseGoalState(current, reason, Date.now(), options.hold);
   settleExecutionFlags(runtime, "paused", options);
   runtime.lastStopReason = undefined;
@@ -289,7 +285,6 @@ export function pauseGoalWithoutDecision(pi: ExtensionAPI, runtime: GoalRuntime,
   );
 }
 
-/** Pauses an active goal whose tool is unavailable. */
 function pauseGoalBeforeTurn(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -306,7 +301,6 @@ function pauseGoalBeforeTurn(
   );
 }
 
-/** Aborts the request a paused goal was about to own. */
 function abortGoalRequest(ctx: ExtensionContext): void {
   try {
     ctx.abort();
@@ -525,8 +519,6 @@ export function registerGoalRuntime(
     const current = runtime.state;
     if (!isAutomationMode(ctx) || !isSavedSession(ctx) || !current) return;
     if (current.status === "paused" && current.resumeAfterManualCompaction === true) {
-      // The aborted turn may resume only when /compact follows the abort directly. A request in between means
-      // the user moved on, so a later /compact must not restart the old turn.
       const checkpoint = checkpointPausedGoalState(current, Date.now());
       try {
         persistGoalState(pi, runtime, "checkpoint", checkpoint);

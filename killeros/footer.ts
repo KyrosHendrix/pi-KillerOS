@@ -23,15 +23,10 @@ const LEVEL_COLORS: Readonly<Record<ThinkingLevel, ThemeColor>> = {
 
 const GIT_STATUS_REFRESH_INTERVAL_MS = 30_000;
 const GIT_STATUS_WATCH_DEBOUNCE_MS = 250;
-/**
- * Minimum time between watch-triggered scans. KILLEROS_FOOTER_WATCH_INTERVAL_MS can only shorten it, so end-to-end
- * tests need not sit through the cooldown; FooterGitSchedule.test.ts checks the real five seconds on mocked timers.
- */
 const watchIntervalOverride = Number(process.env.KILLEROS_FOOTER_WATCH_INTERVAL_MS);
 const GIT_STATUS_WATCH_INTERVAL_MS = Number.isSafeInteger(watchIntervalOverride) && watchIntervalOverride > 0
   ? Math.min(watchIntervalOverride, 5_000) : 5_000;
 
-/** Coalesces file-change scans to one active scan and one queued follow-up, and emits only successful results. */
 function createGitFileChangesRefresh(
   resolveChanges: () => Promise<GitFileChanges | undefined>,
   onChanges: (changes: GitFileChanges) => void,

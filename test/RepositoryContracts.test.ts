@@ -207,10 +207,8 @@ test("Oxlint configuration ignores private artifacts without excluding repositor
 test("CI blocks moderate dependency advisories without running lifecycle scripts", () => {
   assert.match(ci, /npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund/u);
   assert.match(ci, /npm ci --ignore-scripts/u);
-  // The audit needs no install, so it runs in Quality checks before one and fails fast.
   const checks = ciJob("quality-checks");
   assert.ok(checks.indexOf("npm audit --audit-level=moderate") < checks.indexOf("run: npm ci --ignore-scripts"));
-  // Every job that runs repository code runs on Windows. The gate and static analysis run none, so they use Linux.
   const staticAnalysis = new Set(["quality", "codeql"]);
   for (const workflow of [ci, release]) {
     const jobs = [...workflow.slice(workflow.search(/^jobs:\s*$/mu)).matchAll(/^  ([\w-]+):\r?\n(?:(?: {4,}.*)?\r?\n)*/gmu)];
@@ -247,8 +245,6 @@ test("CI and releases use the pinned Node.js version with one aggregated quality
   assert.deepEqual([...ci.slice(jobsStart).matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
     ["quality-checks", "quality-tests", "pi-latest", "pi-latest-tests", "quality", "codeql"]);
 
-  // Branch protection requires "Quality", the only gate. It passes only when every quality job passed, the newest-Pi
-  // check passed, and the newest-Pi shards either all passed or skipped because that Pi matches the lockfile.
   const quality = ciJob("quality");
   assert.match(quality, /^    name: Quality$/mu);
   assert.match(quality, /^    needs: \[quality-checks, quality-tests, pi-latest, pi-latest-tests\]$/mu);
@@ -263,8 +259,6 @@ test("CI and releases use the pinned Node.js version with one aggregated quality
   assert.match(checks, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
   assert.match(checks, /^        run: npm run check$/mu);
 
-  // npm test and every shard run through scripts/test-suite.ts; shards run two units at a time and add
-  // the lifecycle repeats. Quality and pi-latest-tests run the same shards with the same command.
   const shardCommands = (["quality-tests", "pi-latest-tests"] as const).map((job) => {
     const source = ciJob(job);
     const shards = /^        shard: \[([\d, ]+)\]$/mu.exec(source)?.[1].split(", ").map(Number);
@@ -300,20 +294,15 @@ test("CI and releases use the pinned Node.js version with one aggregated quality
 
 test("a push to main skips only work its pull request already ran on the same files", () => {
   const action = readFileSync(new URL("../.github/actions/tested-tree/action.yml", import.meta.url), "utf8");
-  // Skipping requires a push to main, a merge whose files equal its second parent's, that parent being the
-  // merged pull request's head, and a successful pull request run of this workflow on it.
   assert.match(action, /\[ "\$GITHUB_EVENT_NAME" = push \] && \[ "\$GITHUB_REF" = refs\/heads\/main \]/u);
   assert.match(action, /\.parents\[1\]\.sha \/\/ empty/u);
   assert.match(action, /\.merge_commit_sha == \\"\$GITHUB_SHA\\" and \.base\.ref == \\"main\\" and \.head\.sha == \\"\$head\\"/u);
   assert.match(action, /actions\/workflows\/ci\.yml\/runs\?head_sha=\$head&event=pull_request&status=success/u);
   assert.match(action, /\[ -n "\$tree" \] && \[ "\$tree" = "\$head_tree" \] && \[ "\$\{merged:-0\}" -ge 1 \] && \[ "\$\{passed:-0\}" -ge 1 \]; then skip=true; fi/u);
-  // A failed lookup must leave skip false instead of failing or skipping the job.
   assert.equal((action.match(/\|\| true\)/gu) ?? []).length, 5, "Every lookup tolerates failure");
   assert.match(action, /^        skip=false$/mu);
   assert.match(ci, /^permissions:\r?\n  actions: read\r?\n  contents: read\r?\n  pull-requests: read\r?$/mu);
 
-  // The three jobs that start the pull request's work look the tree up right after checkout, and every later
-  // step except the failure upload runs only without a match. The newest-Pi shards follow pi-latest's output.
   for (const job of ["quality-checks", "quality-tests", "pi-latest"]) {
     const steps = ciJob(job).split(/\r?\n(?= {6}- name: )/u).slice(1);
     assert.match(steps[0] ?? "", /^ {6}- name: Check out source/u, job);
@@ -340,8 +329,6 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   assert.match(readme, /Standalone pushes to `dev` do not start automatic CI/u);
   const compatibilityJob = ciJob("pi-latest");
   assert.match(compatibilityJob, /^    name: Pi compatibility \(latest\)$/mu);
-  // Quality already tests the locked packages; pi-latest-tests repeats the runtime suites only for a newer Pi,
-  // installing the exact packages pi-latest resolved.
   assert.match(compatibilityJob, /^        id: pi$/mu);
   assert.match(compatibilityJob, /"full-suite=" \+ fullSuite/u);
   assert.match(compatibilityJob, /packages=" \+ packages/u);
@@ -358,14 +345,12 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   assert.match(compatibilityTests, /git diff --exit-code -- package\.json package-lock\.json/u);
   assert.ok(compatibilityTests.indexOf("Verify package files are unchanged") > compatibilityTests.indexOf("Install matched Pi packages"));
   assert.ok(compatibilityTests.indexOf("Test shard against matched Pi") > compatibilityTests.indexOf("Verify package files are unchanged"));
-  // The Quality gate covers the newest Pi: a failed shard must fail it, and shards may skip only without a newer Pi.
   const gate = ciJob("quality");
   assert.match(gate, /^          FULL_SUITE: \$\{\{ needs\.pi-latest\.outputs\.full-suite \}\}$/mu);
   assert.match(gate, /^          LATEST: \$\{\{ needs\.pi-latest\.result \}\}$/mu);
   assert.match(gate, /^          SHARDS: \$\{\{ needs\.pi-latest-tests\.result \}\}$/mu);
   assert.match(gate, /test "\$LATEST" = success/u);
   assert.match(gate, /if \[ "\$FULL_SUITE" = true \]; then test "\$SHARDS" = success; else test "\$SHARDS" = skipped; fi/u);
-  // A failed quality job must not hide a newest-Pi failure in the same run.
   assert.match(gate, /- name: Require the newest-Pi check and every shard it started\r?\n        if: always\(\)\r?$/mu);
   const target = /^          PI_TARGET: '([^']+)'$/mu.exec(compatibilityJob)?.[1];
   assert.equal(target, packageJson.peerDependencies["@earendil-works/pi-coding-agent"]);
@@ -514,8 +499,6 @@ test("public guidance documents native wildcard filtering, image reads, and MCP 
 });
 
 test("agent_settled handlers run receipt, goal settlement, activity, sound, then project hooks", () => {
-  // Pi runs agent_settled handlers in registration order. Name each handler by the module that defines it,
-  // read from V8's function location, so forwarding helpers and registration call sites do not matter.
   const handlers: unknown[] = [];
   const host: unknown = new Proxy(() => undefined, {
     get: (_target, key) => key === "on"

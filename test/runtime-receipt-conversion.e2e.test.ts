@@ -8,9 +8,6 @@ import { inspectWorktreeWithoutFilters, passiveGitCommand, passiveGitEnv } from 
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { repositoryRoot, createFamily, git, initRepository } from "./support/ReceiptGitScenario.ts";
 
-// The matrix checks KillerOS's own change detection against Git for every conversion case. It calls the shared
-// detection and the receipt collector directly, the way worked-for.ts does for a request: begin, change files,
-// finish. runtime-receipts.e2e.test.ts and runtime-receipt-git.e2e.test.ts cover the same collector inside real Pi.
 
 const contents = new Map([
   ["lf", "one\ntwo\n"], ["crlf", "one\r\ntwo\r\n"], ["mixed", "one\r\ntwo\n"],
@@ -21,7 +18,6 @@ const rewrites = new Map([...contents, ["edit", "one\r\nchanged\r\n"]]);
 const attributes = ["", "* text=auto", "* text=auto eol=lf", "* text=auto eol=crlf", "* eol=lf", "* text", "* -text", "* binary",
   "* text=auto eol=lf\noverride-* -text", "* -text\noverride-* eol=lf !text"];
 
-/** Runs `body` with HOME isolated in `directory`, as the Pi scenarios did, so user Git config cannot change the result. */
 async function withIsolatedHome<T>(directory: string, body: () => Promise<T>): Promise<T> {
   const keys = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"] as const;
   const saved = keys.map((key) => [key, process.env[key]] as const);
@@ -51,8 +47,6 @@ for (const autoCrlf of ["false", "true", "input"] as const) {
           const directory = `attributes-${index}`;
           mkdirSync(path.join(family.project, directory));
           writeFileSync(path.join(family.project, directory, ".gitattributes"), attribute + "\n");
-          // Only attribute sets with an override-* rule treat override-prefixed paths differently;
-          // elsewhere both prefixes match the same patterns, so a second copy would repeat the case.
           const prefixes = attribute.includes("override-") ? ["default", "override"] : ["default"];
           for (const [indexed, initial] of contents) for (const [working, content] of new Map([["same", initial], ...rewrites])) {
             for (const prefix of prefixes) {
@@ -71,7 +65,6 @@ for (const autoCrlf of ["false", "true", "input"] as const) {
           return [file, metadata.split(" ")[1]];
         }));
 
-        // One receipt spans every case: the baseline is the clean commit, and each file then takes its worktree bytes.
         const collection = await beginChangeReceipt(family.project);
         for (const row of cases) {
           writeFileSync(path.join(family.project, row.file), row.content);
@@ -85,14 +78,12 @@ for (const autoCrlf of ["false", "true", "input"] as const) {
         const expected = cases.filter((row, index) => oracle[index] !== indexIds.get(row.file)).map(row => row.file).sort();
         assert.ok(expected.length > 0 && expected.length < cases.length, "The matrix mixes clean and changed cases");
 
-        // Detection, shared by the footer and receipts, names exactly the paths Git's own conversion changes.
         const gitCommand = passiveGitCommand(family.project);
         assert.ok(gitCommand);
         const snapshot = await inspectWorktreeWithoutFilters(family.project, async (args) =>
           execFileSync(gitCommand, args, { cwd: family.project, env: passiveGitEnv(), maxBuffer: 64 * 1024 * 1024 }));
         assert.deepEqual([...snapshot.files.keys()].sort(), expected, `${autoCrlf}: every original path agrees with Git`);
 
-        // The receipt counts the same changes and lists only paths from that set.
         const summary = await collection.finish();
         assert.equal(summary.state, "available", autoCrlf);
         if (summary.state !== "available") return;

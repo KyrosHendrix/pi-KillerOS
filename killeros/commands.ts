@@ -57,7 +57,6 @@ const BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
   { name: "quit", description: "Quit Pi" },
 ];
 
-/** Argument hints for Pi's own commands; KillerOS commands bring their hints from the modules that parse them. */
 const BUILTIN_SYNTAX_HINTS: Readonly<Record<string, string>> = {
   model: "/model [provider/model]",
   "scoped-models": "/scoped-models",

@@ -15,7 +15,6 @@ on:
   workflow_dispatch:
 
 # Keep the default token read-only. Jobs that need an additional scope declare it locally.
-# The tested-tree lookup reads this push's pull request and that pull request's workflow runs.
 permissions:
   actions: read
   contents: read
@@ -96,9 +95,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # scripts/test-suite.ts balances test units by measured duration across the shards, and each runner
-  # runs two units at a time. --lifecycle-repeats adds two runs of each lifecycle listed in scripts/test-suite.ts,
-  # without --test-force-exit, so a leaked handle or child process hangs that repeat.
   quality-tests:
     name: Quality tests (${{ matrix.shard }}/6)
     runs-on: windows-latest
@@ -145,8 +141,6 @@ jobs:
           retention-days: 7
 
   pi-latest:
-    # Quality tests the locked Pi minimum. This job type-checks the newest Pi in the peer range;
-    # pi-latest-tests repeats the runtime suites, sharded like Quality, only when that install differs from the lockfile.
     name: Pi compatibility (latest)
     runs-on: windows-latest
     timeout-minutes: 25
@@ -192,7 +186,6 @@ jobs:
             "@earendil-works/pi-coding-agent@$PI_VERSION" \
             "@earendil-works/pi-tui@$PI_TUI_RANGE" \
             "typebox@$PI_TYPEBOX_RANGE"
-          # Exact installed versions, so every pi-latest-tests shard installs the same packages.
           node -e '
             const { appendFileSync, readFileSync } = require("node:fs");
             const locked = JSON.parse(readFileSync("package-lock.json", "utf8")).packages;
@@ -263,13 +256,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Branch protection requires this check name. It fails unless every quality job passed, the newest-Pi
-  # check passed, and the newest-Pi shards either all passed or were skipped because that Pi matches the lockfile.
   quality:
     name: Quality
     needs: [quality-checks, quality-tests, pi-latest, pi-latest-tests]
     if: always()
-    # The gate runs no repository code, so it uses the faster Linux runner.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -296,7 +286,6 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
-    # Static analysis runs no repository code, so it uses the faster Linux runner.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

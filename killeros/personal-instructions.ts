@@ -8,7 +8,6 @@ import { readUnlinkedFile } from "./file-identity.ts";
 const PERSONAL_INSTRUCTIONS_FILE = "AGENTS.local.md";
 const PERSONAL_INSTRUCTIONS_LIMIT = 32 * 1024;
 
-/** Reads the project instructions file, keeping the first `limit` bytes of an oversized file with a truncation note. */
 function readBoundedText(filePath: string): string | undefined {
   try {
     const { content, truncated } = readUnlinkedFile(filePath, PERSONAL_INSTRUCTIONS_LIMIT);

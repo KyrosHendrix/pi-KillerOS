@@ -363,7 +363,6 @@ function runHook(hook: KillerosHook, ctx: ExtensionContext, environment: Record<
   return executeHook({ command: hook.command, cwd: ctx.cwd, environment, timeoutMs: hook.timeoutMs, signal: ctx.signal });
 }
 
-/** Runs hooks that observe an event: failures are reported, and cancellation of the parent request stops the rest. */
 async function runObserverHooks(hooks: readonly KillerosHook[], ctx: ExtensionContext, environment: Record<string, string>): Promise<void> {
   for (const hook of hooks) {
     const result = await runHook(hook, ctx, environment);

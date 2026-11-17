@@ -145,7 +145,6 @@ export function registerGoalInterface(
       }
       if (typeof params.evidence !== "string") throw new Error("Goal evidence must be text");
       const evidence = normalizeGoalText(params.evidence, GOAL_EVIDENCE_LIMIT, "Goal evidence");
-      /** Saves an accepted decision; a failed save pauses the goal before the tool reports the error. */
       const saveDecision = (label: string, save: () => void): void => {
         try {
           save();

@@ -12,8 +12,6 @@ const TOKEN_PATTERNS = [
   /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/iu,
 ] as const;
 
-// A credential key at the start of a line, assigned a quoted string or one unspaced word that is not a plain number.
-// Prose after the key ("Token: refresh rotation added") and budgets ("maxTokens: 8192") are not credentials.
 const ASSIGNMENT_PATTERN = /^[\t ]*(?:(?:[-*+]|\d+[.)])[\t ]+)?(?:\*\*|`)?["']?[\w.-]*(?:api_key|apikey|password|passwd|secret|token)[\w.-]*["']?(?:\*\*|`)?[\t ]*(?:=|:)(?:\*\*|`)?[\t ]*(?:"[^"\r\n]+"|'[^'\r\n]+'|(?!\d+(?:[.,]\d+)*[\t ]*(?:#[^\r\n]*)?\r?$)[^\s#"'][^\s]*[\t ]*(?:#[^\r\n]*)?\r?$)/imu;
 
 export type SecretCategory = "a recognized credential" | "a key: value line that names a password, token, secret, or API key";

@@ -46,7 +46,6 @@
     "no-var": "error",
     "prefer-rest-params": "error",
     "prefer-spread": "error",
-    // Rest-omission destructuring intentionally names dropped keys with a _ prefix.
     "no-unused-vars": [
       "error",
       {
@@ -65,7 +64,6 @@
     "typescript/restrict-template-expressions": "error",
     "typescript/triple-slash-reference": "error",
     "typescript/unbound-method": "error",
-    // Hook timers are read in closures declared textually before their single assignment.
     "prefer-const": [
       "error",
       {
@@ -80,7 +78,6 @@
         "killeros/**/*.ts"
       ],
       "rules": {
-        // Pi runs extension handlers on its terminal thread, so a synchronous child process freezes the UI.
         "no-restricted-imports": [
           "error",
           {
@@ -97,7 +94,6 @@
             ]
           }
         ],
-        // Machine identifiers must compare the same in every locale (Turkish dotted I, for example).
         "no-restricted-properties": [
           "error",
           {

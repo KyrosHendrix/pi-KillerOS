@@ -18,7 +18,6 @@ const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", 
 // such as another test's Pi console host. Each tree records the PIDs it saw exit and never signals them again;
 // the record is per tree so a PID one tree saw exit cannot hide another tree's live process.
 
-/** Reports whether `pid` is running, recording in `exitedPids` every PID seen gone. */
 function isAlive(pid: number, exitedPids: Set<number>): boolean {
   if (exitedPids.has(pid)) return false;
   try {
@@ -33,7 +32,6 @@ function isAlive(pid: number, exitedPids: Set<number>): boolean {
   }
 }
 
-/** Waits up to 10 seconds for `pid` to exit. */
 async function waitForExit(pid: number, exitedPids: Set<number>): Promise<void> {
   if (!isAlive(pid, exitedPids)) return;
   await new Promise<void>((resolve, reject) => {
@@ -56,7 +54,6 @@ async function waitForExit(pid: number, exitedPids: Set<number>): Promise<void> 
   });
 }
 
-/** Force-stops `pid` and its tree unless it was already seen gone, then waits for it to exit. */
 async function stopProcess(pid: number, exitedPids: Set<number>): Promise<void> {
   if (!isAlive(pid, exitedPids)) return;
   try {
