@@ -360,20 +360,17 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   assert.match(gate, /false\) test "\$SHARDS" = skipped/u);
   const target = /^          PI_TARGET: '([^']+)'$/mu.exec(compatibilityJob)?.[1];
   assert.equal(target, packageJson.peerDependencies["@earendil-works/pi-coding-agent"]);
-  assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version/u);
+  assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version dependencies --json/u);
+  assert.equal((compatibilityJob.match(/npm view /gu) ?? []).length, 1, "Resolve the Pi version and dependency ranges together");
   assert.match(compatibilityJob, /npm ci --ignore-scripts --no-audit --no-fund/u);
   assert.match(compatibilityJob, /^        run: npm run check$/mu);
   assert.match(compatibilityJob, /git diff --exit-code -- package\.json package-lock\.json/u);
   assert.doesNotMatch(compatibilityJob, /--save|@latest/u);
-  assert.match(ci, /dependencies\.@earendil-works\/pi-ai/u);
-  assert.match(ci, /dependencies\.@earendil-works\/pi-tui/u);
-  assert.match(ci, /dependencies\.typebox/u);
-  assert.match(ci, /typebox@\$PI_TYPEBOX_RANGE/u);
-  assert.match(ci, /test -n "\$PI_AI_RANGE" && test -n "\$PI_TUI_RANGE" && test -n "\$PI_TYPEBOX_RANGE"/u);
-  assert.match(ci, /@earendil-works\/pi-ai@\$PI_AI_RANGE/u);
-  assert.match(ci, /@earendil-works\/pi-coding-agent@\$PI_VERSION/u);
-  assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
-  assert.match(ci, /--package-lock=false/u);
+  assert.match(compatibilityJob, /"@earendil-works\/pi-coding-agent": latest\?\.version/u);
+  assert.match(compatibilityJob, /"@earendil-works\/pi-ai": latest\?\.dependencies\?\.\["@earendil-works\/pi-ai"\]/u);
+  assert.match(compatibilityJob, /"@earendil-works\/pi-tui": latest\?\.dependencies\?\.\["@earendil-works\/pi-tui"\]/u);
+  assert.match(compatibilityJob, /"typebox": latest\?\.dependencies\?\.typebox/u);
+  assert.match(compatibilityJob, /npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "\$\{packages\[@\]\}"/u);
   const cancellation = lifecycles.find((lifecycle) => lifecycle.name === "Pi cancellation");
   assert.ok(cancellation);
   for (const [file, title] of [
