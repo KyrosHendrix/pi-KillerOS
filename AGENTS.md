@@ -20,7 +20,7 @@ Before finishing, check each applicable mode and entry point:
 
 `AGENTS.md` is tracked repository guidance. The root `.gitignore` ignores `docs/` and `.pi/`. Do not force-add those directories or change their ignore rules unless asked.
 
-Open known files in ignored paths directly with `read`. Indexed `find` and `grep` may omit them. Keep private verification helpers in ignored locations. `eslint.config.js` excludes private `.pi/` artifacts, not repository code.
+Open known files in ignored paths directly with `read`. Indexed `find` and `grep` may omit them. Keep private verification helpers in ignored locations. `.oxlintrc.json` excludes private `.pi/` and `docs/` artifacts, not repository code.
 
 ## Preserve the affected contracts
 
@@ -104,7 +104,7 @@ gh run watch "$run" --exit-status
 
 A test that fails in CI and passes on its own is a bug, not bad luck. Do not rerun CI until it turns green. Read the failure report, rerun the failing file locally, and fix the cause in the test, its driver, or KillerOS. If you can't fix it in the current change, open an issue with the failure report and say so in the pull request. Do not add retries, longer timeouts, or skips to make a flaky test pass.
 
-`check` runs TypeScript without emitting files, then ESLint. Tests execute `.ts` files directly. There is no separate build step. Repository contracts scan untracked, non-ignored files too.
+`check` runs TypeScript without emitting files, then Oxlint. Tests execute `.ts` files directly. There is no separate build step.
 
 For README or changelog-only changes, run the focused `RepositoryContracts.test.ts` command and verify affected paths and examples. For release-metadata changes, also run:
 

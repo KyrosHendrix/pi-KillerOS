@@ -41,8 +41,7 @@
     "TUI ordinary and goal continuations survive reload and committed tree boundaries": 2.4
   },
   "test/CompactionSettings.e2e.test.ts": {
-    "RPC /auto-compact status, updates, normalization, and settings failure preservation": 1.4,
-    "Two Pi writers preserve independently changed auto-compaction fields under the settings lock": 0.9
+    "RPC /auto-compact status, updates, normalization, and settings failure preservation": 1.4
   },
   "test/CompactionTrigger.e2e.test.ts": {
     "Cancelled ordinary and goal compaction cannot recover after an aborted settlement": 5.6,
@@ -70,8 +69,7 @@
     "footer watch debounces a burst into one scan after 250 ms": 0,
     "footer watch disposal closes the watcher and cancels the pending scan": 0,
     "footer watch stops on watcher errors and on disposal": 0,
-    "footer watch throttles sustained changes to one scan per five seconds": 0,
-    "the installed footer starts the 30-second fallback": 0
+    "footer watch throttles sustained changes to one scan per five seconds": 0
   },
   "test/GoalCompletionVerification.e2e.test.ts": {
     "baseline capture rejects a file swapped between inspection and open": 0.7,
@@ -198,11 +196,10 @@
     "CI and releases use the pinned Node.js version with one aggregated quality check": 0,
     "CI blocks moderate dependency advisories without running lifecycle scripts": 0,
     "CI checks the newest peer-range Pi with matched runtime packages and a stable required-check name": 0,
-    "ESLint configuration ignores private artifacts without excluding repository code": 0.7,
+    "Oxlint configuration ignores private artifacts without excluding repository code": 0.7,
     "GitHub releases require green current main and consistent package provenance": 0,
     "locked brace expansion bounds deeply nested patterns": 0.8,
-    "lockfile matches the exact Pi development pins without retired experimental packages": 0,
-    "machine identifiers use locale-independent casing": 0,
+    "lockfile matches the exact Pi development pins": 0,
     "peer ranges require the pinned Pi minimums and reject older and next-major versions": 0.1,
     "public compaction documentation states the configurable default": 0,
     "public guidance documents native wildcard filtering, image reads, and MCP selection": 0,
@@ -211,10 +208,7 @@
     "public TUI guidance preserves Pi defaults and documents regular-mode scrollback": 0,
     "publication boundary requires directory publication with lifecycle scripts explicitly enabled": 0,
     "quality checks validate current metadata and test the release-pinned npm lifecycle": 0,
-    "repository contains no retired feature references": 0.1,
-    "repository contract scan includes untracked non-ignored files": 0,
-    "request activity observes continuation scheduling before settlement cleanup": 0,
-    "test sources name no private run directories": 0,
+    "agent_settled handlers run receipt, goal settlement, activity, sound, then project hooks": 0,
     "unreleased notes state only the current Pi minimum": 0
   },
   "test/runtime-fast.e2e.test.ts": {

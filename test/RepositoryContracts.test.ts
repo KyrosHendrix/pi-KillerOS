@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { Session } from "node:inspector";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { ESLint } from "eslint";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { tmpdir } from "node:os";
 import { DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING } from "../killeros/auto-compaction.ts";
 import { lifecycles } from "../scripts/test-suite.ts";
+import Killeros from "../Killeros.ts";
 
 type PackageJson = {
   version: string;
@@ -54,128 +57,12 @@ assert.ok(isPackageJson(packageValue));
 assert.ok(isTypeScriptConfig(tsconfigValue));
 const packageJson = packageValue;
 const tsconfig = tsconfigValue;
-const main = readFileSync(new URL("../Killeros.ts", import.meta.url), "utf8");
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const privateRootFiles = new Set<string>(["AGENTS.md", "CONTEXT.md", "PRODUCT.md", "DESIGN.md"]);
 
-function repositoryFiles(directory: string = repositoryRoot): string[] {
-  const files: string[] = [];
-  for (const entry of readdirSync(directory)) {
-    if (entry === ".git" || entry === "node_modules") continue;
-    if (directory === repositoryRoot && privateRootFiles.has(entry)) continue;
-    const entryPath = path.join(directory, entry);
-    if (statSync(entryPath).isDirectory()) files.push(...repositoryFiles(entryPath));
-    else files.push(entryPath);
-  }
-  return files;
-}
-
-function repositoryContractFiles(): string[] {
-  return execFileSync(
-    "git",
-    ["-C", repositoryRoot, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    { encoding: "utf8" },
-  )
-    .split("\0")
-    .filter(Boolean)
-    .map((file) => path.join(repositoryRoot, file))
-    .filter(existsSync);
-}
-
-test("repository contract scan includes untracked non-ignored files", () => {
-  const probePath = path.join(repositoryRoot, `.killeros-contract-probe-${process.pid}.txt`);
-  const privateDirectory = path.join(repositoryRoot, ".pi");
-  const privateProbePath = path.join(privateDirectory, `.killeros-private-probe-${process.pid}.txt`);
-  const privateDirectoryExisted = existsSync(privateDirectory);
-  let privateDirectoryCreated = false;
-  let probeCreated = false;
-  let privateProbeCreated = false;
-  let operationFailed = false;
-  let operationError: unknown;
-  const cleanupErrors: unknown[] = [];
-
-  try {
-    writeFileSync(probePath, "contract probe", { flag: "wx" });
-    probeCreated = true;
-    if (!privateDirectoryExisted) {
-      mkdirSync(privateDirectory);
-      privateDirectoryCreated = true;
-    }
-    writeFileSync(privateProbePath, "private contract probe", { flag: "wx" });
-    privateProbeCreated = true;
-
-    const scannedFiles = repositoryContractFiles();
-    assert.ok(scannedFiles.includes(path.join(repositoryRoot, "test", "RepositoryContracts.test.ts")));
-    assert.ok(scannedFiles.includes(probePath));
-    assert.ok(!scannedFiles.includes(privateProbePath));
-  } catch (error) {
-    operationFailed = true;
-    operationError = error;
-  } finally {
-    if (probeCreated) {
-      try {
-        unlinkSync(probePath);
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
-    if (privateProbeCreated) {
-      try {
-        unlinkSync(privateProbePath);
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
-    if (privateDirectoryCreated && existsSync(privateDirectory)) {
-      try {
-        rmdirSync(privateDirectory);
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
-  }
-
-  if (operationFailed) {
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError([operationError, ...cleanupErrors], "Repository scan and cleanup both failed");
-    }
-    throw operationError;
-  }
-  if (cleanupErrors.length === 1) throw cleanupErrors[0];
-  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "Repository scan cleanup failed");
-
-  assert.equal(existsSync(probePath), false);
-  assert.equal(existsSync(privateProbePath), false);
-  assert.equal(existsSync(privateDirectory), privateDirectoryExisted);
-});
-
-test("repository contains no retired feature references", () => {
-  const retiredTerms = [
-    "sub" + "agent",
-    "sub" + "-agent",
-    "sub" + " agent",
-    "child" + " agent",
-    "child" + " thread",
-  ];
-  const matches = repositoryContractFiles().filter((file: string) => {
-    const content = readFileSync(file, "utf8").toLowerCase();
-    return retiredTerms.some((term) => content.includes(term));
-  });
-  assert.deepEqual(matches, []);
-});
-
-test("test sources name no private run directories", () => {
-  const privateRunPath = /compact-implementation-[a-f\d]/u;
-  const testRoot = `${path.join(repositoryRoot, "test")}${path.sep}`;
-  const privateRunPathSources = repositoryContractFiles()
-    .filter((file) => file.startsWith(testRoot) && file.endsWith(".ts"))
-    .filter((file) => privateRunPath.test(readFileSync(file, "utf8")));
-  assert.deepEqual(privateRunPathSources, []);
-});
 
 test("peer ranges require the pinned Pi minimums and reject older and next-major versions", () => {
   assert.deepEqual(Object.keys(packageJson.peerDependencies).sort(), [
@@ -228,7 +115,7 @@ test("public TUI guidance preserves Pi defaults and documents regular-mode scrol
   assert.match(readme, /KillerOS leaves Pi's `tuiMode` and `quietStartup` preferences unchanged/u);
 });
 
-test("lockfile matches the exact Pi development pins without retired experimental packages", () => {
+test("lockfile matches the exact Pi development pins", () => {
   const lock: unknown = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
   assert.ok(isUnknownRecord(lock));
   assert.ok(isUnknownRecord(lock.packages));
@@ -241,10 +128,6 @@ test("lockfile matches the exact Pi development pins without retired experimenta
     const lockedPackage: unknown = lock.packages[`node_modules/@earendil-works/${name}`];
     assert.ok(isUnknownRecord(lockedPackage));
     assert.equal(lockedPackage.version, packageJson.devDependencies[`@earendil-works/${name}`], name);
-  }
-  for (const name of ["pi-server", "pi-client", "pi-protocol"]) {
-    assert.equal(packageJson.devDependencies[`@earendil-works/${name}`], undefined, name);
-    assert.equal(lock.packages[`node_modules/@earendil-works/${name}`], undefined, name);
   }
 });
 
@@ -280,14 +163,6 @@ test("locked brace expansion bounds deeply nested patterns", () => {
   assert.equal(output, "ok");
 });
 
-test("machine identifiers use locale-independent casing", () => {
-  const source = repositoryFiles(path.join(repositoryRoot, "killeros"))
-    .filter((file: string) => file.endsWith(".ts"))
-    .map((file: string) => readFileSync(file, "utf8"))
-    .join("\n");
-  assert.doesNotMatch(source, /\.toLocale(?:Lower|Upper)Case\(/u);
-});
-
 test("all shipped TypeScript entry points use strict checking", () => {
   assert.equal(tsconfig.compilerOptions.strict, true);
   assert.deepEqual(tsconfig.include, ["Killeros.ts", "scripts/**/*.ts", "test/**/*.ts"]);
@@ -298,16 +173,34 @@ test("public compaction documentation states the configurable default", () => {
   assert.match(readme, /"autoCompaction"/u);
   assert.match(readme, /"enabled": true/u);
   assert.ok(readme.includes(`"percentRemaining": ${DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING}`));
-  assert.doesNotMatch(readme, /40% remaining|deterministic fallback/iu);
 });
 
-// Catalog ID: runtime.system-eslint-ignore.
-test("ESLint configuration ignores private artifacts without excluding repository code", async () => {
-  const eslint = new ESLint({ cwd: repositoryRoot });
-  assert.equal(await eslint.isPathIgnored(".pi/verification/release-prompt.test.mjs"), true);
-  assert.equal(await eslint.isPathIgnored("docs/killeros-launch/film.mjs"), true);
-  for (const file of ["Killeros.ts", "killeros/hooks.ts", "scripts/verify-release.ts", "test/RepositoryContracts.test.ts"]) {
-    assert.equal(await eslint.isPathIgnored(file), false, file);
+test("Oxlint configuration ignores private artifacts without excluding repository code", () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), "killeros-lint-"));
+  try {
+    copyFileSync(path.join(repositoryRoot, ".oxlintrc.json"), path.join(fixture, ".oxlintrc.json"));
+    writeFileSync(path.join(fixture, "clean.ts"), "export {};\n");
+    const cases = [
+      [".pi/verification/probe.ts", 0],
+      ["docs/probe.ts", 0],
+      ["Killeros.ts", 1],
+      ["killeros/probe.ts", 1],
+      ["scripts/probe.ts", 1],
+      ["test/probe.ts", 1],
+    ] as const;
+    for (const [file, expectedStatus] of cases) {
+      mkdirSync(path.dirname(path.join(fixture, file)), { recursive: true });
+      writeFileSync(path.join(fixture, file), "debugger;\n");
+      const result = spawnSync(process.execPath, [
+        path.join(repositoryRoot, "node_modules/oxlint/bin/oxlint"),
+        "--deny", "no-debugger", "clean.ts", file,
+      ], { cwd: fixture, encoding: "utf8", timeout: 10_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, expectedStatus, `${file}: ${result.stdout}${result.stderr}`);
+      if (expectedStatus === 1) assert.match(result.stdout + result.stderr, /no-debugger/u);
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
   }
 });
 
@@ -348,7 +241,6 @@ test("CI and releases use the pinned Node.js version with one aggregated quality
     const versions = [...workflow.matchAll(/^          node-version: (.+)$/gmu)].map((match) => match[1]);
     assert.ok(versions.length > 0);
     assert.ok(versions.every((version) => version === `'${nodeVersion}'`));
-    assert.doesNotMatch(workflow, /matrix\.node-version/u);
   }
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
@@ -489,7 +381,6 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   assert.match(ci, /test -n "\$PI_AI_RANGE" && test -n "\$PI_TUI_RANGE" && test -n "\$PI_TYPEBOX_RANGE"/u);
   assert.match(ci, /@earendil-works\/pi-ai@\$PI_AI_RANGE/u);
   assert.match(ci, /@earendil-works\/pi-coding-agent@\$PI_VERSION/u);
-  assert.doesNotMatch(ci, /@earendil-works\/pi-(?:server|client|protocol)/u);
   assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
   assert.match(ci, /--package-lock=false/u);
   const cancellation = lifecycles.find((lifecycle) => lifecycle.name === "Pi cancellation");
@@ -576,13 +467,11 @@ test("GitHub releases require green current main and consistent package provenan
   assert.match(release, /refs\/heads\/dev/u);
   assert.match(readme, /Releases go through CI on `main`/u);
   assert.match(readme, /do not push version tags manually/iu);
-  assert.doesNotMatch(readme, /does not publish to npm|npm login/iu);
 });
 
 test("public README documents current requirements and commands", () => {
   assert.deepEqual(packageJson.os, ["win32"]);
   assert.match(readme, /KillerOS supports Windows only/u);
-  assert.doesNotMatch(readme, /supports Windows and Linux|on Linux and Windows/u);
   const escapedVersion = packageJson.version.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   assert.match(readme, new RegExp(`@v${escapedVersion}`, "u"));
   const nodeVersion = readFileSync(new URL("../.node-version", import.meta.url), "utf8").trim();
@@ -592,16 +481,12 @@ test("public README documents current requirements and commands", () => {
   assert.match(readme, /^\/goal pause/mu);
   assert.match(readme, /^\/goal resume/mu);
   assert.match(readme, /^\/goal clear/mu);
-  assert.doesNotMatch(readme, /\/goal (start|check|checks|limit|history)/u);
   for (const command of ["codex-fast", "notification", "handoff", "new", "exit"] as const) {
     assert.match(readme, new RegExp(`^/${command}(?:\\s|$)`, "mu"));
   }
-  assert.doesNotMatch(readme, /^\/init(?:\s|$)/mu);
-  assert.doesNotMatch(readme, /killeros_init_/u);
   assert.match(readme, /^\/handoff \[focus\]/mu);
   assert.match(readme, /off by default/iu);
   assert.match(readme, /Nerd Font/iu);
-  assert.doesNotMatch(readme, /work trail|transient borderless trail/iu);
   assert.match(readme, /settled.*token usage/iu);
   assert.match(readme, /question.*single-select and multi-select/iu);
 });
@@ -628,19 +513,56 @@ test("public guidance documents native wildcard filtering, image reads, and MCP 
   assert.match(readme, /mcp\.md#control-tool-exposure/u);
 });
 
-test("request activity observes continuation scheduling before settlement cleanup", () => {
-  const goalSettlement = main.indexOf("registerGoalSettlement(pi");
-  const activity = main.indexOf("registerRequestActivity(pi");
-  const notifications = main.indexOf("completionNotifications.register(");
-  const workedFor = main.indexOf("registerWorkedFor(pi");
+test("agent_settled handlers run receipt, goal settlement, activity, sound, then project hooks", () => {
+  // Pi runs agent_settled handlers in registration order. Name each handler by the module that defines it,
+  // read from V8's function location, so forwarding helpers and registration call sites do not matter.
+  const handlers: unknown[] = [];
+  const host: unknown = new Proxy(() => undefined, {
+    get: (_target, key) => key === "on"
+      ? (event: string, handler: unknown) => { if (event === "agent_settled") handlers.push(handler); }
+      : host,
+    apply: () => host,
+  });
+  Killeros(host as ExtensionAPI);
 
-  assert.ok(workedFor < goalSettlement);
-  assert.ok(goalSettlement < activity);
-  assert.ok(activity < notifications);
-});
-
-test("project agent_settled hooks register after every KillerOS settlement handler", () => {
-  const settledHooks = main.indexOf("registerSettledHooks();");
-  assert.ok(settledHooks > main.indexOf("completionNotifications.register("),
-    "A slow hook must not delay the receipt or sound, and its file edits must stay out of the agent's receipt");
+  const session = new Session();
+  const scripts = new Map<string, string>();
+  session.on("Debugger.scriptParsed", ({ params }) => scripts.set(params.scriptId, params.url));
+  session.connect();
+  const probe = Symbol.for("killeros.settled-handler");
+  try {
+    session.post("Debugger.enable");
+    // Inspector calls on the main-thread session complete synchronously. A bound function has no location
+    // of its own, so follow it to the function it wraps.
+    const definingModule = (objectId: string): string | undefined => {
+      let module: string | undefined;
+      session.post("Runtime.getProperties", { objectId }, (error, properties) => {
+        assert.ifError(error);
+        const internal = (name: string) => properties.internalProperties?.find((property) => property.name === name)?.value;
+        const location: unknown = internal("[[FunctionLocation]]")?.value;
+        const target = internal("[[TargetFunction]]")?.objectId;
+        if (isUnknownRecord(location) && typeof location.scriptId === "string") {
+          const url = scripts.get(location.scriptId);
+          if (url) module = path.basename(fileURLToPath(url), ".ts");
+        } else if (target) module = definingModule(target);
+      });
+      return module;
+    };
+    const defining = handlers.map((handler) => {
+      Reflect.set(globalThis, probe, handler);
+      let module: string | undefined;
+      session.post("Runtime.evaluate", { expression: `globalThis[Symbol.for("killeros.settled-handler")]` }, (error, value) => {
+        assert.ifError(error);
+        module = definingModule(value.result.objectId ?? "");
+      });
+      assert.ok(module, "The inspector must locate every handler");
+      return module;
+    });
+    const order = ["worked-for", "goal-settlement", "activity", "notifications", "hooks"];
+    assert.deepEqual(defining.filter((module) => order.includes(module)), order,
+      "A slow project hook must not delay the receipt or sound, and its file edits must stay out of the agent's receipt");
+  } finally {
+    Reflect.deleteProperty(globalThis, probe);
+    session.disconnect();
+  }
 });

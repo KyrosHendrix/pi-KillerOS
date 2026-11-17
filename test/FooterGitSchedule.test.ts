@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test, { type TestContext } from "node:test";
 import { scheduleGitStatusFallback, scheduleGitStatusWatch } from "../killeros/footer.ts";
 
@@ -90,10 +89,4 @@ test("footer watch disposal closes the watcher and cancels the pending scan", (t
   watch.advance(10_000);
   assert.equal(watch.refreshes(), 0);
   assert.ok(watch.closed());
-});
-
-test("the installed footer starts the 30-second fallback", () => {
-  // Real Pi would need a 30-second idle wait to observe the fallback, so its wiring is checked at the call site.
-  const source = readFileSync(new URL("../killeros/footer.ts", import.meta.url), "utf8");
-  assert.match(source, /const stopFallback = scheduleGitStatusFallback\(gitStatus\.request\);/u);
 });

@@ -71,7 +71,7 @@ export const moduleTests = {
 const owners: Readonly<Partial<Record<string, readonly string[]>>> = moduleTests;
 
 /** Files that change how Pi loads or runs KillerOS as a whole. */
-export const hostFiles = ["Killeros.ts", "package.json", "package-lock.json", "tsconfig.json", ".node-version", "eslint.config.js"];
+export const hostFiles = ["Killeros.ts", "package.json", "package-lock.json", "tsconfig.json", ".node-version", ".oxlintrc.json"];
 
 /** Host integration tests: activation, packaging, startup, modes, tools, and provider transport. */
 export const hostTests = [
