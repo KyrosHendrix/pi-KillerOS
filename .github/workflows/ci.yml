@@ -236,7 +236,7 @@ jobs:
   pi-latest-tests:
     name: Pi compatibility (latest) tests (${{ matrix.shard }}/6)
     needs: pi-latest
-    if: needs.pi-latest.outputs.full-suite == 'true'
+    if: "!cancelled() && needs.pi-latest.result == 'success' && needs.pi-latest.outputs.full-suite == 'true'"
     runs-on: windows-latest
     timeout-minutes: 25
     strategy:

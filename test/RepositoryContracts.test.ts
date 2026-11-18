@@ -292,8 +292,9 @@ test("a push to main checks for recorded PR coverage before allocating Windows r
   const action = readFileSync(new URL("../.github/actions/tested-tree/action.yml", import.meta.url), "utf8");
   assert.match(action, /git rev-parse --verify 'HEAD\^\{tree\}'/u);
   assert.match(action, /git rev-parse --verify -q HEAD\^2/u);
-  assert.match(action, /\.merged_at != null and \.merge_commit_sha == \\"\$GITHUB_SHA\\" and \.base\.ref == \\"main\\" and \.head\.sha == \\"\$head\\"/u);
+  assert.match(action, /\.merged_at != null and \.merge_commit_sha == \\"\$GITHUB_SHA\\" and \.base\.ref == \\"main\\" and \.head\.repo\.full_name == \.base\.repo\.full_name and \.head\.sha == \\"\$head\\"/u);
   assert.match(action, /actions\/workflows\/ci\.yml\/runs\?head_sha=\$head&event=pull_request&status=success/u);
+  assert.match(action, /select\(\.head_repository\.full_name == \\"\$GITHUB_REPOSITORY\\"\) \| \[\.id, \.run_attempt\]/u);
   assert.match(action, /name="tested-tree-\$pr-\$attempt-\$tree"/u);
   assert.match(action, /\.name == \\"\$name\\" and \.expired == false/u);
   assert.match(action, /^        skip=false$/mu);
@@ -338,7 +339,7 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   assert.doesNotMatch(compatibilityJob, /strategy:|matrix\.|scripts\/test-suite\.ts|node --test/u, "pi-latest only resolves and type-checks");
   const compatibilityTests = ciJob("pi-latest-tests");
   assert.match(compatibilityTests, /^    needs: pi-latest$/mu);
-  assert.match(compatibilityTests, /^    if: needs\.pi-latest\.outputs\.full-suite == 'true'$/mu);
+  assert.match(compatibilityTests, /^    if: "!cancelled\(\) && needs\.pi-latest\.result == 'success' && needs\.pi-latest\.outputs\.full-suite == 'true'"$/mu);
   assert.match(compatibilityTests, /^          PI_PACKAGES: \$\{\{ needs\.pi-latest\.outputs\.packages \}\}$/mu);
   assert.match(compatibilityTests, /test "\$\{#packages\[@\]\}" -eq 4/u);
   assert.match(compatibilityTests, /npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "\$\{packages\[@\]\}"/u);

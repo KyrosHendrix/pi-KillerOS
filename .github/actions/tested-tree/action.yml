@@ -20,9 +20,9 @@ runs:
         if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] &&
           tree=$(git rev-parse --verify 'HEAD^{tree}') &&
           head=$(git rev-parse --verify -q HEAD^2) &&
-          pr=$(gh api "$repo/commits/$GITHUB_SHA/pulls" -q "[.[] | select(.merged_at != null and .merge_commit_sha == \"$GITHUB_SHA\" and .base.ref == \"main\" and .head.sha == \"$head\")] | .[0].number // empty") &&
+          pr=$(gh api "$repo/commits/$GITHUB_SHA/pulls" -q "[.[] | select(.merged_at != null and .merge_commit_sha == \"$GITHUB_SHA\" and .base.ref == \"main\" and .head.repo.full_name == .base.repo.full_name and .head.sha == \"$head\")] | .[0].number // empty") &&
           [[ "$pr" =~ ^[0-9]+$ ]] &&
-          runs=$(gh api "$repo/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&status=success&per_page=5" -q '.workflow_runs[] | [.id, .run_attempt] | @tsv'); then
+          runs=$(gh api "$repo/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&status=success&per_page=5" -q ".workflow_runs[] | select(.head_repository.full_name == \"$GITHUB_REPOSITORY\") | [.id, .run_attempt] | @tsv"); then
           while IFS=$'\t' read -r run attempt; do
             [[ "$run" =~ ^[0-9]+$ && "$attempt" =~ ^[0-9]+$ ]] || continue
             name="tested-tree-$pr-$attempt-$tree"
