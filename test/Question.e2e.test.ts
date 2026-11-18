@@ -2196,7 +2196,6 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       await terminal.waitForScreen((screen) => screen.includes("Q5T1 DONE"), { signal: t.signal });
       assert.equal(singleResult(sessionFile, 0, "invalidate:tree-refused").details?.answer, "Kept");
 
-      // Vector history:reuse: the dialog offers the saved custom answer and publishes it without retyping.
       await submitEditorText(terminal, "q5 th", { signal: t.signal });
       await waitForSelector(terminal, "History reuse", { signal: t.signal });
       await chooseOffered(terminal, /More actions/u, "history:reuse", { signal: t.signal });
@@ -2217,7 +2216,6 @@ test("Question cancellation and invalidation never publish a late answer", { tim
       await terminal.waitForScreen((screen) => screen.includes("Navigated to selected point"), { signal: t.signal, after: commitCursor });
       await waitForControlFile(path.join(control, "nav-result"), (content) => content.includes("\"cancelled\":false"), "invalidate:tree-commit");
 
-      // A fresh question works after the committed navigation, and session_tree cleared the saved answers.
       await submitEditorText(terminal, "q5 t2", { signal: t.signal });
       await waitForSelector(terminal, "Post navigation question", { signal: t.signal });
       await chooseOffered(terminal, /More actions/u, "history:tree-clear", { signal: t.signal });

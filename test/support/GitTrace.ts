@@ -27,7 +27,6 @@ export async function gitReadersFinished(
       seen = contents;
       changedAt = Date.now();
     }
-    // Git appends whole lines; a line still being written is counted on the next read.
     const events = contents.slice(0, contents.lastIndexOf("\n") + 1).split("\n").filter(Boolean)
       .map((line): unknown => JSON.parse(line))
       .map((entry) => typeof entry === "object" && entry !== null && "event" in entry ? entry.event : undefined);

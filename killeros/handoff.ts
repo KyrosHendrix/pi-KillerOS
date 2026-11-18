@@ -77,7 +77,6 @@ function sessionName(sourceName: string | undefined, focus: string, document: st
   return `${shortBase || "Handoff"} · handoff`;
 }
 
-/** Names what makes generated output unsafe: credentials, or copied request or role framing. Never returns the matched text. */
 function unsafeHandoffOutput(summary: string): string | undefined {
   const secret = likelySecretCategory(summary);
   if (secret) return secret;

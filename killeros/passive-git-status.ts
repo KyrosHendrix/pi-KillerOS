@@ -55,7 +55,6 @@ export type PassiveWorktreeSnapshot = {
   symlinks: boolean;
 };
 
-/** Settings that decide how worktree bytes and modes compare with the index. */
 type PassiveWorktreeSettings = Pick<PassiveWorktreeSnapshot, "fileMode" | "symlinks"> & { autoCrlf: string };
 
 /**
@@ -77,7 +76,6 @@ export async function passiveWorktreeSettings(runGit: PassiveGitRunner): Promise
     values.set(key, [...values.get(key) ?? [], separator < 0 ? "true" : record.slice(separator + 1)]);
   }
   if (!values.has("killeros.probe")) throw new Error("incomplete Git settings");
-  /** Returns a boolean setting's last value, true when unset, and throws when any value is not a Git boolean. */
   const bool = (key: string): boolean => {
     const all = values.get(key) ?? ["true"];
     if (all.some((value) => value !== "true" && value !== "false")) throw new Error(`invalid ${key}`);
@@ -170,7 +168,6 @@ function inspectedRoot(cwd: string): string | undefined {
         }
       }
     } catch {
-      // An unreadable directory cannot hold the repository marker we look for.
     }
     const parent = path.dirname(current);
     if (parent === current) break;
@@ -349,7 +346,6 @@ async function readFileState(root: string, entry: IndexEntry | undefined, filePa
   return { mode, content: await worktreeContent(absolutePath, stats, remaining), statsMatch };
 }
 
-/** Reads a regular file of at most `limit` bytes, failing if it grows while being read. */
 async function readBoundedFile(filePath: string, limit: number): Promise<Buffer> {
   const handle = await open(filePath, "r");
   try {
@@ -480,7 +476,6 @@ export class PassiveGitFailure extends Error {
   }
 }
 
-/** Resolves the passive Git binary, treating a failed PATH inspection as no safe binary. */
 function safeGitCommand(cwd: string): string | undefined {
   try {
     return passiveGitCommand(cwd);
@@ -559,7 +554,6 @@ export async function resolveGitFileChanges(cwd: string, trusted: boolean): Prom
     if (!command) return undefined;
     const root = decode(await runPassiveGit(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel"], { command })).trim();
     if (!path.isAbsolute(root)) return undefined;
-    // Counting needs each untracked path, not its bytes, so large untracked files cost nothing and cannot exceed the content limit.
     const snapshot = await inspectWorktreeWithoutFilters(root, (args) => runPassiveGit(root, args, { command }), "paths");
     const changes: GitFileChanges = { modified: 0, added: 0, deleted: 0 };
     const deletedObjectIds: string[] = [];

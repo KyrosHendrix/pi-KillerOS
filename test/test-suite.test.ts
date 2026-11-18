@@ -12,7 +12,6 @@ import {
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
-/** Whether `unit` runs the top-level test `name`, judged by the same pattern Node receives. */
 function runsTest(unit: Unit, name: string): boolean {
   const pattern = unitArguments(unit).find((argument) => /^--test-(name|skip)-pattern=/u.test(argument));
   if (!pattern) return true;
@@ -50,7 +49,6 @@ test("lifecycle repeats keep CI's plain Node flags and select existing tests", (
     const sources = lifecycle.files.map((file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8"));
     const pattern: string | undefined = "pattern" in lifecycle ? lifecycle.pattern : undefined;
     for (const title of pattern?.split("|") ?? []) {
-      // Some files name their test through a constant, so the title must start a string literal in one of its files.
       assert.ok(sources.some((source) => source.includes(`"${title}`) || source.includes(`\`${title}`)),
         `${lifecycle.name}: "${title}" must start an existing test name`);
     }
@@ -142,14 +140,12 @@ test("dry run prints every shard without running tests", () => {
   const output = execFileSync(process.execPath, ["--experimental-strip-types", "scripts/test-suite.ts", "--shard", "2/3", "--dry-run"], { cwd: root, encoding: "utf8" });
   assert.match(output, /^shard 1\/3: ~\d+s$/mu);
   assert.match(output, /^shard 3\/3: ~\d+s$/mu);
-  // Which files split depends on the recorded timings, so match any split file's listed and remaining units.
   assert.match(output, /^ {2}\S+#1 ~\d+s$/mu);
   assert.match(output, /^ {2}\S+#rest ~\d+s$/mu);
   assert.doesNotMatch(output, /ℹ tests/u, "A dry run must not start the test runner");
 });
 
 test("the suite runs a shard and prefixes output by unit", () => {
-  // With one shard per unit, the last shard holds exactly one of the shortest units. That many slots keep the minimum target.
   const total = testUnits(testFiles(), unitSeconds.min).length;
   assert.equal(unitTarget(total), unitSeconds.min);
   const output = execFileSync(process.execPath, ["--experimental-strip-types", "scripts/test-suite.ts", "--shard", `${total}/${total}`, "--concurrency", "1"],

@@ -212,7 +212,6 @@ type Turn = {
   verify: (receipt: RecordValue, screen: string) => void | Promise<void>;
 };
 
-/** Records the Git children this family's Pi starts in a trace2 event file and returns its path. */
 function traceGit(family: Family): string {
   const trace = path.join(family.directory, "git-trace2.jsonl");
   family.env.GIT_TRACE2_EVENT = trace;

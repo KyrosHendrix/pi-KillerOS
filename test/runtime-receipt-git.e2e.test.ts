@@ -23,8 +23,6 @@ test("real Pi receipts report only the response delta with bounded Git metadata"
     const family = createFamily(repositoryRoot, "delta");
     directories.push(family.directory);
     initRepository(family.project);
-    // An owned npm fixture fails at once, like the fixture manifest's test script; KillerOS still observes
-    // actual native bash tool results. It sits outside the project so the receipt deltas stay exact.
     const bin = path.join(family.directory, "check-bin");
     mkdirSync(bin);
     writeFileSync(path.join(bin, "npm"), "#!/bin/sh\nexit 1\n");
@@ -150,7 +148,6 @@ test("real Pi receipts report only the response delta with bounded Git metadata"
               // Prepare commits before collection so this HEAD move emits no worktree event.
               git(family.project, "update-ref", "HEAD", nextHead);
             },
-            // The runner waits for the rendered receipt line, which names the HEAD move.
             screenMarker: "Changes unavailable · HEAD moved",
             verify: (receipt, screen) => {
               assert.deepEqual(receipt.changes, { state: "unavailable", reason: "head-changed" },
@@ -884,7 +881,6 @@ test("real Pi receipt bounds diff work, blob storage, and repository formats", {
     }
   }
 
-  // Loose objects and cat-file batches check blob size in separate code paths. Each path gets one limit variant, and the below-limit packed history covers the passing case.
   for (const variant of ["below-packed", "oversized-loose", "aggregate-packed"] as const) {
     const oversized = variant.startsWith("oversized");
     const aggregate = variant.startsWith("aggregate");
@@ -1321,7 +1317,6 @@ test("an agent_settled project hook runs after the receipt, so its file edits st
   const provider = new ReceiptGitProvider();
   try {
     initRepository(family.project);
-    // The hook stands in for a formatter: it writes into the project every time the agent settles.
     const script = path.join(family.directory, "settled-hook.cjs");
     writeFileSync(script, "require('node:fs').writeFileSync('formatted.txt', 'formatted');\n");
     mkdirSync(path.join(family.project, ".pi"), { recursive: true });
@@ -1333,7 +1328,6 @@ test("an agent_settled project hook runs after the receipt, so its file edits st
       doneWhen: (screen) => screen.includes("Hooked response."),
       mutate: () => writeFileSync(path.join(family.project, "agent.txt"), "agent\n"),
       verify: (receipt) => {
-        // The settlement observer loads after KillerOS, so the hook has finished by the time this runs.
         assert.equal(readFileSync(path.join(family.project, "formatted.txt"), "utf8"), "formatted", "The hook ran at settlement");
         assert.deepEqual(fileSummary(receipt.changes).files, [{ kind: "added", path: "agent.txt", additions: 1, deletions: 0 }],
           "Only the agent's change is in the receipt");

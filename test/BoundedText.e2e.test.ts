@@ -15,7 +15,6 @@ const sources = ["long ".repeat(100), "中", "中日文".repeat(30), "😀👩�
   "中\n😀\ne\u0301\n".repeat(10),
   Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n")] as const;
 
-// Every width the assertions branch on, its neighbors, and odd widths between them. Wrapping has no other thresholds.
 const boundaryWidths = [1, 2, 3, 4, 5, 7, 11, 19, 20, 21, 22, 23, 31, 39, 40, 41, 57, 79, 80] as const;
 
 type SourceIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6;
@@ -64,7 +63,6 @@ function transcriptBlock(screen: string, begin: string, end: string): string[] {
   return rows.slice(start + 1, finish).filter(row => row.trim() !== "");
 }
 
-/** Drives the real native renderers, starting at their first owned history, through each source collapsed and expanded at every boundary width. */
 async function runBoundedScenario(t: TestContext, { id, sourceIndices }: BoundedScenario): Promise<void> {
   const directory = mkdtempSync(path.join(realpathSync(os.tmpdir()), ".killeros-bounded-text-"));
   const dependencies = path.join(directory, "node_modules");
@@ -331,7 +329,6 @@ export default function(pi) {
     parsedUnicodeLimitation: "Emoji and combining fidelity is checked at the actual producer before ConPTY/xterm" }));
 }
 
-// Catalog ID: BT-01. Actual native producer rows preserve Unicode at every boundary width.
 test("Collapsed and expanded Unicode transcript text fits boundary terminal widths", { timeout: 240_000 }, async (t) => {
   await runBoundedScenario(t, { id: "BT-01", sourceIndices: [0, 1, 2, 3, 4, 5] });
 });

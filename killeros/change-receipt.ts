@@ -13,7 +13,6 @@ const GIT_OBJECT_HEADER_LIMIT = 1_024;
 export const CHANGE_UNAVAILABLE_REASONS = ["not-git", "head-changed", "timeout", "too-large", "error"] as const satisfies readonly ("not-git" | "head-changed" | PassiveGitFailure["reason"])[];
 type ChangeUnavailableReason = typeof CHANGE_UNAVAILABLE_REASONS[number];
 
-/** HEAD moved during the response, for example because the agent committed. The dirty-file delta no longer describes the response. */
 class HeadChanged extends Error {}
 
 export type ChangedFile =
@@ -337,22 +336,21 @@ async function compare(repo: Repository, baseline: Snapshot, settlement: Snapsho
     return sources.flatMap((source) => [source?.headObjectId, source?.indexObjectId, source?.contentObjectId].filter((id): id is string => Boolean(id)));
   });
   const headBlobs = await loadHeadBlobs(repo, ids);
-  /** A path absent from one snapshot was clean there, so its HEAD entry from the other snapshot stands in. */
-  const unchanged = (fallback: DirtyFile | undefined): FileState | undefined => {
+  const cleanHeadState = (fallback: DirtyFile | undefined): FileState | undefined => {
     if (!fallback?.headMode || !fallback.headObjectId) return undefined;
     const content = headBlobs.get(fallback.headObjectId);
     if (!content) throw new Error("missing HEAD blob");
     return { mode: fallback.headMode, content };
   };
   const current = (file: DirtyFile | undefined, fallback: DirtyFile | undefined): FileState | undefined => {
-    if (!file) return unchanged(fallback);
+    if (!file) return cleanHeadState(fallback);
     if (!file.mode) return undefined;
     const content = file.content ?? (file.contentObjectId ? headBlobs.get(file.contentObjectId) : undefined);
     if (!content) throw new Error("missing selected blob");
     return { mode: file.mode, content };
   };
   const indexed = (file: DirtyFile | undefined, fallback: DirtyFile | undefined): FileState | undefined => {
-    if (!file) return unchanged(fallback);
+    if (!file) return cleanHeadState(fallback);
     if (!file.indexMode || !file.indexObjectId) return undefined;
     const content = headBlobs.get(file.indexObjectId);
     if (!content) throw new Error("missing index blob");

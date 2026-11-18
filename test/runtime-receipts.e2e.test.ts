@@ -163,9 +163,6 @@ function createFamily(name: string): Family {
     const value = Object.entries(process.env).find(([entry]) => entry.toLowerCase() === key.toLowerCase())?.[1];
     if (value !== undefined) env[key] = value;
   }
-  // An owned npm stand-in keeps a scripted check to one shell start instead of a real npm launch of about a second.
-  // `npm test` passes and writes the two-line checked.txt the lifecycle receipts count; any other npm command fails.
-  // KillerOS still observes real bash tool results. It sits outside the project so the receipt deltas stay exact.
   const bin = path.join(directory, "check-bin");
   mkdirSync(bin);
   writeFileSync(path.join(bin, "npm"), "#!/bin/sh\n[ \"$1\" = test ] || exit 1\nprintf 'one\\ntwo\\n' > checked.txt\n");
@@ -173,7 +170,6 @@ function createFamily(name: string): Family {
   return { directory, project, agent, temporary, env };
 }
 
-/** Runs fixture Git in `project` without system or global configuration. */
 function git(project: string, ...args: string[]): void {
   const env: NodeJS.ProcessEnv = { HOME: path.dirname(project), USERPROFILE: path.dirname(project),
     PATH: process.env.PATH ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "NUL" };
@@ -224,7 +220,6 @@ function workedForEntries(sessionFile: string): WorkedForEntry[] {
   return entries;
 }
 
-/** Writes an extension that records native settlements, and optionally timings, after KillerOS's own settlement handler. */
 function receiptObserver(directory: string, captureTimings = false): { extension: string; events: string; timings: string } {
   const events = path.join(directory, "settlements.jsonl");
   const timings = path.join(directory, "timings.jsonl");
@@ -1184,8 +1179,6 @@ function stringField(value: RecordValue, key: string): string {
   return field;
 }
 
-// Each boundary operation is its own test with one Pi launch, so the scheduler can run them in parallel.
-// Replacement, reload, and committed tree navigation discard a parked receipt; cancelled navigation keeps it.
 for (const operation of ["new", "reload", "tree", "cancel-tree"]) {
   test(`native session boundaries discard receipts parked at settlement (${operation})`, { timeout: 60_000 }, async t => {
     const family = createFamily(`parked-${operation}`);

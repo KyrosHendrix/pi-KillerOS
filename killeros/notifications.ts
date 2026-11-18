@@ -41,7 +41,6 @@ function formatNotificationTitle(
   return safeTerminalText(enabled ? `${base} ${COMPLETION_BELL_GLYPH}` : base).replaceAll("\n", "");
 }
 
-/** The completion sound preference and the terminal title that shows it. */
 interface CompletionNotifications {
   /** Rewrites the terminal title; the shell header calls it because Pi resets the title after session binding. */
   applyTitle: (ctx: ExtensionContext) => void;

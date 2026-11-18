@@ -58,6 +58,5 @@ export default function Killeros(pi: ExtensionAPI, options: KillerosOptions = {}
   registerAutoCompaction(pi, { goal: goalCompaction, onPreferenceChange: updateFooterPreference });
   registerRequestActivity(pi);
   completionNotifications.register();
-  // Project agent_settled hooks run last, after the receipt, goal settlement, and completion sound.
   registerSettledHooks();
 }

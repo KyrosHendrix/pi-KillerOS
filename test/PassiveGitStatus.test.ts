@@ -19,7 +19,6 @@ test("a process with a console keeps automatic Git children on it", () => {
 test("a process started on a hidden console keeps Git children on that console without creating files", (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-git-console-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  // Editors start Pi this way: windowsHide gives the child a hidden console of its own.
   const output = execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "--eval",
     `const { hideGitConsole } = await import(${JSON.stringify(moduleUrl)}); console.log(hideGitConsole());`],
   { cwd: directory, encoding: "utf8", windowsHide: true }).trim();
@@ -27,7 +26,6 @@ test("a process started on a hidden console keeps Git children on that console w
   assert.equal(existsSync(path.join(directory, "CONOUT$")), false, "The console check opens the device, never a file named CONOUT$");
 });
 
-/** A runner that answers the single settings read with `records`, as `git config -z --get-regexp` prints them. */
 function configOutput(...records: string[]): PassiveGitRunner {
   return async (args) => {
     assert.ok(args.includes("--get-regexp") && args.includes("--type=bool-or-str"), "Settings come from one normalized Git read");
@@ -51,7 +49,6 @@ test("worktree settings fail closed on values Git cannot read as booleans or on 
     "Output without the probe key was cut short");
 });
 
-// Receipts recognize a folder outside every repository by Git's English "not a git repository" message.
 test("automatic Git children print untranslated messages whatever locale Pi inherits", () => {
   const env = passiveGitEnv({ LANG: "de_DE.UTF-8", Lc_All: "de_DE.UTF-8", LANGUAGE: "de:fr", LC_MESSAGES: "fr_FR.UTF-8", Path: "C:\\bin" });
   const localeKeys = Object.keys(env).filter((key) => /^(?:lc_all|language)$/iu.test(key));

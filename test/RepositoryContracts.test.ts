@@ -207,17 +207,15 @@ test("Oxlint configuration ignores private artifacts without excluding repositor
 test("CI blocks moderate dependency advisories without running lifecycle scripts", () => {
   assert.match(ci, /npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund/u);
   assert.match(ci, /npm ci --ignore-scripts/u);
-  // The audit needs no install, so it runs in Quality checks before one and fails fast.
   const checks = ciJob("quality-checks");
   assert.ok(checks.indexOf("npm audit --audit-level=moderate") < checks.indexOf("run: npm ci --ignore-scripts"));
-  // Every job that runs repository code runs on Windows. The gate and static analysis run none, so they use Linux.
-  const staticAnalysis = new Set(["quality", "codeql"]);
+  const linuxJobs = new Set(["tested-tree", "quality", "codeql"]);
   for (const workflow of [ci, release]) {
     const jobs = [...workflow.slice(workflow.search(/^jobs:\s*$/mu)).matchAll(/^  ([\w-]+):\r?\n(?:(?: {4,}.*)?\r?\n)*/gmu)];
     assert.ok(jobs.length > 0);
     for (const [source, job] of jobs) {
       const runner = /^    runs-on: (.+)$/mu.exec(source)?.[1];
-      const expected = workflow === ci && staticAnalysis.has(job) ? "ubuntu-latest" : "windows-latest";
+      const expected = workflow === ci && linuxJobs.has(job) ? "ubuntu-latest" : "windows-latest";
       assert.equal(runner, expected, `${job} must run on ${expected}`);
     }
     assert.match(workflow, /defaults:\s+run:\s+shell: bash/u);
@@ -245,26 +243,18 @@ test("CI and releases use the pinned Node.js version with one aggregated quality
   const jobsStart = ci.search(/^jobs:\s*$/mu);
   assert.notEqual(jobsStart, -1);
   assert.deepEqual([...ci.slice(jobsStart).matchAll(/^  ([\w-]+):$/gmu)].map((match) => match[1]),
-    ["quality-checks", "quality-tests", "pi-latest", "pi-latest-tests", "quality", "codeql"]);
+    ["tested-tree", "quality-checks", "quality-tests", "pi-latest", "pi-latest-tests", "quality", "codeql"]);
 
-  // Branch protection requires "Quality", the only gate. It passes only when every quality job passed, the newest-Pi
-  // check passed, and the newest-Pi shards either all passed or skipped because that Pi matches the lockfile.
   const quality = ciJob("quality");
   assert.match(quality, /^    name: Quality$/mu);
-  assert.match(quality, /^    needs: \[quality-checks, quality-tests, pi-latest, pi-latest-tests\]$/mu);
+  assert.match(quality, /^    needs: \[tested-tree, quality-checks, quality-tests, pi-latest, pi-latest-tests\]$/mu);
   assert.match(quality, /^    if: always\(\)$/mu);
-  for (const job of ["quality-checks", "quality-tests"]) {
-    assert.match(quality, new RegExp(`test "\\$\\{\\{ needs\\.${job}\\.result \\}\\}" = success`, "u"));
-  }
-
   const checks = ciJob("quality-checks");
   assert.match(checks, /^    name: Quality checks$/mu);
   assert.doesNotMatch(checks, /strategy:|matrix\./u);
   assert.match(checks, /^        run: npm ci --ignore-scripts --no-audit --no-fund$/mu);
   assert.match(checks, /^        run: npm run check$/mu);
 
-  // npm test and every shard run through scripts/test-suite.ts; shards run two units at a time and add
-  // the lifecycle repeats. Quality and pi-latest-tests run the same shards with the same command.
   const shardCommands = (["quality-tests", "pi-latest-tests"] as const).map((job) => {
     const source = ciJob(job);
     const shards = /^        shard: \[([\d, ]+)\]$/mu.exec(source)?.[1].split(", ").map(Number);
@@ -298,34 +288,34 @@ test("CI and releases use the pinned Node.js version with one aggregated quality
   }
 });
 
-test("a push to main skips only work its pull request already ran on the same files", () => {
+test("a push to main checks for recorded PR coverage before allocating Windows runners", () => {
   const action = readFileSync(new URL("../.github/actions/tested-tree/action.yml", import.meta.url), "utf8");
-  // Skipping requires a push to main, a merge whose files equal its second parent's, that parent being the
-  // merged pull request's head, and a successful pull request run of this workflow on it.
-  assert.match(action, /\[ "\$GITHUB_EVENT_NAME" = push \] && \[ "\$GITHUB_REF" = refs\/heads\/main \]/u);
-  assert.match(action, /\.parents\[1\]\.sha \/\/ empty/u);
-  assert.match(action, /\.merge_commit_sha == \\"\$GITHUB_SHA\\" and \.base\.ref == \\"main\\" and \.head\.sha == \\"\$head\\"/u);
+  assert.match(action, /git rev-parse --verify 'HEAD\^\{tree\}'/u);
+  assert.match(action, /git rev-parse --verify -q HEAD\^2/u);
+  assert.match(action, /\.merged_at != null and \.merge_commit_sha == \\"\$GITHUB_SHA\\" and \.base\.ref == \\"main\\" and \.head\.repo\.full_name == \.base\.repo\.full_name and \.head\.sha == \\"\$head\\"/u);
   assert.match(action, /actions\/workflows\/ci\.yml\/runs\?head_sha=\$head&event=pull_request&status=success/u);
-  assert.match(action, /\[ -n "\$tree" \] && \[ "\$tree" = "\$head_tree" \] && \[ "\$\{merged:-0\}" -ge 1 \] && \[ "\$\{passed:-0\}" -ge 1 \]; then skip=true; fi/u);
-  // A failed lookup must leave skip false instead of failing or skipping the job.
-  assert.equal((action.match(/\|\| true\)/gu) ?? []).length, 5, "Every lookup tolerates failure");
+  assert.match(action, /select\(\.head_repository\.full_name == \\"\$GITHUB_REPOSITORY\\"\) \| \[\.id, \.run_attempt\]/u);
+  assert.match(action, /name="tested-tree-\$pr-\$attempt-\$tree"/u);
+  assert.match(action, /\.name == \\"\$name\\" and \.expired == false/u);
   assert.match(action, /^        skip=false$/mu);
   assert.match(ci, /^permissions:\r?\n  actions: read\r?\n  contents: read\r?\n  pull-requests: read\r?$/mu);
 
-  // The three jobs that start the pull request's work look the tree up right after checkout, and every later
-  // step except the failure upload runs only without a match. The newest-Pi shards follow pi-latest's output.
+  const lookup = ciJob("tested-tree");
+  assert.match(lookup, /^    if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'$/mu);
+  assert.match(lookup, /^          fetch-depth: 2$/mu);
+  assert.match(lookup, /if: steps\.checkout\.outcome == 'success'\s+continue-on-error: true\s+uses: \.\/\.github\/actions\/tested-tree/u);
+
+  const checks = ciJob("quality-checks");
+  assert.match(checks, /Record the checked-out PR tree\s+id: tree\s+if: github\.event_name == 'pull_request' && github\.base_ref == 'main' && github\.event\.pull_request\.head\.repo\.full_name == github\.repository/u);
+  assert.match(checks, /git rev-parse --verify 'HEAD\^\{tree\}'/u);
+  assert.match(checks, /name: tested-tree-\$\{\{ github\.event\.pull_request\.number \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ steps\.tree\.outputs\.sha \}\}/u);
   for (const job of ["quality-checks", "quality-tests", "pi-latest"]) {
-    const steps = ciJob(job).split(/\r?\n(?= {6}- name: )/u).slice(1);
-    assert.match(steps[0] ?? "", /^ {6}- name: Check out source/u, job);
-    assert.match(steps[1] ?? "", /^ {6}- name: Skip a tree its pull request already tested\r?\n {8}id: tested\r?\n {8}uses: \.\/\.github\/actions\/tested-tree/u, job);
-    for (const step of steps.slice(2)) {
-      const condition = /^ {6}- name: (.+)\r?\n {8}if: (.+?)\r?$/mu.exec(step);
-      assert.equal(condition?.[2], condition?.[1] === "Upload test failure reports" ? "failure()" : "steps.tested.outputs.skip != 'true'",
-        `${job}: ${step.split(/\r?\n/u)[0]}`);
-    }
+    const source = ciJob(job);
+    assert.match(source, /^    needs: tested-tree$/mu, job);
+    assert.match(source, /^    if: "!cancelled\(\) && \(needs\.tested-tree\.result != 'success' \|\| needs\.tested-tree\.outputs\.skip != 'true'\)"$/mu, job);
+    assert.doesNotMatch(source, /uses: \.\/\.github\/actions\/tested-tree/u, job);
   }
-  for (const job of ["pi-latest-tests", "quality", "codeql"]) assert.doesNotMatch(ciJob(job), /tested-tree|steps\.tested/u, job);
-  assert.match(readme, /A merge to `main` whose files already passed CI on its pull request skips the repeat/u);
+  assert.doesNotMatch(ciJob("codeql"), /tested-tree|steps\.tested/u);
 });
 
 test("CI checks the newest peer-range Pi with matched runtime packages and a stable required-check name", () => {
@@ -340,8 +330,6 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   assert.match(readme, /Standalone pushes to `dev` do not start automatic CI/u);
   const compatibilityJob = ciJob("pi-latest");
   assert.match(compatibilityJob, /^    name: Pi compatibility \(latest\)$/mu);
-  // Quality already tests the locked packages; pi-latest-tests repeats the runtime suites only for a newer Pi,
-  // installing the exact packages pi-latest resolved.
   assert.match(compatibilityJob, /^        id: pi$/mu);
   assert.match(compatibilityJob, /"full-suite=" \+ fullSuite/u);
   assert.match(compatibilityJob, /packages=" \+ packages/u);
@@ -351,38 +339,39 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
   assert.doesNotMatch(compatibilityJob, /strategy:|matrix\.|scripts\/test-suite\.ts|node --test/u, "pi-latest only resolves and type-checks");
   const compatibilityTests = ciJob("pi-latest-tests");
   assert.match(compatibilityTests, /^    needs: pi-latest$/mu);
-  assert.match(compatibilityTests, /^    if: needs\.pi-latest\.outputs\.full-suite == 'true'$/mu);
+  assert.match(compatibilityTests, /^    if: "!cancelled\(\) && needs\.pi-latest\.result == 'success' && needs\.pi-latest\.outputs\.full-suite == 'true'"$/mu);
   assert.match(compatibilityTests, /^          PI_PACKAGES: \$\{\{ needs\.pi-latest\.outputs\.packages \}\}$/mu);
   assert.match(compatibilityTests, /test "\$\{#packages\[@\]\}" -eq 4/u);
   assert.match(compatibilityTests, /npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "\$\{packages\[@\]\}"/u);
   assert.match(compatibilityTests, /git diff --exit-code -- package\.json package-lock\.json/u);
   assert.ok(compatibilityTests.indexOf("Verify package files are unchanged") > compatibilityTests.indexOf("Install matched Pi packages"));
   assert.ok(compatibilityTests.indexOf("Test shard against matched Pi") > compatibilityTests.indexOf("Verify package files are unchanged"));
-  // The Quality gate covers the newest Pi: a failed shard must fail it, and shards may skip only without a newer Pi.
   const gate = ciJob("quality");
+  assert.match(gate, /^          REUSE: \$\{\{ needs\.tested-tree\.result == 'success' && needs\.tested-tree\.outputs\.skip == 'true' \}\}$/mu);
+  assert.match(gate, /^          CHECKS: \$\{\{ needs\.quality-checks\.result \}\}$/mu);
+  assert.match(gate, /^          TESTS: \$\{\{ needs\.quality-tests\.result \}\}$/mu);
   assert.match(gate, /^          FULL_SUITE: \$\{\{ needs\.pi-latest\.outputs\.full-suite \}\}$/mu);
   assert.match(gate, /^          LATEST: \$\{\{ needs\.pi-latest\.result \}\}$/mu);
   assert.match(gate, /^          SHARDS: \$\{\{ needs\.pi-latest-tests\.result \}\}$/mu);
-  assert.match(gate, /test "\$LATEST" = success/u);
-  assert.match(gate, /if \[ "\$FULL_SUITE" = true \]; then test "\$SHARDS" = success; else test "\$SHARDS" = skipped; fi/u);
-  // A failed quality job must not hide a newest-Pi failure in the same run.
-  assert.match(gate, /- name: Require the newest-Pi check and every shard it started\r?\n        if: always\(\)\r?$/mu);
+  for (const result of ["CHECKS", "TESTS", "LATEST"]) {
+    assert.ok(gate.includes(`test "$${result}" = success`));
+    assert.ok(gate.includes(`test "$${result}" = skipped`));
+  }
+  assert.match(gate, /true\) test "\$SHARDS" = success/u);
+  assert.match(gate, /false\) test "\$SHARDS" = skipped/u);
   const target = /^          PI_TARGET: '([^']+)'$/mu.exec(compatibilityJob)?.[1];
   assert.equal(target, packageJson.peerDependencies["@earendil-works/pi-coding-agent"]);
-  assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version/u);
+  assert.match(compatibilityJob, /npm view "@earendil-works\/pi-coding-agent@\$PI_TARGET" version dependencies --json/u);
+  assert.equal((compatibilityJob.match(/npm view /gu) ?? []).length, 1, "Resolve the Pi version and dependency ranges together");
   assert.match(compatibilityJob, /npm ci --ignore-scripts --no-audit --no-fund/u);
   assert.match(compatibilityJob, /^        run: npm run check$/mu);
   assert.match(compatibilityJob, /git diff --exit-code -- package\.json package-lock\.json/u);
   assert.doesNotMatch(compatibilityJob, /--save|@latest/u);
-  assert.match(ci, /dependencies\.@earendil-works\/pi-ai/u);
-  assert.match(ci, /dependencies\.@earendil-works\/pi-tui/u);
-  assert.match(ci, /dependencies\.typebox/u);
-  assert.match(ci, /typebox@\$PI_TYPEBOX_RANGE/u);
-  assert.match(ci, /test -n "\$PI_AI_RANGE" && test -n "\$PI_TUI_RANGE" && test -n "\$PI_TYPEBOX_RANGE"/u);
-  assert.match(ci, /@earendil-works\/pi-ai@\$PI_AI_RANGE/u);
-  assert.match(ci, /@earendil-works\/pi-coding-agent@\$PI_VERSION/u);
-  assert.match(ci, /@earendil-works\/pi-tui@\$PI_TUI_RANGE/u);
-  assert.match(ci, /--package-lock=false/u);
+  assert.match(compatibilityJob, /"@earendil-works\/pi-coding-agent": latest\?\.version/u);
+  assert.match(compatibilityJob, /"@earendil-works\/pi-ai": latest\?\.dependencies\?\.\["@earendil-works\/pi-ai"\]/u);
+  assert.match(compatibilityJob, /"@earendil-works\/pi-tui": latest\?\.dependencies\?\.\["@earendil-works\/pi-tui"\]/u);
+  assert.match(compatibilityJob, /"typebox": latest\?\.dependencies\?\.typebox/u);
+  assert.match(compatibilityJob, /npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "\$\{packages\[@\]\}"/u);
   const cancellation = lifecycles.find((lifecycle) => lifecycle.name === "Pi cancellation");
   assert.ok(cancellation);
   for (const [file, title] of [
@@ -399,7 +388,7 @@ test("CI checks the newest peer-range Pi with matched runtime packages and a sta
 
 test("quality checks validate current metadata and test the release-pinned npm lifecycle", () => {
   const qualityJob = ciJob("quality-checks");
-  assert.match(qualityJob, /- name: Validate release metadata\s+if: .+\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
+  assert.match(qualityJob, /- name: Validate release metadata\s+env:\s+KILLEROS_RELEASE: 'true'\s+run: node --experimental-strip-types scripts\/verify-release\.ts/u);
   assert.equal((qualityJob.match(/KILLEROS_RELEASE:/gu) ?? []).length, 1);
   assert.doesNotMatch(ci.split("jobs:")[0], /KILLEROS_RELEASE/u);
   assert.doesNotMatch(qualityJob.split("steps:")[0], /KILLEROS_RELEASE/u);
@@ -407,9 +396,9 @@ test("quality checks validate current metadata and test the release-pinned npm l
   assert.ok(publishingNpm);
   assert.match(release, /npm prefix --global >> "\$GITHUB_PATH"/u);
   assert.ok(qualityJob.includes(`npm@${publishingNpm}`));
-  assert.match(qualityJob, /- name: Provision publishing npm\s+if: .+\s+run: npm install/u);
+  assert.match(qualityJob, /- name: Provision publishing npm\s+run: npm install/u);
   assert.match(qualityJob, /npm install --prefix "\$RUNNER_TEMP\/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@/u);
-  assert.match(qualityJob, /- name: Test publication lifecycle with publishing npm\s+if: .+\s+env:\s+KILLEROS_TEST_NPM_CLI: \$\{\{ runner\.temp \}\}\/killeros-publishing-npm\/node_modules\/npm\/bin\/npm-cli\.js\s+run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test\/verify-release\.test\.ts/u);
+  assert.match(qualityJob, /- name: Test publication lifecycle with publishing npm\s+env:\s+KILLEROS_TEST_NPM_CLI: \$\{\{ runner\.temp \}\}\/killeros-publishing-npm\/node_modules\/npm\/bin\/npm-cli\.js\s+run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test\/verify-release\.test\.ts/u);
   assert.doesNotMatch(qualityJob, /npm install --global/u);
   const lifecycleTests = readFileSync(new URL("./verify-release.test.ts", import.meta.url), "utf8");
   assert.match(lifecycleTests, /test\("publication lifecycle /u, "The pinned-npm entry point must select a retained test");
@@ -514,8 +503,6 @@ test("public guidance documents native wildcard filtering, image reads, and MCP 
 });
 
 test("agent_settled handlers run receipt, goal settlement, activity, sound, then project hooks", () => {
-  // Pi runs agent_settled handlers in registration order. Name each handler by the module that defines it,
-  // read from V8's function location, so forwarding helpers and registration call sites do not matter.
   const handlers: unknown[] = [];
   const host: unknown = new Proxy(() => undefined, {
     get: (_target, key) => key === "on"

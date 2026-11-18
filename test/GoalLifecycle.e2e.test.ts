@@ -504,10 +504,6 @@ test("a native provider failure saves a sanitized paused goal and one error noti
   });
 });
 
-/**
- * Saved goal states for goals.restore-validation. Restore accepts exactly what parseGoalState accepts, so
- * every vector is checked against the parser in-process. Two vectors also launch Pi to prove the wiring.
- */
 const restoreValidationVectors = (() => {
   const now = Date.now();
   const common = { version: 1, revision: 1, objective: "Reject contradictory state", createdAt: now, updatedAt: now,
@@ -563,7 +559,6 @@ test("the saved goal parser rejects every malformed vector and accepts every leg
     piLaunches: 2, providerRequests: 2, fixtureGitLaunches: 0, nestedChildAccounting: "pending" }));
 });
 
-// One rejected and one accepted vector prove that restore applies the parser's verdict in a real Pi.
 for (const vector of restoreValidationVectors.filter(candidate => ["contradiction-1", "legacy-check"].includes(candidate.label))) {
   test(`malformed saved goals and unsafe reports fail closed before dispatch (${vector.label})`, { timeout: 60_000 }, async t => {
     const probeRejectedGoal = vector.label.startsWith("contradiction-")
@@ -1575,7 +1570,6 @@ test("saved goals stay inactive outside TUI and RPC or without a saved session",
     });
   }
 
-  // Print and JSON inertness for saved goals is covered by the legacy-modes test and runtime-print-json.
   for (const status of ["paused", "complete", "absent"] as const) {
     const options: GoalScenarioOptions = status === "absent"
       ? { session: {} }
@@ -1671,7 +1665,6 @@ test("legacy saved goals stay inactive in print and JSON modes", { timeout: 120_
     totals.providerRequests += summary.providerRequests;
     totals.naturalExits += summary.naturalExits;
   };
-  // One mode per case: KillerOS gates print and JSON through one non-interactive branch.
   const now = Date.now();
   const legacyActive = { version: 1, revision: 1, objective: "Do not auto-run here", status: "active",
     createdAt: now, updatedAt: now, activeMilliseconds: 0, activeStartedAt: now, turns: 1, baselineTokens: 0 };
@@ -1731,10 +1724,6 @@ test("explicit pause prevents another continuation after accepted goal progress"
 });
 
 // Catalog ID: goals.pause-clear. Native settlement proves cancellation, not private host-call order.
-/**
- * goals.pause-clear runs 14 histories (14 Pi launches, 16 provider requests, 14 natural exits) in five
- * independent groups, one test each. Each group runs its histories through `run` and checks its share.
- */
 function pauseClearHistories(t: TestContext) {
   const totals = { piLaunches: 0, providerRequests: 0, naturalExits: 0 };
   const run = async (label: string, options: GoalScenarioOptions, exercise: (fixture: GoalScenarioFixture) => Promise<void>) => {

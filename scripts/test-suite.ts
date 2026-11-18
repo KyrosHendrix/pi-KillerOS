@@ -1,25 +1,3 @@
-/**
- * Runs the full test suite, or one CI shard of it, scheduled by measured duration.
- *
- *   npm test                                                       the full suite, four units at a time
- *   node --experimental-strip-types scripts/test-suite.ts --shard 2/8 --concurrency 2 --lifecycle-repeats 2   one CI shard
- *   node --experimental-strip-types scripts/test-suite.ts --shard 2/8 --dry-run   print every shard's units
- *   node --experimental-strip-types scripts/test-suite.ts --record <log>...      rewrite test/test-timings.json
- *
- * Tests inside one process run one after another, so the suite runs in units: groups of one file's
- * top-level tests, packed from `test/test-timings.json` into about `unitTarget` seconds each. A file with one
- * unit runs whole. A file with several runs one process per group (`--test-name-pattern`), except its
- * smallest group, which skips every other group's tests (`--test-skip-pattern`), so tests missing
- * from the timings still run exactly once.
- *
- * CI adds `--lifecycle-repeats`: each listed lifecycle runs that many more times, one process per repeat,
- * with Node's plain flags, so a leaked handle or child process hangs it instead of being forced to exit.
- *
- * Units are dealt to shards longest first, each onto the shard with the least estimated time, and each
- * shard starts its longest units first. A unit that reports zero tests, or misses a test it lists, fails,
- * so a renamed test cannot silently drop out. Output lines carry the unit's name, because units run concurrently.
- * `--record` reads that output, from a local run or from `gh run view --log`, back into timings.
- */
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -96,7 +74,6 @@ export function testFiles(): string[] {
 
 const unitName = (file: string): string => file.replace(/^test\//u, "").replace(/\.test\.[^.]+$/u, "");
 
-/** Packs tests longest first into groups of about `target` seconds, each test into the first group it fits. */
 function packTests(tests: Readonly<Record<string, number>>, target: number): Array<{ tests: string[]; seconds: number }> {
   const groups: Array<{ tests: string[]; seconds: number }> = [];
   for (const [test, seconds] of Object.entries(tests).sort(([a, x], [b, y]) => y - x || a.localeCompare(b))) {
@@ -162,7 +139,6 @@ export function unitArguments(unit: Unit): string[] {
   return ["--test", ...nodeTestFlags, ...select, unit.file];
 }
 
-/** Lists the test files a unit runs. */
 const unitFiles = (unit: Unit): readonly string[] => unit.kind === "lifecycle" ? unit.files : [unit.file];
 
 /** A finished top-level test as the spec reporter lists it. */
@@ -183,10 +159,8 @@ export function unitFailed({ unit, code, topLevel }: UnitResult): boolean {
   return unit.kind === "tests" && unit.select?.mode === "only" && unit.select.tests.some((test) => !ran.includes(test));
 }
 
-/** A spec reporter line for a finished top-level test: no indentation, a result mark, and a duration. */
 const topLevelResult = /^[✔✖﹣] (.+?) \((\d[\d.]*)ms\)(?: #.*)?$/u;
 
-/** The same line as the suite prints it, behind its unit name and, in CI logs, a job and timestamp prefix. */
 const suiteResult = /(?:^|\s)\[([^\]]+)\] ([✔✖﹣] .+?\(\d[\d.]*ms\)(?: #.*)?)$/u;
 
 /** Parses one reporter line, or returns undefined for any other line. */
@@ -210,7 +184,6 @@ export function recordTimings(logs: readonly string[], files: readonly string[])
     .map(([file, tests]) => [file, Object.fromEntries(Object.entries(tests).sort(([a], [b]) => a.localeCompare(b)))]));
 }
 
-/** Runs one unit, prefixing each output line with its name, and records its top-level results. */
 async function runUnit(unit: Unit): Promise<UnitResult> {
   // Inside a test process, NODE_TEST_CONTEXT would make the unit stream results to that test runner instead of reporting them.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "NODE_TEST_CONTEXT"));
@@ -219,7 +192,6 @@ async function runUnit(unit: Unit): Promise<UnitResult> {
   const relay = (stream: NodeJS.ReadableStream, sink: NodeJS.WriteStream): void => {
     let pending = "";
     stream.setEncoding("utf8");
-    /** Records a finished top-level test from one reporter line and forwards the line with the unit's prefix. */
     const emit = (line: string): void => {
       const result = parseTopLevel(line);
       if (result) topLevel.push(result);
@@ -245,7 +217,6 @@ async function runUnit(unit: Unit): Promise<UnitResult> {
 export async function runUnits(units: readonly Unit[], concurrency: number): Promise<UnitResult[]> {
   const queue = longestFirst(units);
   const results: UnitResult[] = [];
-  /** Runs queued units one at a time until the queue is empty. */
   const worker = async (): Promise<void> => {
     for (let unit = queue.shift(); unit; unit = queue.shift()) results.push(await runUnit(unit));
   };
@@ -274,7 +245,6 @@ export function parseConcurrency(value: string): number {
   return concurrency;
 }
 
-/** Parses the CLI, then prints the shard plan, records timings, or runs the shard, and resolves to the exit code. */
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     shard: { type: "string", default: "1/1" },

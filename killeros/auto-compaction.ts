@@ -85,7 +85,6 @@ function isSessionTooSmallCompactionError(error: unknown): boolean {
   return error instanceof Error && error.message === SESSION_TOO_SMALL_COMPACTION_ERROR;
 }
 
-/** Whether remaining context is at or below the stricter of the user's percentage and Pi's token reserve; undefined without a usable reading. */
 function isAtThreshold(
   usage: Pick<ContextUsage, "tokens" | "contextWindow"> | undefined,
   preference: AutoCompactionPreference,
@@ -122,7 +121,6 @@ export function registerAutoCompaction(
   let rearmOnNextLogicalRequest = false;
   let settingsErrorReported = false;
 
-  /** Reads the saved preference and publishes it, or publishes undefined and rethrows when killeros.json cannot be read. */
   const loadPreference = (): AutoCompactionPreference => {
     try {
       const preference = readAutoCompactionPreference(settingsStore.load());
@@ -366,7 +364,6 @@ export function registerAutoCompaction(
     try {
       loadPreference();
     } catch {
-      // loadPreference already published the unreadable state; turn_end reports the error.
     }
   });
   pi.on("session_shutdown", resetForLifecycle);

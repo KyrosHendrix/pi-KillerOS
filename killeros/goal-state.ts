@@ -19,10 +19,8 @@ const FILE_HASH_CHUNK_SIZE = 64 * 1024;
 const FILE_HASH_LIMIT = 64 * 1024 * 1024;
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-/** Why a pause keeps the interrupted turn: compaction will resume it, and manual compaction resumes when Pi saves the summary. */
 type GoalTurnHold = "manual-compaction" | "automatic-compaction";
 
-/** How a resume after compaction continues: the interrupted turn itself, or the next turn under any decision already accepted. */
 type GoalTurnResume = "same-turn" | "next-turn";
 
 export interface GoalTransitionOptions {
@@ -31,7 +29,6 @@ export interface GoalTransitionOptions {
   decision?: GoalTurnDecision;
   hold?: GoalTurnHold;
   resume?: GoalTurnResume;
-  /** Replaces the turn budget when a resume renews an exhausted limit. */
   maxTurns?: number;
 }
 
@@ -89,7 +86,6 @@ function isGoalTurnPhase(value: unknown): value is GoalTurnPhase {
   return value === "ready" || value === "in-flight" || value === "authorized";
 }
 
-/** Checks the turn and evidence that every recorded decision and report carries. */
 function isTurnEvidence(value: unknown, turns: number): value is Record<string, unknown> & { turn: number; evidence: string } {
   return isRecord(value)
     && safeNonNegativeInteger(value.turn)

@@ -197,7 +197,6 @@ function isFooterRecord(value: unknown): value is FooterRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Creates an isolated footer fixture with its own project, agent, sessions, and Git trace, optionally outside any repository. */
 function createFooterFamily(name: string, options: { outsideRepository?: boolean; path?: string } = {}): FooterFamily {
   // Corrupting HEAD must not let Git discover the checkout above the fixture.
   const parent = os.tmpdir();
@@ -224,7 +223,6 @@ function createFooterFamily(name: string, options: { outsideRepository?: boolean
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: globalGitConfig,
     GIT_TRACE2_EVENT: trace,
-    // FooterGitSchedule.test.ts checks the real five-second watch cooldown; these scenarios only need scans to follow changes.
     KILLEROS_FOOTER_WATCH_INTERVAL_MS: "500",
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
@@ -738,7 +736,6 @@ test("Footer preserves model, context, cost, goal, and priority information acro
     const ctxDetailMatch = wideMeta.match(/ctx \d+% \([^()]+\/[^()]+\)/u);
     assert.ok(percentTokenMatch && ctxDetailMatch, "The wide footer anchor rendered full and percentage context tokens");
     const ctxDetail = ctxDetailMatch[0];
-    // Session cost appears only in the widest layout, so once it fits it must keep fitting at every wider width.
     const widening = ["$"];
     const shown = new Set<string>();
     // ConPTY clamps its physical size to at least two columns.
@@ -912,13 +909,8 @@ function footerGitFailureCount(events: readonly FooterTraceEvent[]): number {
     && event.code !== undefined && event.code !== 0).length;
 }
 
-/**
- * Git children one successful footer scan starts: the root lookup, the index and untracked listings,
- * HEAD, and one settings read. A committed HEAD adds its tree listing.
- */
 const footerScanCommands = 5;
 
-/** Waits until the footer's Git trace shows `count` more complete scans with the expected outcome after `before`. */
 async function waitForFooterGitScan(
   trace: string,
   before: readonly FooterTraceEvent[],
@@ -1038,11 +1030,6 @@ const systemGitSearchPath = Object.entries(process.env).find(([key]) => key.toLo
 const systemGitDirectories = systemGitSearchPath.split(path.delimiter).filter((directory) => path.isAbsolute(directory)
   && existsSync(path.join(directory, "git.exe")));
 
-/**
- * FT-04 harness: each recovery history is its own test with one Pi launch. `body` creates families and
- * starts terminals through the harness, which closes every terminal, reports diagnostics on failure,
- * and checks natural exit, native resource release, and scratch directory removal.
- */
 async function footerRecovery(t: TestContext, body: (harness: {
   createFamily: (...args: Parameters<typeof createFooterFamily>) => FooterFamily;
   startTerminal: (...args: Parameters<typeof startFooterTerminal>) => PiTerminalProcess;
@@ -1205,8 +1192,6 @@ test("Footer Git status renders nothing after a failed initial discovery until i
 
     const unavailableBeforeRecovery = events;
     const beforeUnavailableRecoveryRender = unavailableTerminal.sequence;
-    // Build the repository outside the watched project and move it in whole: a scan fired by the watcher during
-    // `git init` would read a half-written .git and record a failure the success wait below cannot outlive.
     const staging = path.join(initialUnavailable.directory, "staging-repository");
     mkdirSync(staging);
     initFooterRepository(initialUnavailable, staging);
