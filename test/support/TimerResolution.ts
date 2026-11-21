@@ -9,8 +9,17 @@
  */
 import { pathToFileURL } from "node:url";
 
-type WinmmLibrary = { functions: { timeBeginPeriod(milliseconds: number): number } };
-type NodeFfi = { dlopen(path: string, definitions: { timeBeginPeriod: { arguments: ["uint32"]; return: "uint32" } }): WinmmLibrary };
+type WinmmLibrary = {
+  functions: { timeBeginPeriod(milliseconds: number): number };
+};
+type NodeFfi = {
+  dlopen(
+    path: string,
+    definitions: {
+      timeBeginPeriod: { arguments: ["uint32"]; return: "uint32" };
+    },
+  ): WinmmLibrary;
+};
 
 if (process.platform === "win32") {
   // node:ffi warns that it is experimental on first load. Pi children and tests check stderr, so hide only that warning.
@@ -22,9 +31,15 @@ if (process.platform === "win32") {
   try {
     // A variable specifier keeps TypeScript from requiring declarations that @types/node does not ship yet.
     const specifier = "node:ffi";
-    const ffi = await import(specifier) as NodeFfi;
-    ffi.dlopen("winmm.dll", { timeBeginPeriod: { arguments: ["uint32"], return: "uint32" } }).functions.timeBeginPeriod(1);
-  } catch { /* Without node:ffi or winmm, timers keep the default tick; tests stay correct, only slower. */ } finally {
+    const ffi = (await import(specifier)) as NodeFfi;
+    ffi
+      .dlopen("winmm.dll", {
+        timeBeginPeriod: { arguments: ["uint32"], return: "uint32" },
+      })
+      .functions.timeBeginPeriod(1);
+  } catch {
+    /* Without node:ffi or winmm, timers keep the default tick; tests stay correct, only slower. */
+  } finally {
     process.emitWarning = emitWarning;
   }
 }
@@ -32,5 +47,8 @@ if (process.platform === "win32") {
 /** Adds this module as a preload to a child environment's NODE_OPTIONS, keeping any options it already has. */
 export function piTimerResolutionOptions(env: NodeJS.ProcessEnv): void {
   const preload = `--import="${pathToFileURL(import.meta.filename).href}"`;
-  if (!env.NODE_OPTIONS?.includes(preload)) env.NODE_OPTIONS = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ${preload}` : preload;
+  if (!env.NODE_OPTIONS?.includes(preload))
+    env.NODE_OPTIONS = env.NODE_OPTIONS
+      ? `${env.NODE_OPTIONS} ${preload}`
+      : preload;
 }

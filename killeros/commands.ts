@@ -28,7 +28,9 @@ interface SlashCommandToken {
 export interface SlashCommandResolver {
   clearFallbackCommands(): void;
   updateFallbackCommands(items: readonly AutocompleteItem[]): void;
-  getCommandCatalog(baseSuggestions?: readonly AutocompleteItem[]): ReadonlyMap<string, CommandInfo>;
+  getCommandCatalog(
+    baseSuggestions?: readonly AutocompleteItem[],
+  ): ReadonlyMap<string, CommandInfo>;
   isValidCommand(name: string): boolean;
 }
 
@@ -45,7 +47,10 @@ const BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
   { name: "changelog", description: "Show changelog entries" },
   { name: "hotkeys", description: "Show keyboard shortcuts" },
   { name: "fork", description: "Fork from a previous user message" },
-  { name: "clone", description: "Duplicate the session at the current position" },
+  {
+    name: "clone",
+    description: "Duplicate the session at the current position",
+  },
   { name: "tree", description: "Navigate the session tree" },
   { name: "trust", description: "Save the project trust decision" },
   { name: "login", description: "Configure provider authentication" },
@@ -78,7 +83,9 @@ function safeCommandName(name: string): string | undefined {
   return safe === name && safe && !/[\s/]/u.test(safe) ? safe : undefined;
 }
 
-function getSlashCommandPrefix(line: string): { prefix: string; slashIndex: number } | undefined {
+function getSlashCommandPrefix(
+  line: string,
+): { prefix: string; slashIndex: number } | undefined {
   const match = SLASH_COMMAND_PREFIX_PATTERN.exec(line);
   if (!match || match.index === undefined) return undefined;
   const prefix = match[1] ?? "";
@@ -98,7 +105,9 @@ export function findSlashCommandTokens(line: string): SlashCommandToken[] {
 }
 
 function commandNameFromAutocompleteItem(item: AutocompleteItem): string {
-  const name = (item.value || item.label).replace(/^\//u, "").trim().split(/\s+/u)[0] ?? "";
+  const name =
+    (item.value || item.label).replace(/^\//u, "").trim().split(/\s+/u)[0] ??
+    "";
   return safeCommandName(name) ?? "";
 }
 
@@ -106,43 +115,64 @@ export function createSlashCommandResolver(
   pi: Pick<ExtensionAPI, "getCommands">,
   extensionSyntaxHints: Readonly<Record<string, string>>,
 ): SlashCommandResolver {
-  const syntaxHints: Readonly<Record<string, string>> = { ...BUILTIN_SYNTAX_HINTS, ...extensionSyntaxHints };
+  const syntaxHints: Readonly<Record<string, string>> = {
+    ...BUILTIN_SYNTAX_HINTS,
+    ...extensionSyntaxHints,
+  };
   let fallbackCommands = new Map<string, string | undefined>();
 
-  const getCommandCatalog = (baseSuggestions: readonly AutocompleteItem[] = []): ReadonlyMap<string, CommandInfo> => {
+  const getCommandCatalog = (
+    baseSuggestions: readonly AutocompleteItem[] = [],
+  ): ReadonlyMap<string, CommandInfo> => {
     const commands = new Map<string, CommandInfo>();
-    BUILTIN_COMMANDS.forEach((command) => commands.set(command.name, {
-      ...command,
-      category: "Built-in",
-      syntaxHint: syntaxHints[command.name],
-    }));
+    BUILTIN_COMMANDS.forEach((command) =>
+      commands.set(command.name, {
+        ...command,
+        category: "Built-in",
+        syntaxHint: syntaxHints[command.name],
+      }),
+    );
 
     for (const command of pi.getCommands()) {
       const name = safeCommandName(command.name);
       if (!name) continue;
-      const category: CommandInfo["category"] = command.source === "skill"
-        ? "Skill"
-        : command.source === "prompt"
-          ? "Prompt"
-          : "Extension";
+      const category: CommandInfo["category"] =
+        command.source === "skill"
+          ? "Skill"
+          : command.source === "prompt"
+            ? "Prompt"
+            : "Extension";
       commands.set(name, {
         name,
-        description: command.description === undefined
-          ? undefined
-          : safeTerminalText(command.description).replaceAll("\n", " "),
+        description:
+          command.description === undefined
+            ? undefined
+            : safeTerminalText(command.description).replaceAll("\n", " "),
         category,
         syntaxHint: syntaxHints[name],
       });
     }
 
-    const baseCommands = baseSuggestions.length > 0
-      ? new Map(baseSuggestions.map((item) => [commandNameFromAutocompleteItem(item), item.description] as const))
-      : fallbackCommands;
+    const baseCommands =
+      baseSuggestions.length > 0
+        ? new Map(
+            baseSuggestions.map(
+              (item) =>
+                [
+                  commandNameFromAutocompleteItem(item),
+                  item.description,
+                ] as const,
+            ),
+          )
+        : fallbackCommands;
     for (const [name, description] of baseCommands) {
       if (name && !commands.has(name)) {
         commands.set(name, {
           name,
-          description: description === undefined ? undefined : safeTerminalText(description).replaceAll("\n", " "),
+          description:
+            description === undefined
+              ? undefined
+              : safeTerminalText(description).replaceAll("\n", " "),
           category: "Built-in",
         });
       }
@@ -156,7 +186,14 @@ export function createSlashCommandResolver(
     },
     updateFallbackCommands(items) {
       fallbackCommands = new Map(
-        items.map((item) => [commandNameFromAutocompleteItem(item), item.description] as const)
+        items
+          .map(
+            (item) =>
+              [
+                commandNameFromAutocompleteItem(item),
+                item.description,
+              ] as const,
+          )
           .filter(([name]) => Boolean(name)),
       );
     },
@@ -172,7 +209,12 @@ function scoreCommandMatch(name: string, prefix: string): number {
   const normalizedName = name.toLowerCase();
   const normalizedPrefix = prefix.toLowerCase();
   if (normalizedName.startsWith(normalizedPrefix)) return 100;
-  if (normalizedName.split(/[:\-_]/).some((token) => token.startsWith(normalizedPrefix))) return 80;
+  if (
+    normalizedName
+      .split(/[:\-_]/)
+      .some((token) => token.startsWith(normalizedPrefix))
+  )
+    return 80;
   if (normalizedName.includes(normalizedPrefix)) return 50;
   return 0;
 }
@@ -191,20 +233,34 @@ export function registerSlashAutocomplete(
         const line = lines[cursorLine] ?? "";
         const beforeCursor = line.slice(0, cursorCol);
         const prefixMatch = getSlashCommandPrefix(beforeCursor);
-        if (!prefixMatch) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+        if (!prefixMatch)
+          return current.getSuggestions(lines, cursorLine, cursorCol, options);
 
         const prefix = prefixMatch.prefix.toLowerCase();
-        const baseSuggestions = await current.getSuggestions(lines, cursorLine, cursorCol, options);
+        const baseSuggestions = await current.getSuggestions(
+          lines,
+          cursorLine,
+          cursorCol,
+          options,
+        );
         resolver.updateFallbackCommands(baseSuggestions?.items ?? []);
-        const commands = resolver.getCommandCatalog(baseSuggestions?.items ?? []);
+        const commands = resolver.getCommandCatalog(
+          baseSuggestions?.items ?? [],
+        );
 
         const ranked = [...commands.values()]
           .map((command) => ({
             command,
-            score: scoreCommandMatch(command.name, prefix) + Math.min((usage.get(command.name) ?? 0) * 2, 15),
+            score:
+              scoreCommandMatch(command.name, prefix) +
+              Math.min((usage.get(command.name) ?? 0) * 2, 15),
           }))
           .filter(({ command }) => scoreCommandMatch(command.name, prefix) > 0)
-          .sort((left, right) => right.score - left.score || left.command.name.localeCompare(right.command.name));
+          .sort(
+            (left, right) =>
+              right.score - left.score ||
+              left.command.name.localeCompare(right.command.name),
+          );
         if (!ranked.length) return baseSuggestions;
 
         return {
@@ -214,23 +270,39 @@ export function registerSlashAutocomplete(
             return {
               value: `/${command.name} `,
               label: `/${command.name}`,
-              description: `[${command.category}] ${syntax}${command.description ?? ""}`.trim(),
+              description:
+                `[${command.category}] ${syntax}${command.description ?? ""}`.trim(),
               killerosCommand: command.name,
             };
           }),
         };
       },
       applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
-        const commandName = "killerosCommand" in item && typeof item.killerosCommand === "string"
-          ? item.killerosCommand
-          : undefined;
-        if (!commandName) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+        const commandName =
+          "killerosCommand" in item && typeof item.killerosCommand === "string"
+            ? item.killerosCommand
+            : undefined;
+        if (!commandName)
+          return current.applyCompletion(
+            lines,
+            cursorLine,
+            cursorCol,
+            item,
+            prefix,
+          );
         usage.set(commandName, (usage.get(commandName) ?? 0) + 1);
         const line = lines[cursorLine] ?? "";
         const beforeCursor = line.slice(0, cursorCol);
         const afterCursor = line.slice(cursorCol);
         const prefixMatch = getSlashCommandPrefix(beforeCursor);
-        if (!prefixMatch) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+        if (!prefixMatch)
+          return current.applyCompletion(
+            lines,
+            cursorLine,
+            cursorCol,
+            item,
+            prefix,
+          );
         const slashIndex = prefixMatch.slashIndex;
         const newBefore = beforeCursor.slice(0, slashIndex) + item.value;
         const nextLines = [...lines];
@@ -238,7 +310,10 @@ export function registerSlashAutocomplete(
         return { lines: nextLines, cursorLine, cursorCol: newBefore.length };
       },
       shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
-        return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+        return (
+          current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ??
+          true
+        );
       },
     }));
   });

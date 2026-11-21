@@ -1,4 +1,8 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { formatTime, formatTokens } from "./display.ts";
 import { errorMessage, reportError } from "./errors.ts";
 import type { GoalRuntime, GoalState, GoalStatus } from "./goal-model.ts";
@@ -17,7 +21,7 @@ import {
 } from "./goal-runtime.ts";
 import { releaseContinuationHold } from "./goal-settlement.ts";
 import {
-  checkpointPausedGoalState,
+  checkpointWithoutManualRecovery,
   createNewGoalState,
   DEFAULT_GOAL_MAX_TURNS,
   editGoalState,
@@ -42,13 +46,21 @@ type GoalCommand =
   | { kind: "invalid"; message: string };
 
 /** Parses raw text as a plain objective, or reports why it cannot be one. */
-function parseGoalObjectiveText(input: string): Extract<GoalCommand, { kind: "objective" } | { kind: "invalid" }> {
+function parseGoalObjectiveText(
+  input: string,
+): Extract<GoalCommand, { kind: "objective" } | { kind: "invalid" }> {
   const objective = validateGoalObjective(input);
   if (objective) return { kind: "objective", objective };
   if (safeTerminalText(input) !== input) {
-    return { kind: "invalid", message: "A goal objective contains unsupported content" };
+    return {
+      kind: "invalid",
+      message: "A goal objective contains unsupported content",
+    };
   }
-  return { kind: "invalid", message: "A goal objective may not exceed 4,000 characters" };
+  return {
+    kind: "invalid",
+    message: "A goal objective may not exceed 4,000 characters",
+  };
 }
 
 /** Parses one raw /goal argument string into a closed command variant; the handler decides whether "edit" applies to the current goal. */
@@ -59,31 +71,47 @@ function parseGoalCommand(args: string): GoalCommand {
   if (lowered === "pause") return { kind: "pause" };
   if (lowered === "resume") return { kind: "resume" };
   if (lowered === "clear") return { kind: "clear" };
-  if (lowered === "edit") return { kind: "invalid", message: "Provide the new objective: /goal edit <objective>" };
-  if (/^edit\s/ui.test(input)) {
-    const objective = validateGoalObjective(input.replace(/^edit\s+/ui, ""));
+  if (lowered === "edit")
+    return {
+      kind: "invalid",
+      message: "Provide the new objective: /goal edit <objective>",
+    };
+  if (/^edit\s/iu.test(input)) {
+    const objective = validateGoalObjective(input.replace(/^edit\s+/iu, ""));
     if (objective) return { kind: "edit", objective };
   }
   return parseGoalObjectiveText(input);
 }
 
-function goalPanelActions(status: GoalStatus): Array<{ label: string; control: "pause" | "resume" | "clear" }> {
-  if (status === "active") return [{ label: "Pause goal", control: "pause" }, { label: "Clear goal", control: "clear" }];
+function goalPanelActions(
+  status: GoalStatus,
+): Array<{ label: string; control: "pause" | "resume" | "clear" }> {
+  if (status === "active")
+    return [
+      { label: "Pause goal", control: "pause" },
+      { label: "Clear goal", control: "clear" },
+    ];
   if (status === "paused" || status === "blocked") {
-    return [{ label: "Resume goal", control: "resume" }, { label: "Clear goal", control: "clear" }];
+    return [
+      { label: "Resume goal", control: "resume" },
+      { label: "Clear goal", control: "clear" },
+    ];
   }
   return [{ label: "Clear goal", control: "clear" }];
 }
 
 function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
   const usedTokens = Math.max(0, sumGoalTokens(ctx) - state.baselineTokens);
-  const turns = state.maxTurns === undefined
-    ? `${state.turns} turn${state.turns === 1 ? "" : "s"}`
-    : `${state.turns}/${state.maxTurns} turns`;
+  const turns =
+    state.maxTurns === undefined
+      ? `${state.turns} turn${state.turns === 1 ? "" : "s"}`
+      : `${state.turns}/${state.maxTurns} turns`;
   const lines = [
     `Goal ${state.status} · ${turns} · ${formatTime(goalElapsedMilliseconds(state, Date.now()))} · ${formatTokens(usedTokens)} tokens`,
     state.objective,
-    ...(state.verification === undefined ? [] : [`Deliverable · ${state.verification.path}`]),
+    ...(state.verification === undefined
+      ? []
+      : [`Deliverable · ${state.verification.path}`]),
   ];
   const decision = state.turnDecision ?? state.lastDecision;
   if (decision?.kind === "continue") {
@@ -95,17 +123,32 @@ function goalStatusSummary(state: GoalState, ctx: ExtensionContext): string {
   } else if (decision?.kind === "blocked") {
     lines.push(`Evidence · ${decision.evidence}`);
   } else if (decision?.kind === "complete") {
-    lines.push(`Completion · ${decision.verification === "file" ? `verified file ${state.verification?.path ?? "deliverable"}` : "model-reported"}`);
+    lines.push(
+      `Completion · ${decision.verification === "file" ? `verified file ${state.verification?.path ?? "deliverable"}` : "model-reported"}`,
+    );
     lines.push(`Evidence · ${decision.evidence}`);
   }
   if (state.status === "paused") {
-    lines.push(state.turns === 0 ? "Paused at · before turn 1" : `Paused at · turn ${state.turns}`);
+    lines.push(
+      state.turns === 0
+        ? "Paused at · before turn 1"
+        : `Paused at · turn ${state.turns}`,
+    );
     const reason = state.stopReason ?? state.result;
     if (reason) lines.push(`Reason · ${reason}`);
-    if (state.stopReason === "repeated continue report" && state.lastContinueReport) {
-      lines.push(`Repeated turns · ${state.lastContinueReport.turn} and ${state.turns}`);
+    if (
+      state.stopReason === "repeated continue report" &&
+      state.lastContinueReport
+    ) {
+      lines.push(
+        `Repeated turns · ${state.lastContinueReport.turn} and ${state.turns}`,
+      );
     }
-  } else if (state.result && decision?.kind !== "complete" && decision?.kind !== "blocked") {
+  } else if (
+    state.result &&
+    decision?.kind !== "complete" &&
+    decision?.kind !== "blocked"
+  ) {
     lines.push(`Result · ${state.result}`);
   }
   return safeTerminalText(lines.join("\n"));
@@ -121,10 +164,16 @@ interface GoalCommandScope {
   ownsCommand: () => boolean;
 }
 
-async function showGoalStatus(scope: GoalCommandScope, rerun: (control: "pause" | "resume" | "clear") => Promise<void>): Promise<void> {
+async function showGoalStatus(
+  scope: GoalCommandScope,
+  rerun: (control: "pause" | "resume" | "clear") => Promise<void>,
+): Promise<void> {
   const { runtime, ctx, ownsGoal } = scope;
   if (!runtime.state) {
-    ctx.ui.notify("No goal is set. Use /goal <objective> to start a long-running task.", "info");
+    ctx.ui.notify(
+      "No goal is set. Use /goal <objective> to start a long-running task.",
+      "info",
+    );
     return;
   }
   if (ctx.mode !== "tui") {
@@ -132,11 +181,21 @@ async function showGoalStatus(scope: GoalCommandScope, rerun: (control: "pause" 
     return;
   }
   const actions = goalPanelActions(runtime.state.status);
-  const selected = await ctx.ui.select(goalStatusSummary(runtime.state, ctx), actions.map((action) => action.label));
+  const selected = await ctx.ui.select(
+    goalStatusSummary(runtime.state, ctx),
+    actions.map((action) => action.label),
+  );
   if (!ownsGoal()) return;
   const action = actions.find((candidate) => candidate.label === selected);
   if (!action) return;
-  if (action.control === "clear" && !await ctx.ui.confirm("Clear goal?", safeTerminalText(runtime.state.objective))) return;
+  if (
+    action.control === "clear" &&
+    !(await ctx.ui.confirm(
+      "Clear goal?",
+      safeTerminalText(runtime.state.objective),
+    ))
+  )
+    return;
   if (!ownsGoal()) return;
   await rerun(action.control);
   return;
@@ -148,14 +207,19 @@ async function clearGoal(scope: GoalCommandScope): Promise<void> {
     ctx.ui.notify("No goal is set", "info");
     return;
   }
-  const shouldStopGoalRun = runtime.goalTurnInFlight || runtime.continuationScheduled;
+  const shouldStopGoalRun =
+    runtime.goalTurnInFlight || runtime.continuationScheduled;
   let saved = false;
   try {
     clearGoalState(pi, runtime);
     saved = true;
   } catch (error) {
     if (runtime.state?.status === "active") {
-      pauseFailedGoal(pi, runtime, `the requested clear could not be saved: ${errorMessage(error)}`);
+      pauseFailedGoal(
+        pi,
+        runtime,
+        `the requested clear could not be saved: ${errorMessage(error)}`,
+      );
     } else {
       reportError(ctx, "Goal could not be cleared", error);
       return;
@@ -164,13 +228,22 @@ async function clearGoal(scope: GoalCommandScope): Promise<void> {
   try {
     await stopGoalRun(runtime, ctx, shouldStopGoalRun);
   } catch (error) {
-    reportError(ctx, saved ? "Goal cleared, but the active goal turn could not be confirmed stopped" : "Goal paused, but the active goal turn could not be confirmed stopped", error);
+    reportError(
+      ctx,
+      saved
+        ? "Goal cleared, but the active goal turn could not be confirmed stopped"
+        : "Goal paused, but the active goal turn could not be confirmed stopped",
+      error,
+    );
     return;
   }
   if (saved) {
     if (ctx.mode !== "tui") ctx.ui.notify("Goal cleared", "info");
   } else {
-    ctx.ui.notify("Goal paused: the requested clear could not be saved\nAutomatic continuation is stopped. Retry /goal clear to remove the goal.", "error");
+    ctx.ui.notify(
+      "Goal paused: the requested clear could not be saved\nAutomatic continuation is stopped. Retry /goal clear to remove the goal.",
+      "error",
+    );
   }
   return;
 }
@@ -182,16 +255,24 @@ async function pauseGoalCommand(scope: GoalCommandScope): Promise<void> {
     return;
   }
   if (runtime.state.status === "paused") {
-    if (!runtime.persistenceRetryNeeded
-      && runtime.state.resumeAfterManualCompaction !== true
-      && runtime.automaticCompaction === undefined) {
+    if (
+      !runtime.persistenceRetryNeeded &&
+      runtime.state.resumeAfterManualCompaction !== true &&
+      runtime.automaticCompaction === undefined
+    ) {
       ctx.ui.notify("Goal is already paused", "info");
       return;
     }
-    const checkpoint = checkpointPausedGoalState(runtime.state, Date.now());
+    const checkpoint = checkpointWithoutManualRecovery(
+      runtime.state,
+      Date.now(),
+    );
     try {
       persistGoalState(pi, runtime, "pause", checkpoint);
-      ctx.ui.notify("Goal pause saved. Goal remains paused. Automatic compaction recovery is off.", "info");
+      ctx.ui.notify(
+        "Goal pause saved. Goal remains paused. Automatic compaction recovery is off.",
+        "info",
+      );
     } catch (error) {
       runtime.continuationScheduled = false;
       holdUnsavedGoal(pi, runtime, checkpoint);
@@ -200,29 +281,43 @@ async function pauseGoalCommand(scope: GoalCommandScope): Promise<void> {
     return;
   }
   if (runtime.state.status !== "active") {
-    ctx.ui.notify(`Goal is ${runtime.state.status}; only an active goal can be paused`, "warning");
+    ctx.ui.notify(
+      `Goal is ${runtime.state.status}; only an active goal can be paused`,
+      "warning",
+    );
     return;
   }
-  const shouldStopGoalRun = runtime.goalTurnInFlight || runtime.continuationScheduled;
+  const shouldStopGoalRun =
+    runtime.goalTurnInFlight || runtime.continuationScheduled;
   let saved = false;
   let failureReason: string | undefined;
   try {
     transitionGoal(pi, runtime, "pause", "paused");
     saved = true;
   } catch (error) {
-    failureReason = safeTerminalText(`the requested pause could not be saved: ${errorMessage(error)}`);
+    failureReason = safeTerminalText(
+      `the requested pause could not be saved: ${errorMessage(error)}`,
+    );
     pauseFailedGoal(pi, runtime, failureReason);
   }
   try {
     await stopGoalRun(runtime, ctx, shouldStopGoalRun);
   } catch (error) {
-    reportError(ctx, "Goal paused, but the active goal turn could not be confirmed stopped", error);
+    reportError(
+      ctx,
+      "Goal paused, but the active goal turn could not be confirmed stopped",
+      error,
+    );
     return;
   }
   if (saved) {
-    if (ctx.mode !== "tui") ctx.ui.notify("Goal paused. Run /goal resume to continue.", "info");
+    if (ctx.mode !== "tui")
+      ctx.ui.notify("Goal paused. Run /goal resume to continue.", "info");
   } else {
-    ctx.ui.notify(`Goal paused: ${failureReason}\nAutomatic continuation is stopped. If session storage is still unavailable, retry /goal pause after it recovers.`, "error");
+    ctx.ui.notify(
+      `Goal paused: ${failureReason}\nAutomatic continuation is stopped. If session storage is still unavailable, retry /goal pause after it recovers.`,
+      "error",
+    );
   }
   return;
 }
@@ -242,29 +337,46 @@ function resumeGoalCommand(scope: GoalCommandScope): void {
     return;
   }
   const currentMax = runtime.state.maxTurns;
-  const exhausted = currentMax !== undefined && runtime.state.turns >= currentMax;
+  const exhausted =
+    currentMax !== undefined && runtime.state.turns >= currentMax;
   if (exhausted && runtime.state.turns >= GOAL_MAX_TURNS) {
-    ctx.ui.notify(`Goal reached the lifetime limit (${runtime.state.turns}/${GOAL_MAX_TURNS}). Set a new objective.`, "warning");
+    ctx.ui.notify(
+      `Goal reached the lifetime limit (${runtime.state.turns}/${GOAL_MAX_TURNS}). Set a new objective.`,
+      "warning",
+    );
     return;
   }
   try {
     transitionGoal(pi, runtime, "resume", "active", undefined, {
       resetBlockedAudit: true,
-      ...(exhausted ? { maxTurns: Math.min(Math.max(currentMax, runtime.state.turns) + DEFAULT_GOAL_MAX_TURNS, GOAL_MAX_TURNS) } : {}),
+      ...(exhausted
+        ? {
+            maxTurns: Math.min(
+              Math.max(currentMax, runtime.state.turns) +
+                DEFAULT_GOAL_MAX_TURNS,
+              GOAL_MAX_TURNS,
+            ),
+          }
+        : {}),
     });
-    if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") ctx.ui.notify("Goal resumed", "info");
+    if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui")
+      ctx.ui.notify("Goal resumed", "info");
   } catch (error) {
     reportError(ctx, "Goal could not be resumed", error);
   }
   return;
 }
 
-async function editGoal(scope: GoalCommandScope, objective: string): Promise<void> {
+async function editGoal(
+  scope: GoalCommandScope,
+  objective: string,
+): Promise<void> {
   const { pi, runtime, ctx, generation, initiatingState } = scope;
   const mutation = runtime.mutation;
-  const ownsEdit = (): boolean => runtime.lifecycleGeneration === generation
-    && runtime.mutation === mutation
-    && runtime.state?.status === initiatingState?.status;
+  const ownsEdit = (): boolean =>
+    runtime.lifecycleGeneration === generation &&
+    runtime.mutation === mutation &&
+    runtime.state?.status === initiatingState?.status;
   const hold = Symbol();
   runtime.continuationHeld = hold;
   let waitError: unknown;
@@ -276,7 +388,8 @@ async function editGoal(scope: GoalCommandScope, objective: string): Promise<voi
     releaseContinuationHold(pi, runtime, ctx, hold);
   }
   if (!ownsEdit()) {
-    if (runtime.lifecycleGeneration === generation) scheduleGoalContinuation(pi, runtime, ctx);
+    if (runtime.lifecycleGeneration === generation)
+      scheduleGoalContinuation(pi, runtime, ctx);
     return;
   }
   if (waitError) {
@@ -295,15 +408,23 @@ async function editGoal(scope: GoalCommandScope, objective: string): Promise<voi
     return;
   }
   if (!ownsEdit() || runtime.state !== state) return;
-  if (!state || state.status !== "active" && state.status !== "paused") return;
+  if (!state || (state.status !== "active" && state.status !== "paused"))
+    return;
   try {
     const next = editGoalState(state, objective, verification, Date.now());
     persistGoalState(pi, runtime, "edit", next);
     endGoalTurn(runtime);
     runtime.continuationScheduled = false;
     if (next.status === "paused") {
-      if (ctx.mode !== "tui") ctx.ui.notify("Goal objective updated. The goal is paused; run /goal resume to continue.", "info");
-    } else if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") {
+      if (ctx.mode !== "tui")
+        ctx.ui.notify(
+          "Goal objective updated. The goal is paused; run /goal resume to continue.",
+          "info",
+        );
+    } else if (
+      scheduleGoalContinuation(pi, runtime, ctx) &&
+      ctx.mode !== "tui"
+    ) {
       ctx.ui.notify("Goal objective updated.", "info");
     }
   } catch (error) {
@@ -322,15 +443,24 @@ async function editGoal(scope: GoalCommandScope, objective: string): Promise<voi
   return;
 }
 
-async function startGoal(scope: GoalCommandScope, objective: string): Promise<void> {
+async function startGoal(
+  scope: GoalCommandScope,
+  objective: string,
+): Promise<void> {
   const { pi, runtime, ctx, generation, ownsCommand } = scope;
   const unfinished = runtime.state && runtime.state.status !== "complete";
   if (unfinished) {
     if (!ctx.hasUI) {
-      ctx.ui.notify("Clear the current goal before replacing it outside TUI mode", "error");
+      ctx.ui.notify(
+        "Clear the current goal before replacing it outside TUI mode",
+        "error",
+      );
       return;
     }
-    const replace = await ctx.ui.confirm("Replace active goal", "Replace the current unfinished goal and discard its continuation state?");
+    const replace = await ctx.ui.confirm(
+      "Replace active goal",
+      "Replace the current unfinished goal and discard its continuation state?",
+    );
     if (!replace || !ownsCommand()) return;
   }
 
@@ -362,17 +492,28 @@ async function startGoal(scope: GoalCommandScope, objective: string): Promise<vo
     }
     if (!ownsCommand()) return;
     try {
-      const state = createNewGoalState(objective, sumGoalTokens(ctx), verification, Date.now(), {
-        maxTurns: DEFAULT_GOAL_MAX_TURNS,
-      });
-      const replaced = runtime.state !== undefined && runtime.state.status !== "complete";
+      const state = createNewGoalState(
+        objective,
+        sumGoalTokens(ctx),
+        verification,
+        Date.now(),
+        {
+          maxTurns: DEFAULT_GOAL_MAX_TURNS,
+        },
+      );
+      const replaced =
+        runtime.state !== undefined && runtime.state.status !== "complete";
       persistGoalState(pi, runtime, replaced ? "replace" : "set", state);
       endGoalTurn(runtime);
       runtime.continuationScheduled = false;
       if (unfinished) runtime.automaticCompaction = undefined;
-      if (runtime.continuationHeld === hold) runtime.continuationHeld = undefined;
+      if (runtime.continuationHeld === hold)
+        runtime.continuationHeld = undefined;
       if (scheduleGoalContinuation(pi, runtime, ctx) && ctx.mode !== "tui") {
-        ctx.ui.notify(`${replaced ? "Goal replaced" : "Goal started"}. Each turn must record continue, complete, or a blocker decision before another turn starts.`, "info");
+        ctx.ui.notify(
+          `${replaced ? "Goal replaced" : "Goal started"}. Each turn must record continue, complete, or a blocker decision before another turn starts.`,
+          "info",
+        );
       }
     } catch (error) {
       if (!unfinished) {
@@ -390,15 +531,24 @@ async function startGoal(scope: GoalCommandScope, objective: string): Promise<vo
       }
     }
   } finally {
-    if (releaseContinuationHold(pi, runtime, ctx, hold) && runtime.lifecycleGeneration === generation) {
+    if (
+      releaseContinuationHold(pi, runtime, ctx, hold) &&
+      runtime.lifecycleGeneration === generation
+    ) {
       scheduleGoalContinuation(pi, runtime, ctx);
     }
   }
 }
 
 /** Registers /goal: it parses the arguments, captures the goal it acts on, and runs one subcommand. */
-export function registerGoalCommand(pi: ExtensionAPI, runtime: GoalRuntime): void {
-  const handleGoalCommand = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
+export function registerGoalCommand(
+  pi: ExtensionAPI,
+  runtime: GoalRuntime,
+): void {
+  const handleGoalCommand = async (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
     let command = parseGoalCommand(args);
     if (!isAutomationMode(ctx)) {
       ctx.ui.notify("/goal requires TUI or RPC mode", "error");
@@ -414,12 +564,20 @@ export function registerGoalCommand(pi: ExtensionAPI, runtime: GoalRuntime): voi
     }
     const generation = runtime.lifecycleGeneration;
     const initiatingState = runtime.state;
-    const ownsGoal = (): boolean => runtime.lifecycleGeneration === generation && runtime.state === initiatingState;
+    const ownsGoal = (): boolean =>
+      runtime.lifecycleGeneration === generation &&
+      runtime.state === initiatingState;
     if (command.kind !== "status") runtime.commandEpoch += 1;
     const epoch = runtime.commandEpoch;
-    const ownsCommand = (): boolean => runtime.lifecycleGeneration === generation && runtime.commandEpoch === epoch;
+    const ownsCommand = (): boolean =>
+      runtime.lifecycleGeneration === generation &&
+      runtime.commandEpoch === epoch;
 
-    if (command.kind === "edit" && initiatingState?.status !== "active" && initiatingState?.status !== "paused") {
+    if (
+      command.kind === "edit" &&
+      initiatingState?.status !== "active" &&
+      initiatingState?.status !== "paused"
+    ) {
       const fallback = parseGoalObjectiveText(args.trim());
       if (fallback.kind === "invalid") {
         ctx.ui.notify(fallback.message, "error");
@@ -427,14 +585,30 @@ export function registerGoalCommand(pi: ExtensionAPI, runtime: GoalRuntime): voi
       }
       command = fallback;
     }
-    const scope: GoalCommandScope = { pi, runtime, ctx, generation, initiatingState, ownsGoal, ownsCommand };
+    const scope: GoalCommandScope = {
+      pi,
+      runtime,
+      ctx,
+      generation,
+      initiatingState,
+      ownsGoal,
+      ownsCommand,
+    };
     switch (command.kind) {
-      case "status": return showGoalStatus(scope, (control) => handleGoalCommand(control, ctx));
-      case "clear": return clearGoal(scope);
-      case "pause": return pauseGoalCommand(scope);
-      case "resume": return resumeGoalCommand(scope);
-      case "edit": return editGoal(scope, command.objective);
-      case "objective": return startGoal(scope, command.objective);
+      case "status":
+        return showGoalStatus(scope, (control) =>
+          handleGoalCommand(control, ctx),
+        );
+      case "clear":
+        return clearGoal(scope);
+      case "pause":
+        return pauseGoalCommand(scope);
+      case "resume":
+        return resumeGoalCommand(scope);
+      case "edit":
+        return editGoal(scope, command.objective);
+      case "objective":
+        return startGoal(scope, command.objective);
       default: {
         const unhandled: never = command;
         return unhandled;
@@ -448,7 +622,10 @@ export function registerGoalCommand(pi: ExtensionAPI, runtime: GoalRuntime): voi
       const normalized = prefix.trimStart().toLowerCase();
       const actions = [
         { value: "clear", description: "Remove the current goal" },
-        { value: "edit", description: "Update the objective without resetting the goal" },
+        {
+          value: "edit",
+          description: "Update the objective without resetting the goal",
+        },
         { value: "pause", description: "Stop automatic continuation" },
         { value: "resume", description: "Resume automatic continuation" },
       ];

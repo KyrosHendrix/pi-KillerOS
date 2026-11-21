@@ -1,10 +1,14 @@
 name: Tested tree
-description: >-
-  Checks for a successful pull request run that recorded the exact tree of this push to main.
+description: Checks whether a successful same-repository pull request tested the full pushed tree with the resolved Pi packages.
+
+inputs:
+  pi-packages:
+    description: Exact package specifications for the latest compatible Pi installation.
+    required: true
 
 outputs:
   skip:
-    description: "'true' when the pushed files already passed the full workflow on their pull request."
+    description: Whether CI can reuse full coverage of the pushed tree.
     value: ${{ steps.lookup.outputs.skip }}
 
 runs:
@@ -14,25 +18,29 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        PI_PACKAGES: ${{ inputs.pi-packages }}
       run: |
         skip=false
         repo="repos/$GITHUB_REPOSITORY"
-        if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] &&
+        if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main && -n "$PI_PACKAGES" ]] &&
           tree=$(git rev-parse --verify 'HEAD^{tree}') &&
-          head=$(git rev-parse --verify -q HEAD^2) &&
-          pr=$(gh api "$repo/commits/$GITHUB_SHA/pulls" -q "[.[] | select(.merged_at != null and .merge_commit_sha == \"$GITHUB_SHA\" and .base.ref == \"main\" and .head.repo.full_name == .base.repo.full_name and .head.sha == \"$head\")] | .[0].number // empty") &&
+          head=$(git rev-parse --verify -q 'HEAD^2^{commit}') &&
+          pr=$(gh api "$repo/commits/$GITHUB_SHA/pulls" -q ".[] | select(.merged_at != null and .merge_commit_sha == \"$GITHUB_SHA\" and .base.ref == \"main\" and .base.repo.full_name == \"$GITHUB_REPOSITORY\" and .head.repo.full_name == \"$GITHUB_REPOSITORY\" and .head.sha == \"$head\") | .number") &&
           [[ "$pr" =~ ^[0-9]+$ ]] &&
-          runs=$(gh api "$repo/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&status=success&per_page=5" -q ".workflow_runs[] | select(.head_repository.full_name == \"$GITHUB_REPOSITORY\") | [.id, .run_attempt] | @tsv"); then
+          runs=$(gh api "$repo/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&status=success&per_page=5" -q ".workflow_runs[] | select(.head_repository.full_name == \"$GITHUB_REPOSITORY\" and .conclusion == \"success\") | [.id, .run_attempt] | @tsv"); then
           while IFS=$'\t' read -r run attempt; do
             [[ "$run" =~ ^[0-9]+$ && "$attempt" =~ ^[0-9]+$ ]] || continue
-            name="tested-tree-$pr-$attempt-$tree"
-            if recorded=$(gh api "$repo/actions/runs/$run/artifacts?name=$name" -q "any(.artifacts[]; .name == \"$name\" and .expired == false)") &&
-              [[ "$recorded" == true ]]; then
+            name="tested-full-tree-v2-$pr-$attempt-$tree"
+            directory=$(mktemp -d "$RUNNER_TEMP/tested-tree.XXXXXXXX")
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$directory" &&
+              jq -es --arg tree "$tree" --arg piPackages "$PI_PACKAGES" '
+                length == 1 and (.[0] | type == "object" and .version == 2 and
+                .fullSuite == true and .tree == $tree and .piPackages == $piPackages)
+              ' "$directory/tested-full-tree.json" >/dev/null; then
               skip=true
-              echo "Pull request #$pr already tested tree $tree in CI run $run, attempt $attempt."
+              echo "CI run $run, attempt $attempt tested the full tree $tree on pull request $pr with $PI_PACKAGES."
               break
             fi
           done <<< "$runs"
         fi
         echo "skip=$skip" >> "$GITHUB_OUTPUT"
-        echo "Files already tested on their pull request: $skip"

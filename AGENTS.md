@@ -8,7 +8,7 @@ KillerOS is a strict TypeScript extension for the Pi coding agent. It replaces t
 
 Read `README.md` before changing commands, configuration, requirements, or mode behavior. It owns user guidance and the release process. For Pi integration changes, consult the installed docs and API types in `node_modules/@earendil-works/pi-coding-agent/`.
 
-Use npm. `package.json` defines supported engine and peer ranges; `package-lock.json` pins development packages. KillerOS supports Windows only.
+Use Node.js and Bun canary for development. Use npm for publication and keep `package-lock.json` as the dependency lockfile. KillerOS supports Windows only.
 
 Before finishing, check each applicable mode and entry point:
 
@@ -20,7 +20,7 @@ Before finishing, check each applicable mode and entry point:
 
 `AGENTS.md` is tracked repository guidance. The root `.gitignore` ignores `docs/` and `.pi/`. Do not force-add those directories or change their ignore rules unless asked.
 
-Open known files in ignored paths directly with `read`. Indexed `find` and `grep` may omit them. Keep private verification helpers in ignored locations. `.oxlintrc.json` excludes private `.pi/` and `docs/` artifacts, not repository code.
+Open known files in ignored paths directly with `read`. Indexed `find` and `grep` may omit them. Keep private verification helpers in ignored locations. The lint configuration in `bunfig.toml` excludes private `.pi/` and `docs/` artifacts.
 
 ## Preserve the affected contracts
 
@@ -73,7 +73,7 @@ Check `test/Hooks.e2e.test.ts`, `test/Hooks.system.test.ts`, and `test/Handoff.e
 Run commands from the repository root. On a fresh checkout or after lockfile changes:
 
 ```bash
-npm ci --ignore-scripts --no-audit --no-fund
+bun install --frozen-lockfile --ignore-scripts
 ```
 
 Run an affected test file while working:
@@ -95,7 +95,7 @@ npm run test:changed
 
 `test:changed` runs the test files that cover the branch's changes since `origin/main`, including uncommitted and untracked files. Pass `-- --dry-run` to see the selection. When you add a module or a test file, map it in `scripts/test-changed.ts`; `test/test-changed.test.ts` fails until you do.
 
-CI owns the full suite. Do not run `npm test` locally unless asked: it takes about 10 minutes on a laptop, and a pull request's CI runs it in under 2. CI tests the pushed commit, not uncommitted changes. Push only when you're allowed to. To run CI on a pushed branch without a pull request:
+CI runs the full suite when required. Run `npm test` locally only when asked. Push only when authorized. To run CI on a pushed branch without a pull request:
 
 ```bash
 run=$(gh workflow run ci.yml --ref <branch> | grep -oE 'runs/[0-9]+' | cut -d/ -f2)
@@ -104,7 +104,7 @@ gh run watch "$run" --exit-status
 
 A test that fails in CI and passes on its own is a bug, not bad luck. Do not rerun CI until it turns green. Read the failure report, rerun the failing file locally, and fix the cause in the test, its driver, or KillerOS. If you can't fix it in the current change, open an issue with the failure report and say so in the pull request. Do not add retries, longer timeouts, or skips to make a flaky test pass.
 
-`check` runs TypeScript without emitting files, then Oxlint. Tests execute `.ts` files directly. There is no separate build step.
+`npm run check` runs `bun check --no-script`, `bun lint --no-script --type-aware --max-warnings=0 .`, and `bun fmt --no-script --check`. Tests execute `.ts` files directly. There is no build step.
 
 For README or changelog-only changes, run the focused `RepositoryContracts.test.ts` command and verify affected paths and examples. For release-metadata changes, also run:
 
@@ -114,7 +114,11 @@ node --test --test-force-exit --experimental-strip-types test/verify-release.tes
 
 For guidance-only changes in `AGENTS.md` or `docs/`, verify referenced paths, headings, and commands directly. Prose alone does not require the runtime suite.
 
-CI runs on Windows using Node.js 26.13.0, pinned in `.node-version`, and checks the minimum Pi in Quality, because development pins equal the peer-range minimums, and the newest compatible Pi in `Pi compatibility (latest)`, which repeats the runtime suites only when the installed Pi package versions differ from the lockfile. `npm test` runs `scripts/test-suite.ts`, which packs each file's top-level tests from `test/test-timings.json` into units of 15 to 60 seconds, about three per worker slot. One top-level test is one unit at most, so split a long test that loops over independent scenarios into one test per scenario. Quality runs the same script across six runners, sized so the shards finish with the other required jobs, and adds the lifecycle repeats listed in `scripts/test-suite.ts`; `Pi compatibility (latest) tests` runs the identical shards against a newer Pi. When one shard regularly finishes well after the others, refresh the timings from a green CI run's shard logs: save `gh run view <run> --log` and run `node --experimental-strip-types scripts/test-suite.ts --record <log>`. On a push to `main`, `.github/actions/tested-tree` checks for a successful PR run that recorded the exact merged tree before starting the Windows jobs. Run the Windows checks if the lookup fails or cannot verify the match. Compatibility installs must not change the tracked manifest or lockfile. Local checks do not establish that CI passes. Report what ran and what remains unverified.
+CI pins Node.js 26.13.0 in `.node-version`. The plan job selects PR tests from the diff against the checked-out merge commit's first parent. Shared test inputs and runs without a usable PR diff trigger the full suite. CI uses `test/test-timings.json` to size Windows shards and starts the Ubuntu checks and Windows tests in parallel. When the latest compatible Pi quartet differs from the lockfile, CI also runs a full compatibility matrix. Compatibility installs must leave `package.json` and `package-lock.json` intact.
+
+Split long tests that loop over independent scenarios into one top-level test per scenario. When a shard regularly finishes well after the others, save the shard logs from a green run with `gh run view <run> --log` and refresh timings with `bun scripts/test-suite.ts --record <log>`.
+
+The `Quality` job records a `tested-full-tree-v2` artifact only after successful full-suite checks on a same-repository PR into `main`. On a push to `main`, `.github/actions/tested-tree` checks that the successful PR run covered the exact tree and Pi quartet before reusing its results. On a failed lookup or a mismatch, run the full checks. CodeQL runs in its own workflow. Report which checks ran and what remains unverified.
 
 ## Update docs and release metadata when needed
 

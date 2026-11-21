@@ -1,5 +1,10 @@
 import path from "node:path";
-import type { ExtensionAPI, ExtensionContext, Theme, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  Theme,
+  ToolResultEvent,
+} from "@earendil-works/pi-coding-agent";
 import type { StopReason } from "@earendil-works/pi-ai";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { WidthCachedComponent } from "./bounded-text.ts";
@@ -12,7 +17,12 @@ import {
   type ChangeSummary,
   type ChangedFile,
 } from "./change-receipt.ts";
-import { MAX_RECEIPT_CHECKS, parseCheckLabel, recognizedCheck, type CheckAttempt } from "./checks.ts";
+import {
+  MAX_RECEIPT_CHECKS,
+  parseCheckLabel,
+  recognizedCheck,
+  type CheckAttempt,
+} from "./checks.ts";
 import { entryUsage, lastAssistantMessage, wasAborted } from "./pi-context.ts";
 import { formatTokens, modelDisplayName } from "./display.ts";
 import { errorMessage } from "./errors.ts";
@@ -56,7 +66,11 @@ interface WorkedForEntryDataV4 {
   responseMilliseconds?: number;
 }
 
-type WorkedForEntryData = WorkedForEntryDataV1 | WorkedForEntryDataV2 | WorkedForEntryDataV3 | WorkedForEntryDataV4;
+type WorkedForEntryData =
+  | WorkedForEntryDataV1
+  | WorkedForEntryDataV2
+  | WorkedForEntryDataV3
+  | WorkedForEntryDataV4;
 
 const OUTCOMES = {
   done: { label: "✓ Done", color: "success" },
@@ -69,7 +83,12 @@ function isWorkedForOutcome(value: unknown): value is WorkedForOutcome {
 }
 
 function integer(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= 0
+  );
 }
 
 function positiveInteger(value: unknown): value is number {
@@ -81,16 +100,33 @@ function positiveDuration(value: unknown): value is number {
 }
 
 function validPath(value: unknown): value is string {
-  if (typeof value !== "string" || value.length === 0 || value.includes("\0")) return false;
-  if (path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) return false;
+  if (typeof value !== "string" || value.length === 0 || value.includes("\0"))
+    return false;
+  if (path.posix.isAbsolute(value) || path.win32.isAbsolute(value))
+    return false;
   return !value.split(/[\\/]/u).includes("..");
 }
 
 function parseFile(value: unknown): ChangedFile | undefined {
-  if (!isRecord(value) || !validPath(value.path) || !integer(value.additions) || !integer(value.deletions)) return undefined;
-  if (value.detail !== undefined && value.detail !== "binary" && value.detail !== "mode") return undefined;
-  const detail: "binary" | "mode" | undefined = value.detail === "binary" || value.detail === "mode" ? value.detail : undefined;
-  if (detail && (value.additions !== 0 || value.deletions !== 0)) return undefined;
+  if (
+    !isRecord(value) ||
+    !validPath(value.path) ||
+    !integer(value.additions) ||
+    !integer(value.deletions)
+  )
+    return undefined;
+  if (
+    value.detail !== undefined &&
+    value.detail !== "binary" &&
+    value.detail !== "mode"
+  )
+    return undefined;
+  const detail: "binary" | "mode" | undefined =
+    value.detail === "binary" || value.detail === "mode"
+      ? value.detail
+      : undefined;
+  if (detail && (value.additions !== 0 || value.deletions !== 0))
+    return undefined;
   const shared = {
     path: value.path,
     additions: value.additions,
@@ -101,25 +137,46 @@ function parseFile(value: unknown): ChangedFile | undefined {
     if (!validPath(value.previousPath)) return undefined;
     return { kind: "renamed", previousPath: value.previousPath, ...shared };
   }
-  if (value.previousPath !== undefined || value.kind !== "added" && value.kind !== "modified" && value.kind !== "deleted") return undefined;
+  if (
+    value.previousPath !== undefined ||
+    (value.kind !== "added" &&
+      value.kind !== "modified" &&
+      value.kind !== "deleted")
+  )
+    return undefined;
   return { kind: value.kind, ...shared };
 }
 
 function parseChanges(value: unknown): ChangeSummary | undefined {
   if (!isRecord(value)) return undefined;
   if (value.state === "unavailable") {
-    const reason = CHANGE_UNAVAILABLE_REASONS.find((candidate) => candidate === value.reason);
+    const reason = CHANGE_UNAVAILABLE_REASONS.find(
+      (candidate) => candidate === value.reason,
+    );
     return reason && { state: "unavailable", reason };
   }
-  if (value.state !== "available" || !integer(value.totalFiles) || !integer(value.additions) || !integer(value.deletions)
-    || !integer(value.omittedFiles) || !Array.isArray(value.files) || value.files.length > MAX_RECEIPT_FILES) return undefined;
+  if (
+    value.state !== "available" ||
+    !integer(value.totalFiles) ||
+    !integer(value.additions) ||
+    !integer(value.deletions) ||
+    !integer(value.omittedFiles) ||
+    !Array.isArray(value.files) ||
+    value.files.length > MAX_RECEIPT_FILES
+  )
+    return undefined;
   const files = value.files.map(parseFile);
   if (files.some((file) => !file)) return undefined;
   const parsed = files as ChangedFile[];
   if (value.totalFiles !== parsed.length + value.omittedFiles) return undefined;
   if (value.omittedFiles === 0) {
-    if (value.additions !== parsed.reduce((total, file) => total + file.additions, 0)
-      || value.deletions !== parsed.reduce((total, file) => total + file.deletions, 0)) return undefined;
+    if (
+      value.additions !==
+        parsed.reduce((total, file) => total + file.additions, 0) ||
+      value.deletions !==
+        parsed.reduce((total, file) => total + file.deletions, 0)
+    )
+      return undefined;
   }
   return {
     state: "available",
@@ -137,30 +194,64 @@ function parseModelName(value: unknown): string | undefined {
   return sanitized || undefined;
 }
 
-function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefined {
+function parseV4(
+  data: Record<string, unknown>,
+): WorkedForEntryDataV4 | undefined {
   try {
-    if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_PAYLOAD_BYTES) return undefined;
+    if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_PAYLOAD_BYTES)
+      return undefined;
   } catch {
     return undefined;
   }
-  if (!integer(data.milliseconds) || !integer(data.tokens) || !isWorkedForOutcome(data.outcome)) return undefined;
+  if (
+    !integer(data.milliseconds) ||
+    !integer(data.tokens) ||
+    !isWorkedForOutcome(data.outcome)
+  )
+    return undefined;
   const changes = parseChanges(data.changes);
-  if (!changes || !Array.isArray(data.checks) || data.checks.length > MAX_RECEIPT_CHECKS || !isRecord(data.omittedChecks)
-    || !integer(data.omittedChecks.passed) || !integer(data.omittedChecks.failed)) return undefined;
-  if (data.omittedChecks.passed + data.omittedChecks.failed > 0 && data.checks.length !== MAX_RECEIPT_CHECKS) return undefined;
+  if (
+    !changes ||
+    !Array.isArray(data.checks) ||
+    data.checks.length > MAX_RECEIPT_CHECKS ||
+    !isRecord(data.omittedChecks) ||
+    !integer(data.omittedChecks.passed) ||
+    !integer(data.omittedChecks.failed)
+  )
+    return undefined;
+  if (
+    data.omittedChecks.passed + data.omittedChecks.failed > 0 &&
+    data.checks.length !== MAX_RECEIPT_CHECKS
+  )
+    return undefined;
   const checks: CheckAttempt[] = [];
   for (const check of data.checks) {
-    if (!isRecord(check) || check.outcome !== "passed" && check.outcome !== "failed") return undefined;
+    if (
+      !isRecord(check) ||
+      (check.outcome !== "passed" && check.outcome !== "failed")
+    )
+      return undefined;
     const label = parseCheckLabel(check.label);
     if (!label) return undefined;
     checks.push({ label, outcome: check.outcome });
   }
   const model = parseModelName(data.model);
-  const throughput = positiveInteger(data.outputTokens) && data.decodeMilliseconds === undefined && positiveDuration(data.responseMilliseconds)
-    ? { outputTokens: data.outputTokens, responseMilliseconds: data.responseMilliseconds }
-    : positiveInteger(data.outputTokens) && data.responseMilliseconds === undefined && positiveInteger(data.decodeMilliseconds)
-      ? { outputTokens: data.outputTokens, decodeMilliseconds: data.decodeMilliseconds }
-      : {};
+  const throughput =
+    positiveInteger(data.outputTokens) &&
+    data.decodeMilliseconds === undefined &&
+    positiveDuration(data.responseMilliseconds)
+      ? {
+          outputTokens: data.outputTokens,
+          responseMilliseconds: data.responseMilliseconds,
+        }
+      : positiveInteger(data.outputTokens) &&
+          data.responseMilliseconds === undefined &&
+          positiveInteger(data.decodeMilliseconds)
+        ? {
+            outputTokens: data.outputTokens,
+            decodeMilliseconds: data.decodeMilliseconds,
+          }
+        : {};
   return {
     version: 4,
     milliseconds: data.milliseconds,
@@ -168,7 +259,10 @@ function parseV4(data: Record<string, unknown>): WorkedForEntryDataV4 | undefine
     tokens: data.tokens,
     changes,
     checks,
-    omittedChecks: { passed: data.omittedChecks.passed, failed: data.omittedChecks.failed },
+    omittedChecks: {
+      passed: data.omittedChecks.passed,
+      failed: data.omittedChecks.failed,
+    },
     ...(model ? { model } : {}),
     ...throughput,
   };
@@ -179,7 +273,8 @@ function sessionTokenTotal(ctx: ExtensionContext): number | undefined {
     let total = 0;
     for (const entry of ctx.sessionManager.getEntries()) {
       const tokens = entryUsage(entry)?.totalTokens;
-      if (typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0) total += tokens;
+      if (typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0)
+        total += tokens;
     }
     return total;
   } catch {
@@ -188,23 +283,52 @@ function sessionTokenTotal(ctx: ExtensionContext): number | undefined {
 }
 
 function formatWorkedForDuration(milliseconds: number): string {
-  const boundedMilliseconds = Number.isFinite(milliseconds) ? Math.max(0, milliseconds) : 0;
+  const boundedMilliseconds = Number.isFinite(milliseconds)
+    ? Math.max(0, milliseconds)
+    : 0;
   const totalSeconds = Math.max(1, Math.floor(boundedMilliseconds / 1_000));
   if (totalSeconds < 60) return `${totalSeconds}s`;
   const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes}m ${(totalSeconds % 60).toString().padStart(2, "0")}s`;
+  if (totalMinutes < 60)
+    return `${totalMinutes}m ${(totalSeconds % 60).toString().padStart(2, "0")}s`;
   return `${Math.floor(totalMinutes / 60)}h ${(totalMinutes % 60).toString().padStart(2, "0")}m`;
 }
 
-function parseWorkedForEntryData(data: unknown): WorkedForEntryData | undefined {
-  if (!isRecord(data) || !("version" in data) || !("milliseconds" in data)) return undefined;
+function parseWorkedForEntryData(
+  data: unknown,
+): WorkedForEntryData | undefined {
+  if (!isRecord(data) || !("version" in data) || !("milliseconds" in data))
+    return undefined;
   if (data.version === 4) return parseV4(data);
-  if (typeof data.milliseconds !== "number" || !Number.isFinite(data.milliseconds) || data.milliseconds < 0) return undefined;
-  if (data.version === 1) return { version: 1, milliseconds: data.milliseconds };
-  if (!("outcome" in data) || !isWorkedForOutcome(data.outcome)) return undefined;
-  if (data.version === 2) return { version: 2, milliseconds: data.milliseconds, outcome: data.outcome };
-  if (data.version !== 3 || typeof data.tokens !== "number" || !Number.isFinite(data.tokens) || data.tokens < 0) return undefined;
-  return { version: 3, milliseconds: data.milliseconds, outcome: data.outcome, tokens: data.tokens };
+  if (
+    typeof data.milliseconds !== "number" ||
+    !Number.isFinite(data.milliseconds) ||
+    data.milliseconds < 0
+  )
+    return undefined;
+  if (data.version === 1)
+    return { version: 1, milliseconds: data.milliseconds };
+  if (!("outcome" in data) || !isWorkedForOutcome(data.outcome))
+    return undefined;
+  if (data.version === 2)
+    return {
+      version: 2,
+      milliseconds: data.milliseconds,
+      outcome: data.outcome,
+    };
+  if (
+    data.version !== 3 ||
+    typeof data.tokens !== "number" ||
+    !Number.isFinite(data.tokens) ||
+    data.tokens < 0
+  )
+    return undefined;
+  return {
+    version: 3,
+    milliseconds: data.milliseconds,
+    outcome: data.outcome,
+    tokens: data.tokens,
+  };
 }
 
 function safePath(value: string): string {
@@ -215,11 +339,7 @@ class WorkedForV4Component extends WidthCachedComponent {
   private readonly data: WorkedForEntryDataV4;
   private readonly expanded: boolean;
   private readonly theme: Theme;
-  constructor(
-    data: WorkedForEntryDataV4,
-    expanded: boolean,
-    theme: Theme,
-  ) {
+  constructor(data: WorkedForEntryDataV4, expanded: boolean, theme: Theme) {
     super();
     this.data = data;
     this.expanded = expanded;
@@ -231,53 +351,104 @@ class WorkedForV4Component extends WidthCachedComponent {
     const outcome = OUTCOMES[data.outcome];
     const headline = theme.fg(outcome.color, outcome.label);
     const duration = data.responseMilliseconds ?? data.decodeMilliseconds;
-    const tokensPerSecond = data.outputTokens !== undefined && duration !== undefined && (data.responseMilliseconds === undefined || data.outcome === "done")
-      ? data.outputTokens / (duration / 1_000)
-      : undefined;
-    const speedSuffix = tokensPerSecond !== undefined && Number.isFinite(tokensPerSecond) && tokensPerSecond > 0
-      ? ` · ${data.responseMilliseconds !== undefined && tokensPerSecond < 0.05 ? "<0.1" : tokensPerSecond.toFixed(1)} tok/s`
-      : "";
+    const tokensPerSecond =
+      data.outputTokens !== undefined &&
+      duration !== undefined &&
+      (data.responseMilliseconds === undefined || data.outcome === "done")
+        ? data.outputTokens / (duration / 1_000)
+        : undefined;
+    const speedSuffix =
+      tokensPerSecond !== undefined &&
+      Number.isFinite(tokensPerSecond) &&
+      tokensPerSecond > 0
+        ? ` · ${data.responseMilliseconds !== undefined && tokensPerSecond < 0.05 ? "<0.1" : tokensPerSecond.toFixed(1)} tok/s`
+        : "";
     const modelSuffix = data.model ? ` · ${data.model}` : "";
     const lines = [
       `${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)} · ↑ ${formatTokens(data.tokens)} tokens${speedSuffix}${modelSuffix}`)}`,
     ];
-    if (data.changes.state === "unavailable") lines.push(theme.fg("dim", data.changes.reason === "head-changed" ? "Changes unavailable · HEAD moved" : "Changes unavailable"));
-    else if (data.changes.totalFiles === 0) lines.push(theme.fg("dim", "No files changed"));
+    if (data.changes.state === "unavailable")
+      lines.push(
+        theme.fg(
+          "dim",
+          data.changes.reason === "head-changed"
+            ? "Changes unavailable · HEAD moved"
+            : "Changes unavailable",
+        ),
+      );
+    else if (data.changes.totalFiles === 0)
+      lines.push(theme.fg("dim", "No files changed"));
     else {
       const count = `${data.changes.totalFiles} ${data.changes.totalFiles === 1 ? "file" : "files"}`;
-      lines.push(`${theme.fg("accent", `${width < 40 ? count : `Changed ${count}`}`)}${theme.fg("dim", " · ")}${theme.fg("success", `+${data.changes.additions}`)} ${theme.fg("error", `−${data.changes.deletions}`)}`);
+      lines.push(
+        `${theme.fg("accent", `${width < 40 ? count : `Changed ${count}`}`)}${theme.fg("dim", " · ")}${theme.fg("success", `+${data.changes.additions}`)} ${theme.fg("error", `−${data.changes.deletions}`)}`,
+      );
     }
-    const passed = data.checks.filter((check) => check.outcome === "passed").length + data.omittedChecks.passed;
-    const failed = data.checks.filter((check) => check.outcome === "failed").length + data.omittedChecks.failed;
+    const passed =
+      data.checks.filter((check) => check.outcome === "passed").length +
+      data.omittedChecks.passed;
+    const failed =
+      data.checks.filter((check) => check.outcome === "failed").length +
+      data.omittedChecks.failed;
     const totalChecks = passed + failed;
     if (totalChecks === 0) {
-      if (data.changes.state === "available" && data.changes.totalFiles > 0) lines.push(theme.fg("warning", "No check recorded"));
+      if (data.changes.state === "available" && data.changes.totalFiles > 0)
+        lines.push(theme.fg("warning", "No check recorded"));
     } else if (totalChecks === 1) {
       const check = data.checks[0];
-      if (check?.outcome === "passed") lines.push(theme.fg("success", `Check passed: ${check.label} ✓`));
-      else if (check) lines.push(theme.fg("error", `Check failed: ${check.label} ×`));
+      if (check?.outcome === "passed")
+        lines.push(theme.fg("success", `Check passed: ${check.label} ✓`));
+      else if (check)
+        lines.push(theme.fg("error", `Check failed: ${check.label} ×`));
     } else if (failed === 0) {
       lines.push(theme.fg("success", `Checks: ${passed} passed`));
     } else {
-      lines.push(`${theme.fg("accent", "Checks:")} ${theme.fg("success", `${passed} passed`)}${theme.fg("dim", " · ")}${theme.fg("error", `${failed} failed`)}`);
+      lines.push(
+        `${theme.fg("accent", "Checks:")} ${theme.fg("success", `${passed} passed`)}${theme.fg("dim", " · ")}${theme.fg("error", `${failed} failed`)}`,
+      );
     }
     if (this.expanded && data.changes.state === "available") {
       for (const file of data.changes.files) {
-        const marker = file.kind === "added" ? "A" : file.kind === "deleted" ? "D" : file.kind === "renamed" ? "R" : "M";
-        const label = file.kind === "renamed" ? `${safePath(file.previousPath)} → ${safePath(file.path)}` : safePath(file.path);
+        const marker =
+          file.kind === "added"
+            ? "A"
+            : file.kind === "deleted"
+              ? "D"
+              : file.kind === "renamed"
+                ? "R"
+                : "M";
+        const label =
+          file.kind === "renamed"
+            ? `${safePath(file.previousPath)} → ${safePath(file.path)}`
+            : safePath(file.path);
         const prefix = `${marker} `;
-        const detail = file.detail ? ` ${file.detail}` : ` +${file.additions} −${file.deletions}`;
-        const labelWidth = width - 1 - visibleWidth(prefix) - visibleWidth(detail);
-        const fittedLabel = labelWidth > 0 ? truncateToWidth(label, labelWidth, "…") : "";
+        const detail = file.detail
+          ? ` ${file.detail}`
+          : ` +${file.additions} −${file.deletions}`;
+        const labelWidth =
+          width - 1 - visibleWidth(prefix) - visibleWidth(detail);
+        const fittedLabel =
+          labelWidth > 0 ? truncateToWidth(label, labelWidth, "…") : "";
         const styledDetail = file.detail
           ? theme.fg("dim", detail)
           : `${theme.fg("success", ` +${file.additions}`)} ${theme.fg("error", `−${file.deletions}`)}`;
-        lines.push(`${theme.fg("accent", `${prefix}${fittedLabel}`)}${styledDetail}`);
+        lines.push(
+          `${theme.fg("accent", `${prefix}${fittedLabel}`)}${styledDetail}`,
+        );
       }
-      if (data.changes.omittedFiles > 0) lines.push(theme.fg("dim", `… ${data.changes.omittedFiles} more files`));
+      if (data.changes.omittedFiles > 0)
+        lines.push(
+          theme.fg("dim", `… ${data.changes.omittedFiles} more files`),
+        );
     }
     if (this.expanded) {
-      for (const check of data.checks) lines.push(theme.fg(check.outcome === "passed" ? "success" : "error", `${check.outcome === "passed" ? "✓" : "×"} ${check.label}`));
+      for (const check of data.checks)
+        lines.push(
+          theme.fg(
+            check.outcome === "passed" ? "success" : "error",
+            `${check.outcome === "passed" ? "✓" : "×"} ${check.label}`,
+          ),
+        );
       const omitted = data.omittedChecks.passed + data.omittedChecks.failed;
       if (omitted > 0) lines.push(theme.fg("dim", `… ${omitted} more checks`));
     }
@@ -285,7 +456,9 @@ class WorkedForV4Component extends WidthCachedComponent {
   }
 }
 
-function workedForOutcome(stopReason: StopReason | undefined): WorkedForOutcome {
+function workedForOutcome(
+  stopReason: StopReason | undefined,
+): WorkedForOutcome {
   if (stopReason === "stop") return "done";
   if (stopReason === "aborted") return "stopped";
   return "failed";
@@ -308,9 +481,18 @@ type ActiveReceipt = {
   throughputInvalid: boolean;
 };
 
-function finishAssistantStream(receipt: ActiveReceipt, outputTokens: unknown, endedAt: number, failed: boolean): void {
-  const duration = receipt.responseStartedAt === undefined ? undefined : endedAt - receipt.responseStartedAt;
-  if (failed || !integer(outputTokens) || !positiveDuration(duration)) receipt.throughputInvalid = true;
+function finishAssistantStream(
+  receipt: ActiveReceipt,
+  outputTokens: unknown,
+  endedAt: number,
+  failed: boolean,
+): void {
+  const duration =
+    receipt.responseStartedAt === undefined
+      ? undefined
+      : endedAt - receipt.responseStartedAt;
+  if (failed || !integer(outputTokens) || !positiveDuration(duration))
+    receipt.throughputInvalid = true;
   else {
     receipt.outputTokens += outputTokens;
     receipt.responseMilliseconds += duration;
@@ -322,7 +504,12 @@ function receiptModelName(
   settled: ActiveReceipt,
   model: ExtensionContext["model"],
 ): string | undefined {
-  if (settled.modelMismatch || settled.modelProvider === undefined || settled.modelId === undefined) return undefined;
+  if (
+    settled.modelMismatch ||
+    settled.modelProvider === undefined ||
+    settled.modelId === undefined
+  )
+    return undefined;
   if (!model || model.provider !== settled.modelProvider) return undefined;
   const resolved = modelDisplayName({ id: settled.modelId });
   if (!resolved || resolved.length > 200) return undefined;
@@ -333,7 +520,10 @@ function fitPayload(data: WorkedForEntryDataV4): WorkedForEntryDataV4 {
   if (data.changes.state === "unavailable") return data;
   const changes = { ...data.changes, files: [...data.changes.files] };
   const fitted = { ...data, changes };
-  while (changes.files.length > 0 && Buffer.byteLength(JSON.stringify(fitted), "utf8") > MAX_PAYLOAD_BYTES) {
+  while (
+    changes.files.length > 0 &&
+    Buffer.byteLength(JSON.stringify(fitted), "utf8") > MAX_PAYLOAD_BYTES
+  ) {
     changes.files.pop();
     changes.omittedFiles += 1;
   }
@@ -345,16 +535,33 @@ export function registerWorkedFor(pi: ExtensionAPI): void {
   let lifecycleGeneration = 0;
   let collectionNoticeShown = false;
 
-  pi.registerEntryRenderer<WorkedForEntryData>(WORKED_FOR_ENTRY_TYPE, (entry, options, theme) => {
-    const data = parseWorkedForEntryData(entry.data);
-    if (!data) return undefined;
-    if (data.version === 1) return new Text(theme.fg("dim", `Worked for ${formatWorkedForDuration(data.milliseconds)}`), 1, 0);
-    if (data.version === 4) return new WorkedForV4Component(data, options.expanded, theme);
-    const outcome = OUTCOMES[data.outcome];
-    const tokens = data.version === 3 ? ` · ↑ ${formatTokens(data.tokens)} tokens` : "";
-    const headline = theme.fg(outcome.color, outcome.label);
-    return new Text(`${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)}${tokens}`)}`, 1, 0);
-  });
+  pi.registerEntryRenderer<WorkedForEntryData>(
+    WORKED_FOR_ENTRY_TYPE,
+    (entry, options, theme) => {
+      const data = parseWorkedForEntryData(entry.data);
+      if (!data) return undefined;
+      if (data.version === 1)
+        return new Text(
+          theme.fg(
+            "dim",
+            `Worked for ${formatWorkedForDuration(data.milliseconds)}`,
+          ),
+          1,
+          0,
+        );
+      if (data.version === 4)
+        return new WorkedForV4Component(data, options.expanded, theme);
+      const outcome = OUTCOMES[data.outcome];
+      const tokens =
+        data.version === 3 ? ` · ↑ ${formatTokens(data.tokens)} tokens` : "";
+      const headline = theme.fg(outcome.color, outcome.label);
+      return new Text(
+        `${headline}${theme.fg("dim", ` · ${formatWorkedForDuration(data.milliseconds)}${tokens}`)}`,
+        1,
+        0,
+      );
+    },
+  );
 
   const resetForBranch = async (): Promise<void> => {
     lifecycleGeneration += 1;
@@ -390,7 +597,8 @@ export function registerWorkedFor(pi: ExtensionAPI): void {
   });
 
   pi.on("message_start", (event, ctx) => {
-    if (ctx.mode !== "tui" || !active || event.message.role !== "assistant") return;
+    if (ctx.mode !== "tui" || !active || event.message.role !== "assistant")
+      return;
     if (active.responseStartedAt !== undefined) active.throughputInvalid = true;
     active.responseStartedAt = Date.now();
   });
@@ -401,14 +609,21 @@ export function registerWorkedFor(pi: ExtensionAPI): void {
     const provider: unknown = event.message.provider;
     const requestedModelId: unknown = event.message.model;
     const responseModelId: unknown = event.message.responseModel;
-    if (typeof provider !== "string" || typeof requestedModelId !== "string"
-      || responseModelId !== undefined && typeof responseModelId !== "string") active.modelMismatch = true;
+    if (
+      typeof provider !== "string" ||
+      typeof requestedModelId !== "string" ||
+      (responseModelId !== undefined && typeof responseModelId !== "string")
+    )
+      active.modelMismatch = true;
     else {
       const modelId = responseModelId ?? requestedModelId;
       if (active.modelProvider === undefined || active.modelId === undefined) {
         active.modelProvider = provider;
         active.modelId = modelId;
-      } else if (active.modelProvider !== provider || active.modelId !== modelId) {
+      } else if (
+        active.modelProvider !== provider ||
+        active.modelId !== modelId
+      ) {
         active.modelMismatch = true;
       }
     }
@@ -416,12 +631,18 @@ export function registerWorkedFor(pi: ExtensionAPI): void {
       active,
       event.message.usage?.output,
       Date.now(),
-      event.message.stopReason === "error" || event.message.stopReason === "aborted",
+      event.message.stopReason === "error" ||
+        event.message.stopReason === "aborted",
     );
   });
 
   pi.on("tool_result", (event: ToolResultEvent, ctx) => {
-    if (ctx.mode !== "tui" || !active || event.toolName !== "bash" && event.toolName !== "powershell") return;
+    if (
+      ctx.mode !== "tui" ||
+      !active ||
+      (event.toolName !== "bash" && event.toolName !== "powershell")
+    )
+      return;
     const check = recognizedCheck(event.input.command, event.isError);
     if (!check) return;
     if (active.checks.length < MAX_RECEIPT_CHECKS) active.checks.push(check);
@@ -444,23 +665,46 @@ export function registerWorkedFor(pi: ExtensionAPI): void {
     const model = receiptModelName(settled, ctx.model);
     const changes = await (await settled.collection).finish();
     // Earlier async session_tree handlers can delay our reset after Pi switches branches.
-    if (generation !== lifecycleGeneration
-      || !ctx.sessionManager.getBranch().some((entry) => entry.id === settled.leafId)) return;
-    if (changes.state === "unavailable" && changes.reason !== "not-git" && changes.reason !== "head-changed" && changes.reason !== "timeout" && !collectionNoticeShown) {
+    if (
+      generation !== lifecycleGeneration ||
+      !ctx.sessionManager
+        .getBranch()
+        .some((entry) => entry.id === settled.leafId)
+    )
+      return;
+    if (
+      changes.state === "unavailable" &&
+      changes.reason !== "not-git" &&
+      changes.reason !== "head-changed" &&
+      changes.reason !== "timeout" &&
+      !collectionNoticeShown
+    ) {
       collectionNoticeShown = true;
       ctx.ui.notify(`Change receipt unavailable: ${changes.reason}`, "warning");
     }
     const settledTokens = sessionTokenTotal(ctx);
-    const outcome = wasAborted(event) ? "stopped" : workedForOutcome(settled.stopReason);
-    const throughput = outcome === "done" && !settled.throughputInvalid && settled.responseStartedAt === undefined
-      && positiveInteger(settled.outputTokens) && positiveDuration(settled.responseMilliseconds)
-      ? { outputTokens: settled.outputTokens, responseMilliseconds: settled.responseMilliseconds }
-      : {};
+    const outcome = wasAborted(event)
+      ? "stopped"
+      : workedForOutcome(settled.stopReason);
+    const throughput =
+      outcome === "done" &&
+      !settled.throughputInvalid &&
+      settled.responseStartedAt === undefined &&
+      positiveInteger(settled.outputTokens) &&
+      positiveDuration(settled.responseMilliseconds)
+        ? {
+            outputTokens: settled.outputTokens,
+            responseMilliseconds: settled.responseMilliseconds,
+          }
+        : {};
     const data = fitPayload({
       version: 4,
       milliseconds: Math.max(0, Date.now() - settled.startedAt),
       outcome,
-      tokens: settled.startedTokens === undefined || settledTokens === undefined ? 0 : Math.max(0, settledTokens - settled.startedTokens),
+      tokens:
+        settled.startedTokens === undefined || settledTokens === undefined
+          ? 0
+          : Math.max(0, settledTokens - settled.startedTokens),
       changes,
       checks: settled.checks,
       omittedChecks: settled.omittedChecks,
@@ -470,7 +714,10 @@ export function registerWorkedFor(pi: ExtensionAPI): void {
     try {
       pi.appendEntry<WorkedForEntryDataV4>(WORKED_FOR_ENTRY_TYPE, data);
     } catch (error) {
-      ctx.ui.notify(`Worked-for timing could not be saved: ${errorMessage(error)}`, "error");
+      ctx.ui.notify(
+        `Worked-for timing could not be saved: ${errorMessage(error)}`,
+        "error",
+      );
     }
   });
 

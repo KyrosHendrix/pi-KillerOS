@@ -105,8 +105,16 @@ Project hooks run shell commands on Pi events. Put them in `.pi/killeros-hooks.j
 ```json
 {
   "hooks": {
-    "tool_call": [{ "matcher": "^bash$", "command": "node scripts/check-command.js" }],
-    "tool_result": [{ "matcher": "^(write|edit)$", "command": "npm run lint --silent", "timeoutMs": 60000 }],
+    "tool_call": [
+      { "matcher": "^bash$", "command": "node scripts/check-command.js" }
+    ],
+    "tool_result": [
+      {
+        "matcher": "^(write|edit)$",
+        "command": "npm run lint --silent",
+        "timeoutMs": 60000
+      }
+    ],
     "agent_settled": [{ "command": "npm run format --silent" }]
   }
 }
@@ -141,13 +149,17 @@ Personal instructions are private additions to the system prompt. KillerOS appen
 
 ## Contributing
 
-Use Node.js 26.13.0, pinned in `.node-version`. Install dependencies with `npm ci --ignore-scripts --no-audit --no-fund`. Run the checkout with `npx pi -e .`, with any installed copy disabled. Run `npm run check` and `npm run test:changed`, which runs the test files that cover your changes. `npm test` runs the full suite, four test units at a time to bound child-process load, starting with the longest. CI runs the same suite across six runners. There is no build step.
+Use Node.js 26.13.0, pinned in `.node-version`, and Bun canary for development. Install dependencies with `bun install --frozen-lockfile --ignore-scripts`. Run the checkout with `npx pi -e .` after disabling any installed copy.
 
-Automatic pre-merge CI requires a pull request, including a draft pull request. Open a draft PR for feedback or run the CI workflow manually. Standalone pushes to `dev` do not start automatic CI. Run local checks before pushing. CI also runs on pushes to `main` and on the weekly schedule. If a successful PR run recorded the exact tree merged to `main`, the push reuses that run's Windows checks. If CI cannot verify the match, it runs the Windows checks. CodeQL still runs on `main`, and the weekly run does its own validation.
+Run `npm run check` or run its steps individually with `bun check --no-script`, `bun lint --no-script --type-aware --max-warnings=0 .`, and `bun fmt --no-script --check`. Run `npm run test:changed` for tests reachable from your local changes. The suite runner uses `bun test` for supported tests and Node for tests that need its runtime. There is no build step.
+
+Open a pull request or dispatch CI manually to check a development branch. CI plans Windows test shards using recorded test times and runs checks in parallel. PRs normally run tests reachable from the diff against the merge commit's first parent. Changes to shared test inputs trigger the full suite. Main pushes, scheduled runs, and manual runs default to the full suite. When the latest compatible Pi packages differ from the lockfile, CI also checks and tests that set.
+
+A successful same-repository PR into `main` can publish a `tested-full-tree-v2` artifact after the full suite passes. A push to `main` can reuse that run if CI verifies the merged tree and the exact Pi package versions. If the lookup fails or any field differs, CI runs the checks. CodeQL runs in a separate workflow with the same triggers.
 
 ### Release process
 
-Prepare releases on `dev`, update package versions and changelog, and open a PR into `main`. Wait for required checks and review, then use a merge commit. Releases go through CI on `main`; do not push version tags manually. Wait for the automated sync back to `dev` before advancing it.
+Prepare releases on `dev`, update package versions and changelog, and open a PR into `main`. Wait for required checks and review, then use a merge commit. CI and CodeQL must both pass for the same commit on `main` before publication. Do not push version tags manually. Wait for the automated sync back to `dev` before advancing it.
 
 </details>
 
