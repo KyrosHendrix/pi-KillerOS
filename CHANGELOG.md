@@ -6,6 +6,7 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ### Changed
 
+- Raised the minimum supported Pi version to 1.6.0.
 - Run project `agent_settled` hooks after KillerOS saves the change receipt and plays the completion sound. A slow hook no longer lengthens the "Worked for" time or delays the sound, and files a hook edits, such as a formatter's, no longer appear as the agent's changes. The next goal turn still waits for these hooks.
 - Name what `/handoff` found when it rejects a summary as unsafe: a recognized credential, a `key: value` line that names a password, token, secret, or API key, or copied request or role framing. The message never includes the matched text.
 
