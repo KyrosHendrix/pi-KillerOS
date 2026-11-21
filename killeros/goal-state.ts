@@ -3,7 +3,18 @@ import type { BigIntStats, Stats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { sameFileIdentity } from "./file-identity.ts";
-import type { GoalBlockerAudit, GoalContinueReport, GoalFileBaseline, GoalFileVerification, GoalPendingDecision, GoalState, GoalStateCommon, GoalStatus, GoalTurnDecision, GoalTurnPhase } from "./goal-model.ts";
+import type {
+  GoalBlockerAudit,
+  GoalContinueReport,
+  GoalFileBaseline,
+  GoalFileVerification,
+  GoalPendingDecision,
+  GoalState,
+  GoalStateCommon,
+  GoalStatus,
+  GoalTurnDecision,
+  GoalTurnPhase,
+} from "./goal-model.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 import { isRecord } from "./guards.ts";
 import { hasErrorCode } from "./errors.ts";
@@ -17,12 +28,12 @@ export const GOAL_VERSION = 1;
 export const GOAL_BLOCKER_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,119}$/u;
 const FILE_HASH_CHUNK_SIZE = 64 * 1024;
 const FILE_HASH_LIMIT = 64 * 1024 * 1024;
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const graphemeSegmenter = new Intl.Segmenter(undefined, {
+  granularity: "grapheme",
+});
 
-/** Why a pause keeps the interrupted turn: compaction will resume it, and manual compaction resumes when Pi saves the summary. */
 type GoalTurnHold = "manual-compaction" | "automatic-compaction";
 
-/** How a resume after compaction continues: the interrupted turn itself, or the next turn under any decision already accepted. */
 type GoalTurnResume = "same-turn" | "next-turn";
 
 export interface GoalTransitionOptions {
@@ -31,12 +42,16 @@ export interface GoalTransitionOptions {
   decision?: GoalTurnDecision;
   hold?: GoalTurnHold;
   resume?: GoalTurnResume;
-  /** Replaces the turn budget when a resume renews an exhausted limit. */
   maxTurns?: number;
 }
 
 function isGoalStatus(value: unknown): value is GoalStatus {
-  return value === "active" || value === "paused" || value === "blocked" || value === "complete";
+  return (
+    value === "active" ||
+    value === "paused" ||
+    value === "blocked" ||
+    value === "complete"
+  );
 }
 
 function finiteNonNegative(value: unknown): value is number {
@@ -53,7 +68,8 @@ function incrementableNonNegativeInteger(value: unknown): value is number {
 
 function addGoalMilliseconds(accumulated: number, interval: number): number {
   const total = accumulated + interval;
-  if (!safeNonNegativeInteger(total)) throw new Error("Goal active duration exceeds the safe integer range");
+  if (!safeNonNegativeInteger(total))
+    throw new Error("Goal active duration exceeds the safe integer range");
   return total;
 }
 
@@ -64,20 +80,32 @@ function codePointCount(value: string): number {
   return length;
 }
 
-function isSafePersistedText(value: unknown, limit: number, required = true): value is string {
-  return typeof value === "string"
-    && (required ? Boolean(value.trim()) : true)
-    && value === value.trim()
-    && safeTerminalText(value) === value
-    && codePointCount(value) <= limit;
+function isSafePersistedText(
+  value: unknown,
+  limit: number,
+  required = true,
+): value is string {
+  return (
+    typeof value === "string" &&
+    (required ? Boolean(value.trim()) : true) &&
+    value === value.trim() &&
+    safeTerminalText(value) === value &&
+    codePointCount(value) <= limit
+  );
 }
 
 /** Normalizes model or user text before it crosses the persisted goal boundary. */
-export function normalizeGoalText(value: string, limit: number, label: string): string {
-  if (codePointCount(value) > limit) throw new Error(`${label} must not exceed ${limit} characters`);
+export function normalizeGoalText(
+  value: string,
+  limit: number,
+  label: string,
+): string {
+  if (codePointCount(value) > limit)
+    throw new Error(`${label} must not exceed ${limit} characters`);
   const normalized = safeTerminalText(value).trim();
   if (!normalized) throw new Error(`${label} must not be empty`);
-  if (codePointCount(normalized) > limit) throw new Error(`${label} must not exceed ${limit} characters`);
+  if (codePointCount(normalized) > limit)
+    throw new Error(`${label} must not exceed ${limit} characters`);
   return normalized;
 }
 
@@ -89,53 +117,86 @@ function isGoalTurnPhase(value: unknown): value is GoalTurnPhase {
   return value === "ready" || value === "in-flight" || value === "authorized";
 }
 
-/** Checks the turn and evidence that every recorded decision and report carries. */
-function isTurnEvidence(value: unknown, turns: number): value is Record<string, unknown> & { turn: number; evidence: string } {
-  return isRecord(value)
-    && safeNonNegativeInteger(value.turn)
-    && value.turn >= 1
-    && value.turn <= turns
-    && isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT);
+function isTurnEvidence(
+  value: unknown,
+  turns: number,
+): value is Record<string, unknown> & { turn: number; evidence: string } {
+  return (
+    isRecord(value) &&
+    safeNonNegativeInteger(value.turn) &&
+    value.turn >= 1 &&
+    value.turn <= turns &&
+    isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)
+  );
 }
 
-function isGoalContinueReport(value: unknown, turns: number): value is GoalContinueReport {
-  return isTurnEvidence(value, turns)
-    && isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT);
+function isGoalContinueReport(
+  value: unknown,
+  turns: number,
+): value is GoalContinueReport {
+  return (
+    isTurnEvidence(value, turns) &&
+    isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT)
+  );
 }
 
-function isGoalPendingDecision(value: unknown, turns: number): value is GoalPendingDecision {
+function isGoalPendingDecision(
+  value: unknown,
+  turns: number,
+): value is GoalPendingDecision {
   if (!isTurnEvidence(value, turns)) return false;
-  if (value.kind === "continue") return isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT);
-  return value.kind === "blocker-audit"
-    && isBlockerKey(value.blockerKey)
-    && typeof value.streak === "number"
-    && Number.isInteger(value.streak)
-    && value.streak >= 1
-    && value.streak < 3;
+  if (value.kind === "continue")
+    return isSafePersistedText(value.nextAction, GOAL_EVIDENCE_LIMIT);
+  return (
+    value.kind === "blocker-audit" &&
+    isBlockerKey(value.blockerKey) &&
+    typeof value.streak === "number" &&
+    Number.isInteger(value.streak) &&
+    value.streak >= 1 &&
+    value.streak < 3
+  );
 }
 
-function isGoalTurnDecision(value: unknown, turns: number): value is GoalTurnDecision {
+function isGoalTurnDecision(
+  value: unknown,
+  turns: number,
+): value is GoalTurnDecision {
   if (isGoalPendingDecision(value, turns)) return true;
   if (!isTurnEvidence(value, turns)) return false;
-  if (value.kind === "complete") return value.verification === "file" || value.verification === "model-reported";
-  return value.kind === "blocked" && isBlockerKey(value.blockerKey) && value.streak === 3;
+  if (value.kind === "complete")
+    return (
+      value.verification === "file" || value.verification === "model-reported"
+    );
+  return (
+    value.kind === "blocked" &&
+    isBlockerKey(value.blockerKey) &&
+    value.streak === 3
+  );
 }
 
 function isGoalFileBaseline(value: unknown): value is GoalFileBaseline {
   if (!isRecord(value)) return false;
   if (value.exists === false) {
-    return value.size === undefined && value.mtimeMs === undefined && value.contentHash === undefined;
+    return (
+      value.size === undefined &&
+      value.mtimeMs === undefined &&
+      value.contentHash === undefined
+    );
   }
-  return value.exists === true
-    && finiteNonNegative(value.size)
-    && finiteNonNegative(value.mtimeMs)
-    && (value.contentHash === undefined
-      || value.contentHash === null
-      || typeof value.contentHash === "string" && /^[a-f0-9]{64}$/u.test(value.contentHash));
+  return (
+    value.exists === true &&
+    finiteNonNegative(value.size) &&
+    finiteNonNegative(value.mtimeMs) &&
+    (value.contentHash === undefined ||
+      value.contentHash === null ||
+      (typeof value.contentHash === "string" &&
+        /^[a-f0-9]{64}$/u.test(value.contentHash)))
+  );
 }
 
 function isAbsoluteFilePath(value: string): boolean {
-  if (!value || /^(?:https?|file):\/\//iu.test(value) || /[\\\/]$/u.test(value)) return false;
+  if (!value || /^(?:https?|file):\/\//iu.test(value) || /[\\\/]$/u.test(value))
+    return false;
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
@@ -148,31 +209,62 @@ function stripUnquotedPathPunctuation(value: string): string {
       continue;
     }
     const closer = stripped.at(-1);
-    const opener = closer === ")" ? "(" : closer === "]" ? "[" : closer === "}" ? "{" : undefined;
-    if (closer === undefined || opener === undefined
-      || stripped.split(closer).length <= stripped.split(opener).length) return stripped;
+    const opener =
+      closer === ")"
+        ? "("
+        : closer === "]"
+          ? "["
+          : closer === "}"
+            ? "{"
+            : undefined;
+    if (
+      closer === undefined ||
+      opener === undefined ||
+      stripped.split(closer).length <= stripped.split(opener).length
+    )
+      return stripped;
     stripped = stripped.slice(0, -1);
   }
 }
 
 function isGoalFileVerification(value: unknown): value is GoalFileVerification {
-  return isRecord(value)
-    && value.kind === "file"
-    && isSafePersistedText(value.path, GOAL_OBJECTIVE_LIMIT)
-    && isAbsoluteFilePath(value.path)
-    && isGoalFileBaseline(value.baseline);
+  return (
+    isRecord(value) &&
+    value.kind === "file" &&
+    isSafePersistedText(value.path, GOAL_OBJECTIVE_LIMIT) &&
+    isAbsoluteFilePath(value.path) &&
+    isGoalFileBaseline(value.baseline)
+  );
 }
 
 function isMaxTurns(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= GOAL_MAX_TURNS;
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= GOAL_MAX_TURNS
+  );
 }
 
-function isGoalBlockerAudit(value: unknown, turns: number, status: GoalStatus): value is GoalBlockerAudit {
-  if (!isRecord(value)
-    || !isBlockerKey(value.key)
-    || typeof value.streak !== "number" || !Number.isInteger(value.streak) || value.streak < 1 || value.streak > 3
-    || typeof value.lastTurn !== "number" || !Number.isInteger(value.lastTurn) || value.lastTurn < 1 || value.lastTurn > turns
-    || value.evidence !== undefined && !isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT)) {
+function isGoalBlockerAudit(
+  value: unknown,
+  turns: number,
+  status: GoalStatus,
+): value is GoalBlockerAudit {
+  if (
+    !isRecord(value) ||
+    !isBlockerKey(value.key) ||
+    typeof value.streak !== "number" ||
+    !Number.isInteger(value.streak) ||
+    value.streak < 1 ||
+    value.streak > 3 ||
+    typeof value.lastTurn !== "number" ||
+    !Number.isInteger(value.lastTurn) ||
+    value.lastTurn < 1 ||
+    value.lastTurn > turns ||
+    (value.evidence !== undefined &&
+      !isSafePersistedText(value.evidence, GOAL_EVIDENCE_LIMIT))
+  ) {
     return false;
   }
   if (status === "complete") return false;
@@ -204,28 +296,40 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     lastContinueReport,
     stopReason,
   } = value;
-  if (version !== GOAL_VERSION
-    || !incrementableNonNegativeInteger(revision) || revision < 1
-    || typeof objective !== "string" || !objective.trim() || safeTerminalText(objective) !== objective
-      || codePointCount(objective.trim()) > GOAL_OBJECTIVE_LIMIT
-    || !isGoalStatus(status)
-    || !safeNonNegativeInteger(createdAt)
-    || !safeNonNegativeInteger(updatedAt)
-    || !incrementableNonNegativeInteger(activeMilliseconds)
-    || !incrementableNonNegativeInteger(turns)
-    || blockedAuditStartTurn !== undefined
-      && (!safeNonNegativeInteger(blockedAuditStartTurn) || blockedAuditStartTurn > turns)
-    || !safeNonNegativeInteger(baselineTokens)
-    || result !== undefined && !isSafePersistedText(result, GOAL_EVIDENCE_LIMIT, false)
-    || verification !== undefined && !isGoalFileVerification(verification)
-    || maxTurns !== undefined && !isMaxTurns(maxTurns)
-    || resumeAfterManualCompaction !== undefined && resumeAfterManualCompaction !== true
-    || blockerAudit !== undefined && !isGoalBlockerAudit(blockerAudit, turns, status)
-    || turnPhase !== undefined && !isGoalTurnPhase(turnPhase)
-    || turnDecision !== undefined && !isGoalPendingDecision(turnDecision, turns)
-    || lastDecision !== undefined && !isGoalTurnDecision(lastDecision, turns)
-    || lastContinueReport !== undefined && !isGoalContinueReport(lastContinueReport, turns)
-    || stopReason !== undefined && !isSafePersistedText(stopReason, GOAL_EVIDENCE_LIMIT)) {
+  if (
+    version !== GOAL_VERSION ||
+    !incrementableNonNegativeInteger(revision) ||
+    revision < 1 ||
+    typeof objective !== "string" ||
+    !objective.trim() ||
+    safeTerminalText(objective) !== objective ||
+    codePointCount(objective.trim()) > GOAL_OBJECTIVE_LIMIT ||
+    !isGoalStatus(status) ||
+    !safeNonNegativeInteger(createdAt) ||
+    !safeNonNegativeInteger(updatedAt) ||
+    !incrementableNonNegativeInteger(activeMilliseconds) ||
+    !incrementableNonNegativeInteger(turns) ||
+    (blockedAuditStartTurn !== undefined &&
+      (!safeNonNegativeInteger(blockedAuditStartTurn) ||
+        blockedAuditStartTurn > turns)) ||
+    !safeNonNegativeInteger(baselineTokens) ||
+    (result !== undefined &&
+      !isSafePersistedText(result, GOAL_EVIDENCE_LIMIT, false)) ||
+    (verification !== undefined && !isGoalFileVerification(verification)) ||
+    (maxTurns !== undefined && !isMaxTurns(maxTurns)) ||
+    (resumeAfterManualCompaction !== undefined &&
+      resumeAfterManualCompaction !== true) ||
+    (blockerAudit !== undefined &&
+      !isGoalBlockerAudit(blockerAudit, turns, status)) ||
+    (turnPhase !== undefined && !isGoalTurnPhase(turnPhase)) ||
+    (turnDecision !== undefined &&
+      !isGoalPendingDecision(turnDecision, turns)) ||
+    (lastDecision !== undefined && !isGoalTurnDecision(lastDecision, turns)) ||
+    (lastContinueReport !== undefined &&
+      !isGoalContinueReport(lastContinueReport, turns)) ||
+    (stopReason !== undefined &&
+      !isSafePersistedText(stopReason, GOAL_EVIDENCE_LIMIT))
+  ) {
     return undefined;
   }
 
@@ -234,16 +338,30 @@ export function parseGoalState(value: unknown): GoalState | undefined {
   if (isGoalTurnDecision(lastDecision, turns)) {
     if (lastDecision.kind === "complete") {
       if (status !== "complete") return undefined;
-      if ((lastDecision.verification === "file") !== (verification !== undefined)) return undefined;
+      if (
+        (lastDecision.verification === "file") !==
+        (verification !== undefined)
+      )
+        return undefined;
     }
-    if (lastDecision.kind === "blocked" && status !== "blocked") return undefined;
+    if (lastDecision.kind === "blocked" && status !== "blocked")
+      return undefined;
   }
   if (pending !== undefined && turnPhase !== "authorized") return undefined;
   if (turnPhase === "authorized" && pending === undefined) return undefined;
   if (turnPhase === "ready" && pending !== undefined) return undefined;
-  if (status === "complete" && (turnPhase !== undefined || pending !== undefined)) return undefined;
-  if (status === "blocked" && (turnPhase !== undefined || pending !== undefined)) return undefined;
-  if (status === "paused" && turnPhase === "ready" && pending !== undefined) return undefined;
+  if (
+    status === "complete" &&
+    (turnPhase !== undefined || pending !== undefined)
+  )
+    return undefined;
+  if (
+    status === "blocked" &&
+    (turnPhase !== undefined || pending !== undefined)
+  )
+    return undefined;
+  if (status === "paused" && turnPhase === "ready" && pending !== undefined)
+    return undefined;
   // A pause reason is only current while paused; on any other status it contradicts the state.
   if (stopReason !== undefined && status !== "paused") return undefined;
 
@@ -267,7 +385,11 @@ export function parseGoalState(value: unknown): GoalState | undefined {
   };
   switch (status) {
     case "active":
-      if (!safeNonNegativeInteger(activeStartedAt) || resumeAfterManualCompaction !== undefined) return undefined;
+      if (
+        !safeNonNegativeInteger(activeStartedAt) ||
+        resumeAfterManualCompaction !== undefined
+      )
+        return undefined;
       return {
         ...common,
         status,
@@ -282,14 +404,31 @@ export function parseGoalState(value: unknown): GoalState | undefined {
         status,
         ...(result === undefined ? {} : { result }),
         ...(blockerAudit === undefined ? {} : { blockerAudit }),
-        ...(resumeAfterManualCompaction === undefined ? {} : { resumeAfterManualCompaction }),
+        ...(resumeAfterManualCompaction === undefined
+          ? {}
+          : { resumeAfterManualCompaction }),
       };
     case "blocked":
-      if (activeStartedAt !== undefined || resumeAfterManualCompaction !== undefined || typeof result !== "string") return undefined;
-      return { ...common, status, result, ...(blockerAudit === undefined ? {} : { blockerAudit }) };
+      if (
+        activeStartedAt !== undefined ||
+        resumeAfterManualCompaction !== undefined ||
+        typeof result !== "string"
+      )
+        return undefined;
+      return {
+        ...common,
+        status,
+        result,
+        ...(blockerAudit === undefined ? {} : { blockerAudit }),
+      };
     case "complete":
-      if (activeStartedAt !== undefined || resumeAfterManualCompaction !== undefined
-        || typeof result !== "string" || blockerAudit !== undefined) return undefined;
+      if (
+        activeStartedAt !== undefined ||
+        resumeAfterManualCompaction !== undefined ||
+        typeof result !== "string" ||
+        blockerAudit !== undefined
+      )
+        return undefined;
       return { ...common, status, result };
   }
 }
@@ -301,9 +440,11 @@ class GoalDeliverableChangedError extends Error {
 }
 
 function sameFile(left: BigIntStats, right: BigIntStats): boolean {
-  return sameFileIdentity(left, right)
-    && left.size === right.size
-    && left.mtimeNs === right.mtimeNs;
+  return (
+    sameFileIdentity(left, right) &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs
+  );
 }
 
 async function snapshotHandle(handle: FileHandle): Promise<BigIntStats> {
@@ -317,7 +458,10 @@ function legacyMtimeMs(snapshot: BigIntStats): number {
   return Number(seconds) * 1_000 + Number(nanoseconds) / 1_000_000;
 }
 
-async function hashFile(handle: FileHandle, inspected: BigIntStats): Promise<string> {
+async function hashFile(
+  handle: FileHandle,
+  inspected: BigIntStats,
+): Promise<string> {
   const hash = createHash("sha256");
   const buffer = Buffer.allocUnsafe(FILE_HASH_CHUNK_SIZE);
   const size = Number(inspected.size);
@@ -336,7 +480,9 @@ async function hashFile(handle: FileHandle, inspected: BigIntStats): Promise<str
 }
 
 /** Captures a file baseline with bounded asynchronous I/O and descriptor identity checks. */
-async function captureGoalFileBaseline(filePath: string): Promise<GoalFileBaseline> {
+async function captureGoalFileBaseline(
+  filePath: string,
+): Promise<GoalFileBaseline> {
   let inspected: BigIntStats;
   try {
     inspected = await lstat(filePath, { bigint: true });
@@ -345,7 +491,11 @@ async function captureGoalFileBaseline(filePath: string): Promise<GoalFileBaseli
     throw error;
   }
   const size = Number(inspected.size);
-  const baseline = { exists: true as const, size, mtimeMs: legacyMtimeMs(inspected) };
+  const baseline = {
+    exists: true as const,
+    size,
+    mtimeMs: legacyMtimeMs(inspected),
+  };
   if (!inspected.isFile() || size > FILE_HASH_LIMIT) return baseline;
 
   let handle: FileHandle | undefined;
@@ -365,13 +515,22 @@ async function captureGoalFileBaseline(filePath: string): Promise<GoalFileBaseli
 
 const GOAL_URL_PATTERN = /(?:https?|file):\/\/[^\s"'`]+/giu;
 const GOAL_QUOTED_PATTERN = /`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'/gu;
-const GOAL_ABSOLUTE_PATTERN = /(?:^|[\s"'`(\[{,;])([A-Za-z]:[\\/][^\s,;'"`]+|\/[^\s,;'"`]+)/gu;
-const GOAL_LIST_FILE_PATTERN = /(?:\band\b|\bor\b|\bplus\b|\balong\s+with\b|[,;&+])\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b|(Makefile|Dockerfile|\.gitignore)\b)/giu;
-const GOAL_RELATIVE_FILE_PATTERN = /(?:^|[\s"'`(\[{,;])((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b/gu;
+const GOAL_ABSOLUTE_PATTERN =
+  /(?:^|[\s"'`(\[{,;])([A-Za-z]:[\\/][^\s,;'"`]+|\/[^\s,;'"`]+)/gu;
+const GOAL_LIST_FILE_PATTERN =
+  /(?:\band\b|\bor\b|\bplus\b|\balong\s+with\b|[,;&+])\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b|(Makefile|Dockerfile|\.gitignore)\b)/giu;
+const GOAL_RELATIVE_FILE_PATTERN =
+  /(?:^|[\s"'`(\[{,;])((?:\.{1,2}[\\/])*[A-Za-z0-9_][A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,12})\b/gu;
 
 function isQuotedGoalFileMention(raw: string): boolean {
   const value = raw.trim();
-  if (!value || /\p{Cc}/u.test(value) || /^(?:https?|file):\/\//iu.test(value) || /[\\/]$/u.test(value)) return false;
+  if (
+    !value ||
+    /\p{Cc}/u.test(value) ||
+    /^(?:https?|file):\/\//iu.test(value) ||
+    /[\\/]$/u.test(value)
+  )
+    return false;
   return /[\/\\.:]/u.test(value);
 }
 
@@ -381,15 +540,19 @@ function isPathShapedGoalCandidate(raw: string): boolean {
   if (!value || /[\\\/]$/u.test(value)) return false;
   if (path.isAbsolute(value) || path.win32.isAbsolute(value)) return true;
   if (URL.canParse(value)) return false;
-  return /[\\\/]/u.test(value)
-    || value.startsWith(".") && value !== "." && value !== ".."
-    || /\.[A-Za-z0-9]{1,12}$/u.test(value);
+  return (
+    /[\\\/]/u.test(value) ||
+    (value.startsWith(".") && value !== "." && value !== "..") ||
+    /\.[A-Za-z0-9]{1,12}$/u.test(value)
+  );
 }
 
 function goalPathIdentity(filePath: string): string {
   const nativePath = filePath.replaceAll("/", "\\");
   // Parent segments may traverse symlinks; keep them distinct without filesystem proof.
-  const normalized = nativePath.split(path.sep).includes("..") ? nativePath : path.normalize(nativePath);
+  const normalized = nativePath.split(path.sep).includes("..")
+    ? nativePath
+    : path.normalize(nativePath);
   return normalized.toLowerCase();
 }
 
@@ -402,22 +565,39 @@ function absoluteGoalFilePath(value: string, cwd: string): string {
     : path.resolve(cwd, value);
 }
 
-function normalizeGoalFileMention(raw: string, cwd: string, quoted = false): string | undefined {
+function normalizeGoalFileMention(
+  raw: string,
+  cwd: string,
+  quoted = false,
+): string | undefined {
   const trimmed = raw.trim();
   const value = quoted ? trimmed : stripUnquotedPathPunctuation(trimmed);
-  if (!value || /\p{Cc}/u.test(value) || !quoted && /\s/u.test(value)) return undefined;
+  if (!value || /\p{Cc}/u.test(value) || (!quoted && /\s/u.test(value)))
+    return undefined;
   const absolute = absoluteGoalFilePath(value, cwd);
   if (!isAbsoluteFilePath(absolute)) return undefined;
   return goalPathIdentity(absolute);
 }
 
 /** Counts distinct path-shaped mentions so several files cannot bind proof to one. */
-function countGoalTargetFiles(objective: string, cwd: string, target: string, targetQuoted: boolean): number {
+function countGoalTargetFiles(
+  objective: string,
+  cwd: string,
+  target: string,
+  targetQuoted: boolean,
+): number {
   const source = objective.replace(GOAL_URL_PATTERN, " ");
   // ponytail: Only these exact prose forms are excluded; quote ambiguous bare filenames for exact proof.
-  const prose = source.replace(GOAL_QUOTED_PATTERN, " ")
-    .replace(/(?<![A-Za-z0-9_.\\/-])version\s+\d+(?:\.\d+)+(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu, " ")
-    .replace(/(?<![A-Za-z0-9_.\\/-])for\s+Node\.js(?!\s+compatibility\.[A-Za-z0-9])(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))|(?<![A-Za-z0-9_.\\/-])Node\.js\s+compatibility(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu, " ");
+  const prose = source
+    .replace(GOAL_QUOTED_PATTERN, " ")
+    .replace(
+      /(?<![A-Za-z0-9_.\\/-])version\s+\d+(?:\.\d+)+(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu,
+      " ",
+    )
+    .replace(
+      /(?<![A-Za-z0-9_.\\/-])for\s+Node\.js(?!\s+compatibility\.[A-Za-z0-9])(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))|(?<![A-Za-z0-9_.\\/-])Node\.js\s+compatibility(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu,
+      " ",
+    );
   const mentions = new Set<string>();
   const add = (raw: string, quoted = false): void => {
     const normalized = normalizeGoalFileMention(raw, cwd, quoted);
@@ -446,17 +626,25 @@ function countGoalTargetFiles(objective: string, cwd: string, target: string, ta
 }
 
 /** Captures one explicit output path so goal completion can verify its creation or modification. */
-export async function inferGoalVerification(objective: string, cwd: string): Promise<GoalFileVerification | undefined> {
+export async function inferGoalVerification(
+  objective: string,
+  cwd: string,
+): Promise<GoalFileVerification | undefined> {
   const candidates: Array<{ raw: string; quoted: boolean }> = [];
-  const destination = /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b\s+(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
+  const destination =
+    /\b(?:create|write|save|generate)\b[^\r\n]{0,160}?\b(?:file|document|markdown|report|spreadsheet|presentation|image)\b\s+(?:to|at|as|destination(?:\s+is)?|output(?:\s+(?:to|at))?)\b\s*(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z]:\\[^\s,;]+|\/[^\s,;]+))/giu;
   for (const match of objective.matchAll(destination)) {
     const quoted = match[1] ?? match[2] ?? match[3];
     candidates.push({
-      raw: quoted !== undefined ? quoted : stripUnquotedPathPunctuation((match[4] ?? "").trim()),
+      raw:
+        quoted !== undefined
+          ? quoted
+          : stripUnquotedPathPunctuation((match[4] ?? "").trim()),
       quoted: quoted !== undefined,
     });
   }
-  const direct = /\b(?:create|update|edit|fix|refactor|migrate)\s+(`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)')/giu;
+  const direct =
+    /\b(?:create|update|edit|fix|refactor|migrate)\s+(`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)')/giu;
   for (const match of objective.matchAll(direct)) {
     const quoted = match[2] ?? match[3] ?? match[4];
     if (quoted !== undefined) candidates.push({ raw: quoted, quoted: true });
@@ -466,12 +654,17 @@ export async function inferGoalVerification(objective: string, cwd: string): Pro
   for (const candidate of candidates) {
     const value = candidate.raw.trim();
     if (!value || /\p{Cc}/u.test(value)) continue;
-    const alreadyAbsolute = path.isAbsolute(value) || path.win32.isAbsolute(value);
+    const alreadyAbsolute =
+      path.isAbsolute(value) || path.win32.isAbsolute(value);
     if (!alreadyAbsolute && URL.canParse(value)) continue;
     const absolute = absoluteGoalFilePath(value, cwd);
     const identity = goalPathIdentity(absolute);
     operands.add(identity);
-    if (!isPathShapedGoalCandidate(candidate.raw) || !isAbsoluteFilePath(absolute)) continue;
+    if (
+      !isPathShapedGoalCandidate(candidate.raw) ||
+      !isAbsoluteFilePath(absolute)
+    )
+      continue;
     const existing = resolved.get(identity);
     resolved.set(identity, {
       filePath: existing?.filePath ?? absolute,
@@ -480,45 +673,74 @@ export async function inferGoalVerification(objective: string, cwd: string): Pro
   }
   if (operands.size !== 1 || resolved.size !== 1) return undefined;
   const target = resolved.values().next().value;
-  if (target === undefined || countGoalTargetFiles(objective, cwd, target.filePath, target.quoted) > 1) return undefined;
-  return { kind: "file", path: target.filePath, baseline: await captureGoalFileBaseline(target.filePath) };
+  if (
+    target === undefined ||
+    countGoalTargetFiles(objective, cwd, target.filePath, target.quoted) > 1
+  )
+    return undefined;
+  return {
+    kind: "file",
+    path: target.filePath,
+    baseline: await captureGoalFileBaseline(target.filePath),
+  };
 }
 
-export async function verifyGoalDeliverable(verification: GoalFileVerification): Promise<void> {
+export async function verifyGoalDeliverable(
+  verification: GoalFileVerification,
+): Promise<void> {
   let artifact: Stats;
   try {
     artifact = await lstat(verification.path);
   } catch {
-    throw new Error(`Goal deliverable is not a regular file at the required path: ${verification.path}`);
+    throw new Error(
+      `Goal deliverable is not a regular file at the required path: ${verification.path}`,
+    );
   }
   if (!artifact.isFile()) {
-    throw new Error(`Goal deliverable is not a regular file at the required path: ${verification.path}`);
+    throw new Error(
+      `Goal deliverable is not a regular file at the required path: ${verification.path}`,
+    );
   }
   if (!verification.baseline.exists) return;
   if (verification.baseline.contentHash === null) {
-    throw new Error(`Goal deliverable content cannot be verified: ${verification.path}`);
+    throw new Error(
+      `Goal deliverable content cannot be verified: ${verification.path}`,
+    );
   }
   if (verification.baseline.contentHash !== undefined) {
     const current = await captureGoalFileBaseline(verification.path);
     if (!current.exists || current.contentHash === null) {
-      throw new Error(`Goal deliverable content cannot be verified: ${verification.path}`);
+      throw new Error(
+        `Goal deliverable content cannot be verified: ${verification.path}`,
+      );
     }
     if (current.contentHash === verification.baseline.contentHash) {
-      throw new Error(`Goal deliverable has not changed since the goal started: ${verification.path}`);
+      throw new Error(
+        `Goal deliverable has not changed since the goal started: ${verification.path}`,
+      );
     }
   }
-  if (verification.baseline.contentHash === undefined
-    && artifact.size === verification.baseline.size
-    && artifact.mtimeMs === verification.baseline.mtimeMs) {
-    throw new Error(`Goal deliverable has not changed since the goal started: ${verification.path}`);
+  if (
+    verification.baseline.contentHash === undefined &&
+    artifact.size === verification.baseline.size &&
+    artifact.mtimeMs === verification.baseline.mtimeMs
+  ) {
+    throw new Error(
+      `Goal deliverable has not changed since the goal started: ${verification.path}`,
+    );
   }
 }
 
 /** Truncates safe text to `limit` code points without splitting a grapheme cluster. */
-export function boundGoalText(value: string, limit = GOAL_EVIDENCE_LIMIT): string {
+export function boundGoalText(
+  value: string,
+  limit = GOAL_EVIDENCE_LIMIT,
+): string {
   let remaining = limit;
   let bounded = "";
-  for (const { segment } of graphemeSegmenter.segment(safeTerminalText(value).trim())) {
+  for (const { segment } of graphemeSegmenter.segment(
+    safeTerminalText(value).trim(),
+  )) {
     remaining -= codePointCount(segment);
     if (remaining < 0) break;
     bounded += segment;
@@ -529,11 +751,14 @@ export function boundGoalText(value: string, limit = GOAL_EVIDENCE_LIMIT): strin
 export function validateGoalObjective(input: string): string | undefined {
   const objective = input.trim();
   if (!objective || safeTerminalText(objective) !== objective) return undefined;
-  return codePointCount(objective) <= GOAL_OBJECTIVE_LIMIT ? objective : undefined;
+  return codePointCount(objective) <= GOAL_OBJECTIVE_LIMIT
+    ? objective
+    : undefined;
 }
 
 export function goalElapsedMilliseconds(state: GoalState, now: number): number {
-  const activeInterval = state.status === "active" ? Math.max(0, now - state.activeStartedAt) : 0;
+  const activeInterval =
+    state.status === "active" ? Math.max(0, now - state.activeStartedAt) : 0;
   return addGoalMilliseconds(state.activeMilliseconds, activeInterval);
 }
 
@@ -548,20 +773,36 @@ function commonGoalState(state: GoalState): GoalStateCommon {
     turns: state.turns,
     blockedAuditStartTurn: state.blockedAuditStartTurn,
     baselineTokens: state.baselineTokens,
-    ...(state.verification === undefined ? {} : { verification: state.verification }),
+    ...(state.verification === undefined
+      ? {}
+      : { verification: state.verification }),
     ...(state.maxTurns === undefined ? {} : { maxTurns: state.maxTurns }),
     ...(state.turnPhase === undefined ? {} : { turnPhase: state.turnPhase }),
-    ...(state.turnDecision === undefined ? {} : { turnDecision: state.turnDecision }),
-    ...(state.lastDecision === undefined ? {} : { lastDecision: state.lastDecision }),
-    ...(state.lastContinueReport === undefined ? {} : { lastContinueReport: state.lastContinueReport }),
-    ...(state.status === "paused" && state.stopReason !== undefined ? { stopReason: state.stopReason } : {}),
+    ...(state.turnDecision === undefined
+      ? {}
+      : { turnDecision: state.turnDecision }),
+    ...(state.lastDecision === undefined
+      ? {}
+      : { lastDecision: state.lastDecision }),
+    ...(state.lastContinueReport === undefined
+      ? {}
+      : { lastContinueReport: state.lastContinueReport }),
+    ...(state.status === "paused" && state.stopReason !== undefined
+      ? { stopReason: state.stopReason }
+      : {}),
   };
 }
 
 function stopGoalClock(state: GoalState, now: number): GoalStateCommon {
   const common = commonGoalState(state);
   return state.status === "active"
-    ? { ...common, activeMilliseconds: addGoalMilliseconds(common.activeMilliseconds, Math.max(0, now - state.activeStartedAt)) }
+    ? {
+        ...common,
+        activeMilliseconds: addGoalMilliseconds(
+          common.activeMilliseconds,
+          Math.max(0, now - state.activeStartedAt),
+        ),
+      }
     : common;
 }
 
@@ -601,15 +842,22 @@ export function beginGoalTurnState(
   current: Extract<GoalState, { status: "active" }>,
   now: number,
 ): Extract<GoalState, { status: "active" }> {
-  if (!incrementableNonNegativeInteger(current.turns)) throw new Error("Goal turn counter cannot advance safely");
-  const { turnDecision: _decision, turnPhase: _phase, ...withoutPending } = current;
+  if (!incrementableNonNegativeInteger(current.turns))
+    throw new Error("Goal turn counter cannot advance safely");
+  const {
+    turnDecision: _decision,
+    turnPhase: _phase,
+    ...withoutPending
+  } = current;
   return {
     ...withoutPending,
     revision: nextRevision(current),
     turns: current.turns + 1,
     updatedAt: now,
     turnPhase: "in-flight",
-    ...(current.turnDecision === undefined ? {} : { lastDecision: current.turnDecision }),
+    ...(current.turnDecision === undefined
+      ? {}
+      : { lastDecision: current.turnDecision }),
   };
 }
 
@@ -624,7 +872,9 @@ export function checkpointActiveGoalState(
     updatedAt: now,
     activeStartedAt: now,
     ...(current.result === undefined ? {} : { result: current.result }),
-    ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
+    ...(current.blockerAudit === undefined
+      ? {}
+      : { blockerAudit: current.blockerAudit }),
   };
 }
 
@@ -635,20 +885,30 @@ export function pauseGoalState(
   hold?: GoalTurnHold,
 ): GoalState {
   const common = stopGoalClock(current, now);
-  const { turnDecision: _decision, turnPhase: _phase, ...withoutPending } = common;
+  const {
+    turnDecision: _decision,
+    turnPhase: _phase,
+    ...withoutPending
+  } = common;
   return {
     ...withoutPending,
     status: "paused",
     turnPhase: hold ? current.turnPhase : "ready",
-    ...(hold && current.turnDecision !== undefined ? { turnDecision: current.turnDecision } : {}),
+    ...(hold && current.turnDecision !== undefined
+      ? { turnDecision: current.turnDecision }
+      : {}),
     ...(result === undefined ? {} : { result }),
     ...(result === undefined ? {} : { stopReason: boundGoalText(result) }),
-    ...(current.blockerAudit === undefined ? {} : { blockerAudit: current.blockerAudit }),
-    ...(hold === "manual-compaction" ? { resumeAfterManualCompaction: true as const } : {}),
+    ...(current.blockerAudit === undefined
+      ? {}
+      : { blockerAudit: current.blockerAudit }),
+    ...(hold === "manual-compaction"
+      ? { resumeAfterManualCompaction: true as const }
+      : {}),
   };
 }
 
-export function checkpointPausedGoalState(
+export function checkpointWithoutManualRecovery(
   current: Extract<GoalState, { status: "paused" }>,
   now: number,
 ): GoalState {
@@ -661,7 +921,8 @@ export function recordGoalDecision(
   decision: GoalPendingDecision,
   now: number,
 ): Extract<GoalState, { status: "active" }> {
-  if (decision.turn !== state.turns) throw new Error("Goal decision does not match the active turn");
+  if (decision.turn !== state.turns)
+    throw new Error("Goal decision does not match the active turn");
   return {
     ...state,
     revision: nextRevision(state),
@@ -670,7 +931,13 @@ export function recordGoalDecision(
     turnDecision: decision,
     lastDecision: decision,
     ...(decision.kind === "continue"
-      ? { lastContinueReport: { turn: decision.turn, evidence: decision.evidence, nextAction: decision.nextAction } }
+      ? {
+          lastContinueReport: {
+            turn: decision.turn,
+            evidence: decision.evidence,
+            nextAction: decision.nextAction,
+          },
+        }
       : {}),
   };
 }
@@ -700,8 +967,17 @@ export function editGoalState(
     ...(verification === undefined ? {} : { verification }),
   };
   return current.status === "active"
-    ? { ...common, status: "active", activeStartedAt: current.activeStartedAt, ...(current.result === undefined ? {} : { result: current.result }) }
-    : { ...common, status: "paused", ...(current.result === undefined ? {} : { result: current.result }) };
+    ? {
+        ...common,
+        status: "active",
+        activeStartedAt: current.activeStartedAt,
+        ...(current.result === undefined ? {} : { result: current.result }),
+      }
+    : {
+        ...common,
+        status: "paused",
+        ...(current.result === undefined ? {} : { result: current.result }),
+      };
 }
 
 export function transitionGoalState(
@@ -716,11 +992,21 @@ export function transitionGoalState(
     ...stopped,
     revision: nextRevision(stopped),
     updatedAt: now,
-    blockedAuditStartTurn: options.resetBlockedAudit ? stopped.turns : stopped.blockedAuditStartTurn,
+    blockedAuditStartTurn: options.resetBlockedAudit
+      ? stopped.turns
+      : stopped.blockedAuditStartTurn,
   };
-  const blockerAudit = options.resetBlockedAudit ? undefined : options.blockerAudit ?? current.blockerAudit;
-  const pending = options.resume === "next-turn" ? current.turnDecision : undefined;
-  const { turnDecision: _decision, turnPhase: _phase, stopReason: _stopReason, ...withoutPending } = common;
+  const blockerAudit = options.resetBlockedAudit
+    ? undefined
+    : (options.blockerAudit ?? current.blockerAudit);
+  const pending =
+    options.resume === "next-turn" ? current.turnDecision : undefined;
+  const {
+    turnDecision: _decision,
+    turnPhase: _phase,
+    stopReason: _stopReason,
+    ...withoutPending
+  } = common;
   switch (status) {
     case "active":
       return {
@@ -728,8 +1014,15 @@ export function transitionGoalState(
         ...(current.status === "blocked" ? { lastDecision: undefined } : {}),
         status,
         activeStartedAt: now,
-        turnPhase: pending !== undefined ? "authorized" : options.resume === "same-turn" ? "in-flight" : "ready",
-        ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
+        turnPhase:
+          pending !== undefined
+            ? "authorized"
+            : options.resume === "same-turn"
+              ? "in-flight"
+              : "ready",
+        ...(options.maxTurns === undefined
+          ? {}
+          : { maxTurns: options.maxTurns }),
         ...(pending === undefined ? {} : { turnDecision: pending }),
         ...(blockerAudit === undefined ? {} : { blockerAudit }),
       };
@@ -738,27 +1031,39 @@ export function transitionGoalState(
         ...withoutPending,
         status,
         turnPhase: options.hold ? current.turnPhase : "ready",
-        ...(options.hold && current.turnDecision !== undefined ? { turnDecision: current.turnDecision } : {}),
-        ...(result === undefined ? {} : { result, stopReason: boundGoalText(result) }),
+        ...(options.hold && current.turnDecision !== undefined
+          ? { turnDecision: current.turnDecision }
+          : {}),
+        ...(result === undefined
+          ? {}
+          : { result, stopReason: boundGoalText(result) }),
         ...(blockerAudit === undefined ? {} : { blockerAudit }),
-        ...(options.hold === "manual-compaction" ? { resumeAfterManualCompaction: true } : {}),
+        ...(options.hold === "manual-compaction"
+          ? { resumeAfterManualCompaction: true }
+          : {}),
       };
     case "blocked":
-      if (result === undefined) throw new Error("A blocked goal requires a result");
+      if (result === undefined)
+        throw new Error("A blocked goal requires a result");
       return {
         ...withoutPending,
         status,
         result,
-        ...(options.decision === undefined ? {} : { lastDecision: options.decision }),
+        ...(options.decision === undefined
+          ? {}
+          : { lastDecision: options.decision }),
         ...(blockerAudit === undefined ? {} : { blockerAudit }),
       };
     case "complete":
-      if (result === undefined) throw new Error("A complete goal requires a result");
+      if (result === undefined)
+        throw new Error("A complete goal requires a result");
       return {
         ...withoutPending,
         status,
         result,
-        ...(options.decision === undefined ? {} : { lastDecision: options.decision }),
+        ...(options.decision === undefined
+          ? {}
+          : { lastDecision: options.decision }),
       };
   }
 }

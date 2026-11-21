@@ -1,6 +1,18 @@
 import { createReadStream, watch } from "node:fs";
 import { hasErrorCode } from "./errors.ts";
-import { decode, inspectWorktreeWithoutFilters, PassiveGitFailure, passiveWorktreeMode, passiveWorktreeSettings, readWorktreeFile, resolvePassiveHead, runPassiveGit, WORKTREE_CONTENT_LIMIT, type PassiveWorktreeFile as DirtyFile, type PassiveWorktreeSnapshot } from "./passive-git-status.ts";
+import {
+  decode,
+  inspectWorktreeWithoutFilters,
+  PassiveGitFailure,
+  passiveWorktreeMode,
+  passiveWorktreeSettings,
+  readWorktreeFile,
+  resolvePassiveHead,
+  runPassiveGit,
+  WORKTREE_CONTENT_LIMIT,
+  type PassiveWorktreeFile as DirtyFile,
+  type PassiveWorktreeSnapshot,
+} from "./passive-git-status.ts";
 import path from "node:path";
 import { createInflate } from "node:zlib";
 
@@ -10,18 +22,45 @@ export const MAX_RECEIPT_FILES = 20;
 const GIT_OBJECT_HEADER_LIMIT = 1_024;
 
 /** Every reason a receipt can record for missing change data; persisted receipts are checked against this list. */
-export const CHANGE_UNAVAILABLE_REASONS = ["not-git", "head-changed", "timeout", "too-large", "error"] as const satisfies readonly ("not-git" | "head-changed" | PassiveGitFailure["reason"])[];
-type ChangeUnavailableReason = typeof CHANGE_UNAVAILABLE_REASONS[number];
+export const CHANGE_UNAVAILABLE_REASONS = [
+  "not-git",
+  "head-changed",
+  "timeout",
+  "too-large",
+  "error",
+] as const satisfies readonly (
+  "not-git" | "head-changed" | PassiveGitFailure["reason"]
+)[];
+type ChangeUnavailableReason = (typeof CHANGE_UNAVAILABLE_REASONS)[number];
 
-/** HEAD moved during the response, for example because the agent committed. The dirty-file delta no longer describes the response. */
 class HeadChanged extends Error {}
 
 export type ChangedFile =
-  | { kind: "added" | "modified" | "deleted"; path: string; additions: number; deletions: number; detail?: "binary" | "mode" }
-  | { kind: "renamed"; path: string; previousPath: string; additions: number; deletions: number; detail?: "binary" | "mode" };
+  | {
+      kind: "added" | "modified" | "deleted";
+      path: string;
+      additions: number;
+      deletions: number;
+      detail?: "binary" | "mode";
+    }
+  | {
+      kind: "renamed";
+      path: string;
+      previousPath: string;
+      additions: number;
+      deletions: number;
+      detail?: "binary" | "mode";
+    };
 
 export type ChangeSummary =
-  | { state: "available"; totalFiles: number; additions: number; deletions: number; files: ChangedFile[]; omittedFiles: number }
+  | {
+      state: "available";
+      totalFiles: number;
+      additions: number;
+      deletions: number;
+      files: ChangedFile[];
+      omittedFiles: number;
+    }
   | { state: "unavailable"; reason: ChangeUnavailableReason };
 
 export interface ChangeReceiptCollection {
@@ -38,11 +77,22 @@ type Repository = {
   blobCacheBytes: number;
 };
 async function repository(cwd: string): Promise<Repository> {
-  const result = decode(await runPassiveGit(cwd, [
-    "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir", "--git-path", "objects",
-  ])).trimEnd().split(/\r?\n/u);
+  const result = decode(
+    await runPassiveGit(cwd, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--show-toplevel",
+      "--git-dir",
+      "--git-common-dir",
+      "--git-path",
+      "objects",
+    ]),
+  )
+    .trimEnd()
+    .split(/\r?\n/u);
   const [root, gitDirectory, commonDirectory, objectDirectory] = result;
-  if (!root || !gitDirectory || !commonDirectory || !objectDirectory) throw new PassiveGitFailure("error");
+  if (!root || !gitDirectory || !commonDirectory || !objectDirectory)
+    throw new PassiveGitFailure("error");
   return {
     root,
     gitDirectory,
@@ -67,31 +117,50 @@ const repositoryMonitors = new Map<string, RepositoryMonitor>();
 
 function discardMonitor(monitor: RepositoryMonitor): void {
   for (const watcher of monitor.watchers) watcher.close();
-  if (repositoryMonitors.get(monitor.repo.root) === monitor) repositoryMonitors.delete(monitor.repo.root);
+  if (repositoryMonitors.get(monitor.repo.root) === monitor)
+    repositoryMonitors.delete(monitor.repo.root);
 }
 
 function sameRepository(left: Repository, right: Repository): boolean {
-  return left.root === right.root
-    && left.gitDirectory === right.gitDirectory
-    && left.commonDirectory === right.commonDirectory
-    && left.objectDirectory === right.objectDirectory;
+  return (
+    left.root === right.root &&
+    left.gitDirectory === right.gitDirectory &&
+    left.commonDirectory === right.commonDirectory &&
+    left.objectDirectory === right.objectDirectory
+  );
 }
 
 function snapshot(repo: Repository): Promise<Snapshot> {
-  return inspectWorktreeWithoutFilters(repo.root, (args) => runPassiveGit(repo.root, args));
+  return inspectWorktreeWithoutFilters(repo.root, (args) =>
+    runPassiveGit(repo.root, args),
+  );
 }
 
-async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: readonly string[]): Promise<Snapshot | undefined> {
+async function snapshotKnownPaths(
+  repo: Repository,
+  baseline: Snapshot,
+  paths: readonly string[],
+): Promise<Snapshot | undefined> {
   const files = new Map<string, DirtyFile>();
   let totalBytes = 0;
   for (const filePath of paths) {
     const previous = baseline.files.get(filePath);
     if (!previous) return undefined;
     try {
-      const file = await readWorktreeFile(repo.root, filePath, WORKTREE_CONTENT_LIMIT - totalBytes);
+      const file = await readWorktreeFile(
+        repo.root,
+        filePath,
+        WORKTREE_CONTENT_LIMIT - totalBytes,
+      );
       totalBytes += file.content.length;
-      if (totalBytes > WORKTREE_CONTENT_LIMIT) throw new PassiveGitFailure("too-large");
-      files.set(filePath, { ...previous, mode: passiveWorktreeMode(file.mode, previous.indexMode, baseline), content: file.content, contentObjectId: undefined });
+      if (totalBytes > WORKTREE_CONTENT_LIMIT)
+        throw new PassiveGitFailure("too-large");
+      files.set(filePath, {
+        ...previous,
+        mode: passiveWorktreeMode(file.mode, previous.indexMode, baseline),
+        content: file.content,
+        contentObjectId: undefined,
+      });
     } catch (error) {
       if (!hasErrorCode(error, "ENOENT")) throw error;
       files.set(filePath, { ...previous, mode: undefined, content: undefined });
@@ -101,15 +170,30 @@ async function snapshotKnownPaths(repo: Repository, baseline: Snapshot, paths: r
 }
 
 function currentHead(repo: Repository): Promise<string> {
-  return resolvePassiveHead((args) => runPassiveGit(repo.root, args, { stdoutLimit: 4_096 }));
+  return resolvePassiveHead((args) =>
+    runPassiveGit(repo.root, args, { stdoutLimit: 4_096 }),
+  );
 }
 
 function observes(filePath: string, observedPaths: readonly string[]): boolean {
-  return observedPaths.includes(".") || observedPaths.some((observed) => filePath === observed || filePath.startsWith(`${observed}/`) || observed.startsWith(`${filePath}/`));
+  return (
+    observedPaths.includes(".") ||
+    observedPaths.some(
+      (observed) =>
+        filePath === observed ||
+        filePath.startsWith(`${observed}/`) ||
+        observed.startsWith(`${filePath}/`),
+    )
+  );
 }
 
-async function refreshSnapshot(monitor: RepositoryMonitor, observedPaths: readonly string[], current = monitor.snapshot): Promise<Snapshot> {
-  if (monitor.watchFailed || observedPaths.length > 200) return snapshot(monitor.repo);
+async function refreshSnapshot(
+  monitor: RepositoryMonitor,
+  observedPaths: readonly string[],
+  current = monitor.snapshot,
+): Promise<Snapshot> {
+  if (monitor.watchFailed || observedPaths.length > 200)
+    return snapshot(monitor.repo);
   if (observedPaths.length === 0) return current;
   const scoped = await snapshotKnownPaths(monitor.repo, current, observedPaths);
   if (!scoped) return snapshot(monitor.repo);
@@ -121,7 +205,10 @@ async function refreshSnapshot(monitor: RepositoryMonitor, observedPaths: readon
   return { ...scoped, files };
 }
 
-function createMonitor(repo: Repository, initialSnapshot: Snapshot): RepositoryMonitor {
+function createMonitor(
+  repo: Repository,
+  initialSnapshot: Snapshot,
+): RepositoryMonitor {
   const changedPaths = new Set<string>();
   const monitor: RepositoryMonitor = {
     changedPaths,
@@ -139,7 +226,9 @@ function createMonitor(repo: Repository, initialSnapshot: Snapshot): RepositoryM
     try {
       const watcher = watch(directory, options, callback);
       watcher.unref();
-      watcher.on("error", () => { monitor.watchFailed = true; });
+      watcher.on("error", () => {
+        monitor.watchFailed = true;
+      });
       monitor.watchers.push(watcher);
     } catch {
       monitor.watchFailed = true;
@@ -152,22 +241,32 @@ function createMonitor(repo: Repository, initialSnapshot: Snapshot): RepositoryM
     }
     const normalized = String(filename).replaceAll("\\", "/");
     if (normalized === ".git" || normalized.startsWith(".git/")) return;
-    changedPaths.add(event === "rename" ? path.posix.dirname(normalized) : normalized);
+    changedPaths.add(
+      event === "rename" ? path.posix.dirname(normalized) : normalized,
+    );
   });
   observe(repo.gitDirectory, {}, (_event, filename) => {
-    if (filename && String(filename).replaceAll("\\", "/") === "index") changedPaths.add(".");
+    if (filename && String(filename).replaceAll("\\", "/") === "index")
+      changedPaths.add(".");
   });
   return monitor;
 }
 
 function boundedBlobSize(value: string, limit: number): number {
   const size = Number(value);
-  if (!Number.isSafeInteger(size) || size > limit) throw new PassiveGitFailure("too-large");
+  if (!Number.isSafeInteger(size) || size > limit)
+    throw new PassiveGitFailure("too-large");
   return size;
 }
 
-async function looseBlob(objectDirectory: string, id: string, limit: number): Promise<Buffer | undefined> {
-  const source = createReadStream(path.join(objectDirectory, id.slice(0, 2), id.slice(2)));
+async function looseBlob(
+  objectDirectory: string,
+  id: string,
+  limit: number,
+): Promise<Buffer | undefined> {
+  const source = createReadStream(
+    path.join(objectDirectory, id.slice(0, 2), id.slice(2)),
+  );
   const inflater = createInflate();
   source.once("error", (error) => inflater.destroy(error));
   source.pipe(inflater);
@@ -181,23 +280,37 @@ async function looseBlob(objectDirectory: string, id: string, limit: number): Pr
       if (expectedSize === undefined) {
         const separator = data.indexOf(0);
         if (separator < 0) {
-          if (header.length + data.length > GIT_OBJECT_HEADER_LIMIT) throw new Error("invalid blob header");
-          header = header.length === 0 ? Buffer.from(data) : Buffer.concat([header, data]);
+          if (header.length + data.length > GIT_OBJECT_HEADER_LIMIT)
+            throw new Error("invalid blob header");
+          header =
+            header.length === 0
+              ? Buffer.from(data)
+              : Buffer.concat([header, data]);
           continue;
         }
-        if (header.length + separator > GIT_OBJECT_HEADER_LIMIT) throw new Error("invalid blob header");
-        const headerBytes = header.length === 0 ? data.subarray(0, separator) : Buffer.concat([header, data.subarray(0, separator)]);
+        if (header.length + separator > GIT_OBJECT_HEADER_LIMIT)
+          throw new Error("invalid blob header");
+        const headerBytes =
+          header.length === 0
+            ? data.subarray(0, separator)
+            : Buffer.concat([header, data.subarray(0, separator)]);
         const match = /^blob ([0-9]+)$/u.exec(headerBytes.toString("ascii"));
         if (!match) throw new Error("invalid blob");
         expectedSize = boundedBlobSize(match[1], limit);
         body = Buffer.alloc(expectedSize);
         data = data.subarray(separator + 1);
       }
-      if (!body || expectedSize === undefined || data.length > expectedSize - bodyBytes) throw new Error("invalid blob");
+      if (
+        !body ||
+        expectedSize === undefined ||
+        data.length > expectedSize - bodyBytes
+      )
+        throw new Error("invalid blob");
       data.copy(body, bodyBytes);
       bodyBytes += data.length;
     }
-    if (expectedSize === undefined || !body || bodyBytes !== expectedSize) throw new Error("invalid blob");
+    if (expectedSize === undefined || !body || bodyBytes !== expectedSize)
+      throw new Error("invalid blob");
     return body;
   } catch (error) {
     if (hasErrorCode(error, "ENOENT")) return undefined;
@@ -218,19 +331,27 @@ function cacheBlob(repo: Repository, id: string, content: Buffer): void {
   repo.blobCacheBytes += content.length;
 }
 
-async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<Map<string, Buffer>> {
+async function loadHeadBlobs(
+  repo: Repository,
+  ids: readonly string[],
+): Promise<Map<string, Buffer>> {
   const blobs = new Map<string, Buffer>();
   const missing: string[] = [];
   let blobBytes = 0;
   for (const id of new Set(ids)) {
     const cached = repo.blobCache.get(id);
     if (cached !== undefined) {
-      if (cached.length > WORKTREE_CONTENT_LIMIT - blobBytes) throw new PassiveGitFailure("too-large");
+      if (cached.length > WORKTREE_CONTENT_LIMIT - blobBytes)
+        throw new PassiveGitFailure("too-large");
       blobBytes += cached.length;
       blobs.set(id, cached);
       continue;
     }
-    const content = await looseBlob(repo.objectDirectory, id, WORKTREE_CONTENT_LIMIT - blobBytes);
+    const content = await looseBlob(
+      repo.objectDirectory,
+      id,
+      WORKTREE_CONTENT_LIMIT - blobBytes,
+    );
     if (content !== undefined) {
       blobBytes += content.length;
       blobs.set(id, content);
@@ -238,15 +359,26 @@ async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<
     } else missing.push(id);
   }
   if (missing.length > 0) {
-    const batchOutputLimit = WORKTREE_CONTENT_LIMIT + missing.reduce((total, id) => total + id.length + 32, 0);
-    const output = await runPassiveGit(repo.root, ["cat-file", "--batch"], { input: Buffer.from(`${missing.join("\n")}\n`), stdoutLimit: batchOutputLimit });
+    const batchOutputLimit =
+      WORKTREE_CONTENT_LIMIT +
+      missing.reduce((total, id) => total + id.length + 32, 0);
+    const output = await runPassiveGit(repo.root, ["cat-file", "--batch"], {
+      input: Buffer.from(`${missing.join("\n")}\n`),
+      stdoutLimit: batchOutputLimit,
+    });
     let offset = 0;
     for (const id of missing) {
       const headerEnd = output.indexOf(10, offset);
-      if (headerEnd < 0 || headerEnd - offset > GIT_OBJECT_HEADER_LIMIT) throw new Error("invalid batch blob");
-      const match = /^([0-9a-f]+) blob ([0-9]+)$/u.exec(output.subarray(offset, headerEnd).toString("ascii"));
+      if (headerEnd < 0 || headerEnd - offset > GIT_OBJECT_HEADER_LIMIT)
+        throw new Error("invalid batch blob");
+      const match = /^([0-9a-f]+) blob ([0-9]+)$/u.exec(
+        output.subarray(offset, headerEnd).toString("ascii"),
+      );
       if (!match || match[1] !== id) throw new Error("invalid batch blob");
-      const size = boundedBlobSize(match[2], WORKTREE_CONTENT_LIMIT - blobBytes);
+      const size = boundedBlobSize(
+        match[2],
+        WORKTREE_CONTENT_LIMIT - blobBytes,
+      );
       const start = headerEnd + 1;
       const end = start + size;
       if (output[end] !== 10) throw new Error("invalid batch body");
@@ -263,28 +395,42 @@ async function loadHeadBlobs(repo: Repository, ids: readonly string[]): Promise<
 
 type FileState = { mode: string; content: Buffer };
 
-function sameDirtyFile(left: DirtyFile | undefined, right: DirtyFile | undefined): boolean {
+function sameDirtyFile(
+  left: DirtyFile | undefined,
+  right: DirtyFile | undefined,
+): boolean {
   if (!left || !right) return left === right;
-  return left.headMode === right.headMode
-    && left.headObjectId === right.headObjectId
-    && left.indexMode === right.indexMode
-    && left.indexObjectId === right.indexObjectId
-    && left.mode === right.mode
-    && left.contentObjectId === right.contentObjectId
-    && (left.content && right.content ? left.content.equals(right.content) : left.content === right.content);
+  return (
+    left.headMode === right.headMode &&
+    left.headObjectId === right.headObjectId &&
+    left.indexMode === right.indexMode &&
+    left.indexObjectId === right.indexObjectId &&
+    left.mode === right.mode &&
+    left.contentObjectId === right.contentObjectId &&
+    (left.content && right.content
+      ? left.content.equals(right.content)
+      : left.content === right.content)
+  );
 }
 
 function lines(content: Buffer): string[] {
-  return (content.toString("latin1").match(/[^\n]*\n|[^\n]+$/gu) ?? [])
-    .map((line) => line.endsWith("\r\n") ? `${line.slice(0, -2)}\n` : line);
+  return (content.toString("latin1").match(/[^\n]*\n|[^\n]+$/gu) ?? []).map(
+    (line) => (line.endsWith("\r\n") ? `${line.slice(0, -2)}\n` : line),
+  );
 }
 
-function sameFileState(left: FileState | undefined, right: FileState | undefined): boolean {
+function sameFileState(
+  left: FileState | undefined,
+  right: FileState | undefined,
+): boolean {
   if (!left || !right) return left === right;
   return left.mode === right.mode && left.content.equals(right.content);
 }
 
-function lineDelta(before: Buffer, after: Buffer): { additions: number; deletions: number } {
+function lineDelta(
+  before: Buffer,
+  after: Buffer,
+): { additions: number; deletions: number } {
   const left = lines(before);
   const right = lines(after);
   const maximum = left.length + right.length;
@@ -294,17 +440,25 @@ function lineDelta(before: Buffer, after: Buffer): { additions: number; deletion
     const next = new Map<number, number>();
     for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
       operations += 1;
-      if (operations > MAX_DIFF_OPERATIONS) throw new PassiveGitFailure("too-large");
-      let x = diagonal === -distance || diagonal !== distance && (frontier.get(diagonal - 1) ?? -1) < (frontier.get(diagonal + 1) ?? -1)
-        ? frontier.get(diagonal + 1) ?? 0
-        : (frontier.get(diagonal - 1) ?? 0) + 1;
+      if (operations > MAX_DIFF_OPERATIONS)
+        throw new PassiveGitFailure("too-large");
+      let x =
+        diagonal === -distance ||
+        (diagonal !== distance &&
+          (frontier.get(diagonal - 1) ?? -1) <
+            (frontier.get(diagonal + 1) ?? -1))
+          ? (frontier.get(diagonal + 1) ?? 0)
+          : (frontier.get(diagonal - 1) ?? 0) + 1;
       let y = x - diagonal;
       while (x < left.length && y < right.length && left[x] === right[y]) {
         x += 1;
         y += 1;
       }
       if (x >= left.length && y >= right.length) {
-        return { additions: (distance + right.length - left.length) / 2, deletions: (distance + left.length - right.length) / 2 };
+        return {
+          additions: (distance + right.length - left.length) / 2,
+          deletions: (distance + left.length - right.length) / 2,
+        };
       }
       next.set(diagonal, x);
     }
@@ -328,31 +482,60 @@ function binarySimilarity(left: Buffer, right: Buffer): number {
 }
 
 // ponytail: fuzzy rename matching is quadratic up to 400 pairs; use Git's diff engine if larger rename batches matter.
-async function compare(repo: Repository, baseline: Snapshot, settlement: Snapshot): Promise<ChangeSummary> {
+async function compare(
+  repo: Repository,
+  baseline: Snapshot,
+  settlement: Snapshot,
+): Promise<ChangeSummary> {
   if (baseline.head !== settlement.head) throw new HeadChanged();
-  const paths = new Set([...baseline.files.keys(), ...settlement.files.keys()]
-    .filter((filePath) => !sameDirtyFile(baseline.files.get(filePath), settlement.files.get(filePath))));
+  const paths = new Set(
+    [...baseline.files.keys(), ...settlement.files.keys()].filter(
+      (filePath) =>
+        !sameDirtyFile(
+          baseline.files.get(filePath),
+          settlement.files.get(filePath),
+        ),
+    ),
+  );
   const ids = [...paths].flatMap((filePath) => {
-    const sources = [baseline.files.get(filePath), settlement.files.get(filePath)];
-    return sources.flatMap((source) => [source?.headObjectId, source?.indexObjectId, source?.contentObjectId].filter((id): id is string => Boolean(id)));
+    const sources = [
+      baseline.files.get(filePath),
+      settlement.files.get(filePath),
+    ];
+    return sources.flatMap((source) =>
+      [
+        source?.headObjectId,
+        source?.indexObjectId,
+        source?.contentObjectId,
+      ].filter((id): id is string => Boolean(id)),
+    );
   });
   const headBlobs = await loadHeadBlobs(repo, ids);
-  /** A path absent from one snapshot was clean there, so its HEAD entry from the other snapshot stands in. */
-  const unchanged = (fallback: DirtyFile | undefined): FileState | undefined => {
+  const cleanHeadState = (
+    fallback: DirtyFile | undefined,
+  ): FileState | undefined => {
     if (!fallback?.headMode || !fallback.headObjectId) return undefined;
     const content = headBlobs.get(fallback.headObjectId);
     if (!content) throw new Error("missing HEAD blob");
     return { mode: fallback.headMode, content };
   };
-  const current = (file: DirtyFile | undefined, fallback: DirtyFile | undefined): FileState | undefined => {
-    if (!file) return unchanged(fallback);
+  const current = (
+    file: DirtyFile | undefined,
+    fallback: DirtyFile | undefined,
+  ): FileState | undefined => {
+    if (!file) return cleanHeadState(fallback);
     if (!file.mode) return undefined;
-    const content = file.content ?? (file.contentObjectId ? headBlobs.get(file.contentObjectId) : undefined);
+    const content =
+      file.content ??
+      (file.contentObjectId ? headBlobs.get(file.contentObjectId) : undefined);
     if (!content) throw new Error("missing selected blob");
     return { mode: file.mode, content };
   };
-  const indexed = (file: DirtyFile | undefined, fallback: DirtyFile | undefined): FileState | undefined => {
-    if (!file) return unchanged(fallback);
+  const indexed = (
+    file: DirtyFile | undefined,
+    fallback: DirtyFile | undefined,
+  ): FileState | undefined => {
+    if (!file) return cleanHeadState(fallback);
     if (!file.indexMode || !file.indexObjectId) return undefined;
     const content = headBlobs.get(file.indexObjectId);
     if (!content) throw new Error("missing index blob");
@@ -360,7 +543,8 @@ async function compare(repo: Repository, baseline: Snapshot, settlement: Snapsho
   };
   const removed: Array<{ path: string; file: FileState }> = [];
   const added: Array<{ path: string; file: FileState }> = [];
-  const modified: Array<{ path: string; before: FileState; after: FileState }> = [];
+  const modified: Array<{ path: string; before: FileState; after: FileState }> =
+    [];
   for (const filePath of paths) {
     const beforeEntry = baseline.files.get(filePath);
     const afterEntry = settlement.files.get(filePath);
@@ -377,10 +561,17 @@ async function compare(repo: Repository, baseline: Snapshot, settlement: Snapsho
     else if (before && after) modified.push({ path: filePath, before, after });
   }
 
-  const renames = new Map<string, { path: string; file: FileState; additions: number; deletions: number }>();
+  const renames = new Map<
+    string,
+    { path: string; file: FileState; additions: number; deletions: number }
+  >();
   const consumedAdditions = new Set<string>();
   for (const oldFile of removed) {
-    const exact = added.find((candidate) => !consumedAdditions.has(candidate.path) && candidate.file.content.equals(oldFile.file.content));
+    const exact = added.find(
+      (candidate) =>
+        !consumedAdditions.has(candidate.path) &&
+        candidate.file.content.equals(oldFile.file.content),
+    );
     if (!exact) continue;
     renames.set(oldFile.path, { ...exact, additions: 0, deletions: 0 });
     consumedAdditions.add(exact.path);
@@ -389,15 +580,38 @@ async function compare(repo: Repository, baseline: Snapshot, settlement: Snapsho
     for (const oldFile of removed) {
       if (renames.has(oldFile.path)) continue;
       const oldIsBinary = isBinary(oldFile.file.content);
-      let best: { path: string; file: FileState; additions: number; deletions: number; score: number } | undefined;
+      let best:
+        | {
+            path: string;
+            file: FileState;
+            additions: number;
+            deletions: number;
+            score: number;
+          }
+        | undefined;
       for (const candidate of added) {
-        if (consumedAdditions.has(candidate.path) || isBinary(candidate.file.content) !== oldIsBinary) continue;
-        const delta = oldIsBinary ? { additions: 0, deletions: 0 } : lineDelta(oldFile.file.content, candidate.file.content);
+        if (
+          consumedAdditions.has(candidate.path) ||
+          isBinary(candidate.file.content) !== oldIsBinary
+        )
+          continue;
+        const delta = oldIsBinary
+          ? { additions: 0, deletions: 0 }
+          : lineDelta(oldFile.file.content, candidate.file.content);
         const score = oldIsBinary
           ? binarySimilarity(oldFile.file.content, candidate.file.content)
-          : (lines(oldFile.file.content).length + lines(candidate.file.content).length - delta.additions - delta.deletions)
-            / (2 * Math.max(lines(oldFile.file.content).length, lines(candidate.file.content).length, 1));
-        if (score >= 0.5 && (!best || score > best.score)) best = { ...candidate, ...delta, score };
+          : (lines(oldFile.file.content).length +
+              lines(candidate.file.content).length -
+              delta.additions -
+              delta.deletions) /
+            (2 *
+              Math.max(
+                lines(oldFile.file.content).length,
+                lines(candidate.file.content).length,
+                1,
+              ));
+        if (score >= 0.5 && (!best || score > best.score))
+          best = { ...candidate, ...delta, score };
       }
       if (!best) continue;
       renames.set(oldFile.path, best);
@@ -409,30 +623,81 @@ async function compare(repo: Repository, baseline: Snapshot, settlement: Snapsho
   for (const oldFile of removed) {
     const rename = renames.get(oldFile.path);
     if (rename) {
-      const binary = isBinary(oldFile.file.content) || isBinary(rename.file.content);
-      changes.push({ kind: "renamed", path: rename.path, previousPath: oldFile.path, additions: rename.additions, deletions: rename.deletions, ...(binary ? { detail: "binary" as const } : oldFile.file.mode !== rename.file.mode && rename.additions === 0 && rename.deletions === 0 ? { detail: "mode" as const } : {}) });
+      const binary =
+        isBinary(oldFile.file.content) || isBinary(rename.file.content);
+      changes.push({
+        kind: "renamed",
+        path: rename.path,
+        previousPath: oldFile.path,
+        additions: rename.additions,
+        deletions: rename.deletions,
+        ...(binary
+          ? { detail: "binary" as const }
+          : oldFile.file.mode !== rename.file.mode &&
+              rename.additions === 0 &&
+              rename.deletions === 0
+            ? { detail: "mode" as const }
+            : {}),
+      });
       continue;
     }
     const binary = isBinary(oldFile.file.content);
-    changes.push({ kind: "deleted", path: oldFile.path, additions: 0, deletions: binary ? 0 : lines(oldFile.file.content).length, ...(binary ? { detail: "binary" as const } : {}) });
+    changes.push({
+      kind: "deleted",
+      path: oldFile.path,
+      additions: 0,
+      deletions: binary ? 0 : lines(oldFile.file.content).length,
+      ...(binary ? { detail: "binary" as const } : {}),
+    });
   }
   for (const newFile of added) {
     if (consumedAdditions.has(newFile.path)) continue;
     const binary = isBinary(newFile.file.content);
-    changes.push({ kind: "added", path: newFile.path, additions: binary ? 0 : lines(newFile.file.content).length, deletions: 0, ...(binary ? { detail: "binary" as const } : {}) });
+    changes.push({
+      kind: "added",
+      path: newFile.path,
+      additions: binary ? 0 : lines(newFile.file.content).length,
+      deletions: 0,
+      ...(binary ? { detail: "binary" as const } : {}),
+    });
   }
   for (const file of modified) {
-    const binary = isBinary(file.before.content) || isBinary(file.after.content);
-    const delta = binary || file.before.content.equals(file.after.content) ? { additions: 0, deletions: 0 } : lineDelta(file.before.content, file.after.content);
-    changes.push({ kind: "modified", path: file.path, ...delta, ...(binary ? { detail: "binary" as const } : file.before.mode !== file.after.mode && file.before.content.equals(file.after.content) ? { detail: "mode" as const } : {}) });
+    const binary =
+      isBinary(file.before.content) || isBinary(file.after.content);
+    const delta =
+      binary || file.before.content.equals(file.after.content)
+        ? { additions: 0, deletions: 0 }
+        : lineDelta(file.before.content, file.after.content);
+    changes.push({
+      kind: "modified",
+      path: file.path,
+      ...delta,
+      ...(binary
+        ? { detail: "binary" as const }
+        : file.before.mode !== file.after.mode &&
+            file.before.content.equals(file.after.content)
+          ? { detail: "mode" as const }
+          : {}),
+    });
   }
-  changes.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  changes.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
   const additions = changes.reduce((total, file) => total + file.additions, 0);
   const deletions = changes.reduce((total, file) => total + file.deletions, 0);
-  return { state: "available", totalFiles: changes.length, additions, deletions, files: changes.slice(0, MAX_RECEIPT_FILES), omittedFiles: Math.max(0, changes.length - MAX_RECEIPT_FILES) };
+  return {
+    state: "available",
+    totalFiles: changes.length,
+    additions,
+    deletions,
+    files: changes.slice(0, MAX_RECEIPT_FILES),
+    omittedFiles: Math.max(0, changes.length - MAX_RECEIPT_FILES),
+  };
 }
 
-export async function beginChangeReceipt(cwd: string): Promise<ChangeReceiptCollection> {
+export async function beginChangeReceipt(
+  cwd: string,
+): Promise<ChangeReceiptCollection> {
   try {
     let repo = await repository(cwd);
     let monitor = repositoryMonitors.get(repo.root);
@@ -454,10 +719,12 @@ export async function beginChangeReceipt(cwd: string): Promise<ChangeReceiptColl
         currentHead(repo),
         passiveWorktreeSettings((args) => runPassiveGit(repo.root, args)),
       ]);
-      monitor.snapshot = head !== monitor.snapshot.head
-        || settings.fileMode !== monitor.snapshot.fileMode || settings.symlinks !== monitor.snapshot.symlinks
-        ? await snapshot(repo)
-        : await refreshSnapshot(monitor, idleChanges);
+      monitor.snapshot =
+        head !== monitor.snapshot.head ||
+        settings.fileMode !== monitor.snapshot.fileMode ||
+        settings.symlinks !== monitor.snapshot.symlinks
+          ? await snapshot(repo)
+          : await refreshSnapshot(monitor, idleChanges);
     } catch (error) {
       discardMonitor(monitor);
       throw error;
@@ -475,15 +742,28 @@ export async function beginChangeReceipt(cwd: string): Promise<ChangeReceiptColl
           while (monitor.changedPaths.size > 0) {
             const observedPaths = [...monitor.changedPaths];
             monitor.changedPaths.clear();
-            settlement = await refreshSnapshot(monitor, observedPaths, settlement);
+            settlement = await refreshSnapshot(
+              monitor,
+              observedPaths,
+              settlement,
+            );
           }
-          if (await currentHead(repo) !== baseline.head) throw new HeadChanged();
+          if ((await currentHead(repo)) !== baseline.head)
+            throw new HeadChanged();
           const summary = await compare(repo, baseline, settlement);
           monitor.snapshot = settlement;
           return summary;
         } catch (error) {
           discardMonitor(monitor);
-          return { state: "unavailable", reason: error instanceof HeadChanged ? "head-changed" : error instanceof PassiveGitFailure ? error.reason : "error" };
+          return {
+            state: "unavailable",
+            reason:
+              error instanceof HeadChanged
+                ? "head-changed"
+                : error instanceof PassiveGitFailure
+                  ? error.reason
+                  : "error",
+          };
         } finally {
           monitor.inUse = false;
         }
@@ -494,10 +774,17 @@ export async function beginChangeReceipt(cwd: string): Promise<ChangeReceiptColl
       },
     };
   } catch (error) {
-    const reason = error instanceof PassiveGitFailure && decode(error.stderr).includes("not a git repository")
-      ? "not-git" as const
-      : error instanceof PassiveGitFailure ? error.reason : "error";
-    return { finish: async () => ({ state: "unavailable", reason }), dispose: async () => undefined };
+    const reason =
+      error instanceof PassiveGitFailure &&
+      decode(error.stderr).includes("not a git repository")
+        ? ("not-git" as const)
+        : error instanceof PassiveGitFailure
+          ? error.reason
+          : "error";
+    return {
+      finish: async () => ({ state: "unavailable", reason }),
+      dispose: async () => undefined,
+    };
   }
 }
 

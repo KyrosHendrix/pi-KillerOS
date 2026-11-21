@@ -5,15 +5,21 @@ import { safeTerminalText } from "./safe-terminal-text.ts";
 /** Formats a terminal-safe, single-line project path with home abbreviation. */
 export function formatCwd(cwd: string): string {
   const safeCwd = safeTerminalText(cwd).replaceAll("\n", "");
-  const home = safeTerminalText(process.env.HOME || process.env.USERPROFILE || os.homedir()).replaceAll("\n", "");
+  const home = safeTerminalText(
+    process.env.HOME || process.env.USERPROFILE || os.homedir(),
+  ).replaceAll("\n", "");
   if (!home) return safeCwd;
   const normalizedHome = home.replace(/[\\/]+$/, "");
   const normalizedCwd = safeCwd.replace(/[\\/]+$/, "");
   const comparedHome = normalizedHome.toLowerCase();
   const comparedCwd = normalizedCwd.toLowerCase();
   if (comparedCwd === comparedHome) return "~";
-  const separator = normalizedCwd.slice(normalizedHome.length, normalizedHome.length + 1);
-  return comparedCwd.startsWith(comparedHome) && (separator === "/" || separator === "\\")
+  const separator = normalizedCwd.slice(
+    normalizedHome.length,
+    normalizedHome.length + 1,
+  );
+  return comparedCwd.startsWith(comparedHome) &&
+    (separator === "/" || separator === "\\")
     ? `~${normalizedCwd.slice(normalizedHome.length)}`
     : safeCwd;
 }
@@ -31,7 +37,8 @@ export function formatTime(milliseconds: number): string {
 
   const seconds = totalSeconds % 60;
   const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes}m ${seconds.toString().padStart(2, "0")}s`;
+  if (totalMinutes < 60)
+    return `${totalMinutes}m ${seconds.toString().padStart(2, "0")}s`;
 
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
@@ -53,10 +60,18 @@ export function formatTokens(value: number): string {
 }
 
 /** Resolves a lowercase model id for display, falling back to the name. */
-export function modelDisplayName(model: { name?: string; id?: string }): string {
-  const id = safeTerminalText(model.id ?? "").replaceAll("\n", "").trim();
+export function modelDisplayName(model: {
+  name?: string;
+  id?: string;
+}): string {
+  const id = safeTerminalText(model.id ?? "")
+    .replaceAll("\n", "")
+    .trim();
   if (id) return id.toLowerCase();
-  return safeTerminalText(model.name ?? "").replaceAll("\n", "").trim().toLowerCase();
+  return safeTerminalText(model.name ?? "")
+    .replaceAll("\n", "")
+    .trim()
+    .toLowerCase();
 }
 
 /** Colors a directory or branch label with KillerOS's fixed path accent. */

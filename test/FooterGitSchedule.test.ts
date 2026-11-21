@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { scheduleGitStatusFallback, scheduleGitStatusWatch } from "../killeros/footer.ts";
+import {
+  scheduleGitStatusFallback,
+  scheduleGitStatusWatch,
+} from "../killeros/footer.ts";
 
 // Footer Git timing runs on mocked timers so its exact boundaries are checked without wall-clock waits.
 // Footer.e2e.test.ts covers the installed watcher, scans, and rendering in real Pi.
 
-type WatchHarness = { change: () => void; fail: () => void; advance: (ms: number) => void; refreshes: () => number; stop: () => void; closed: () => boolean };
+type WatchHarness = {
+  change: () => void;
+  fail: () => void;
+  advance: (ms: number) => void;
+  refreshes: () => number;
+  stop: () => void;
+  closed: () => boolean;
+};
 
 function watchHarness(t: TestContext): WatchHarness {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
@@ -13,21 +23,43 @@ function watchHarness(t: TestContext): WatchHarness {
   let onError: (() => void) | undefined;
   let closed = false;
   let refreshes = 0;
-  const stop = scheduleGitStatusWatch("C:\\project", () => { refreshes++; }, (_cwd, changed, failed) => {
-    onChange = changed;
-    onError = failed;
-    return () => { closed = true; };
-  });
-  assert.ok(onChange && onError, "The watcher must subscribe to changes and errors");
+  const stop = scheduleGitStatusWatch(
+    "C:\\project",
+    () => {
+      refreshes++;
+    },
+    (_cwd, changed, failed) => {
+      onChange = changed;
+      onError = failed;
+      return () => {
+        closed = true;
+      };
+    },
+  );
+  assert.ok(
+    onChange && onError,
+    "The watcher must subscribe to changes and errors",
+  );
   // Mock timers start a timer scheduled inside a callback from the end of the current tick, so advance 1 ms at a time.
-  const advance = (ms: number): void => { for (let elapsed = 0; elapsed < ms; elapsed++) t.mock.timers.tick(1); };
-  return { change: onChange, fail: onError, advance, refreshes: () => refreshes, stop, closed: () => closed };
+  const advance = (ms: number): void => {
+    for (let elapsed = 0; elapsed < ms; elapsed++) t.mock.timers.tick(1);
+  };
+  return {
+    change: onChange,
+    fail: onError,
+    advance,
+    refreshes: () => refreshes,
+    stop,
+    closed: () => closed,
+  };
 }
 
 test("footer fallback rescans every 30 seconds until disposed", (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   let refreshes = 0;
-  const stop = scheduleGitStatusFallback(() => { refreshes++; });
+  const stop = scheduleGitStatusFallback(() => {
+    refreshes++;
+  });
   t.mock.timers.tick(29_999);
   assert.equal(refreshes, 0, "No fallback scan before 30 seconds");
   t.mock.timers.tick(1);
@@ -46,11 +78,23 @@ test("footer watch debounces a burst into one scan after 250 ms", (t) => {
   watch.change();
   watch.change();
   watch.advance(149);
-  assert.equal(watch.refreshes(), 0, "Changes inside the debounce window do not scan yet");
+  assert.equal(
+    watch.refreshes(),
+    0,
+    "Changes inside the debounce window do not scan yet",
+  );
   watch.advance(1);
-  assert.equal(watch.refreshes(), 1, "The burst scans once, 250 ms after its first change");
+  assert.equal(
+    watch.refreshes(),
+    1,
+    "The burst scans once, 250 ms after its first change",
+  );
   watch.advance(10_000);
-  assert.equal(watch.refreshes(), 1, "A burst without later changes scans only once");
+  assert.equal(
+    watch.refreshes(),
+    1,
+    "A burst without later changes scans only once",
+  );
 });
 
 test("footer watch throttles sustained changes to one scan per five seconds", (t) => {
@@ -61,13 +105,29 @@ test("footer watch throttles sustained changes to one scan per five seconds", (t
     watch.change();
     watch.advance(400);
   }
-  assert.equal(watch.refreshes(), 1, "One scan runs before the five-second cooldown ends");
+  assert.equal(
+    watch.refreshes(),
+    1,
+    "One scan runs before the five-second cooldown ends",
+  );
   watch.advance(299);
-  assert.equal(watch.refreshes(), 1, "Changes queued during the cooldown wait for it, then debounce again");
+  assert.equal(
+    watch.refreshes(),
+    1,
+    "Changes queued during the cooldown wait for it, then debounce again",
+  );
   watch.advance(1);
-  assert.equal(watch.refreshes(), 2, "Queued changes scan at 5,500 ms, 5.25 seconds after the first scan");
+  assert.equal(
+    watch.refreshes(),
+    2,
+    "Queued changes scan at 5,500 ms, 5.25 seconds after the first scan",
+  );
   watch.advance(10_000);
-  assert.equal(watch.refreshes(), 2, "Queued changes collapse into one later scan");
+  assert.equal(
+    watch.refreshes(),
+    2,
+    "Queued changes collapse into one later scan",
+  );
 });
 
 test("footer watch stops on watcher errors and on disposal", (t) => {
@@ -75,7 +135,11 @@ test("footer watch stops on watcher errors and on disposal", (t) => {
   failed.change();
   failed.fail();
   failed.advance(10_000);
-  assert.equal(failed.refreshes(), 0, "A watcher error cancels the pending scan");
+  assert.equal(
+    failed.refreshes(),
+    0,
+    "A watcher error cancels the pending scan",
+  );
   assert.ok(failed.closed(), "A watcher error closes the watcher");
   failed.change();
   failed.advance(10_000);

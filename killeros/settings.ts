@@ -1,13 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { linkSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { hasErrorCode } from "./errors.ts";
 import { isRecord } from "./guards.ts";
 
 export type KillerosSettings = Record<string, unknown>;
-type KillerosSettingsUpdate = Readonly<Record<string, unknown>>
-  | ((current: Readonly<KillerosSettings>) => Readonly<Record<string, unknown>>);
+type KillerosSettingsUpdate =
+  | Readonly<Record<string, unknown>>
+  | ((
+      current: Readonly<KillerosSettings>,
+    ) => Readonly<Record<string, unknown>>);
 
 interface KillerosSettingsStore {
   load(): KillerosSettings;
@@ -18,7 +29,8 @@ interface KillerosSettingsStore {
 function readStoredSettings(settingsPath: string): KillerosSettings {
   try {
     const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf8"));
-    if (!isRecord(parsed)) throw new Error("KillerOS settings must contain a JSON object");
+    if (!isRecord(parsed))
+      throw new Error("KillerOS settings must contain a JSON object");
     return parsed;
   } catch (error) {
     if (hasErrorCode(error, "ENOENT")) return {};
@@ -32,7 +44,13 @@ const LOCK_TIMEOUT_MILLISECONDS = 10_000;
 function readLockOwnerPid(lockPath: string): number | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(lockPath, "utf8"));
-    if (!isRecord(value) || typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0) return undefined;
+    if (
+      !isRecord(value) ||
+      typeof value.pid !== "number" ||
+      !Number.isSafeInteger(value.pid) ||
+      value.pid <= 0
+    )
+      return undefined;
     return value.pid;
   } catch {
     return undefined;
@@ -58,10 +76,16 @@ function moveLockAside(lockPath: string): boolean {
     } catch (error) {
       if (hasErrorCode(error, "ENOENT")) return false;
       if (
-        Date.now() >= deadline
-        || !["EACCES", "EBUSY", "EPERM"].some((code) => hasErrorCode(error, code))
-      ) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_MILLISECONDS);
+        Date.now() >= deadline ||
+        !["EACCES", "EBUSY", "EPERM"].some((code) => hasErrorCode(error, code))
+      )
+        throw error;
+      Atomics.wait(
+        new Int32Array(new SharedArrayBuffer(4)),
+        0,
+        0,
+        LOCK_RETRY_MILLISECONDS,
+      );
     }
   }
   rmSync(stalePath, { force: true });
@@ -78,7 +102,11 @@ function recoverSettingsLock(lockPath: string, expectedPid: number): boolean {
   }
   try {
     // Recheck under exclusive recovery ownership; another waiter may have replaced the lock.
-    return readLockOwnerPid(lockPath) === expectedPid && !isProcessRunning(expectedPid) && moveLockAside(lockPath);
+    return (
+      readLockOwnerPid(lockPath) === expectedPid &&
+      !isProcessRunning(expectedPid) &&
+      moveLockAside(lockPath)
+    );
   } finally {
     // ponytail: a crash during recovery leaves .recovery for manual removal; never steal it and risk lost writes.
     rmdirSync(recoveryPath);
@@ -89,7 +117,11 @@ function acquireSettingsLock(settingsPath: string): () => void {
   const lockPath = `${settingsPath}.lock`;
   const ownerPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
   const deadline = Date.now() + LOCK_TIMEOUT_MILLISECONDS;
-  writeFileSync(ownerPath, JSON.stringify({ pid: process.pid }), { encoding: "utf8", mode: 0o600, flag: "wx" });
+  writeFileSync(ownerPath, JSON.stringify({ pid: process.pid }), {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
   try {
     while (true) {
       try {
@@ -98,9 +130,22 @@ function acquireSettingsLock(settingsPath: string): () => void {
       } catch (error) {
         if (!hasErrorCode(error, "EEXIST")) throw error;
         const currentOwnerPid = readLockOwnerPid(lockPath);
-        if (currentOwnerPid && !isProcessRunning(currentOwnerPid) && recoverSettingsLock(lockPath, currentOwnerPid)) continue;
-        if (Date.now() >= deadline) throw new Error(`Timed out waiting for KillerOS settings lock: ${lockPath}`);
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_MILLISECONDS);
+        if (
+          currentOwnerPid &&
+          !isProcessRunning(currentOwnerPid) &&
+          recoverSettingsLock(lockPath, currentOwnerPid)
+        )
+          continue;
+        if (Date.now() >= deadline)
+          throw new Error(
+            `Timed out waiting for KillerOS settings lock: ${lockPath}`,
+          );
+        Atomics.wait(
+          new Int32Array(new SharedArrayBuffer(4)),
+          0,
+          0,
+          LOCK_RETRY_MILLISECONDS,
+        );
       }
     }
   } finally {

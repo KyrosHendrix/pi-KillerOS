@@ -1,13 +1,24 @@
 import { contentText } from "@earendil-works/pi-ai";
-import { BorderedLoader, convertToLlm, type ExtensionAPI, type ExtensionCommandContext, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
+import {
+  BorderedLoader,
+  convertToLlm,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  serializeConversation,
+  sessionEntryToContextMessages,
+} from "@earendil-works/pi-coding-agent";
 import { errorMessage, reportError } from "./errors.ts";
 import { readContextUsage } from "./pi-context.ts";
 import type { GoalRuntime, GoalState } from "./goal-model.ts";
-import { createKillerosSettingsStore, type KillerosSettings } from "./settings.ts";
+import {
+  createKillerosSettingsStore,
+  type KillerosSettings,
+} from "./settings.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 import { likelySecretCategory } from "./secret-detector.ts";
 
-const HANDOFF_UNAVAILABLE = "/handoff is not available while an agent or /goal is running.";
+const HANDOFF_UNAVAILABLE =
+  "/handoff is not available while an agent or /goal is running.";
 const HANDOFF_REQUEST_RESERVE_TOKENS = 1_024;
 /** Output-token budget with headroom for reasoning traces plus all ten sections. */
 const DEFAULT_HANDOFF_MAX_TOKENS = 8_192;
@@ -39,7 +50,10 @@ const HANDOFF_SYSTEM_PROMPT = [
   "Preserve sourceGoal.lastDecision, including its next action or blocker, and sourceGoal.deliverablePath when present. Transfer context only; do not activate a goal.",
   `Use exactly these second-level Markdown headings: ${HANDOFF_SECTIONS.slice(0, -1).join(", ")}, and ${HANDOFF_SECTIONS.at(-1)}.`,
 ].join("\n");
-type HandoffGoalSnapshot = Pick<GoalState, "objective" | "status" | "lastDecision"> & { deliverablePath?: string };
+type HandoffGoalSnapshot = Pick<
+  GoalState,
+  "objective" | "status" | "lastDecision"
+> & { deliverablePath?: string };
 
 type HandoffGenerationResult =
   | { kind: "summary"; summary: string }
@@ -57,7 +71,10 @@ function createHandoffRequest(
     sourceConversation: conversation,
     sourceGoal,
     requestedFocus: focus,
-    installedSkills: skills.map(({ name, description }) => ({ name, description })),
+    installedSkills: skills.map(({ name, description }) => ({
+      name,
+      description,
+    })),
   });
 }
 
@@ -68,7 +85,11 @@ function handoffDocument(summary: string): string {
 }
 
 /** Derives the destination name from the source, requested focus, or objective. */
-function sessionName(sourceName: string | undefined, focus: string, document: string): string {
+function sessionName(
+  sourceName: string | undefined,
+  focus: string,
+  document: string,
+): string {
   const cleanSourceName = safeTerminalText(sourceName ?? "").trim();
   if (cleanSourceName) return `${cleanSourceName} · handoff`;
   const objective = /^## Objective\s*\n+([^\n]+)/mu.exec(document)?.[1]?.trim();
@@ -77,16 +98,21 @@ function sessionName(sourceName: string | undefined, focus: string, document: st
   return `${shortBase || "Handoff"} · handoff`;
 }
 
-/** Names what makes generated output unsafe: credentials, or copied request or role framing. Never returns the matched text. */
 function unsafeHandoffOutput(summary: string): string | undefined {
   const secret = likelySecretCategory(summary);
   if (secret) return secret;
-  return /<\/?source-conversation>/iu.test(summary)
-    || /^[\t ]*(?:system|developer|assistant|user|tool)[\t ]*:/imu.test(summary)
-    || /^[\t ]*#{1,6}[\t ]+(?:system|developer|assistant|user|tool)\b/imu.test(summary)
-    || /<\|(?:system|developer|assistant|user|tool|im_start|im_end)\|>/iu.test(summary)
-    || /\[(?:system|developer|assistant|user|tool)\]/iu.test(summary)
-    || /["']role["'][\t ]*:[\t ]*["'](?:system|developer|assistant|user|tool)["']/iu.test(summary)
+  return /<\/?source-conversation>/iu.test(summary) ||
+    /^[\t ]*(?:system|developer|assistant|user|tool)[\t ]*:/imu.test(summary) ||
+    /^[\t ]*#{1,6}[\t ]+(?:system|developer|assistant|user|tool)\b/imu.test(
+      summary,
+    ) ||
+    /<\|(?:system|developer|assistant|user|tool|im_start|im_end)\|>/iu.test(
+      summary,
+    ) ||
+    /\[(?:system|developer|assistant|user|tool)\]/iu.test(summary) ||
+    /["']role["'][\t ]*:[\t ]*["'](?:system|developer|assistant|user|tool)["']/iu.test(
+      summary,
+    )
     ? "copied request or role framing"
     : undefined;
 }
@@ -101,12 +127,20 @@ function positiveIntOr(value: unknown, fallback: number): number {
 }
 
 /** Resolves the summary budget: explicit option first, then killeros.json, then the default. */
-function resolveHandoffMaxTokens(settings: Readonly<KillerosSettings>, override?: number): number {
-  return positiveIntOr(override, positiveIntOr(settings.handoffMaxTokens, DEFAULT_HANDOFF_MAX_TOKENS));
+function resolveHandoffMaxTokens(
+  settings: Readonly<KillerosSettings>,
+  override?: number,
+): number {
+  return positiveIntOr(
+    override,
+    positiveIntOr(settings.handoffMaxTokens, DEFAULT_HANDOFF_MAX_TOKENS),
+  );
 }
 
 /** Finds fenced code spans so `## ` lines inside them are not treated as headings. */
-function fencedCodeRanges(document: string): Array<{ start: number; end: number }> {
+function fencedCodeRanges(
+  document: string,
+): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
   let fenceStart: number | null = null;
   let fenceChar = "";
@@ -125,26 +159,36 @@ function fencedCodeRanges(document: string): Array<{ start: number; end: number 
       fenceStart = lineStart;
       fenceChar = marker[0];
       fenceLength = marker.length;
-    } else if (marker[0] === fenceChar && marker.length >= fenceLength && /^[ \t]*$/.test(rest)) {
+    } else if (
+      marker[0] === fenceChar &&
+      marker.length >= fenceLength &&
+      /^[ \t]*$/.test(rest)
+    ) {
       ranges.push({ start: fenceStart, end: lineEnd });
       fenceStart = null;
       fenceChar = "";
       fenceLength = 0;
     }
   }
-  if (fenceStart !== null) ranges.push({ start: fenceStart, end: document.length });
+  if (fenceStart !== null)
+    ranges.push({ start: fenceStart, end: document.length });
   return ranges;
 }
 
 /** Checks that the model returned every section needed to continue safely. */
-function hasRequiredHandoffContent(document: string, focus: string, sourceGoal?: HandoffGoalSnapshot): boolean {
+function hasRequiredHandoffContent(
+  document: string,
+  focus: string,
+  sourceGoal?: HandoffGoalSnapshot,
+): boolean {
   if (focus && !document.includes(focus)) return false;
   const ranges = fencedCodeRanges(document);
-  const headings = [...document.matchAll(/^## ([^\r\n]+?)[ \t]*\r?$/gmu)]
-    .filter((heading) => {
-      const index = heading.index ?? 0;
-      return !ranges.some((range) => index >= range.start && index < range.end);
-    });
+  const headings = [
+    ...document.matchAll(/^## ([^\r\n]+?)[ \t]*\r?$/gmu),
+  ].filter((heading) => {
+    const index = heading.index ?? 0;
+    return !ranges.some((range) => index >= range.start && index < range.end);
+  });
   if (headings.length !== HANDOFF_SECTIONS.length) return false;
   return headings.every((heading, index) => {
     if (heading[1] !== HANDOFF_SECTIONS[index]) return false;
@@ -155,19 +199,33 @@ function hasRequiredHandoffContent(document: string, focus: string, sourceGoal?:
     if (!sourceGoal) return true;
     if (heading[1] === "Objective") {
       const fenced = /^(`{3,}|~{3,})\n([\s\S]*)\n\1$/u.exec(content);
-      return content === sourceGoal.objective || fenced?.[2] === sourceGoal.objective;
+      return (
+        content === sourceGoal.objective || fenced?.[2] === sourceGoal.objective
+      );
     }
     const lines = content.split(/\r?\n/u);
-    const statusLines = lines.filter((line) => line.startsWith("Saved goal status:"));
+    const statusLines = lines.filter((line) =>
+      line.startsWith("Saved goal status:"),
+    );
     if (heading[1] === "Current state") {
-      return statusLines.length === 1 && lines[0] === `Saved goal status: ${sourceGoal.status}`;
+      return (
+        statusLines.length === 1 &&
+        lines[0] === `Saved goal status: ${sourceGoal.status}`
+      );
     }
     return statusLines.length === 0;
   });
 }
 
-function handoffAvailable(ctx: ExtensionCommandContext, goalRuntime: GoalRuntime): boolean {
-  return ctx.isIdle() && !ctx.hasPendingMessages() && goalRuntime.state?.status !== "active";
+function handoffAvailable(
+  ctx: ExtensionCommandContext,
+  goalRuntime: GoalRuntime,
+): boolean {
+  return (
+    ctx.isIdle() &&
+    !ctx.hasPendingMessages() &&
+    goalRuntime.state?.status !== "active"
+  );
 }
 
 function sourceHandoffAvailable(
@@ -179,11 +237,13 @@ function sourceHandoffAvailable(
   sourceGeneration: number,
 ): boolean {
   try {
-    return goalRuntime.lifecycleGeneration === sourceGeneration
-      && goalRuntime.state === sourceGoal
-      && ctx.sessionManager.getSessionFile() === sourceSession
-      && handoffAvailable(ctx, goalRuntime)
-      && ctx.sessionManager.buildContextEntries().at(-1)?.id === sourceLeaf;
+    return (
+      goalRuntime.lifecycleGeneration === sourceGeneration &&
+      goalRuntime.state === sourceGoal &&
+      ctx.sessionManager.getSessionFile() === sourceSession &&
+      handoffAvailable(ctx, goalRuntime) &&
+      ctx.sessionManager.buildContextEntries().at(-1)?.id === sourceLeaf
+    );
   } catch {
     return false;
   }
@@ -197,14 +257,26 @@ function notifyHandoffUnavailable(ctx: ExtensionCommandContext): void {
   }
 }
 
-function assertHandoffContextReserve(ctx: ExtensionCommandContext, maxTokens: number): void {
+function assertHandoffContextReserve(
+  ctx: ExtensionCommandContext,
+  maxTokens: number,
+): void {
   const usage = readContextUsage(ctx);
   const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow;
-  if (!usage || usage.tokens === null || !Number.isFinite(usage.tokens)
-    || typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0) return;
+  if (
+    !usage ||
+    usage.tokens === null ||
+    !Number.isFinite(usage.tokens) ||
+    typeof contextWindow !== "number" ||
+    !Number.isFinite(contextWindow) ||
+    contextWindow <= 0
+  )
+    return;
   const remaining = contextWindow - Math.max(0, usage.tokens);
   if (remaining < maxTokens + HANDOFF_REQUEST_RESERVE_TOKENS) {
-    throw new Error("The session does not have enough context space for this handoff. Run /compact or lower handoffMaxTokens.");
+    throw new Error(
+      "The session does not have enough context space for this handoff. Run /compact or lower handoffMaxTokens.",
+    );
   }
 }
 
@@ -213,39 +285,63 @@ async function generateHandoffSummary(
   ctx: ExtensionCommandContext,
   conversation: string,
   focus: string,
-  options: { maxTokens: number; signal?: AbortSignal; sourceGoal?: HandoffGoalSnapshot },
+  options: {
+    maxTokens: number;
+    signal?: AbortSignal;
+    sourceGoal?: HandoffGoalSnapshot;
+  },
 ): Promise<string> {
   if (!ctx.model) throw new Error("No current model is available");
 
   options.signal?.throwIfAborted();
   assertHandoffContextReserve(ctx, options.maxTokens);
 
-  const response = await ctx.modelRegistry.complete(ctx.model, {
-    systemPrompt: HANDOFF_SYSTEM_PROMPT,
-    messages: [{
-      role: "user",
-      content: createHandoffRequest(conversation, focus, ctx.getSystemPromptOptions().skills ?? [], options.sourceGoal),
-      timestamp: Date.now(),
-    }],
-  }, {
-    maxTokens: options.maxTokens,
-    signal: options.signal,
-  });
-  if (response.stopReason === "error") throw new Error(response.errorMessage || "Handoff summary failed");
+  const response = await ctx.modelRegistry.complete(
+    ctx.model,
+    {
+      systemPrompt: HANDOFF_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: createHandoffRequest(
+            conversation,
+            focus,
+            ctx.getSystemPromptOptions().skills ?? [],
+            options.sourceGoal,
+          ),
+          timestamp: Date.now(),
+        },
+      ],
+    },
+    {
+      maxTokens: options.maxTokens,
+      signal: options.signal,
+    },
+  );
+  if (response.stopReason === "error")
+    throw new Error(response.errorMessage || "Handoff summary failed");
   if (response.stopReason === "length") {
-    throw new Error(`The handoff summary exceeded its ${options.maxTokens}-token output budget. Shorten the source session or raise the handoff token budget.`);
+    throw new Error(
+      `The handoff summary exceeded its ${options.maxTokens}-token output budget. Shorten the source session or raise the handoff token budget.`,
+    );
   }
-  if (response.stopReason !== "stop") throw new Error("The handoff summary did not finish");
+  if (response.stopReason !== "stop")
+    throw new Error("The handoff summary did not finish");
 
   const summary = safeTerminalText(contentText(response.content)).trim();
   if (!summary) throw new Error("The handoff summary was empty");
   const unsafe = unsafeHandoffOutput(summary);
-  if (unsafe) throw new Error(`The handoff summary contained unsafe content: ${unsafe}`);
+  if (unsafe)
+    throw new Error(`The handoff summary contained unsafe content: ${unsafe}`);
   return summary;
 }
 
 /** Registers the idle-only command that summarizes context into a child session. */
-export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, handoffMaxTokens?: number): void {
+export function registerHandoff(
+  pi: ExtensionAPI,
+  goalRuntime: GoalRuntime,
+  handoffMaxTokens?: number,
+): void {
   pi.registerCommand("handoff", {
     description: "Create a fresh session with a continuation handoff",
     handler: async (args, ctx) => {
@@ -268,20 +364,27 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
         const sourceLeaf = entries.at(-1)?.id;
         const sourceGeneration = goalRuntime.lifecycleGeneration;
         const sourceState = goalRuntime.state;
-        const sourceGoal: HandoffGoalSnapshot | undefined = sourceState ? {
-          objective: sourceState.objective,
-          status: sourceState.status,
-          lastDecision: sourceState.lastDecision,
-          deliverablePath: sourceState.verification?.path,
-        } : undefined;
-        const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
-          buildSessionProjection?: () => { messages: ReturnType<typeof sessionEntryToContextMessages> };
-        };
-        const messages = typeof sessionManager.buildSessionProjection === "function"
-          ? sessionManager.buildSessionProjection().messages
-          : entries.flatMap(sessionEntryToContextMessages);
+        const sourceGoal: HandoffGoalSnapshot | undefined = sourceState
+          ? {
+              objective: sourceState.objective,
+              status: sourceState.status,
+              lastDecision: sourceState.lastDecision,
+              deliverablePath: sourceState.verification?.path,
+            }
+          : undefined;
+        const sessionManager =
+          ctx.sessionManager as typeof ctx.sessionManager & {
+            buildSessionProjection?: () => {
+              messages: ReturnType<typeof sessionEntryToContextMessages>;
+            };
+          };
+        const messages =
+          typeof sessionManager.buildSessionProjection === "function"
+            ? sessionManager.buildSessionProjection().messages
+            : entries.flatMap(sessionEntryToContextMessages);
         const conversation = serializeConversation(convertToLlm(messages));
-        if (!conversation.trim()) throw new Error("No usable session context is available");
+        if (!conversation.trim())
+          throw new Error("No usable session context is available");
         focus = safeTerminalText(args).trim();
         let maxTokens = handoffMaxTokens;
         if (!isPositiveInt(maxTokens)) {
@@ -289,26 +392,50 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
           try {
             settings = createKillerosSettingsStore().load();
           } catch (error) {
-            ctx.ui.notify(`killeros.json could not be read; using the default handoff budget: ${errorMessage(error)}`, "warning");
+            ctx.ui.notify(
+              `killeros.json could not be read; using the default handoff budget: ${errorMessage(error)}`,
+              "warning",
+            );
           }
           maxTokens = resolveHandoffMaxTokens(settings);
         }
-        const generation = ctx.mode === "tui"
-          ? await ctx.ui.custom<HandoffGenerationResult>((tui, theme, _keybindings, done) => {
-            const loader = new BorderedLoader(tui, theme, "Generating handoff...");
-            let settled = false;
-            const finish = (result: HandoffGenerationResult): void => {
-              if (settled) return;
-              settled = true;
-              done(result);
-            };
-            loader.onAbort = () => finish({ kind: "cancelled" });
-            generateHandoffSummary(ctx, conversation, focus, { maxTokens, signal: loader.signal, sourceGoal })
-              .then((summary) => finish({ kind: "summary", summary }))
-              .catch((error: unknown) => finish({ kind: "error", error }));
-            return loader;
-          })
-          : { kind: "summary", summary: await generateHandoffSummary(ctx, conversation, focus, { maxTokens, sourceGoal }) } as const;
+        const generation =
+          ctx.mode === "tui"
+            ? await ctx.ui.custom<HandoffGenerationResult>(
+                (tui, theme, _keybindings, done) => {
+                  const loader = new BorderedLoader(
+                    tui,
+                    theme,
+                    "Generating handoff...",
+                  );
+                  let settled = false;
+                  const finish = (result: HandoffGenerationResult): void => {
+                    if (settled) return;
+                    settled = true;
+                    done(result);
+                  };
+                  loader.onAbort = () => finish({ kind: "cancelled" });
+                  generateHandoffSummary(ctx, conversation, focus, {
+                    maxTokens,
+                    signal: loader.signal,
+                    sourceGoal,
+                  })
+                    .then((summary) => finish({ kind: "summary", summary }))
+                    .catch((error: unknown) =>
+                      finish({ kind: "error", error }),
+                    );
+                  return loader;
+                },
+              )
+            : ({
+                kind: "summary",
+                summary: await generateHandoffSummary(
+                  ctx,
+                  conversation,
+                  focus,
+                  { maxTokens, sourceGoal },
+                ),
+              } as const);
         if (generation.kind === "cancelled") {
           ctx.ui.notify("Handoff cancelled", "info");
           return;
@@ -317,11 +444,22 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
 
         document = handoffDocument(generation.summary);
         if (!hasRequiredHandoffContent(document, focus, sourceGoal)) {
-          throw new Error(sourceGoal
-            ? "The handoff summary did not contain every required section or preserve the saved goal"
-            : "The handoff summary did not contain every required section");
+          throw new Error(
+            sourceGoal
+              ? "The handoff summary did not contain every required section or preserve the saved goal"
+              : "The handoff summary did not contain every required section",
+          );
         }
-        if (!sourceHandoffAvailable(ctx, goalRuntime, sourceSession, sourceLeaf, sourceState, sourceGeneration)) {
+        if (
+          !sourceHandoffAvailable(
+            ctx,
+            goalRuntime,
+            sourceSession,
+            sourceLeaf,
+            sourceState,
+            sourceGeneration,
+          )
+        ) {
           notifyHandoffUnavailable(ctx);
           return;
         }
@@ -337,8 +475,14 @@ export function registerHandoff(pi: ExtensionAPI, goalRuntime: GoalRuntime, hand
           setup: async (sessionManager) => {
             try {
               // A regular user message makes Pi persist the otherwise setup-only child session.
-              sessionManager.appendMessage({ role: "user", content: document, timestamp: Date.now() });
-              sessionManager.appendSessionInfo(sessionName(sourceName, focus, document));
+              sessionManager.appendMessage({
+                role: "user",
+                content: document,
+                timestamp: Date.now(),
+              });
+              sessionManager.appendSessionInfo(
+                sessionName(sourceName, focus, document),
+              );
             } catch (error) {
               setupFailure = { error };
             }

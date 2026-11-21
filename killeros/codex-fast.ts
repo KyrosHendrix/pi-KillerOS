@@ -1,5 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isCodexFastEnabled, isCodexFastModel, toggleCodexFast } from "./codex-fast-state.ts";
+import {
+  isCodexFastEnabled,
+  isCodexFastModel,
+  toggleCodexFast,
+} from "./codex-fast-state.ts";
 import { isRecord } from "./guards.ts";
 
 export function registerCodexFastMode(pi: ExtensionAPI): void {
@@ -8,7 +12,10 @@ export function registerCodexFastMode(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (trimmed === "status") {
-        ctx.ui.notify(`Codex fast mode: ${isCodexFastEnabled() ? "enabled" : "disabled"}`, "info");
+        ctx.ui.notify(
+          `Codex fast mode: ${isCodexFastEnabled() ? "enabled" : "disabled"}`,
+          "info",
+        );
         return;
       }
       if (trimmed) {
@@ -22,11 +29,19 @@ export function registerCodexFastMode(pi: ExtensionAPI): void {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
-    if (!isCodexFastEnabled() || !isCodexFastModel(ctx.model) || !isRecord(event.payload)) {
+    if (
+      !isCodexFastEnabled() ||
+      !isCodexFastModel(ctx.model) ||
+      !isRecord(event.payload)
+    ) {
       return event.payload;
     }
     // The hook exposes no dispatched provider/API. Native requests must match the selected model.
-    if (ctx.model?.provider === "openai" && event.payload.model !== ctx.model.id) return event.payload;
+    if (
+      ctx.model?.provider === "openai" &&
+      event.payload.model !== ctx.model.id
+    )
+      return event.payload;
     return { ...event.payload, service_tier: "priority" };
   });
 }

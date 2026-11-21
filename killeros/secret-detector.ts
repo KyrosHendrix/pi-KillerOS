@@ -12,19 +12,26 @@ const TOKEN_PATTERNS = [
   /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/iu,
 ] as const;
 
-// A credential key at the start of a line, assigned a quoted string or one unspaced word that is not a plain number.
-// Prose after the key ("Token: refresh rotation added") and budgets ("maxTokens: 8192") are not credentials.
-const ASSIGNMENT_PATTERN = /^[\t ]*(?:(?:[-*+]|\d+[.)])[\t ]+)?(?:\*\*|`)?["']?[\w.-]*(?:api_key|apikey|password|passwd|secret|token)[\w.-]*["']?(?:\*\*|`)?[\t ]*(?:=|:)(?:\*\*|`)?[\t ]*(?:"[^"\r\n]+"|'[^'\r\n]+'|(?!\d+(?:[.,]\d+)*[\t ]*(?:#[^\r\n]*)?\r?$)[^\s#"'][^\s]*[\t ]*(?:#[^\r\n]*)?\r?$)/imu;
+const CREDENTIAL_ASSIGNMENT_LINE_PATTERN =
+  /^[\t ]*(?:(?:[-*+]|\d+[.)])[\t ]+)?(?:\*\*|`)?["']?[\w.-]*(?:api_key|apikey|password|passwd|secret|token)[\w.-]*["']?(?:\*\*|`)?[\t ]*(?:=|:)(?:\*\*|`)?[\t ]*(?:"[^"\r\n]+"|'[^'\r\n]+'|(?!\d+(?:[.,]\d+)*[\t ]*(?:#[^\r\n]*)?\r?$)[^\s#"'][^\s]*[\t ]*(?:#[^\r\n]*)?\r?$)/imu;
 
-export type SecretCategory = "a recognized credential" | "a key: value line that names a password, token, secret, or API key";
+export type SecretCategory =
+  | "a recognized credential"
+  | "a key: value line that names a password, token, secret, or API key";
 
 /** Names the kind of high-confidence credential material in the text, without returning the matched value. */
 export function likelySecretCategory(text: string): SecretCategory | undefined {
-  if (TOKEN_PATTERNS.some((pattern) => pattern.test(text))) return "a recognized credential";
+  if (TOKEN_PATTERNS.some((pattern) => pattern.test(text)))
+    return "a recognized credential";
   // Inspect Markdown wrappers without changing the document that callers validate or save.
-  const assignments = text.replace(/^[\t ]*(?:>[\t ]*)+/gmu, "")
-    .replace(/^[\t ]*\|[\t ]*([^|\r\n]+?)[\t ]*\|[\t ]*([^|\r\n]+?)[\t ]*\|/gmu, "$1: $2\n");
-  return ASSIGNMENT_PATTERN.test(text) || ASSIGNMENT_PATTERN.test(assignments)
+  const assignments = text
+    .replace(/^[\t ]*(?:>[\t ]*)+/gmu, "")
+    .replace(
+      /^[\t ]*\|[\t ]*([^|\r\n]+?)[\t ]*\|[\t ]*([^|\r\n]+?)[\t ]*\|/gmu,
+      "$1: $2\n",
+    );
+  return CREDENTIAL_ASSIGNMENT_LINE_PATTERN.test(text) ||
+    CREDENTIAL_ASSIGNMENT_LINE_PATTERN.test(assignments)
     ? "a key: value line that names a password, token, secret, or API key"
     : undefined;
 }

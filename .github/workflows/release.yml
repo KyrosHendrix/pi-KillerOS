@@ -1,14 +1,10 @@
 name: Release
 
 on:
-  # Normal path: a new version on main is released only after the full CI workflow passes.
   workflow_run:
-    workflows:
-      - CI
-    types:
-      - completed
-    branches:
-      - main
+    workflows: [CI, CodeQL]
+    types: [completed]
+    branches: [main]
 concurrency:
   group: release
   cancel-in-progress: false
@@ -24,6 +20,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: write
       id-token: write
     outputs:
@@ -31,14 +28,14 @@ jobs:
 
     steps:
       - name: Check out verified source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 2
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '26.13.0'
           registry-url: 'https://registry.npmjs.org'
@@ -46,6 +43,7 @@ jobs:
       - name: Validate release metadata
         id: metadata
         env:
+          GH_TOKEN: ${{ github.token }}
           VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
@@ -58,6 +56,29 @@ jobs:
           if [[ "$SHA" != "$CURRENT_MAIN" ]]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "Verified commit ${SHA} is stale; current main is ${CURRENT_MAIN}."
+            exit 0
+          fi
+
+          pending=false
+          for workflow in ci.yml codeql.yml; do
+            run=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+              -f branch=main -f event=push -f head_sha="$SHA" -F per_page=1 \
+              --jq '.workflow_runs[0] | select(. != null) | [.head_sha, .head_branch, .status, .conclusion] | @tsv')
+            IFS=$'\t' read -r run_sha run_branch status conclusion <<< "$run"
+            if [[ -n "$run" ]] && [[ "$run_sha" != "$SHA" || "$run_branch" != main ]]; then
+              echo "Unexpected run for ${workflow}. Expected ${SHA} on main." >&2
+              exit 1
+            fi
+            if [[ "$status" != completed ]]; then
+              echo "Waiting for ${workflow} on main at ${SHA} (${status:-no run found})."
+              pending=true
+            elif [[ "$conclusion" != success ]]; then
+              echo "${workflow} concluded ${conclusion} on main at ${SHA}." >&2
+              exit 1
+            fi
+          done
+          if [[ "$pending" == true ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -167,7 +188,7 @@ jobs:
       contents: write
     steps:
       - name: Check out dev
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: dev
           fetch-depth: 0

@@ -37,11 +37,14 @@ function formatNotificationTitle(
   enabled: boolean,
 ): string {
   const directory = basename(cwd) || cwd;
-  const base = sessionName ? `π - ${sessionName} - ${directory}` : `π - ${directory}`;
-  return safeTerminalText(enabled ? `${base} ${COMPLETION_BELL_GLYPH}` : base).replaceAll("\n", "");
+  const base = sessionName
+    ? `π - ${sessionName} - ${directory}`
+    : `π - ${directory}`;
+  return safeTerminalText(
+    enabled ? `${base} ${COMPLETION_BELL_GLYPH}` : base,
+  ).replaceAll("\n", "");
 }
 
-/** The completion sound preference and the terminal title that shows it. */
 interface CompletionNotifications {
   /** Rewrites the terminal title; the shell header calls it because Pi resets the title after session binding. */
   applyTitle: (ctx: ExtensionContext) => void;
@@ -55,7 +58,9 @@ export function createCompletionNotifications(
 ): CompletionNotifications {
   const runtime = dependencies ?? {
     store: createNotificationPreferenceStore(),
-    ring: () => { process.stdout.write("\x07"); },
+    ring: () => {
+      process.stdout.write("\x07");
+    },
   };
   let enabled = false;
   let requestPending = false;
@@ -63,7 +68,9 @@ export function createCompletionNotifications(
 
   const applyTitle = (ctx: ExtensionContext): void => {
     if (ctx.mode !== "tui") return;
-    ctx.ui.setTitle(formatNotificationTitle(ctx.cwd, pi.getSessionName(), enabled));
+    ctx.ui.setTitle(
+      formatNotificationTitle(ctx.cwd, pi.getSessionName(), enabled),
+    );
   };
 
   const register = (): void => {
@@ -83,7 +90,10 @@ export function createCompletionNotifications(
         try {
           runtime.store.save(nextEnabled);
         } catch (error) {
-          ctx.ui.notify(`Completion sound setting could not be saved: ${errorMessage(error)}`, "error");
+          ctx.ui.notify(
+            `Completion sound setting could not be saved: ${errorMessage(error)}`,
+            "error",
+          );
           return;
         }
         enabled = nextEnabled;
@@ -100,7 +110,10 @@ export function createCompletionNotifications(
         enabled = runtime.store.load();
       } catch (error) {
         enabled = false;
-        ctx.ui.notify(`Completion sound settings could not be read: ${errorMessage(error)}`, "error");
+        ctx.ui.notify(
+          `Completion sound settings could not be read: ${errorMessage(error)}`,
+          "error",
+        );
       }
       applyTitle(ctx);
     });
@@ -126,7 +139,10 @@ export function createCompletionNotifications(
       try {
         runtime.ring();
       } catch (error) {
-        ctx.ui.notify(`Completion sound failed: ${errorMessage(error)}`, "error");
+        ctx.ui.notify(
+          `Completion sound failed: ${errorMessage(error)}`,
+          "error",
+        );
       }
     });
 

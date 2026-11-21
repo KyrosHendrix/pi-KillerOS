@@ -9,15 +9,18 @@ interface ChangelogSection {
 }
 
 function errorCode(error: unknown): string | undefined {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
-    && typeof error.code === "string"
+  return typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
     ? error.code
     : undefined;
 }
 
-export function extractReleaseSection(text: string, version: string): string | null {
+export function extractReleaseSection(
+  text: string,
+  version: string,
+): string | null {
   if (text.startsWith("\uFEFF")) {
     text = text.slice(1);
   }
@@ -39,11 +42,14 @@ export function extractReleaseSection(text: string, version: string): string | n
 }
 
 const isMain =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   const [changelogPath, version] = process.argv.slice(2);
   if (changelogPath === undefined || version === undefined) {
-    console.error("usage: node scripts/release-notes.ts <changelog.md> <version>");
+    console.error(
+      "usage: node scripts/release-notes.ts <changelog.md> <version>",
+    );
     process.exit(2);
   }
   let changelogText: string;

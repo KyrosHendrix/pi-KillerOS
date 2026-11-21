@@ -27,16 +27,31 @@ export async function gitReadersFinished(
       seen = contents;
       changedAt = Date.now();
     }
-    // Git appends whole lines; a line still being written is counted on the next read.
-    const events = contents.slice(0, contents.lastIndexOf("\n") + 1).split("\n").filter(Boolean)
+    const events = contents
+      .slice(0, contents.lastIndexOf("\n") + 1)
+      .split("\n")
+      .filter(Boolean)
       .map((line): unknown => JSON.parse(line))
-      .map((entry) => typeof entry === "object" && entry !== null && "event" in entry ? entry.event : undefined);
-    const running = events.filter((event) => event === "start").length - events.filter((event) => event === "exit").length;
+      .map((entry) =>
+        typeof entry === "object" && entry !== null && "event" in entry
+          ? entry.event
+          : undefined,
+      );
+    const running =
+      events.filter((event) => event === "start").length -
+      events.filter((event) => event === "exit").length;
     runningAtEntry ??= running;
-    if (events.length > 0 && running === 0 && Date.now() - changedAt >= quietMs) {
+    if (
+      events.length > 0 &&
+      running === 0 &&
+      Date.now() - changedAt >= quietMs
+    ) {
       return { waitedMs: Date.now() - startedAt, runningAtEntry };
     }
-    assert.ok(Date.now() - startedAt < 20_000, `Git readers did not finish: ${running} still running after ${events.length} trace events`);
+    assert.ok(
+      Date.now() - startedAt < 20_000,
+      `Git readers did not finish: ${running} still running after ${events.length} trace events`,
+    );
     await delay(25, undefined, { signal });
   }
 }

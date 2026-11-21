@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { shareLaunchCaches } from "./support/LaunchCaches.ts";
+import { nodeExecutable } from "./support/NodeRuntime.ts";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
@@ -47,7 +56,12 @@ function isUnknownArray(value: unknown): value is unknown[] {
 
 function isolatedFixtureEnvironment(directory: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  const inherited = new Map(Object.entries(process.env).map(([key, value]) => [key.toLowerCase(), value]));
+  const inherited = new Map(
+    Object.entries(process.env).map(([key, value]) => [
+      key.toLowerCase(),
+      value,
+    ]),
+  );
   for (const key of ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT"]) {
     const value = inherited.get(key.toLowerCase());
     if (value !== undefined) env[key] = value;
@@ -79,35 +93,69 @@ function initializeFixtureRepository(
   counts: { fixtureGitInitializations: number; gitCommands: number },
 ): void {
   const programFiles = process.env.ProgramFiles;
-  assert.ok(programFiles, "The fixture requires the installed Windows Git executable");
+  assert.ok(
+    programFiles,
+    "The fixture requires the installed Windows Git executable",
+  );
   const git = path.join(programFiles, "Git", "cmd", "git.exe");
-  assert.ok(existsSync(git), "The fixture requires Git at the standard Windows installation path");
+  assert.ok(
+    existsSync(git),
+    "The fixture requires Git at the standard Windows installation path",
+  );
   assert.ok(path.isAbsolute(git));
 
-  const gitEnv: NodeJS.ProcessEnv = { ...env, PATH: "", GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" };
+  const gitEnv: NodeJS.ProcessEnv = {
+    ...env,
+    PATH: "",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_NO_LAZY_FETCH: "1",
+  };
   for (const key of [
-    "GIT_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_WORK_TREE", "GIT_INDEX_FILE",
-      "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+    "GIT_DIR",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
   ]) {
     delete gitEnv[key];
   }
 
   counts.gitCommands += 1;
-  execFileSync(git, ["init", "--quiet"], { cwd: project, env: gitEnv, timeout: 15_000 });
-  counts.fixtureGitInitializations += 1;
-  counts.gitCommands += 1;
-  const discoveredRoot = realpathSync.native(execFileSync(git, ["rev-parse", "--show-toplevel"], {
+  execFileSync(git, ["init", "--quiet"], {
     cwd: project,
     env: gitEnv,
-    encoding: "utf8",
     timeout: 15_000,
-  }).trim());
+  });
+  counts.fixtureGitInitializations += 1;
+  counts.gitCommands += 1;
+  const discoveredRoot = realpathSync.native(
+    execFileSync(git, ["rev-parse", "--show-toplevel"], {
+      cwd: project,
+      env: gitEnv,
+      encoding: "utf8",
+      timeout: 15_000,
+    }).trim(),
+  );
   const fixtureRoot = realpathSync.native(project);
-  const gitRelativeToProject = path.relative(fixtureRoot, realpathSync.native(git));
-  assert.ok(gitRelativeToProject === ".." || gitRelativeToProject.startsWith(`..${path.sep}`)
-    || path.isAbsolute(gitRelativeToProject), "Fixture Git must resolve outside the project");
-  assert.equal(discoveredRoot.toLowerCase(), fixtureRoot.toLowerCase(),
-    "Fixture Git commands must resolve to the disposable project root");
+  const gitRelativeToProject = path.relative(
+    fixtureRoot,
+    realpathSync.native(git),
+  );
+  assert.ok(
+    gitRelativeToProject === ".." ||
+      gitRelativeToProject.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(gitRelativeToProject),
+    "Fixture Git must resolve outside the project",
+  );
+  assert.equal(
+    discoveredRoot.toLowerCase(),
+    fixtureRoot.toLowerCase(),
+    "Fixture Git commands must resolve to the disposable project root",
+  );
 }
 
 function sessionEntries(session: string): unknown[] {
@@ -121,12 +169,25 @@ function sessionEntries(session: string): unknown[] {
 }
 
 function assertNoGoalOrCompactionEntries(entries: unknown[]): void {
-  assert.equal(entries.some((entry) => isUnknownRecord(entry)
-    && (entry.customType === "killeros-goal" || entry.customType === "unexpected-noninteractive-compaction")), false);
+  assert.equal(
+    entries.some(
+      (entry) =>
+        isUnknownRecord(entry) &&
+        (entry.customType === "killeros-goal" ||
+          entry.customType === "unexpected-noninteractive-compaction"),
+    ),
+    false,
+  );
 }
 
-async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSignal): Promise<HistoryResult> {
-  const directory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-print-json-"));
+async function runHistory(
+  mode: OutputMode,
+  trusted: boolean,
+  signal: AbortSignal,
+): Promise<HistoryResult> {
+  const directory = mkdtempSync(
+    path.join(repositoryRoot, "node_modules", ".killeros-print-json-"),
+  );
   let server: Server | undefined;
   let project = "";
   let agentDir = "";
@@ -152,25 +213,43 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
     const probe = path.join(directory, "probe.ts");
     mkdirSync(project);
     mkdirSync(agentDir);
-    assert.equal(existsSync(session), false, "Each history must start with a new session");
+    assert.equal(
+      existsSync(session),
+      false,
+      "Each history must start with a new session",
+    );
 
     writeFileSync(path.join(project, "AGENTS.local.md"), personalMarker);
-    writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({
-      cacheWarming: "off",
-      retry: { enabled: false },
-      compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
-    }));
-    writeFileSync(path.join(agentDir, "killeros.json"), JSON.stringify({ autoCompaction: { enabled: true, percentRemaining: 100 } }));
-    writeFileSync(probe, `export default function(pi) { pi.on("session_before_compact", () => {
+    writeFileSync(
+      path.join(agentDir, "settings.json"),
+      JSON.stringify({
+        cacheWarming: "off",
+        retry: { enabled: false },
+        compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
+      }),
+    );
+    writeFileSync(
+      path.join(agentDir, "killeros.json"),
+      JSON.stringify({
+        autoCompaction: { enabled: true, percentRemaining: 100 },
+      }),
+    );
+    writeFileSync(
+      probe,
+      `export default function(pi) { pi.on("session_before_compact", () => {
   pi.appendEntry("unexpected-noninteractive-compaction", {}); return {cancel:true};
-}); }`);
+}); }`,
+    );
 
     const providerServer = createServer((request, response) => {
       void (async () => {
         const step = providerRequests++;
         assert.equal(request.method, "POST");
         assert.equal(request.url, "/v1/chat/completions");
-        assert.equal(request.headers.authorization, "Bearer noninteractive-local-key");
+        assert.equal(
+          request.headers.authorization,
+          "Bearer noninteractive-local-key",
+        );
         const chunks: Buffer[] = [];
         let size = 0;
         for await (const chunk of request) {
@@ -180,9 +259,16 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
           chunks.push(Buffer.from(chunk));
         }
 
-        const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        assert.ok(isUnknownRecord(body) && isUnknownArray(body.messages) && isUnknownArray(body.tools));
-        const personalMarkerCount = JSON.stringify(body.messages).split(personalMarker).length - 1;
+        const body: unknown = JSON.parse(
+          Buffer.concat(chunks).toString("utf8"),
+        );
+        assert.ok(
+          isUnknownRecord(body) &&
+            isUnknownArray(body.messages) &&
+            isUnknownArray(body.tools),
+        );
+        const personalMarkerCount =
+          JSON.stringify(body.messages).split(personalMarker).length - 1;
         assert.equal(personalMarkerCount, trusted ? 1 : 0);
         const toolNames = body.tools.map((tool) => {
           assert.ok(isUnknownRecord(tool) && isUnknownRecord(tool.function));
@@ -190,10 +276,17 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
           assert.ok(typeof name === "string");
           return name;
         });
-        assert.deepEqual(toolNames, ["question"], "No goal tool may activate in print or JSON mode");
+        assert.deepEqual(
+          toolNames,
+          ["question"],
+          "No goal tool may activate in print or JSON mode",
+        );
         const last = body.messages.at(-1);
         assert.ok(isUnknownRecord(last));
-        assert.ok(step < 2, "Noninteractive modes must not start compaction continuations");
+        assert.ok(
+          step < 2,
+          "Noninteractive modes must not start compaction continuations",
+        );
 
         let questionErrorObserved = false;
         if (step === 0) {
@@ -202,25 +295,69 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
           assert.equal(last.role, "tool");
           const toolContent = JSON.stringify(last.content);
           assert.ok(typeof toolContent === "string");
-          assert.match(toolContent, /The question tool requires interactive TUI mode/u);
+          assert.match(
+            toolContent,
+            /The question tool requires interactive TUI mode/u,
+          );
           questionErrorObserved = true;
         }
-        observations.push({ step, lastRole: last.role, personalMarkerCount, toolNames, questionErrorObserved });
+        observations.push({
+          step,
+          lastRole: last.role,
+          personalMarkerCount,
+          toolNames,
+          questionErrorObserved,
+        });
 
-        const delta = step === 0
-          ? { tool_calls: [{ index: 0, id: "noninteractive-question", type: "function", function: {
-            name: "question", arguments: JSON.stringify({ question: "Choose", options: [{ label: "Alpha" }] }),
-          } }] }
-          : { content: "Noninteractive workflow verified" };
-        response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
-        response.end(`data: ${JSON.stringify({
-          id: `noninteractive-${step}`,
-          model: "local",
-          choices: [{ index: 0, delta, finish_reason: step === 0 ? "tool_calls" : "stop" }],
-          usage: { prompt_tokens: 2_000, completion_tokens: 20, total_tokens: 2_020 },
-        })}\n\ndata: [DONE]\n\n`);
+        const delta =
+          step === 0
+            ? {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "noninteractive-question",
+                    type: "function",
+                    function: {
+                      name: "question",
+                      arguments: JSON.stringify({
+                        question: "Choose",
+                        options: [{ label: "Alpha" }],
+                      }),
+                    },
+                  },
+                ],
+              }
+            : { content: "Noninteractive workflow verified" };
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          connection: "close",
+        });
+        response.end(
+          `data: ${JSON.stringify({
+            id: `noninteractive-${step}`,
+            model: "local",
+            choices: [
+              {
+                index: 0,
+                delta,
+                finish_reason: step === 0 ? "tool_calls" : "stop",
+              },
+            ],
+            usage: {
+              prompt_tokens: 2_000,
+              completion_tokens: 20,
+              total_tokens: 2_020,
+            },
+          })}\n\ndata: [DONE]\n\n`,
+        );
       })().catch((error: unknown) => {
-        if (faults.length < 8) faults.push((error instanceof Error ? error.message : String(error)).slice(0, 1_000));
+        if (faults.length < 8)
+          faults.push(
+            (error instanceof Error ? error.message : String(error)).slice(
+              0,
+              1_000,
+            ),
+          );
         if (!response.destroyed) {
           response.writeHead(500, { connection: "close" });
           response.end("Rejected noninteractive fixture request");
@@ -246,19 +383,24 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
           baseUrl: `http://127.0.0.1:${address.port}/v1`,
           api: "openai-completions",
           apiKey: "noninteractive-local-key",
-          models: [{
-            id: "local",
-            name: "Noninteractive local",
-            reasoning: false,
-            input: ["text"],
-            contextWindow: 100_000,
-            maxTokens: 1_000,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          }],
+          models: [
+            {
+              id: "local",
+              name: "Noninteractive local",
+              reasoning: false,
+              input: ["text"],
+              contextWindow: 100_000,
+              maxTokens: 1_000,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            },
+          ],
         },
       },
     };
-    writeFileSync(path.join(agentDir, "models.json"), JSON.stringify(providerModels));
+    writeFileSync(
+      path.join(agentDir, "models.json"),
+      JSON.stringify(providerModels),
+    );
 
     env = isolatedFixtureEnvironment(directory);
     Object.assign(env, {
@@ -268,22 +410,54 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
       PI_SKIP_VERSION_CHECK: "1",
     });
     const allowedEnvironmentKeys = new Set([
-      "SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
-      "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_OPTIONAL_LOCKS", "GIT_NO_LAZY_FETCH",
-      "PI_CODING_AGENT_DIR", "PI_OFFLINE", "PI_TELEMETRY", "PI_SKIP_VERSION_CHECK",
+      "SystemRoot",
+      "WINDIR",
+      "ComSpec",
+      "PATHEXT",
+      "PATH",
+      "HOME",
+      "USERPROFILE",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "TEMP",
+      "TMP",
+      "GIT_CONFIG_GLOBAL",
+      "GIT_CONFIG_SYSTEM",
+      "GIT_CONFIG_NOSYSTEM",
+      "GIT_OPTIONAL_LOCKS",
+      "GIT_NO_LAZY_FETCH",
+      "PI_CODING_AGENT_DIR",
+      "PI_OFFLINE",
+      "PI_TELEMETRY",
+      "PI_SKIP_VERSION_CHECK",
     ]);
-    assert.deepEqual(Object.keys(env).filter((key) => !allowedEnvironmentKeys.has(key)), []);
-    assert.deepEqual(Object.keys(env).filter((key) => /(?:api.?key|token|secret|credential|mcp)/iu.test(key)), []);
+    assert.deepEqual(
+      Object.keys(env).filter((key) => !allowedEnvironmentKeys.has(key)),
+      [],
+    );
+    assert.deepEqual(
+      Object.keys(env).filter((key) =>
+        /(?:api.?key|token|secret|credential|mcp)/iu.test(key),
+      ),
+      [],
+    );
     initializeFixtureRepository(project, env, gitActivity);
 
-    const cliPath = path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
+    const cliPath = path.join(
+      repositoryRoot,
+      "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+    );
     args = [
       "--print",
       ...(mode === "json" ? ["--mode", "json"] : []),
-      "--model", "noninteractive-local/local",
-      "--thinking", "off",
-      "--tools", "question,killeros_*",
-      "--session", session,
+      "--model",
+      "noninteractive-local/local",
+      "--thinking",
+      "off",
+      "--tools",
+      "question,killeros_*",
+      "--session",
+      session,
       trusted ? "--approve" : "--no-approve",
       "--offline",
       "--no-context-files",
@@ -292,20 +466,29 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
       "--no-themes",
       "--no-mcp",
       "--no-extensions",
-      "--extension", repositoryRoot,
-      "--extension", probe,
+      "--extension",
+      repositoryRoot,
+      "--extension",
+      probe,
     ];
-    assert.ok(args.includes("--no-mcp"), "No MCP configuration may reach the fixture process");
+    assert.ok(
+      args.includes("--no-mcp"),
+      "No MCP configuration may reach the fixture process",
+    );
 
     const run = async (prompt: string) => {
       piLaunches += 1;
-      const invocation = promisify(execFile)(process.execPath, [cliPath, ...args, prompt], {
-        cwd: project,
-        env,
-        timeout: 15_000,
-        maxBuffer: 1_048_576,
-        signal,
-      });
+      const invocation = promisify(execFile)(
+        nodeExecutable(),
+        [cliPath, ...args, prompt],
+        {
+          cwd: project,
+          env: shareLaunchCaches(env),
+          timeout: 15_000,
+          maxBuffer: 1_048_576,
+          signal,
+        },
+      );
       let stdinFailure: unknown;
       try {
         invocation.child.stdin?.end();
@@ -316,40 +499,78 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
       try {
         result = await invocation;
       } catch (error) {
-        if (stdinFailure !== undefined) throw new AggregateError([error, stdinFailure], "Could not close Pi stdin");
+        if (stdinFailure !== undefined)
+          throw new AggregateError(
+            [error, stdinFailure],
+            "Could not close Pi stdin",
+          );
         throw error;
       }
-      if (stdinFailure !== undefined) throw new Error("Could not close Pi stdin", { cause: stdinFailure });
-      assert.equal(invocation.child.exitCode, 0, "Pi must exit naturally with code 0");
-      assert.equal(invocation.child.signalCode, null, "Pi must not exit from a signal");
+      if (stdinFailure !== undefined)
+        throw new Error("Could not close Pi stdin", { cause: stdinFailure });
+      assert.equal(
+        invocation.child.exitCode,
+        0,
+        "Pi must exit naturally with code 0",
+      );
+      assert.equal(
+        invocation.child.signalCode,
+        null,
+        "Pi must not exit from a signal",
+      );
       naturalExits += 1;
       return result;
     };
 
     await run("/goal Unsupported noninteractive goal");
-    assert.equal(providerRequests, 0, "/goal must not start provider work in print or JSON mode");
+    assert.equal(
+      providerRequests,
+      0,
+      "/goal must not start provider work in print or JSON mode",
+    );
     assertNoGoalOrCompactionEntries(sessionEntries(session));
 
     const result = await run("Verify noninteractive restrictions");
     assert.match(result.stdout, /Noninteractive workflow verified/u);
-    assert.equal(providerRequests, 2, "Each ordinary prompt must make exactly two provider requests");
+    assert.equal(
+      providerRequests,
+      2,
+      "Each ordinary prompt must make exactly two provider requests",
+    );
     assert.deepEqual(faults, []);
-    assert.ok(observations[1]?.questionErrorObserved, "The question tool error must reach the provider follow-up");
+    assert.ok(
+      observations[1]?.questionErrorObserved,
+      "The question tool error must reach the provider follow-up",
+    );
 
     const entries = sessionEntries(session);
-    assert.ok(existsSync(session), "Pi must save the scenario's independent session");
+    assert.ok(
+      existsSync(session),
+      "Pi must save the scenario's independent session",
+    );
     assert.ok(entries.length > 0);
     assertNoGoalOrCompactionEntries(entries);
     sessionEntryCount = entries.length;
 
     if (mode === "json") {
-      const events = result.stdout.trim().split(/\r?\n/u).map((line) => {
-        const value: unknown = JSON.parse(line);
-        return value;
-      });
-      jsonSettlementObserved = events.some((event) => isUnknownRecord(event)
-        && event.type === "agent_settled" && event.aborted === false);
-      assert.equal(jsonSettlementObserved, true, "JSON output must contain native agent_settled with aborted=false");
+      const events = result.stdout
+        .trim()
+        .split(/\r?\n/u)
+        .map((line) => {
+          const value: unknown = JSON.parse(line);
+          return value;
+        });
+      jsonSettlementObserved = events.some(
+        (event) =>
+          isUnknownRecord(event) &&
+          event.type === "agent_settled" &&
+          event.aborted === false,
+      );
+      assert.equal(
+        jsonSettlementObserved,
+        true,
+        "JSON output must contain native agent_settled with aborted=false",
+      );
     }
     assert.equal(providerRequests, observations.length);
   } catch (error) {
@@ -364,7 +585,7 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
       }
       try {
         await new Promise<void>((resolve, reject) => {
-          server?.close((error) => error ? reject(error) : resolve());
+          server?.close((error) => (error ? reject(error) : resolve()));
         });
       } catch (error) {
         cleanupFailures.push(error);
@@ -372,7 +593,11 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
     }
     try {
       await removeDirectoryEventually(directory);
-      assert.equal(existsSync(directory), false, "All private history files must be removed");
+      assert.equal(
+        existsSync(directory),
+        false,
+        "All private history files must be removed",
+      );
     } catch (error) {
       cleanupFailures.push(error);
     }
@@ -382,32 +607,48 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
     if (existsSync(directory)) {
       try {
         await removeDirectoryEventually(directory);
-        assert.equal(existsSync(directory), false, "Fixture cleanup must finish after failure capture");
+        assert.equal(
+          existsSync(directory),
+          false,
+          "Fixture cleanup must finish after failure capture",
+        );
       } catch (error) {
         cleanupFailures.push(error);
       }
     }
-    const diagnostics = JSON.stringify({
-      scenarioId,
-      mode,
-      trusted,
-      node: process.version,
-      providerRequests,
-      piLaunches,
-      naturalExits,
-      ...gitActivity,
-      sessionEntryCount,
-      jsonSettlementObserved,
-      observations: observations.slice(0, 8),
-      faults: faults.slice(0, 8),
-      childEnvironmentKeys: Object.keys(env).sort(),
-    }, null, 2);
+    const diagnostics = JSON.stringify(
+      {
+        scenarioId,
+        mode,
+        trusted,
+        node: process.version,
+        providerRequests,
+        piLaunches,
+        naturalExits,
+        ...gitActivity,
+        sessionEntryCount,
+        jsonSettlementObserved,
+        observations: observations.slice(0, 8),
+        faults: faults.slice(0, 8),
+        childEnvironmentKeys: Object.keys(env).sort(),
+      },
+      null,
+      2,
+    );
     let failureDirectory: string;
     try {
-      failureDirectory = mkdtempSync(path.join(repositoryRoot, "node_modules", ".killeros-print-json-failure-"));
+      failureDirectory = mkdtempSync(
+        path.join(
+          repositoryRoot,
+          "node_modules",
+          ".killeros-print-json-failure-",
+        ),
+      );
     } catch (error) {
-      throw new AggregateError([...(failed ? [failure] : []), ...cleanupFailures, error],
-        `${scenarioId} could not create bounded failure evidence`);
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupFailures, error],
+        `${scenarioId} could not create bounded failure evidence`,
+      );
     }
     try {
       throwScenarioFailure({
@@ -421,7 +662,10 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
         try {
           await removeDirectoryEventually(failureDirectory);
         } catch (cleanupError) {
-          throw new AggregateError([error, cleanupError], `${scenarioId} failed and failure evidence cleanup failed`);
+          throw new AggregateError(
+            [error, cleanupError],
+            `${scenarioId} failed and failure evidence cleanup failed`,
+          );
         }
       }
       throw error;
@@ -443,47 +687,84 @@ async function runHistory(mode: OutputMode, trusted: boolean, signal: AbortSigna
 }
 
 // Catalog ID: runtime.print-json-trust.
-test("installed Pi print and JSON preserve trust and reject interactive workflows", { timeout: 60_000 }, async (t) => {
-  const processEnvironmentBefore = JSON.stringify(Object.entries(process.env).sort(([left], [right]) => left.localeCompare(right)));
-  const histories: HistoryResult[] = [];
-  for (const mode of ["print", "json"] as const) {
-    for (const trusted of [true, false] as const) {
-      const history = await runHistory(mode, trusted, t.signal);
-      histories.push(history);
-      t.diagnostic(JSON.stringify({
-        scenarioId,
-        mode: history.mode,
-        trusted: history.trusted,
-        providerRequests: history.providerRequests,
-        piLaunches: history.piLaunches,
-        naturalExits: history.naturalExits,
-        fixtureGitInitializations: history.fixtureGitInitializations,
-        gitCommands: history.gitCommands,
-        sessionEntries: history.sessionEntries,
-        jsonSettlementObserved: history.jsonSettlementObserved,
-        observations: history.observations,
-      }));
+test(
+  "installed Pi print and JSON preserve trust and reject interactive workflows",
+  { timeout: 60_000 },
+  async (t) => {
+    const processEnvironmentBefore = JSON.stringify(
+      Object.entries(process.env).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    );
+    const histories: HistoryResult[] = [];
+    for (const mode of ["print", "json"] as const) {
+      for (const trusted of [true, false] as const) {
+        const history = await runHistory(mode, trusted, t.signal);
+        histories.push(history);
+        t.diagnostic(
+          JSON.stringify({
+            scenarioId,
+            mode: history.mode,
+            trusted: history.trusted,
+            providerRequests: history.providerRequests,
+            piLaunches: history.piLaunches,
+            naturalExits: history.naturalExits,
+            fixtureGitInitializations: history.fixtureGitInitializations,
+            gitCommands: history.gitCommands,
+            sessionEntries: history.sessionEntries,
+            jsonSettlementObserved: history.jsonSettlementObserved,
+            observations: history.observations,
+          }),
+        );
+      }
     }
-  }
 
-  assert.deepEqual(histories.map((history) => [
-    history.mode,
-    history.trusted,
-    history.providerRequests,
-    history.piLaunches,
-    history.naturalExits,
-    history.fixtureGitInitializations,
-  ]), [
-    ["print", true, 2, 2, 2, 1],
-    ["print", false, 2, 2, 2, 1],
-    ["json", true, 2, 2, 2, 1],
-    ["json", false, 2, 2, 2, 1],
-  ]);
-  assert.equal(new Set(histories.map((history) => history.fixtureDirectory)).size, 4,
-    "Each mode/trust history must own a fresh fixture directory");
-  assert.equal(histories.reduce((total, history) => total + history.piLaunches, 0), 8);
-  assert.equal(histories.reduce((total, history) => total + history.fixtureGitInitializations, 0), 4);
-  assert.equal(histories.filter((history) => history.mode === "json" && history.jsonSettlementObserved).length, 2);
-  assert.equal(JSON.stringify(Object.entries(process.env).sort(([left], [right]) => left.localeCompare(right))),
-    processEnvironmentBefore, "Fixture setup must not mutate the runner environment");
-});
+    assert.deepEqual(
+      histories.map((history) => [
+        history.mode,
+        history.trusted,
+        history.providerRequests,
+        history.piLaunches,
+        history.naturalExits,
+        history.fixtureGitInitializations,
+      ]),
+      [
+        ["print", true, 2, 2, 2, 1],
+        ["print", false, 2, 2, 2, 1],
+        ["json", true, 2, 2, 2, 1],
+        ["json", false, 2, 2, 2, 1],
+      ],
+    );
+    assert.equal(
+      new Set(histories.map((history) => history.fixtureDirectory)).size,
+      4,
+      "Each mode/trust history must own a fresh fixture directory",
+    );
+    assert.equal(
+      histories.reduce((total, history) => total + history.piLaunches, 0),
+      8,
+    );
+    assert.equal(
+      histories.reduce(
+        (total, history) => total + history.fixtureGitInitializations,
+        0,
+      ),
+      4,
+    );
+    assert.equal(
+      histories.filter(
+        (history) => history.mode === "json" && history.jsonSettlementObserved,
+      ).length,
+      2,
+    );
+    assert.equal(
+      JSON.stringify(
+        Object.entries(process.env).sort(([left], [right]) =>
+          left.localeCompare(right),
+        ),
+      ),
+      processEnvironmentBefore,
+      "Fixture setup must not mutate the runner environment",
+    );
+  },
+);

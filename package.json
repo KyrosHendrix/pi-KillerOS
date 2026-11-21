@@ -39,12 +39,15 @@
     "node": ">=26.13.0 <27"
   },
   "scripts": {
-    "benchmark:change-receipt": "node --test --experimental-strip-types test/ChangeReceipt.bench.ts",
-    "check": "tsc --noEmit && npm run lint",
-    "lint": "oxlint --type-aware --deny-warnings .",
+    "benchmark:change-receipt": "bun test ./test/ChangeReceipt.bench.ts",
+    "check": "bun check --no-script && bun lint --no-script --type-aware --max-warnings=0 . && bun fmt --no-script --check",
+    "fmt": "bun fmt --no-script",
+    "fmt:check": "bun fmt --no-script --check",
+    "lint": "bun lint --no-script --type-aware --max-warnings=0 .",
     "prepublishOnly": "node --experimental-strip-types scripts/verify-release.ts",
-    "test": "node --experimental-strip-types scripts/test-suite.ts",
-    "test:changed": "node --experimental-strip-types scripts/test-changed.ts"
+    "test": "bun scripts/test-suite.ts",
+    "test:changed": "bun scripts/test-changed.ts",
+    "typecheck": "bun check --no-script"
   },
   "pi": {
     "extensions": [
@@ -66,10 +69,7 @@
     "@earendil-works/pi-tui": "1.5.2",
     "@types/node": "24.12.4",
     "@xterm/headless": "6.0.0",
-    "oxlint": "1.94.0",
-    "oxlint-tsgolint": "7.0.2007",
     "typebox": "1.3.27",
-    "typescript": "5.9.3",
     "zigpty": "0.2.1"
   },
   "overrides": {

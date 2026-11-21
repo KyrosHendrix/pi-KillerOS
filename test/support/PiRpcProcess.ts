@@ -2,6 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { shareLaunchCaches } from "./LaunchCaches.ts";
+import { nodeExecutable } from "./NodeRuntime.ts";
 import { piTimerResolutionOptions } from "./TimerResolution.ts";
 
 export type PiRpcRecord = Record<string, unknown>;
@@ -30,7 +31,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Owns one Pi CLI RPC child and bounds protocol input, waits, diagnostics, and shutdown. */
 export class PiRpcProcess {
   private readonly child: ChildProcess;
   private readonly decoder = new StringDecoder("utf8");
@@ -44,12 +44,19 @@ export class PiRpcProcess {
   private nextCommandId = 0;
   private failure: Error | undefined;
   private exit: ProcessExit | undefined;
-  private closePromise: Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> | undefined;
+  private closePromise:
+    | Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }>
+    | undefined;
 
-  constructor(options: { cliPath: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) {
+  constructor(options: {
+    cliPath: string;
+    args: string[];
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+  }) {
     shareLaunchCaches(options.env);
     piTimerResolutionOptions(options.env);
-    this.child = spawn(process.execPath, [options.cliPath, ...options.args], {
+    this.child = spawn(nodeExecutable(), [options.cliPath, ...options.args], {
       cwd: options.cwd,
       env: options.env,
       detached: true,
@@ -57,12 +64,17 @@ export class PiRpcProcess {
     });
     const stdout = this.child.stdout;
     const stderr = this.child.stderr;
-    if (!stdout || !stderr || !this.child.stdin) throw new Error("Pi RPC process did not expose piped stdio");
+    if (!stdout || !stderr || !this.child.stdin)
+      throw new Error("Pi RPC process did not expose piped stdio");
 
     this.closed = new Promise((resolve) => {
       this.child.once("close", (code, signal) => {
         this.exit = { code, signal };
-        this.rejectWaiters(new Error(`Pi CLI exited (${code ?? "unknown"}/${signal ?? "no signal"})`));
+        this.rejectWaiters(
+          new Error(
+            `Pi CLI exited (${code ?? "unknown"}/${signal ?? "no signal"})`,
+          ),
+        );
         resolve(this.exit);
       });
     });
@@ -86,13 +98,17 @@ export class PiRpcProcess {
     return this.records[0]?.sequence ?? this.sequence + 1;
   }
 
-  /** Release evidence only after the caller has finished all observations through this cursor. */
   acknowledge(sequence: number): void {
-    if (!Number.isSafeInteger(sequence) || sequence < this.acknowledgedSequence || sequence > this.sequence) {
+    if (
+      !Number.isSafeInteger(sequence) ||
+      sequence < this.acknowledgedSequence ||
+      sequence > this.sequence
+    ) {
       throw new Error(`Invalid Pi RPC acknowledgement ${sequence}`);
     }
     this.acknowledgedSequence = sequence;
-    while (this.records[0] && this.records[0].sequence <= sequence) this.records.shift();
+    while (this.records[0] && this.records[0].sequence <= sequence)
+      this.records.shift();
     for (const waiter of this.waiters) {
       if (waiter.after < sequence) {
         this.removeWaiter(waiter);
@@ -102,7 +118,9 @@ export class PiRpcProcess {
   }
 
   private cursorGap(after: number): Error {
-    return new Error(`Pi RPC cursor gap: after ${after}, acknowledged through ${this.acknowledgedSequence}`);
+    return new Error(
+      `Pi RPC cursor gap: after ${after}, acknowledged through ${this.acknowledgedSequence}`,
+    );
   }
 
   diagnostics(): string {
@@ -118,10 +136,15 @@ export class PiRpcProcess {
       acknowledgedSequence: this.acknowledgedSequence,
       currentSequence: this.sequence,
       retainedRecordCount: this.records.length,
-      truncated: this.stderr.length > 4_000 || (this.failure?.message.length ?? 0) > 1_000,
+      truncated:
+        this.stderr.length > 4_000 ||
+        (this.failure?.message.length ?? 0) > 1_000,
       recentRecords: records,
     };
-    while (JSON.stringify(snapshot, null, 2).length > MAX_DIAGNOSTIC_CHARS && records.length > 0) {
+    while (
+      JSON.stringify(snapshot, null, 2).length > MAX_DIAGNOSTIC_CHARS &&
+      records.length > 0
+    ) {
       records.shift();
       snapshot.truncated = true;
     }
@@ -130,7 +153,8 @@ export class PiRpcProcess {
 
   async send(value: PiRpcRecord): Promise<void> {
     const stdin = this.child.stdin;
-    if (!stdin || stdin.destroyed || this.exit) throw new Error(`Pi RPC stdin is closed: ${this.diagnostics()}`);
+    if (!stdin || stdin.destroyed || this.exit)
+      throw new Error(`Pi RPC stdin is closed: ${this.diagnostics()}`);
     await new Promise<void>((resolve, reject) => {
       stdin.write(`${JSON.stringify(value)}\n`, (error) => {
         if (error) reject(error);
@@ -144,7 +168,10 @@ export class PiRpcProcess {
     fields: PiRpcRecord = {},
     options: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<PiRpcRecord> {
-    if (options.signal?.aborted) throw options.signal.reason instanceof Error ? options.signal.reason : new Error("Pi CLI command was cancelled");
+    if (options.signal?.aborted)
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error("Pi CLI command was cancelled");
     const id = `killeros-cli-${++this.nextCommandId}`;
     const after = this.sequence;
     await this.send({ ...fields, id, type });
@@ -153,12 +180,15 @@ export class PiRpcProcess {
       { after, timeoutMs: options.timeoutMs ?? 15_000, signal: options.signal },
     );
     if (response.success !== true) {
-      const description = typeof response.error === "string"
-        ? response.error
-        : response.error === undefined
-          ? "unknown error"
-          : JSON.stringify(response.error) ?? "<unserializable error>";
-      throw new Error(`Pi RPC ${type} failed: ${description}\n${this.diagnostics()}`);
+      const description =
+        typeof response.error === "string"
+          ? response.error
+          : response.error === undefined
+            ? "unknown error"
+            : (JSON.stringify(response.error) ?? "<unserializable error>");
+      throw new Error(
+        `Pi RPC ${type} failed: ${description}\n${this.diagnostics()}`,
+      );
     }
     return response;
   }
@@ -170,20 +200,29 @@ export class PiRpcProcess {
     return (await this.waitForRecord(predicate, options)).value;
   }
 
-  /** Observe the exact matching sequence so long workflows can acknowledge completed batches. */
   async waitForRecord(
     predicate: (record: PiRpcRecord) => boolean,
     options: { after?: number; timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<StoredRecord> {
-    if (options.signal?.aborted) throw options.signal.reason instanceof Error ? options.signal.reason : new Error("Pi CLI wait was cancelled");
+    if (options.signal?.aborted)
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error("Pi CLI wait was cancelled");
     const after = options.after ?? 0;
-    if (!Number.isSafeInteger(after) || after < 0) throw new Error(`Invalid Pi RPC cursor ${after}`);
+    if (!Number.isSafeInteger(after) || after < 0)
+      throw new Error(`Invalid Pi RPC cursor ${after}`);
     if (after < this.acknowledgedSequence) throw this.cursorGap(after);
     for (const stored of this.records) {
       if (stored.sequence > after && predicate(stored.value)) return stored;
     }
-    if (this.failure) throw new Error(`${this.failure.message}\n${this.diagnostics()}`, { cause: this.failure });
-    if (this.exit) throw new Error(`Pi CLI exited before the expected RPC record\n${this.diagnostics()}`);
+    if (this.failure)
+      throw new Error(`${this.failure.message}\n${this.diagnostics()}`, {
+        cause: this.failure,
+      });
+    if (this.exit)
+      throw new Error(
+        `Pi CLI exited before the expected RPC record\n${this.diagnostics()}`,
+      );
 
     return await new Promise<StoredRecord>((resolve, reject) => {
       const waiter: RpcWaiter = {
@@ -193,14 +232,22 @@ export class PiRpcProcess {
         reject,
         timer: setTimeout(() => {
           this.removeWaiter(waiter);
-          reject(new Error(`Timed out waiting for a Pi RPC record after ${options.timeoutMs ?? 15_000}ms\n${this.diagnostics()}`));
+          reject(
+            new Error(
+              `Timed out waiting for a Pi RPC record after ${options.timeoutMs ?? 15_000}ms\n${this.diagnostics()}`,
+            ),
+          );
         }, options.timeoutMs ?? 15_000),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       };
       if (options.signal) {
         waiter.abort = () => {
           this.removeWaiter(waiter);
-          reject(options.signal?.reason instanceof Error ? options.signal.reason : new Error("Pi CLI wait was cancelled"));
+          reject(
+            options.signal?.reason instanceof Error
+              ? options.signal.reason
+              : new Error("Pi CLI wait was cancelled"),
+          );
         };
         options.signal.addEventListener("abort", waiter.abort, { once: true });
       }
@@ -208,45 +255,80 @@ export class PiRpcProcess {
     });
   }
 
-  async close(timeoutMs = 15_000): Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> {
+  async close(timeoutMs = 15_000): Promise<{
+    exit: ProcessExit;
+    forced: boolean;
+    treeCleanupError?: string;
+  }> {
     this.closePromise ??= this.closeOwned(timeoutMs);
     return await this.closePromise;
   }
 
-  /** Ends Pi's stdin and waits for a natural exit; past `timeoutMs`, force-stops the owned process tree and reports whether cleanup was forced or uncertain. */
-  private async closeOwned(timeoutMs: number): Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> {
-    if (this.child.stdin && !this.child.stdin.destroyed && !this.child.stdin.writableEnded) this.child.stdin.end();
+  private async closeOwned(timeoutMs: number): Promise<{
+    exit: ProcessExit;
+    forced: boolean;
+    treeCleanupError?: string;
+  }> {
+    if (
+      this.child.stdin &&
+      !this.child.stdin.destroyed &&
+      !this.child.stdin.writableEnded
+    )
+      this.child.stdin.end();
     let exit = await this.waitForExit(timeoutMs);
     if (exit) return { exit, forced: false };
 
     let treeCleanupError: string | undefined;
     let forced = false;
     const pid = this.child.pid;
-    // Pipes and exit notifications can lag native exit; probe the owned handle before PID escalation.
-    if (pid === undefined || this.child.exitCode !== null || this.child.signalCode !== null || !this.child.kill(0)) {
-      treeCleanupError = "Pi CLI ownership could not be confirmed for forced cleanup";
+    if (
+      pid === undefined ||
+      this.child.exitCode !== null ||
+      this.child.signalCode !== null ||
+      !this.child.kill(0)
+    ) {
+      treeCleanupError =
+        "Pi CLI ownership could not be confirmed for forced cleanup";
     } else {
       forced = true;
-      const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+      const taskkill = path.join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32",
+        "taskkill.exe",
+      );
       try {
-        execFileSync(taskkill, ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", timeout: 3_000 });
+        execFileSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
+          stdio: "ignore",
+          timeout: 3_000,
+        });
       } catch (error) {
         treeCleanupError = errorText(error);
         this.child.kill("SIGKILL");
       }
     }
     exit = await this.waitForExit(5_000);
-    if (!exit) throw new Error(`Pi CLI cleanup could not be confirmed${treeCleanupError ? `: ${treeCleanupError}` : ""}\n${this.diagnostics()}`);
-    return { exit, forced, ...(treeCleanupError === undefined ? {} : { treeCleanupError }) };
+    if (!exit)
+      throw new Error(
+        `Pi CLI cleanup could not be confirmed${treeCleanupError ? `: ${treeCleanupError}` : ""}\n${this.diagnostics()}`,
+      );
+    return {
+      exit,
+      forced,
+      ...(treeCleanupError === undefined ? {} : { treeCleanupError }),
+    };
   }
 
-  private async waitForExit(timeoutMs: number): Promise<ProcessExit | undefined> {
+  private async waitForExit(
+    timeoutMs: number,
+  ): Promise<ProcessExit | undefined> {
     if (this.exit) return this.exit;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         this.closed,
-        new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), timeoutMs);
+        }),
       ]);
     } finally {
       if (timer) clearTimeout(timer);
@@ -256,7 +338,10 @@ export class PiRpcProcess {
   private consumeStdout(chunk: Buffer): void {
     if (this.failure) return;
     this.stdoutBuffer += this.decoder.write(chunk);
-    if (Buffer.byteLength(this.stdoutBuffer, "utf8") > MAX_RECORD_BYTES && !this.stdoutBuffer.includes("\n")) {
+    if (
+      Buffer.byteLength(this.stdoutBuffer, "utf8") > MAX_RECORD_BYTES &&
+      !this.stdoutBuffer.includes("\n")
+    ) {
       this.fail(new Error(`Pi RPC record exceeded ${MAX_RECORD_BYTES} bytes`));
       this.stdoutBuffer = "";
       return;
@@ -269,14 +354,18 @@ export class PiRpcProcess {
       if (line.endsWith("\r")) line = line.slice(0, -1);
       if (!line) continue;
       if (Buffer.byteLength(line, "utf8") > MAX_RECORD_BYTES) {
-        this.fail(new Error(`Pi RPC record exceeded ${MAX_RECORD_BYTES} bytes`));
+        this.fail(
+          new Error(`Pi RPC record exceeded ${MAX_RECORD_BYTES} bytes`),
+        );
         return;
       }
       let parsed: unknown;
       try {
         parsed = JSON.parse(line);
       } catch (error) {
-        this.fail(new Error(`Pi RPC emitted invalid JSON: ${errorText(error)}`));
+        this.fail(
+          new Error(`Pi RPC emitted invalid JSON: ${errorText(error)}`),
+        );
         return;
       }
       if (!isRecord(parsed)) {
@@ -290,7 +379,9 @@ export class PiRpcProcess {
 
   private publish(value: PiRpcRecord): void {
     if (this.records.length >= MAX_RECORDS) {
-      this.fail(new Error(`Pi RPC exceeded the ${MAX_RECORDS}-record driver limit`));
+      this.fail(
+        new Error(`Pi RPC exceeded the ${MAX_RECORDS}-record driver limit`),
+      );
       return;
     }
     const stored = { sequence: ++this.sequence, value };
@@ -304,7 +395,9 @@ export class PiRpcProcess {
         }
       } catch (error) {
         this.removeWaiter(waiter);
-        waiter.reject(error instanceof Error ? error : new Error(String(error)));
+        waiter.reject(
+          error instanceof Error ? error : new Error(String(error)),
+        );
       }
     }
   }
@@ -323,7 +416,8 @@ export class PiRpcProcess {
 
   private removeWaiter(waiter: RpcWaiter): void {
     clearTimeout(waiter.timer);
-    if (waiter.signal && waiter.abort) waiter.signal.removeEventListener("abort", waiter.abort);
+    if (waiter.signal && waiter.abort)
+      waiter.signal.removeEventListener("abort", waiter.abort);
     this.waiters.delete(waiter);
   }
 }

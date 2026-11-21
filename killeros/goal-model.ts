@@ -39,7 +39,10 @@ export type GoalTurnDecision =
       verification: "file" | "model-reported";
     };
 
-export type GoalPendingDecision = Extract<GoalTurnDecision, { kind: "continue" | "blocker-audit" }>;
+export type GoalPendingDecision = Extract<
+  GoalTurnDecision,
+  { kind: "continue" | "blocker-audit" }
+>;
 
 export interface GoalBlockerAudit {
   key: string;
@@ -50,7 +53,12 @@ export interface GoalBlockerAudit {
 
 export type GoalFileBaseline =
   | { exists: false }
-  | { exists: true; size: number; mtimeMs: number; contentHash?: string | null };
+  | {
+      exists: true;
+      size: number;
+      mtimeMs: number;
+      contentHash?: string | null;
+    };
 
 export interface GoalFileVerification {
   kind: "file";
@@ -77,36 +85,37 @@ export interface GoalStateCommon {
   stopReason?: string;
 }
 
-export type GoalState = GoalStateCommon & (
-  | {
-      status: "active";
-      activeStartedAt: number;
-      result?: string;
-      blockerAudit?: GoalBlockerAudit;
-      resumeAfterManualCompaction?: never;
-    }
-  | {
-      status: "paused";
-      activeStartedAt?: never;
-      result?: string;
-      blockerAudit?: GoalBlockerAudit;
-      resumeAfterManualCompaction?: true;
-    }
-  | {
-      status: "blocked";
-      activeStartedAt?: never;
-      result: string;
-      blockerAudit?: GoalBlockerAudit;
-      resumeAfterManualCompaction?: never;
-    }
-  | {
-      status: "complete";
-      activeStartedAt?: never;
-      result: string;
-      blockerAudit?: never;
-      resumeAfterManualCompaction?: never;
-    }
-);
+export type GoalState = GoalStateCommon &
+  (
+    | {
+        status: "active";
+        activeStartedAt: number;
+        result?: string;
+        blockerAudit?: GoalBlockerAudit;
+        resumeAfterManualCompaction?: never;
+      }
+    | {
+        status: "paused";
+        activeStartedAt?: never;
+        result?: string;
+        blockerAudit?: GoalBlockerAudit;
+        resumeAfterManualCompaction?: true;
+      }
+    | {
+        status: "blocked";
+        activeStartedAt?: never;
+        result: string;
+        blockerAudit?: GoalBlockerAudit;
+        resumeAfterManualCompaction?: never;
+      }
+    | {
+        status: "complete";
+        activeStartedAt?: never;
+        result: string;
+        blockerAudit?: never;
+        resumeAfterManualCompaction?: never;
+      }
+  );
 
 /** Pi request outcomes for goal recovery: awaiting result, compacted, or rejected as session-too-small. */
 type AutomaticGoalCompactionOutcome = "pending" | "completed" | "skipped";
@@ -125,7 +134,11 @@ interface GoalTurnExecution {
 }
 
 export type BlockedGoalCompletion =
-  | { kind: "eligible"; state: Extract<GoalState, { status: "blocked" }>; generation: number }
+  | {
+      kind: "eligible";
+      state: Extract<GoalState, { status: "blocked" }>;
+      generation: number;
+    }
   | { kind: "accepted"; generation: number };
 
 export interface GoalRuntime {
