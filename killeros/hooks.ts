@@ -1,12 +1,13 @@
-import {
-  spawn,
-  type SpawnOptionsWithStdioTuple,
-} from "node:child_process";
+import { spawn, type SpawnOptionsWithStdioTuple } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  CONFIG_DIR_NAME,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { errorMessage, reportError } from "./errors.ts";
 import { readUnlinkedFile, UnstableFileError } from "./file-identity.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -46,7 +47,10 @@ interface HookChildProcess {
   once(event: "close", listener: (code: number | null) => void): unknown;
 }
 type HookSpawnOptions = SpawnOptionsWithStdioTuple<"ignore", "pipe", "pipe">;
-export type HookSpawnProcess = (command: string, options: HookSpawnOptions) => HookChildProcess;
+export type HookSpawnProcess = (
+  command: string,
+  options: HookSpawnOptions,
+) => HookChildProcess;
 
 export interface ExecuteHookOptions {
   command: string;
@@ -57,7 +61,11 @@ export interface ExecuteHookOptions {
   signal?: AbortSignal;
 }
 
-const HOOK_EVENTS: readonly KillerosHookEvent[] = ["tool_call", "tool_result", "agent_settled"];
+const HOOK_EVENTS: readonly KillerosHookEvent[] = [
+  "tool_call",
+  "tool_result",
+  "agent_settled",
+];
 const HOOK_CONFIG_FILE = "killeros-hooks.json";
 const HOOK_CONFIG_LIMIT = 64 * 1024;
 const HOOK_OUTPUT_LIMIT = 16 * 1024;
@@ -68,10 +76,16 @@ const HOOK_TIMEOUT_MAX_MS = 300_000;
 // Reads executable project configuration through a bounded, project-local file descriptor.
 function readHookConfig(configPath: string, projectRoot: string): string {
   const actualPath = realpathSync(configPath);
-  const expectedPath = path.join(realpathSync(projectRoot), CONFIG_DIR_NAME, HOOK_CONFIG_FILE);
+  const expectedPath = path.join(
+    realpathSync(projectRoot),
+    CONFIG_DIR_NAME,
+    HOOK_CONFIG_FILE,
+  );
   const samePath = actualPath.toLowerCase() === expectedPath.toLowerCase();
   if (!samePath) {
-    throw new Error("Hook config must be stored in the real project .pi directory");
+    throw new Error(
+      "Hook config must be stored in the real project .pi directory",
+    );
   }
 
   let read: ReturnType<typeof readUnlinkedFile>;
@@ -79,9 +93,14 @@ function readHookConfig(configPath: string, projectRoot: string): string {
     read = readUnlinkedFile(configPath, HOOK_CONFIG_LIMIT);
   } catch (error) {
     if (!(error instanceof UnstableFileError)) throw error;
-    throw new Error(error.reason === "changed" ? "Hook config changed while being opened" : "Hook config must be a regular, non-linked file");
+    throw new Error(
+      error.reason === "changed"
+        ? "Hook config changed while being opened"
+        : "Hook config must be a regular, non-linked file",
+    );
   }
-  if (read.truncated) throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
+  if (read.truncated)
+    throw new Error(`Hook config exceeds ${HOOK_CONFIG_LIMIT} bytes`);
   return read.content.toString("utf8");
 }
 
@@ -90,13 +109,17 @@ function loadKillerosConfig(ctx: ExtensionContext): KillerosHookConfig {
   if (!existsSync(configPath)) return {};
   const displayPath = safeTerminalText(configPath).replaceAll("\n", "");
   if (!ctx.isProjectTrusted()) {
-    ctx.ui.notify(`Ignored untrusted project hooks in ${displayPath}`, "warning");
+    ctx.ui.notify(
+      `Ignored untrusted project hooks in ${displayPath}`,
+      "warning",
+    );
     return {};
   }
 
   try {
     const parsed: unknown = JSON.parse(readHookConfig(configPath, ctx.cwd));
-    if (!isRecord(parsed)) throw new Error("Hook config must contain a JSON object");
+    if (!isRecord(parsed))
+      throw new Error("Hook config must contain a JSON object");
     const parsedHooks = parsed.hooks;
     if (parsedHooks !== undefined && !isRecord(parsedHooks)) {
       throw new Error("Hook config hooks must contain a JSON object");
@@ -109,28 +132,52 @@ function loadKillerosConfig(ctx: ExtensionContext): KillerosHookConfig {
       const accepted: KillerosHook[] = [];
       for (const [index, candidate] of candidates.entries()) {
         if (!isRecord(candidate)) {
-          ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${displayPath}`, "warning");
+          ctx.ui.notify(
+            `Ignored invalid ${event} hook ${index + 1} in ${displayPath}`,
+            "warning",
+          );
           continue;
         }
         const { command, matcher, timeoutMs } = candidate;
         if (event === "agent_settled" && matcher !== undefined) {
-          ctx.ui.notify(`Ignored ${event} hook ${index + 1}: matchers are only valid for tool events`, "warning");
+          ctx.ui.notify(
+            `Ignored ${event} hook ${index + 1}: matchers are only valid for tool events`,
+            "warning",
+          );
           continue;
         }
-        if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > HOOK_TIMEOUT_MAX_MS)) {
-          ctx.ui.notify(`Ignored ${event} hook ${index + 1}: timeoutMs must be an integer from 1 to ${HOOK_TIMEOUT_MAX_MS}`, "warning");
+        if (
+          timeoutMs !== undefined &&
+          (typeof timeoutMs !== "number" ||
+            !Number.isSafeInteger(timeoutMs) ||
+            timeoutMs <= 0 ||
+            timeoutMs > HOOK_TIMEOUT_MAX_MS)
+        ) {
+          ctx.ui.notify(
+            `Ignored ${event} hook ${index + 1}: timeoutMs must be an integer from 1 to ${HOOK_TIMEOUT_MAX_MS}`,
+            "warning",
+          );
           continue;
         }
-        if (typeof command !== "string" || command.trim().length === 0
-          || matcher !== undefined && typeof matcher !== "string") {
-          ctx.ui.notify(`Ignored invalid ${event} hook ${index + 1} in ${displayPath}`, "warning");
+        if (
+          typeof command !== "string" ||
+          command.trim().length === 0 ||
+          (matcher !== undefined && typeof matcher !== "string")
+        ) {
+          ctx.ui.notify(
+            `Ignored invalid ${event} hook ${index + 1} in ${displayPath}`,
+            "warning",
+          );
           continue;
         }
         if (matcher && matcher !== "*") {
           try {
             new RegExp(matcher, "u");
           } catch {
-            ctx.ui.notify(`Ignored ${event} hook ${index + 1}: invalid matcher ${JSON.stringify(matcher)}`, "warning");
+            ctx.ui.notify(
+              `Ignored ${event} hook ${index + 1}: invalid matcher ${JSON.stringify(matcher)}`,
+              "warning",
+            );
             continue;
           }
         }
@@ -202,7 +249,9 @@ function terminateHookProcess(child: HookChildProcess, force: boolean): void {
   }
 }
 
-export function executeHook(options: ExecuteHookOptions): Promise<HookExecutionResult>;
+export function executeHook(
+  options: ExecuteHookOptions,
+): Promise<HookExecutionResult>;
 /** @deprecated Use the object-argument form. The positional adapter will be removed in the next major release. */
 export function executeHook(
   command: string,
@@ -220,16 +269,21 @@ export function executeHook(
   legacySpawnProcess?: HookSpawnProcess,
   legacySignal?: AbortSignal,
 ): Promise<HookExecutionResult> {
-  const options: ExecuteHookOptions = typeof optionsOrCommand === "string"
-    ? {
-        command: optionsOrCommand,
-        cwd: legacyCwd ?? process.cwd(),
-        environment: legacyEnvironment ?? {},
-        ...(legacyTimeoutMs === undefined ? {} : { timeoutMs: legacyTimeoutMs }),
-        ...(legacySpawnProcess === undefined ? {} : { spawnProcess: legacySpawnProcess }),
-        ...(legacySignal === undefined ? {} : { signal: legacySignal }),
-      }
-    : optionsOrCommand;
+  const options: ExecuteHookOptions =
+    typeof optionsOrCommand === "string"
+      ? {
+          command: optionsOrCommand,
+          cwd: legacyCwd ?? process.cwd(),
+          environment: legacyEnvironment ?? {},
+          ...(legacyTimeoutMs === undefined
+            ? {}
+            : { timeoutMs: legacyTimeoutMs }),
+          ...(legacySpawnProcess === undefined
+            ? {}
+            : { spawnProcess: legacySpawnProcess }),
+          ...(legacySignal === undefined ? {} : { signal: legacySignal }),
+        }
+      : optionsOrCommand;
   const {
     command,
     cwd,
@@ -239,7 +293,14 @@ export function executeHook(
     signal,
   } = options;
   if (signal?.aborted) {
-    return Promise.resolve({ code: 130, stdout: "", stderr: "", timedOut: false, cancelled: true, exitUnconfirmed: false });
+    return Promise.resolve({
+      code: 130,
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+      cancelled: true,
+      exitUnconfirmed: false,
+    });
   }
   let child: HookChildProcess;
   try {
@@ -251,11 +312,26 @@ export function executeHook(
       windowsHide: true,
     });
   } catch (error) {
-    return Promise.resolve({ code: 1, stdout: "", stderr: errorMessage(error), timedOut: false, cancelled: false, exitUnconfirmed: false });
+    return Promise.resolve({
+      code: 1,
+      stdout: "",
+      stderr: errorMessage(error),
+      timedOut: false,
+      cancelled: false,
+      exitUnconfirmed: false,
+    });
   }
   return new Promise((resolve) => {
-    const stdout: HookOutputBuffer = { bytes: 0, decoder: new StringDecoder("utf8"), text: "" };
-    const stderr: HookOutputBuffer = { bytes: 0, decoder: new StringDecoder("utf8"), text: "" };
+    const stdout: HookOutputBuffer = {
+      bytes: 0,
+      decoder: new StringDecoder("utf8"),
+      text: "",
+    };
+    const stderr: HookOutputBuffer = {
+      bytes: 0,
+      decoder: new StringDecoder("utf8"),
+      text: "",
+    };
     let completed = false;
     let termination: "timeout" | "cancelled" | undefined;
     let timer: NodeJS.Timeout | undefined;
@@ -280,7 +356,8 @@ export function executeHook(
         exitUnconfirmed,
       });
     };
-    const terminationCode = (): number => termination === "cancelled" ? 130 : 124;
+    const terminationCode = (): number =>
+      termination === "cancelled" ? 130 : 124;
     const beginTermination = (reason: "timeout" | "cancelled"): void => {
       if (completed || termination) return;
       termination = reason;
@@ -312,16 +389,19 @@ export function executeHook(
     const abort = (): void => beginTermination("cancelled");
     child.stdout.on("data", (chunk) => appendBounded(stdout, chunk));
     child.stderr.on("data", (chunk) => appendBounded(stderr, chunk));
-    const captureStreamError = (error: Error): void => appendBounded(stderr, error.message);
-    if (child.stdout instanceof EventEmitter) child.stdout.on("error", captureStreamError);
-    if (child.stderr instanceof EventEmitter) child.stderr.on("error", captureStreamError);
+    const captureStreamError = (error: Error): void =>
+      appendBounded(stderr, error.message);
+    if (child.stdout instanceof EventEmitter)
+      child.stdout.on("error", captureStreamError);
+    if (child.stderr instanceof EventEmitter)
+      child.stderr.on("error", captureStreamError);
     child.on("error", (error) => {
       appendBounded(stderr, error.message);
       if (!windowsCleanupPending) finish(termination ? terminationCode() : 1);
     });
     child.once("close", (code) => {
       if (!windowsCleanupPending) {
-        finish(termination ? terminationCode() : code ?? 1);
+        finish(termination ? terminationCode() : (code ?? 1));
       }
     });
     if (completed) return;
@@ -343,10 +423,17 @@ function serializeHookPayload(payload: unknown): string {
   }
   if (serialized.length <= HOOK_PAYLOAD_LIMIT) return serialized;
   const previewLength = Math.floor((HOOK_PAYLOAD_LIMIT - 64) / 2);
-  return JSON.stringify({ truncated: true, preview: serialized.slice(0, previewLength) });
+  return JSON.stringify({
+    truncated: true,
+    preview: serialized.slice(0, previewLength),
+  });
 }
 
-function hookEnvironment(event: KillerosHookEvent, toolName = "", payload: unknown = {}): Record<string, string> {
+function hookEnvironment(
+  event: KillerosHookEvent,
+  toolName = "",
+  payload: unknown = {},
+): Record<string, string> {
   return {
     KILLEROS_EVENT: event,
     KILLEROS_TOOL: toolName,
@@ -355,15 +442,32 @@ function hookEnvironment(event: KillerosHookEvent, toolName = "", payload: unkno
 }
 
 function hookFailureMessage(result: HookExecutionResult): string {
-  const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
-  return safeTerminalText(`Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}\n${detail}`);
+  const detail =
+    result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
+  return safeTerminalText(
+    `Hook failed${result.timedOut ? " (timed out)" : ""}${result.exitUnconfirmed ? " (process exit unconfirmed)" : ""}\n${detail}`,
+  );
 }
 
-function runHook(hook: KillerosHook, ctx: ExtensionContext, environment: Record<string, string>): Promise<HookExecutionResult> {
-  return executeHook({ command: hook.command, cwd: ctx.cwd, environment, timeoutMs: hook.timeoutMs, signal: ctx.signal });
+function runHook(
+  hook: KillerosHook,
+  ctx: ExtensionContext,
+  environment: Record<string, string>,
+): Promise<HookExecutionResult> {
+  return executeHook({
+    command: hook.command,
+    cwd: ctx.cwd,
+    environment,
+    timeoutMs: hook.timeoutMs,
+    signal: ctx.signal,
+  });
 }
 
-async function runObserverHooks(hooks: readonly KillerosHook[], ctx: ExtensionContext, environment: Record<string, string>): Promise<void> {
+async function runObserverHooks(
+  hooks: readonly KillerosHook[],
+  ctx: ExtensionContext,
+  environment: Record<string, string>,
+): Promise<void> {
   for (const hook of hooks) {
     const result = await runHook(hook, ctx, environment);
     if (result.cancelled) break;
@@ -379,13 +483,23 @@ async function runObserverHooks(hooks: readonly KillerosHook[], ctx: ExtensionCo
  */
 export function registerLifecycleHooks(pi: ExtensionAPI): () => void {
   let config: KillerosHookConfig = {};
-  pi.on("session_start", (_event, ctx) => { config = loadKillerosConfig(ctx); });
+  pi.on("session_start", (_event, ctx) => {
+    config = loadKillerosConfig(ctx);
+  });
 
   pi.on("tool_call", async (event, ctx) => {
     for (const hook of config.hooks?.tool_call ?? []) {
       if (!matchesHook(hook, event.toolName)) continue;
-      const result = await runHook(hook, ctx, hookEnvironment("tool_call", event.toolName, event.input));
-      if (result.cancelled) return { block: true, reason: "Hook cancelled because the parent request was aborted" };
+      const result = await runHook(
+        hook,
+        ctx,
+        hookEnvironment("tool_call", event.toolName, event.input),
+      );
+      if (result.cancelled)
+        return {
+          block: true,
+          reason: "Hook cancelled because the parent request was aborted",
+        };
       if (result.code !== 0) {
         const reason = hookFailureMessage(result);
         ctx.ui.notify(reason, "error");
@@ -395,15 +509,25 @@ export function registerLifecycleHooks(pi: ExtensionAPI): () => void {
   });
 
   pi.on("tool_result", async (event, ctx) => {
-    const hooks = (config.hooks?.tool_result ?? []).filter((hook) => matchesHook(hook, event.toolName));
+    const hooks = (config.hooks?.tool_result ?? []).filter((hook) =>
+      matchesHook(hook, event.toolName),
+    );
     if (hooks.length === 0) return;
-    await runObserverHooks(hooks, ctx, hookEnvironment("tool_result", event.toolName, { input: event.input, isError: event.isError }));
+    await runObserverHooks(
+      hooks,
+      ctx,
+      hookEnvironment("tool_result", event.toolName, {
+        input: event.input,
+        isError: event.isError,
+      }),
+    );
   });
 
   return () => {
     pi.on("agent_settled", async (_event, ctx) => {
       const hooks = config.hooks?.agent_settled ?? [];
-      if (hooks.length > 0) await runObserverHooks(hooks, ctx, hookEnvironment("agent_settled"));
+      if (hooks.length > 0)
+        await runObserverHooks(hooks, ctx, hookEnvironment("agent_settled"));
     });
   };
 }

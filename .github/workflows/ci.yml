@@ -19,9 +19,8 @@ permissions:
   contents: read
   pull-requests: read
 
-# Cancel obsolete runs for the same event ref.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -33,128 +32,323 @@ env:
   NPM_CONFIG_FUND: 'false'
 
 jobs:
-  tested-tree:
-    name: Check for a tested tree
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  plan:
+    name: Plan CI
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      skip: ${{ steps.tested.outputs.skip }}
+      skip: ${{ steps.plan.outputs.skip }}
+      pi-latest-full-suite: ${{ steps.pi.outputs.full-suite }}
+      pi-latest-packages: ${{ steps.pi.outputs.packages }}
+      full-suite: ${{ steps.plan.outputs.full-suite }}
+      files: ${{ steps.plan.outputs.files }}
+      lifecycles: ${{ steps.plan.outputs.lifecycles }}
+      shard-count: ${{ steps.plan.outputs.shard-count }}
+      shards: ${{ steps.plan.outputs.shards }}
+      concurrency: ${{ steps.plan.outputs.concurrency }}
+      lifecycle-repeats: ${{ steps.plan.outputs.lifecycle-repeats }}
+      pi-latest-files: ${{ steps.plan.outputs.pi-latest-files }}
+      pi-latest-lifecycles: ${{ steps.plan.outputs.pi-latest-lifecycles }}
+      pi-latest-shard-count: ${{ steps.plan.outputs.pi-latest-shard-count }}
+      pi-latest-shards: ${{ steps.plan.outputs.pi-latest-shards }}
+      pi-latest-concurrency: ${{ steps.plan.outputs.pi-latest-concurrency }}
+      pi-latest-lifecycle-repeats: ${{ steps.plan.outputs.pi-latest-lifecycle-repeats }}
+      tree: ${{ steps.plan.outputs.tree }}
     steps:
-      - name: Check out merge and parents
-        id: checkout
-        continue-on-error: true
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Check the pull request's recorded tree
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: canary
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26.13.0'
+          package-manager-cache: false
+
+      - name: Resolve matched Pi packages
+        id: pi
+        env:
+          PI_TARGET: '>=1.5.2 <2'
+        run: |
+          npm view "@earendil-works/pi-coding-agent@$PI_TARGET" version dependencies --json | node -e '
+            const { appendFileSync, readFileSync } = require("node:fs");
+            const releases = JSON.parse(readFileSync(0, "utf8"));
+            const latest = Array.isArray(releases) ? releases.at(-1) : releases;
+            const versions = {
+              "@earendil-works/pi-ai": latest?.dependencies?.["@earendil-works/pi-ai"],
+              "@earendil-works/pi-coding-agent": latest?.version,
+              "@earendil-works/pi-tui": latest?.dependencies?.["@earendil-works/pi-tui"],
+              "typebox": latest?.dependencies?.typebox,
+            };
+            const locked = JSON.parse(readFileSync("package-lock.json", "utf8")).packages;
+            const entries = Object.entries(versions);
+            for (const [name, version] of entries) {
+              if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/u.test(version)) {
+                throw new Error("Expected an exact stable npm version for " + name);
+              }
+            }
+            const packages = entries.map(([name, version]) => name + "@" + version).join(" ");
+            const fullSuite = entries.some(([name, version]) => version !== locked["node_modules/" + name]?.version);
+            appendFileSync(process.env.GITHUB_OUTPUT, "full-suite=" + fullSuite + "\npackages=" + packages + "\n");
+          '
+
+      - name: Look up full PR coverage
         id: tested
-        if: steps.checkout.outcome == 'success'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: ./.github/actions/tested-tree
+        with:
+          pi-packages: ${{ steps.pi.outputs.packages }}
 
-  quality-checks:
-    name: Quality checks
-    needs: tested-tree
-    if: "!cancelled() && (needs.tested-tree.result != 'success' || needs.tested-tree.outputs.skip != 'true')"
-    runs-on: windows-latest
-    timeout-minutes: 25
+      - name: Plan test shards
+        id: plan
+        env:
+          REUSE: ${{ steps.tested.outcome == 'success' && steps.tested.outputs.skip == 'true' }}
+          PI_LATEST_FULL_SUITE: ${{ steps.pi.outputs.full-suite }}
+        run: |
+          echo "skip=$REUSE" >> "$GITHUB_OUTPUT"
+          tree=$(git rev-parse --verify 'HEAD^{tree}')
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          if [[ "$REUSE" == true ]]; then
+            exit 0
+          fi
+
+          write_plan() {
+            local plan
+            plan=$(cat)
+            printf '%s\n' "$plan" >&2
+            jq -r --arg prefix "$1" '
+              "\($prefix)files=\(.files | join(","))",
+              "\($prefix)lifecycles=\(.lifecycles | join(","))",
+              "\($prefix)shard-count=\(.shardCount)",
+              "\($prefix)shards=\(.shards | tojson)",
+              "\($prefix)concurrency=\(.concurrency)",
+              "\($prefix)lifecycle-repeats=\(.lifecycleRepeats)",
+              (if $prefix == "" then "full-suite=\(.fullSuite)" else empty end)
+            ' <<< "$plan" >> "$GITHUB_OUTPUT"
+          }
+
+          max_shards=12
+          if [[ "$PI_LATEST_FULL_SUITE" == true ]]; then
+            max_shards=7
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]] && git rev-parse --verify -q 'HEAD^1^{commit}' >/dev/null; then
+            bun scripts/test-changed.ts --ci-plan --diff-base HEAD^1 --diff-head HEAD --max-shards "$max_shards" --target-shard-seconds 22 --concurrency 2 --lifecycle-repeats 2 | write_plan ""
+          else
+            bun scripts/test-changed.ts --ci-plan --full --max-shards "$max_shards" --target-shard-seconds 22 --concurrency 2 --lifecycle-repeats 2 | write_plan ""
+          fi
+          if [[ "$PI_LATEST_FULL_SUITE" == true ]]; then
+            bun scripts/test-changed.ts --ci-plan --full --max-shards "$max_shards" --target-shard-seconds 22 --concurrency 2 --lifecycle-repeats 2 | write_plan pi-latest-
+          fi
+
+  typecheck:
+    name: Type check
+    needs: plan
+    if: needs.plan.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: canary
+
+      - name: Cache Bun packages
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('package-lock.json') }}
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify package files are unchanged
+        run: git diff --exit-code -- package.json package-lock.json
+
+      - run: bun check --no-script
+
+  lint:
+    name: Lint
+    needs: plan
+    if: needs.plan.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: canary
+
+      - name: Cache Bun packages
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('package-lock.json') }}
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify package files are unchanged
+        run: git diff --exit-code -- package.json package-lock.json
+
+      - run: bun lint --no-script --type-aware --max-warnings=0 .
+
+  format:
+    name: Format
+    needs: plan
+    if: needs.plan.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: canary
+
+      - run: bun fmt --no-script --check
+
+  audit-and-release:
+    name: Audit and release metadata
+    needs: plan
+    if: needs.plan.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '26.13.0'
-          cache: npm
-          cache-dependency-path: package-lock.json
+          package-manager-cache: false
 
       - name: Audit locked dependencies
         run: npm audit --audit-level=moderate --package-lock-only --ignore-scripts --no-fund
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Type-check
-        run: npm run check
 
       - name: Validate release metadata
         env:
           KILLEROS_RELEASE: 'true'
         run: node --experimental-strip-types scripts/verify-release.ts
 
+  publication-lifecycle:
+    name: Publication lifecycle
+    needs: plan
+    if: needs.plan.outputs.skip == 'false'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26.13.0'
+          package-manager-cache: false
+
       - name: Provision publishing npm
-        run: npm install --prefix "$RUNNER_TEMP/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@11.5.1
+        run: |
+          mkdir -p node_modules
+          npm install --prefix "$RUNNER_TEMP/killeros-publishing-npm" --ignore-scripts --no-audit --no-fund --no-package-lock --no-save npm@11.5.1
 
       - name: Test publication lifecycle with publishing npm
         env:
           KILLEROS_TEST_NPM_CLI: ${{ runner.temp }}/killeros-publishing-npm/node_modules/npm/bin/npm-cli.js
         run: node --test --test-force-exit --experimental-strip-types --test-name-pattern="publication lifecycle" test/verify-release.test.ts
 
-      - name: Record the checked-out PR tree
-        id: tree
-        if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository
-        continue-on-error: true
-        run: |
-          tree=$(git rev-parse --verify 'HEAD^{tree}')
-          echo "sha=$tree" >> "$GITHUB_OUTPUT"
-          echo "$tree" > "$RUNNER_TEMP/tested-tree.txt"
-
-      - name: Publish the checked-out PR tree
-        if: steps.tree.outcome == 'success'
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: tested-tree-${{ github.event.pull_request.number }}-${{ github.run_attempt }}-${{ steps.tree.outputs.sha }}
-          path: ${{ runner.temp }}/tested-tree.txt
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Upload test failure reports
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: test-failures-quality-checks-${{ github.run_attempt }}
+          name: test-failures-publication-${{ github.run_attempt }}
           path: node_modules/.killeros-*/failure.txt
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
 
   quality-tests:
-    name: Quality tests (${{ matrix.shard }}/6)
-    needs: tested-tree
-    if: "!cancelled() && (needs.tested-tree.result != 'success' || needs.tested-tree.outputs.skip != 'true')"
+    name: Quality tests (${{ matrix.shard }}/${{ needs.plan.outputs.shard-count }})
+    needs: plan
+    if: needs.plan.outputs.skip == 'false' && needs.plan.outputs.shard-count != '0'
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '26.13.0'
-          cache: npm
-          cache-dependency-path: package-lock.json
+          package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: canary
+
+      - name: Cache Bun packages
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('package-lock.json') }}
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify package files are unchanged
+        run: git diff --exit-code -- package.json package-lock.json
 
       - name: Test shard
-        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/6 --concurrency 2 --lifecycle-repeats 2
+        env:
+          TEST_FILES: ${{ needs.plan.outputs.files }}
+          TEST_LIFECYCLES: ${{ needs.plan.outputs.lifecycles }}
+        run: >-
+          bun scripts/test-suite.ts --shard "${{ matrix.shard }}/${{ needs.plan.outputs.shard-count }}"
+          --files="$TEST_FILES" --lifecycles="$TEST_LIFECYCLES"
+          --concurrency ${{ needs.plan.outputs.concurrency }}
+          --lifecycle-repeats ${{ needs.plan.outputs.lifecycle-repeats }}
+          --target-shard-seconds 22
 
       - name: Upload test failure reports
         if: failure()
@@ -166,102 +360,120 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  pi-latest:
+  pi-latest-check:
     name: Pi compatibility (latest)
-    needs: tested-tree
-    if: "!cancelled() && (needs.tested-tree.result != 'success' || needs.tested-tree.outputs.skip != 'true')"
-    runs-on: windows-latest
-    timeout-minutes: 25
-    outputs:
-      full-suite: ${{ steps.pi.outputs.full-suite }}
-      packages: ${{ steps.pi.outputs.packages }}
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Verify resolved Pi packages match the lockfile
+        if: needs.plan.outputs.pi-latest-full-suite == 'false'
+        env:
+          PI_PACKAGES: ${{ needs.plan.outputs.pi-latest-packages }}
+        run: |
+          read -ra packages <<< "$PI_PACKAGES"
+          test "${#packages[@]}" -eq 4
+          for package in "${packages[@]}"; do
+            jq -e --arg name "${package%@*}" --arg version "${package##*@}" \
+              '.packages["node_modules/" + $name].version == $version' package-lock.json >/dev/null
+          done
+
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: needs.plan.outputs.pi-latest-full-suite == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '26.13.0'
-          cache: npm
-          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Set up Bun
+        if: needs.plan.outputs.pi-latest-full-suite == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: canary
+
+      - name: Cache Bun packages
+        if: needs.plan.outputs.pi-latest-full-suite == 'true'
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('package-lock.json') }}
 
       - name: Install locked dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        if: needs.plan.outputs.pi-latest-full-suite == 'true'
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Install matched Pi packages
-        id: pi
+        if: needs.plan.outputs.pi-latest-full-suite == 'true'
         env:
-          PI_TARGET: '>=1.5.2 <2'
+          PI_PACKAGES: ${{ needs.plan.outputs.pi-latest-packages }}
         run: |
-          specs=$(npm view "@earendil-works/pi-coding-agent@$PI_TARGET" version dependencies --json | node -e '
-            const releases = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-            const latest = Array.isArray(releases) ? releases.at(-1) : releases;
-            const packages = {
-              "@earendil-works/pi-ai": latest?.dependencies?.["@earendil-works/pi-ai"],
-              "@earendil-works/pi-coding-agent": latest?.version,
-              "@earendil-works/pi-tui": latest?.dependencies?.["@earendil-works/pi-tui"],
-              "typebox": latest?.dependencies?.typebox,
-            };
-            for (const [name, spec] of Object.entries(packages)) {
-              if (typeof spec !== "string" || !spec.trim() || /[\r\n]/u.test(spec)) {
-                throw new Error("Missing or invalid npm metadata for " + name);
-              }
-              console.log(name + "@" + spec);
-            }
-          ')
-          mapfile -t packages <<< "$specs"
+          read -ra packages <<< "$PI_PACKAGES"
+          test "${#packages[@]}" -eq 4
           npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "${packages[@]}"
-          node -e '
-            const { appendFileSync, readFileSync } = require("node:fs");
-            const locked = JSON.parse(readFileSync("package-lock.json", "utf8")).packages;
-            const names = ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"];
-            const installed = (name) => JSON.parse(readFileSync("node_modules/" + name + "/package.json", "utf8")).version;
-            const fullSuite = names.some((name) => installed(name) !== locked["node_modules/" + name]?.version);
-            const packages = names.map((name) => name + "@" + installed(name)).join(" ");
-            console.log("Installed " + packages + "; repeat runtime suites: " + fullSuite);
-            appendFileSync(process.env.GITHUB_OUTPUT, "full-suite=" + fullSuite + "\npackages=" + packages + "\n");
-          '
 
       - name: Verify package files are unchanged
+        if: needs.plan.outputs.pi-latest-full-suite == 'true'
         run: git diff --exit-code -- package.json package-lock.json
 
-      - name: Type-check against matched Pi
-        run: npm run check
+      - name: Type check and lint against matched Pi
+        if: needs.plan.outputs.pi-latest-full-suite == 'true'
+        run: |
+          bun check --no-script &
+          check_pid=$!
+          bun lint --no-script --type-aware --max-warnings=0 . &
+          lint_pid=$!
+          status=0
+          wait "$check_pid" || status=1
+          wait "$lint_pid" || status=1
+          exit "$status"
 
   pi-latest-tests:
-    name: Pi compatibility (latest) tests (${{ matrix.shard }}/6)
-    needs: pi-latest
-    if: "!cancelled() && needs.pi-latest.result == 'success' && needs.pi-latest.outputs.full-suite == 'true'"
+    name: Pi compatibility (latest) tests (${{ matrix.shard }}/${{ needs.plan.outputs.pi-latest-shard-count }})
+    needs: plan
+    if: needs.plan.outputs.skip == 'false' && needs.plan.outputs.pi-latest-full-suite == 'true' && needs.plan.outputs.pi-latest-shard-count != '0'
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: ${{ fromJSON(needs.plan.outputs.pi-latest-shards) }}
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '26.13.0'
-          cache: npm
-          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: canary
+
+      - name: Cache Bun packages
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('package-lock.json') }}
 
       - name: Install locked dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Install matched Pi packages
         env:
-          PI_PACKAGES: ${{ needs.pi-latest.outputs.packages }}
+          PI_PACKAGES: ${{ needs.plan.outputs.pi-latest-packages }}
         run: |
           read -ra packages <<< "$PI_PACKAGES"
           test "${#packages[@]}" -eq 4
@@ -270,8 +482,16 @@ jobs:
       - name: Verify package files are unchanged
         run: git diff --exit-code -- package.json package-lock.json
 
-      - name: Test shard against matched Pi
-        run: node --experimental-strip-types scripts/test-suite.ts --shard ${{ matrix.shard }}/6 --concurrency 2 --lifecycle-repeats 2
+      - name: Test shard
+        env:
+          TEST_FILES: ${{ needs.plan.outputs.pi-latest-files }}
+          TEST_LIFECYCLES: ${{ needs.plan.outputs.pi-latest-lifecycles }}
+        run: >-
+          bun scripts/test-suite.ts --shard "${{ matrix.shard }}/${{ needs.plan.outputs.pi-latest-shard-count }}"
+          --files="$TEST_FILES" --lifecycles="$TEST_LIFECYCLES"
+          --concurrency ${{ needs.plan.outputs.pi-latest-concurrency }}
+          --lifecycle-repeats ${{ needs.plan.outputs.pi-latest-lifecycle-repeats }}
+          --target-shard-seconds 22
 
       - name: Upload test failure reports
         if: failure()
@@ -283,67 +503,83 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Branch protection requires this check name.
   quality:
     name: Quality
-    needs: [tested-tree, quality-checks, quality-tests, pi-latest, pi-latest-tests]
+    needs: [plan, typecheck, lint, format, audit-and-release, publication-lifecycle, quality-tests, pi-latest-check, pi-latest-tests]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every quality job
         env:
-          REUSE: ${{ needs.tested-tree.result == 'success' && needs.tested-tree.outputs.skip == 'true' }}
-          CHECKS: ${{ needs.quality-checks.result }}
-          TESTS: ${{ needs.quality-tests.result }}
-          LATEST: ${{ needs.pi-latest.result }}
-          FULL_SUITE: ${{ needs.pi-latest.outputs.full-suite }}
-          SHARDS: ${{ needs.pi-latest-tests.result }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          REUSE: ${{ needs.plan.outputs.skip }}
+          LATEST_SUITE: ${{ needs.plan.outputs.pi-latest-full-suite }}
+          SHARD_COUNT: ${{ needs.plan.outputs.shard-count }}
+          LATEST_SHARD_COUNT: ${{ needs.plan.outputs.pi-latest-shard-count }}
+          TYPECHECK_RESULT: ${{ needs.typecheck.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          FORMAT_RESULT: ${{ needs.format.result }}
+          AUDIT_AND_RELEASE_RESULT: ${{ needs.audit-and-release.result }}
+          PUBLICATION_LIFECYCLE_RESULT: ${{ needs.publication-lifecycle.result }}
+          QUALITY_TESTS_RESULT: ${{ needs.quality-tests.result }}
+          PI_LATEST_CHECK_RESULT: ${{ needs.pi-latest-check.result }}
+          PI_LATEST_TESTS_RESULT: ${{ needs.pi-latest-tests.result }}
         run: |
-          if [ "$REUSE" = true ]; then
-            test "$CHECKS" = skipped
-            test "$TESTS" = skipped
-            test "$LATEST" = skipped
-            test "$SHARDS" = skipped
-          else
-            test "$CHECKS" = success
-            test "$TESTS" = success
-            test "$LATEST" = success
-            case "$FULL_SUITE" in
-              true) test "$SHARDS" = success ;;
-              false) test "$SHARDS" = skipped ;;
-              *) exit 1 ;;
-            esac
-          fi
+          test "$PLAN_RESULT" = success
+          case "$LATEST_SUITE" in
+            true|false) ;;
+            *) exit 1 ;;
+          esac
+          case "$REUSE" in
+            true)
+              expected=skipped
+              tests=skipped
+              latest=skipped
+              ;;
+            false)
+              expected=success
+              [[ "$SHARD_COUNT" =~ ^[0-9]+$ ]]
+              tests=success
+              if [[ "$SHARD_COUNT" == 0 ]]; then
+                tests=skipped
+              fi
+              latest=skipped
+              if [[ "$LATEST_SUITE" == true ]]; then
+                [[ "$LATEST_SHARD_COUNT" =~ ^[1-9][0-9]*$ ]]
+                latest=success
+              fi
+              ;;
+            *) exit 1 ;;
+          esac
+          for result in "$TYPECHECK_RESULT" "$LINT_RESULT" "$FORMAT_RESULT" "$AUDIT_AND_RELEASE_RESULT" "$PUBLICATION_LIFECYCLE_RESULT"; do
+            test "$result" = "$expected"
+          done
+          test "$QUALITY_TESTS_RESULT" = "$tests"
+          test "$PI_LATEST_CHECK_RESULT" = "$expected"
+          test "$PI_LATEST_TESTS_RESULT" = "$latest"
 
-  codeql:
-    name: CodeQL
-    # Fork PRs use a read-only token and cannot upload code-scanning results.
-    if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
+      - name: Record full PR coverage
+        id: proof
+        if: >-
+          success() &&
+          github.event_name == 'pull_request' &&
+          github.base_ref == 'main' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          needs.plan.outputs.full-suite == 'true' &&
+          needs.plan.outputs.shard-count != '0'
+        env:
+          TREE: ${{ needs.plan.outputs.tree }}
+          PI_PACKAGES: ${{ needs.plan.outputs.pi-latest-packages }}
+        run: |
+          jq -n --arg tree "$TREE" --arg piPackages "$PI_PACKAGES" \
+            '{version: 2, tree: $tree, fullSuite: true, piPackages: $piPackages}' > "$RUNNER_TEMP/tested-full-tree.json"
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+      - name: Upload full PR coverage
+        if: steps.proof.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          build-mode: none
-          languages: javascript-typescript
-
-      - name: Analyze with CodeQL
-        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
-        with:
-          category: /language:javascript-typescript
+          name: tested-full-tree-v2-${{ github.event.pull_request.number }}-${{ github.run_attempt }}-${{ needs.plan.outputs.tree }}
+          path: ${{ runner.temp }}/tested-full-tree.json
+          if-no-files-found: error
+          retention-days: 7

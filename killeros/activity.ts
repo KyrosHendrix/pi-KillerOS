@@ -1,4 +1,8 @@
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  Theme,
+} from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { modelDisplayName } from "./display.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
@@ -10,11 +14,17 @@ type ActivityMessage =
   | { kind: "responding" };
 
 function safeToolName(toolName: string): string {
-  const normalized = safeTerminalText(toolName.replace(/[\r\n\t]+/gu, " ")).replace(/\s+/gu, " ").trim();
+  const normalized = safeTerminalText(toolName.replace(/[\r\n\t]+/gu, " "))
+    .replace(/\s+/gu, " ")
+    .trim();
   return truncateToWidth(normalized || "tool", 32, "…");
 }
 
-function formatActivityMessage(message: ActivityMessage, theme: Theme, modelId?: string): string {
+function formatActivityMessage(
+  message: ActivityMessage,
+  theme: Theme,
+  modelId?: string,
+): string {
   let verb: string;
   let detail: string;
 
@@ -69,7 +79,9 @@ export function registerRequestActivity(pi: ExtensionAPI): void {
   let activeModel: string | undefined;
 
   const render = (message: ActivityMessage, ctx: ExtensionContext): void => {
-    ctx.ui.setWorkingMessage(formatActivityMessage(message, ctx.ui.theme, activeModel));
+    ctx.ui.setWorkingMessage(
+      formatActivityMessage(message, ctx.ui.theme, activeModel),
+    );
   };
 
   const clear = (ctx?: ExtensionContext): void => {
@@ -98,12 +110,23 @@ export function registerRequestActivity(pi: ExtensionAPI): void {
   });
 
   pi.on("message_update", (event, ctx) => {
-    if (ctx.mode !== "tui" || !active || event.assistantMessageEvent.type !== "text_start") return;
+    if (
+      ctx.mode !== "tui" ||
+      !active ||
+      event.assistantMessageEvent.type !== "text_start"
+    )
+      return;
     render({ kind: "responding" }, ctx);
   });
 
   pi.on("agent_settled", (_event, ctx) => {
-    if (!active || ctx.mode !== "tui" || !ctx.isIdle?.() || ctx.hasPendingMessages?.()) return;
+    if (
+      !active ||
+      ctx.mode !== "tui" ||
+      !ctx.isIdle?.() ||
+      ctx.hasPendingMessages?.()
+    )
+      return;
     clear(ctx);
   });
 

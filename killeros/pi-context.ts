@@ -1,6 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-type SessionEntry = ReturnType<ExtensionContext["sessionManager"]["getEntries"]>[number];
+type SessionEntry = ReturnType<
+  ExtensionContext["sessionManager"]["getEntries"]
+>[number];
 
 /** Goals and proactive compaction run only where Pi keeps a live session between requests. */
 export function isAutomationMode(ctx: Pick<ExtensionContext, "mode">): boolean {
@@ -8,7 +10,9 @@ export function isAutomationMode(ctx: Pick<ExtensionContext, "mode">): boolean {
 }
 
 /** Returns Pi's context usage, or undefined when the host cannot report it. */
-export function readContextUsage(ctx: Pick<ExtensionContext, "getContextUsage">): ReturnType<ExtensionContext["getContextUsage"]> {
+export function readContextUsage(
+  ctx: Pick<ExtensionContext, "getContextUsage">,
+): ReturnType<ExtensionContext["getContextUsage"]> {
   try {
     return ctx.getContextUsage();
   } catch {
@@ -19,12 +23,19 @@ export function readContextUsage(ctx: Pick<ExtensionContext, "getContextUsage">)
 /** Returns the usage a session entry records: assistant and tool-result messages, compactions, and branch summaries. */
 export function entryUsage(entry: SessionEntry) {
   if (entry.type === "message") {
-    return entry.message.role === "assistant" || entry.message.role === "toolResult" ? entry.message.usage : undefined;
+    return entry.message.role === "assistant" ||
+      entry.message.role === "toolResult"
+      ? entry.message.usage
+      : undefined;
   }
-  return entry.type === "compaction" || entry.type === "branch_summary" ? entry.usage : undefined;
+  return entry.type === "compaction" || entry.type === "branch_summary"
+    ? entry.usage
+    : undefined;
 }
 
-function isAssistant<Message extends { role: string }>(message: Message): message is Extract<Message, { role: "assistant" }> {
+function isAssistant<Message extends { role: string }>(
+  message: Message,
+): message is Extract<Message, { role: "assistant" }> {
   return message.role === "assistant";
 }
 

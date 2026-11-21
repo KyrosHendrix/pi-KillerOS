@@ -13,24 +13,38 @@ declare global {
 
 // Accepts process-global state only when it is safe to reuse across extension versions.
 function isCodexFastState(value: unknown): value is CodexFastState {
-  return typeof value === "object" && value !== null
-    && "enabled" in value && typeof value.enabled === "boolean"
-    && "listeners" in value && value.listeners instanceof Set
-    && [...value.listeners].every((listener) => typeof listener === "function");
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "enabled" in value &&
+    typeof value.enabled === "boolean" &&
+    "listeners" in value &&
+    value.listeners instanceof Set &&
+    [...value.listeners].every((listener) => typeof listener === "function")
+  );
 }
 
 const savedState = globalThis.__killerosCodexFastState;
-const state: CodexFastState = isCodexFastState(savedState) ? savedState : {
-  enabled: typeof savedState === "object" && savedState !== null
-    && "enabled" in savedState && savedState.enabled === true,
-  listeners: new Set<CodexFastStateListener>(),
-};
+const state: CodexFastState = isCodexFastState(savedState)
+  ? savedState
+  : {
+      enabled:
+        typeof savedState === "object" &&
+        savedState !== null &&
+        "enabled" in savedState &&
+        savedState.enabled === true,
+      listeners: new Set<CodexFastStateListener>(),
+    };
 globalThis.__killerosCodexFastState = state;
 
 export function isCodexFastModel(model: ExtensionContext["model"]): boolean {
-  return model?.provider === "openai-codex"
-    || (model?.provider === "openai" && model.api === "openai-responses"
-      && (model.baseUrl === "https://api.openai.com/v1" || model.baseUrl === "https://api.openai.com/v1/"));
+  return (
+    model?.provider === "openai-codex" ||
+    (model?.provider === "openai" &&
+      model.api === "openai-responses" &&
+      (model.baseUrl === "https://api.openai.com/v1" ||
+        model.baseUrl === "https://api.openai.com/v1/"))
+  );
 }
 
 export function isCodexFastEnabled(): boolean {
@@ -43,7 +57,9 @@ export function toggleCodexFast(): boolean {
   return state.enabled;
 }
 
-export function subscribeCodexFast(listener: CodexFastStateListener): () => void {
+export function subscribeCodexFast(
+  listener: CodexFastStateListener,
+): () => void {
   state.listeners.add(listener);
   return () => state.listeners.delete(listener);
 }

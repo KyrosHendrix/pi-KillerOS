@@ -15,7 +15,12 @@ import {
   type EditorTheme,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { colorDirectory, formatCwd, modelDisplayName, padRight } from "./display.ts";
+import {
+  colorDirectory,
+  formatCwd,
+  modelDisplayName,
+  padRight,
+} from "./display.ts";
 import {
   findSlashCommandTokens,
   type SlashCommandResolver,
@@ -26,10 +31,10 @@ import { resolveGitBranch } from "./passive-git-status.ts";
 function readPackageVersion(path: string | URL): string | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return typeof value === "object"
-      && value !== null
-      && "version" in value
-      && typeof value.version === "string"
+    return typeof value === "object" &&
+      value !== null &&
+      "version" in value &&
+      typeof value.version === "string"
       ? value.version
       : undefined;
   } catch {
@@ -37,7 +42,9 @@ function readPackageVersion(path: string | URL): string | undefined {
   }
 }
 
-const KILLEROS_VERSION = readPackageVersion(new URL("../package.json", import.meta.url));
+const KILLEROS_VERSION = readPackageVersion(
+  new URL("../package.json", import.meta.url),
+);
 
 const STARTUP_TIPS = [
   "Press Shift+Enter to insert a line break without sending.",
@@ -86,7 +93,8 @@ function nextStartupTip(): string {
 }
 
 function nextEditorSuggestion(): string {
-  if (editorSuggestionDeck.length === 0) editorSuggestionDeck = shuffledDeck(EDITOR_SUGGESTIONS);
+  if (editorSuggestionDeck.length === 0)
+    editorSuggestionDeck = shuffledDeck(EDITOR_SUGGESTIONS);
   return editorSuggestionDeck.pop() ?? EDITOR_SUGGESTIONS[0];
 }
 
@@ -102,7 +110,13 @@ class PiStartupHeader {
   private branch: string | undefined;
   private disposed = false;
 
-  constructor(pi: ExtensionAPI, ctx: ExtensionContext, tip: string, tui: TUI, refreshTitle: (ctx: ExtensionContext) => void) {
+  constructor(
+    pi: ExtensionAPI,
+    ctx: ExtensionContext,
+    tip: string,
+    tui: TUI,
+    refreshTitle: (ctx: ExtensionContext) => void,
+  ) {
     this.pi = pi;
     this.ctx = ctx;
     this.tip = tip;
@@ -116,7 +130,9 @@ class PiStartupHeader {
   }
 
   private tipLines(width: number, theme: Theme): string[] {
-    const text = theme.italic(`${theme.fg("text", theme.bold("Tip:"))}${theme.fg("dim", ` ${this.tip}`)}`);
+    const text = theme.italic(
+      `${theme.fg("text", theme.bold("Tip:"))}${theme.fg("dim", ` ${this.tip}`)}`,
+    );
     return wrapTextWithAnsi(text, width);
   }
 
@@ -125,18 +141,28 @@ class PiStartupHeader {
     if (!this.disposed) this.refreshTitle(this.ctx);
     if (width <= 0) return [];
     const theme = this.ctx.ui.theme;
-    if (width < 28) return [truncateToWidth(theme.fg("text", theme.bold("KillerOS")), width, "")];
+    if (width < 28)
+      return [
+        truncateToWidth(theme.fg("text", theme.bold("KillerOS")), width, ""),
+      ];
 
-    const textWidth = Math.max(0, width - MASTHEAD_MARK[0].length - MASTHEAD_GAP.length);
+    const textWidth = Math.max(
+      0,
+      width - MASTHEAD_MARK[0].length - MASTHEAD_GAP.length,
+    );
     const identity = `${theme.fg("text", "Pi")}${theme.fg("dim", ` ${PI_VERSION} | `)}${theme.fg("text", "KillerOS")}${KILLEROS_VERSION ? theme.fg("dim", ` ${KILLEROS_VERSION}`) : ""}`;
     const thinkingLevel = this.pi.getThinkingLevel();
-    const reasoning = this.ctx.model?.reasoning === false ? "no reasoning" : thinkingLevel;
-    const modelName = this.ctx.model ? modelDisplayName(this.ctx.model) || "unknown model" : "no model";
+    const reasoning =
+      this.ctx.model?.reasoning === false ? "no reasoning" : thinkingLevel;
+    const modelName = this.ctx.model
+      ? modelDisplayName(this.ctx.model) || "unknown model"
+      : "no model";
     const agent = `${theme.fg("dim", "model: ")}${theme.fg("text", `${modelName} ${reasoning}`)}`;
     const directory = formatCwd(this.ctx.cwd);
     const repository = `${theme.fg("dim", "directory: ")}${theme.fg("text", directory)}${this.branch ? ` ${colorDirectory(this.branch)}` : ""}`;
-    const rows = [identity, agent, repository].map((text, index) =>
-      `${theme.fg("accent", MASTHEAD_MARK[index] ?? "")}${MASTHEAD_GAP}${truncateToWidth(text, textWidth, "…")}`,
+    const rows = [identity, agent, repository].map(
+      (text, index) =>
+        `${theme.fg("accent", MASTHEAD_MARK[index] ?? "")}${MASTHEAD_GAP}${truncateToWidth(text, textWidth, "…")}`,
     );
     return [...rows, "", ...this.tipLines(width, theme)];
   }
@@ -153,7 +179,11 @@ function stripAnsi(text: string): string {
 
 function isBorderLine(line: string): boolean {
   const unstyled = stripAnsi(line);
-  return /^[─━═]+$/.test(unstyled) || /^───\s*[↓↑]/.test(unstyled) || /^─{3,}/.test(unstyled);
+  return (
+    /^[─━═]+$/.test(unstyled) ||
+    /^───\s*[↓↑]/.test(unstyled) ||
+    /^─{3,}/.test(unstyled)
+  );
 }
 
 function isScrolledTopBorder(line: string): boolean {
@@ -167,27 +197,42 @@ interface RenderChunk {
   isAnsi: boolean;
 }
 
-function extractTerminalSequence(text: string, position: number): { code: string; length: number } | undefined {
+function extractTerminalSequence(
+  text: string,
+  position: number,
+): { code: string; length: number } | undefined {
   if (text[position] !== "\x1B") return undefined;
   const next = text[position + 1];
   if (next === "[") {
     let end = position + 2;
     while (end < text.length && !/[\x40-\x7E]/u.test(text[end] ?? "")) end += 1;
-    if (end < text.length) return { code: text.slice(position, end + 1), length: end + 1 - position };
+    if (end < text.length)
+      return {
+        code: text.slice(position, end + 1),
+        length: end + 1 - position,
+      };
     return undefined;
   }
   if (next === "]" || next === "_") {
     let end = position + 2;
     while (end < text.length) {
-      if (text[end] === "\x07") return { code: text.slice(position, end + 1), length: end + 1 - position };
+      if (text[end] === "\x07")
+        return {
+          code: text.slice(position, end + 1),
+          length: end + 1 - position,
+        };
       if (text[end] === "\x1B" && text[end + 1] === "\\") {
-        return { code: text.slice(position, end + 2), length: end + 2 - position };
+        return {
+          code: text.slice(position, end + 2),
+          length: end + 2 - position,
+        };
       }
       end += 1;
     }
     return undefined;
   }
-  if (next !== undefined) return { code: text.slice(position, position + 2), length: 2 };
+  if (next !== undefined)
+    return { code: text.slice(position, position + 2), length: 2 };
   return undefined;
 }
 
@@ -221,32 +266,44 @@ function highlightSlashCommands(
     });
   }
 
-  const tokens = findSlashCommandTokens(plain).filter((token) => isValidCommand(token.name));
+  const tokens = findSlashCommandTokens(plain).filter((token) =>
+    isValidCommand(token.name),
+  );
   if (tokens.length === 0) return line;
 
-  return chunks.map((chunk) => {
-    if (chunk.isAnsi) return chunk.text;
-    let output = "";
-    let offset = 0;
-    while (offset < chunk.text.length) {
-      const plainIndex = chunk.plainStart + offset;
-      const token = tokens.find(({ start, end }) => plainIndex >= start && plainIndex < end);
-      if (!token) {
-        const nextTokenStart = tokens.find(({ start }) => start > plainIndex)?.start;
-        const end = nextTokenStart === undefined
-          ? chunk.text.length
-          : Math.min(chunk.text.length, nextTokenStart - chunk.plainStart);
-        output += chunk.text.slice(offset, end);
-        offset = end;
-        continue;
-      }
+  return chunks
+    .map((chunk) => {
+      if (chunk.isAnsi) return chunk.text;
+      let output = "";
+      let offset = 0;
+      while (offset < chunk.text.length) {
+        const plainIndex = chunk.plainStart + offset;
+        const token = tokens.find(
+          ({ start, end }) => plainIndex >= start && plainIndex < end,
+        );
+        if (!token) {
+          const nextTokenStart = tokens.find(
+            ({ start }) => start > plainIndex,
+          )?.start;
+          const end =
+            nextTokenStart === undefined
+              ? chunk.text.length
+              : Math.min(chunk.text.length, nextTokenStart - chunk.plainStart);
+          output += chunk.text.slice(offset, end);
+          offset = end;
+          continue;
+        }
 
-      const tokenEnd = Math.min(chunk.text.length, token.end - chunk.plainStart);
-      output += styleCommand(chunk.text.slice(offset, tokenEnd));
-      offset = tokenEnd;
-    }
-    return output;
-  }).join("");
+        const tokenEnd = Math.min(
+          chunk.text.length,
+          token.end - chunk.plainStart,
+        );
+        output += styleCommand(chunk.text.slice(offset, tokenEnd));
+        offset = tokenEnd;
+      }
+      return output;
+    })
+    .join("");
 }
 
 class PiCodeEditor extends CustomEditor {
@@ -271,12 +328,13 @@ class PiCodeEditor extends CustomEditor {
   }
 
   override handleInput(data: string): void {
-    const isShiftEnter = data === "\x1B[13;2u"
-      || data === "\x1B[13;2~"
-      || data === "\x1B[27;2;13~"
-      || data === "\x1B\r"
-      || data === "\x1B\n"
-      || this.appKeybindings.matches(data, "tui.input.newLine");
+    const isShiftEnter =
+      data === "\x1B[13;2u" ||
+      data === "\x1B[13;2~" ||
+      data === "\x1B[27;2;13~" ||
+      data === "\x1B\r" ||
+      data === "\x1B\n" ||
+      this.appKeybindings.matches(data, "tui.input.newLine");
     if (isShiftEnter) {
       this.insertTextAtCursor("\n");
       return;
@@ -288,7 +346,8 @@ class PiCodeEditor extends CustomEditor {
     if (width <= 0) return [];
     const innerWidth = Math.max(1, width - 2);
     const lines = super.render(innerWidth);
-    if (lines.length < 2) return ["", ...lines.map((line) => truncateToWidth(line, width, ""))];
+    if (lines.length < 2)
+      return ["", ...lines.map((line) => truncateToWidth(line, width, ""))];
     let bottomBorderIndex = lines.length - 1;
     for (let index = lines.length - 1; index >= 1; index -= 1) {
       if (isBorderLine(lines[index] ?? "")) {
@@ -308,7 +367,9 @@ class PiCodeEditor extends CustomEditor {
 
     for (let index = 1; index < bottomBorderIndex; index += 1) {
       const isPromptLine = index === 1 && !isScrolledHeader;
-      const prefix = isPromptLine ? this.runtimeTheme.fg("text", "❯\u00A0") : "  ";
+      const prefix = isPromptLine
+        ? this.runtimeTheme.fg("text", "❯\u00A0")
+        : "  ";
       let content = lines[index] ?? "";
       if (isPromptLine && this.getText() === "") {
         const first = this.suggestion.slice(0, 1);
@@ -335,17 +396,30 @@ class PiCodeEditor extends CustomEditor {
     for (let index = bottomBorderIndex + 1; index < lines.length; index += 1) {
       rendered.push(`  ${padRight(lines[index] ?? "", innerWidth)}`);
     }
-    return [this.runtimeTheme.fg("borderMuted", "─".repeat(width)), ...rendered.map((line) => truncateToWidth(line, width, ""))];
+    return [
+      this.runtimeTheme.fg("borderMuted", "─".repeat(width)),
+      ...rendered.map((line) => truncateToWidth(line, width, "")),
+    ];
   }
 }
 
 const ACTIVITY_FRAMES = [
-  "⠋", "⠙", "⠹", "⠸", "⠼",
-  "⠴", "⠦", "⠧", "⠇", "⠏",
+  "⠋",
+  "⠙",
+  "⠹",
+  "⠸",
+  "⠼",
+  "⠴",
+  "⠦",
+  "⠧",
+  "⠇",
+  "⠏",
 ] as const;
 const ACTIVITY_FRAME_INTERVAL_MS = 80;
 
-let killerosEditorFactory: ReturnType<ExtensionContext["ui"]["getEditorComponent"]>;
+let killerosEditorFactory: ReturnType<
+  ExtensionContext["ui"]["getEditorComponent"]
+>;
 
 export function registerShellUi(
   pi: ExtensionAPI,
@@ -361,19 +435,37 @@ export function registerShellUi(
       const startupTip = nextStartupTip();
       ctx.ui.setHeader((tui) => {
         activeHeader?.dispose();
-        activeHeader = new PiStartupHeader(pi, ctx, startupTip, tui, refreshTitle);
+        activeHeader = new PiStartupHeader(
+          pi,
+          ctx,
+          startupTip,
+          tui,
+          refreshTitle,
+        );
         return activeHeader;
       });
       ctx.ui.setWorkingIndicator({
-        frames: ACTIVITY_FRAMES.map((frame) => ctx.ui.theme.fg("accent", frame)),
+        frames: ACTIVITY_FRAMES.map((frame) =>
+          ctx.ui.theme.fg("accent", frame),
+        ),
         intervalMs: ACTIVITY_FRAME_INTERVAL_MS,
       });
       ctx.ui.setHiddenThinkingLabel("└ Thinking…");
       const existingEditorFactory = ctx.ui.getEditorComponent?.();
-      if (!existingEditorFactory || existingEditorFactory === killerosEditorFactory) {
+      if (
+        !existingEditorFactory ||
+        existingEditorFactory === killerosEditorFactory
+      ) {
         const editorSuggestion = nextEditorSuggestion();
         killerosEditorFactory = (tui, editorTheme, keybindings) =>
-          new PiCodeEditor(tui, editorTheme, keybindings, ctx.ui.theme, editorSuggestion, commandResolver);
+          new PiCodeEditor(
+            tui,
+            editorTheme,
+            keybindings,
+            ctx.ui.theme,
+            editorSuggestion,
+            commandResolver,
+          );
         ctx.ui.setEditorComponent(killerosEditorFactory);
       }
     } catch (error) {

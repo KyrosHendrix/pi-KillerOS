@@ -1,17 +1,29 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+import { nodeDirectory, nodeExecutable } from "./support/NodeRuntime.ts";
 import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { PiRpcProcess } from "./support/PiRpcProcess.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const cliPath = path.join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
+const cliPath = path.join(
+  repositoryRoot,
+  "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+);
 const usage = "Usage: /auto-compact [status|on|off|<percent 0-100>]";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,7 +71,9 @@ export default function() {}
 `;
 
 async function createFixture(t: TestContext, id: string) {
-  const directory = realpathSync(mkdtempSync(path.join(tmpdir(), ".killeros-compaction-settings-")));
+  const directory = realpathSync(
+    mkdtempSync(path.join(tmpdir(), ".killeros-compaction-settings-")),
+  );
   const agent = path.join(directory, "agent");
   mkdirSync(agent);
   const settings = path.join(agent, "killeros.json");
@@ -77,8 +91,11 @@ async function createFixture(t: TestContext, id: string) {
   });
   try {
     for (let ancestor = directory; ; ancestor = path.dirname(ancestor)) {
-      assert.equal(existsSync(path.join(ancestor, ".git")), false,
-        "Settings fixtures must not discover an ancestor Git repository");
+      assert.equal(
+        existsSync(path.join(ancestor, ".git")),
+        false,
+        "Settings fixtures must not discover an ancestor Git repository",
+      );
       if (path.dirname(ancestor) === ancestor) break;
     }
     await new Promise<void>((resolve, reject) => {
@@ -87,74 +104,218 @@ async function createFixture(t: TestContext, id: string) {
     });
     const address = server.address();
     assert.ok(address && typeof address !== "string");
-    writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false },
-      compaction: { enabled: false }, defaultThinkingLevel: "off" }));
-    writeFileSync(path.join(agent, "models.json"), JSON.stringify({ providers: { "compaction-settings": {
-      api: "openai-completions", baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-fixture",
-      models: [{ id: "local", name: "settings local", reasoning: false, input: ["text"], contextWindow: 100_000,
-        maxTokens: 1_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-    } } }));
+    writeFileSync(
+      path.join(agent, "settings.json"),
+      JSON.stringify({
+        cacheWarming: "off",
+        retry: { enabled: false },
+        compaction: { enabled: false },
+        defaultThinkingLevel: "off",
+      }),
+    );
+    writeFileSync(
+      path.join(agent, "models.json"),
+      JSON.stringify({
+        providers: {
+          "compaction-settings": {
+            api: "openai-completions",
+            baseUrl: `http://127.0.0.1:${address.port}/v1`,
+            apiKey: "local-fixture",
+            models: [
+              {
+                id: "local",
+                name: "settings local",
+                reasoning: false,
+                input: ["text"],
+                contextWindow: 100_000,
+                maxTokens: 1_000,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              },
+            ],
+          },
+        },
+      }),
+    );
   } catch (error) {
     server.close();
     await removeDirectoryEventually(directory);
     throw error;
   }
-  const env: NodeJS.ProcessEnv = { PATH: path.dirname(process.execPath), HOME: directory, USERPROFILE: directory,
-    TEMP: directory, TMP: directory, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" };
-  const inherited = new Map(Object.entries(process.env).map(([key, value]) => [key.toLowerCase(), value]));
-  for (const key of ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT"]) env[key] = inherited.get(key.toLowerCase());
+  const env: NodeJS.ProcessEnv = {
+    PATH: nodeDirectory(),
+    HOME: directory,
+    USERPROFILE: directory,
+    TEMP: directory,
+    TMP: directory,
+    PI_CODING_AGENT_DIR: agent,
+    PI_OFFLINE: "1",
+    PI_SKIP_VERSION_CHECK: "1",
+    PI_TELEMETRY: "0",
+  };
+  const inherited = new Map(
+    Object.entries(process.env).map(([key, value]) => [
+      key.toLowerCase(),
+      value,
+    ]),
+  );
+  for (const key of ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT"])
+    env[key] = inherited.get(key.toLowerCase());
   return {
-    directory, settings, diagnostics,
+    directory,
+    settings,
+    diagnostics,
     async start(label: string, adapter = false) {
       const project = path.join(directory, label);
       mkdirSync(project);
       const adapterFile = path.join(project, "adapter.mjs");
       writeFileSync(path.join(project, "plan.json"), "{}");
       if (adapter) writeFileSync(adapterFile, adapterSource);
-      const rpc = new PiRpcProcess({ cliPath, cwd: project,
-        env: { ...env, HOME: project, USERPROFILE: project, TEMP: project, TMP: project,
-          COMPACTION_SETTINGS_CONTROL: project, COMPACTION_SETTINGS_FILE: settings },
-        args: ["--mode", "rpc", "--model", "compaction-settings/local", "--thinking", "off", "--no-tools",
-          "--session", path.join(project, "session.jsonl"), "--offline", "--approve", "--no-context-files", "--no-skills",
-          "--no-prompt-templates", "--no-themes", "--no-mcp", "--no-extensions",
-          ...(adapter ? ["--extension", adapterFile] : []), "--extension", repositoryRoot] });
+      const rpc = new PiRpcProcess({
+        cliPath,
+        cwd: project,
+        env: {
+          ...env,
+          HOME: project,
+          USERPROFILE: project,
+          TEMP: project,
+          TMP: project,
+          COMPACTION_SETTINGS_CONTROL: project,
+          COMPACTION_SETTINGS_FILE: settings,
+        },
+        args: [
+          "--mode",
+          "rpc",
+          "--model",
+          "compaction-settings/local",
+          "--thinking",
+          "off",
+          "--no-tools",
+          "--session",
+          path.join(project, "session.jsonl"),
+          "--offline",
+          "--approve",
+          "--no-context-files",
+          "--no-skills",
+          "--no-prompt-templates",
+          "--no-themes",
+          "--no-mcp",
+          "--no-extensions",
+          ...(adapter ? ["--extension", adapterFile] : []),
+          "--extension",
+          repositoryRoot,
+        ],
+      });
       processes.push(rpc);
-      const commands = record((await rpc.command("get_commands", {}, { signal: t.signal, timeoutMs: 30_000 })).data);
-      assert.ok(Array.isArray(commands.commands) && commands.commands.some((value) => record(value).name === "auto-compact"));
+      const commands = record(
+        (
+          await rpc.command(
+            "get_commands",
+            {},
+            { signal: t.signal, timeoutMs: 30_000 },
+          )
+        ).data,
+      );
+      assert.ok(
+        Array.isArray(commands.commands) &&
+          commands.commands.some(
+            (value) => record(value).name === "auto-compact",
+          ),
+      );
       rpc.acknowledge(rpc.currentSequence);
       return { rpc, project };
     },
     async startTerminal() {
       const project = path.join(directory, "terminal");
       mkdirSync(project);
-      const terminal = new PiTerminalProcess({ file: process.execPath, cwd: project,
-        env: { ...env, HOME: project, USERPROFILE: project, TEMP: project, TMP: project }, cols: 120, rows: 30,
-        args: [cliPath, "--model", "compaction-settings/local", "--thinking", "off", "--no-tools",
-          "--session", path.join(project, "session.jsonl"), "--offline", "--approve", "--no-context-files", "--no-skills",
-          "--no-prompt-templates", "--no-themes", "--no-mcp", "--no-extensions", "--extension", repositoryRoot] });
+      const terminal = new PiTerminalProcess({
+        file: nodeExecutable(),
+        cwd: project,
+        env: {
+          ...env,
+          HOME: project,
+          USERPROFILE: project,
+          TEMP: project,
+          TMP: project,
+        },
+        cols: 120,
+        rows: 30,
+        args: [
+          cliPath,
+          "--model",
+          "compaction-settings/local",
+          "--thinking",
+          "off",
+          "--no-tools",
+          "--session",
+          path.join(project, "session.jsonl"),
+          "--offline",
+          "--approve",
+          "--no-context-files",
+          "--no-skills",
+          "--no-prompt-templates",
+          "--no-themes",
+          "--no-mcp",
+          "--no-extensions",
+          "--extension",
+          repositoryRoot,
+        ],
+      });
       terminals.push(terminal);
-      await terminal.waitForScreen((screen) => screen.includes("KillerOS"), { signal: t.signal });
+      await terminal.waitForScreen((screen) => screen.includes("KillerOS"), {
+        signal: t.signal,
+      });
       return terminal;
     },
-    async command(rpc: PiRpcProcess, argument: string, expected: string | RegExp, notifyType = "info") {
+    async command(
+      rpc: PiRpcProcess,
+      argument: string,
+      expected: string | RegExp,
+      notifyType = "info",
+    ) {
       const after = rpc.currentSequence;
-      const response = await rpc.command("prompt", { message: `/auto-compact ${argument}` }, { signal: t.signal });
-      assert.equal(record(response.data).disposition, "handled", "The slash command starts no agent run");
+      const response = await rpc.command(
+        "prompt",
+        { message: `/auto-compact ${argument}` },
+        { signal: t.signal },
+      );
+      assert.equal(
+        record(response.data).disposition,
+        "handled",
+        "The slash command starts no agent run",
+      );
       const notices: Record<string, unknown>[] = [];
       const through = rpc.currentSequence;
       let cursor = after;
       while (cursor < through) {
-        const stored = await rpc.waitForRecord(() => true, { after: cursor, signal: t.signal });
+        const stored = await rpc.waitForRecord(() => true, {
+          after: cursor,
+          signal: t.signal,
+        });
         cursor = stored.sequence;
-        assert.notEqual(stored.value.type, "agent_start", "A settings command must not start an agent");
-        if (stored.value.type === "extension_ui_request" && stored.value.method === "notify") notices.push(stored.value);
+        assert.notEqual(
+          stored.value.type,
+          "agent_start",
+          "A settings command must not start an agent",
+        );
+        if (
+          stored.value.type === "extension_ui_request" &&
+          stored.value.method === "notify"
+        )
+          notices.push(stored.value);
       }
-      assert.equal(notices.length, 1, "Each command emits exactly one outcome notification");
+      assert.equal(
+        notices.length,
+        1,
+        "Each command emits exactly one outcome notification",
+      );
       const notice = notices[0];
       assert.ok(notice);
       assert.equal(notice.notifyType, notifyType);
       if (typeof expected === "string") assert.equal(notice.message, expected);
-      else { assert.equal(typeof notice.message, "string"); assert.match(String(notice.message), expected); }
+      else {
+        assert.equal(typeof notice.message, "string");
+        assert.match(String(notice.message), expected);
+      }
       diagnostics.push({ argument, notice });
       rpc.acknowledge(rpc.currentSequence);
     },
@@ -163,156 +324,414 @@ async function createFixture(t: TestContext, id: string) {
       for (const rpc of processes) {
         diagnostics.push(JSON.parse(rpc.diagnostics()));
         try {
-          const state = record((await rpc.command("get_state", {}, { signal: t.signal })).data);
+          const state = record(
+            (await rpc.command("get_state", {}, { signal: t.signal })).data,
+          );
           assert.equal(state.isStreaming, false);
           assert.equal(state.isCompacting, false);
           assert.equal(state.pendingMessageCount, 0);
-          const entries = record((await rpc.command("get_entries", {}, { signal: t.signal })).data);
+          const entries = record(
+            (await rpc.command("get_entries", {}, { signal: t.signal })).data,
+          );
           assert.ok(Array.isArray(entries.entries));
-          assert.ok(entries.entries.every((value) => !["compaction", "message"].includes(String(record(value).type))),
-            "Commands must not append assistant messages or compaction entries");
-        } catch (error) { errors.push(error); }
-        try { assert.deepEqual(await rpc.close(), { exit: { code: 0, signal: null }, forced: false }); }
-        catch (error) { errors.push(error); }
+          assert.ok(
+            entries.entries.every(
+              (value) =>
+                !["compaction", "message"].includes(String(record(value).type)),
+            ),
+            "Commands must not append assistant messages or compaction entries",
+          );
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          assert.deepEqual(await rpc.close(), {
+            exit: { code: 0, signal: null },
+            forced: false,
+          });
+        } catch (error) {
+          errors.push(error);
+        }
       }
       for (const terminal of terminals) {
         diagnostics.push(JSON.parse(terminal.diagnostics()));
-        try { assert.deepEqual(await terminal.close(), { code: 0, forced: false }); }
-        catch (error) { errors.push(error); }
+        try {
+          assert.deepEqual(await terminal.close(), { code: 0, forced: false });
+        } catch (error) {
+          errors.push(error);
+        }
       }
       try {
-        await new Promise<void>((resolve, reject) => { server.close((error) => error ? reject(error) : resolve()); server.closeAllConnections(); });
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+          server.closeAllConnections();
+        });
         assert.deepEqual(requests, []);
         assert.deepEqual(faults, []);
         assert.equal(existsSync(settings + ".lock"), false);
-      } catch (error) { errors.push(error); }
-      if (errors.length) throwScenarioFailure({ directory, message: `${id} failed`, errors, diagnostics: JSON.stringify(diagnostics) });
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length)
+        throwScenarioFailure({
+          directory,
+          message: `${id} failed`,
+          errors,
+          diagnostics: JSON.stringify(diagnostics),
+        });
       await removeDirectoryEventually(directory);
       assert.equal(existsSync(directory), false);
-      t.diagnostic(JSON.stringify({ scenarioId: id, piLaunches: processes.length + terminals.length, providerRequests: requests.length,
-        naturalExits: processes.length + terminals.length, rpcProcesses: processes.length, terminalProcesses: terminals.length, cleanup: "complete" }));
+      t.diagnostic(
+        JSON.stringify({
+          scenarioId: id,
+          piLaunches: processes.length + terminals.length,
+          providerRequests: requests.length,
+          naturalExits: processes.length + terminals.length,
+          rpcProcesses: processes.length,
+          terminalProcesses: terminals.length,
+          cleanup: "complete",
+        }),
+      );
     },
   };
 }
 
 // Catalog ID: compaction-settings-rpc-lifecycle.
-test("RPC /auto-compact status, updates, normalization, and settings failure preservation", { timeout: 90_000 }, async (t) => {
-  const fixture = await createFixture(t, "compaction-settings-rpc-lifecycle");
-  let failure: unknown;
-  try {
-    assert.equal(existsSync(fixture.settings), false, "The original settings file starts absent");
-    const terminal = await fixture.startTerminal();
-    assert.equal(existsSync(fixture.settings), false, "Native startup must leave settings absent before the first write");
-    let after = terminal.sequence;
-    await terminal.submitEditorText("/notification", { signal: t.signal });
-    await terminal.waitForScreen((screen) => screen.includes("Completion sound") && screen.includes("Off ← current"),
-      { after, signal: t.signal });
-    after = terminal.sequence;
-    terminal.write("\r");
-    await terminal.waitForScreen((screen) => screen.includes("Completion sound: On"), { after, signal: t.signal });
-    assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), { completionSound: true },
-      "Selecting On creates the absent file with exactly the first field");
-    for (const { command, notice, enabled } of [
-      { command: "/auto-compact 22", notice: "Automatic compaction threshold: 22% remaining (on)", enabled: true },
-      { command: "/auto-compact off", notice: "Automatic compaction: off (threshold 22%)", enabled: false },
-    ]) {
-      after = terminal.sequence;
-      await terminal.submitEditorText(command, { signal: t.signal });
-      await terminal.waitForScreen((screen) => screen.includes(notice), { after, signal: t.signal });
-      assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), {
-        completionSound: true, autoCompaction: { enabled, percentRemaining: 22 },
-      }, "Public updates preserve the first write and persist exactly two fields");
-    }
-    const terminalSession = path.join(fixture.directory, "terminal", "session.jsonl");
-    const terminalEntries = (existsSync(terminalSession) ? readFileSync(terminalSession, "utf8") : "")
-      .trim().split("\n").filter(Boolean).map((line) => record(JSON.parse(line)));
-    assert.ok(terminalEntries.every((entry) => !["message", "compaction"].includes(String(entry.type))),
-      "Native settings commands are handled without an agent turn or compaction");
-    fixture.diagnostics.push({ history: "absent-settings-first-and-later-write", commands: 3, providerRequests: 0 });
-    const retained = { completionSound: true, handoffMaxTokens: 4096, futureSetting: { retained: "exactly" } };
-    const seed = (autoCompaction: unknown): void => writeFileSync(fixture.settings, JSON.stringify({ ...retained, autoCompaction }));
-    seed({ enabled: true, percentRemaining: 12.5 });
-    const { rpc, project } = await fixture.start("lifecycle", true);
-    for (const argument of ["", " status "]) await fixture.command(rpc, argument, "Automatic compaction: on at 12.5% remaining");
-    seed({ enabled: true, percentRemaining: 15 });
-    for (const argument of ["  ", " status "]) await fixture.command(rpc, argument, "Automatic compaction: on at 15% remaining");
-    seed({ enabled: false, percentRemaining: 15 });
-    await fixture.command(rpc, "status", "Automatic compaction: off (threshold 15%)");
-    seed({ enabled: true, percentRemaining: 12.5 });
-    const mutations = [
-      { argument: " off ", enabled: false, percentRemaining: 12.5, notice: "Automatic compaction: off (threshold 12.5%)" },
-      { argument: "20", enabled: false, percentRemaining: 20, notice: "Automatic compaction threshold: 20% remaining (off)" },
-      { argument: "on", enabled: true, percentRemaining: 20, notice: "Automatic compaction: on at 20% remaining" },
-      { argument: "00", enabled: true, percentRemaining: 0, notice: "Automatic compaction threshold: 0% remaining (on)" },
-      { argument: "15", enabled: true, percentRemaining: 15, notice: "Automatic compaction threshold: 15% remaining (on)" },
-      { argument: "100", enabled: true, percentRemaining: 100, notice: "Automatic compaction threshold: 100% remaining (on)" },
-    ];
-    for (const { argument, enabled, percentRemaining, notice } of mutations) {
-      await fixture.command(rpc, argument, notice);
-      assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), { ...retained, autoCompaction: { enabled, percentRemaining } });
-    }
-    for (const invalid of [undefined, { enabled: "yes", percentRemaining: 200 }, { enabled: "yes", percentRemaining: 900 }]) {
-      seed(invalid);
-      await fixture.command(rpc, "status", "Automatic compaction: on at 15% remaining");
-      await fixture.command(rpc, "off", "Automatic compaction: off (threshold 15%)");
-      assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), { ...retained, autoCompaction: { enabled: false, percentRemaining: 15 } });
-    }
-    seed({ enabled: false, percentRemaining: 22 });
-    await fixture.command(rpc, "status", "Automatic compaction: off (threshold 22%)");
-    seed({ enabled: "yes", percentRemaining: 900 });
-    await fixture.command(rpc, "20", "Automatic compaction threshold: 20% remaining (on)");
-    assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), {
-      ...retained, autoCompaction: { enabled: true, percentRemaining: 20 },
-    });
-    for (const argument of ["-1", "101", "1.5", "1e1", "+10", "10%", "10 now", "ON", "unknown"]) {
-      const before = readFileSync(fixture.settings, "utf8");
-      await fixture.command(rpc, argument, usage, "error");
-      assert.equal(readFileSync(fixture.settings, "utf8"), before, `${argument} must leave the file byte-identical`);
-    }
-    writeFileSync(fixture.settings, "{malformed");
-    await fixture.command(rpc, "status", /^Automatic compaction setting could not be read:/u, "error");
-    await fixture.command(rpc, "off", /^Automatic compaction setting could not be saved:/u, "error");
-    assert.equal(readFileSync(fixture.settings, "utf8"), "{malformed");
-    seed({ enabled: true, percentRemaining: 15 });
-    const before = readFileSync(fixture.settings, "utf8");
-    const planPath = path.join(project, "plan.json");
+test(
+  "RPC /auto-compact status, updates, normalization, and settings failure preservation",
+  { timeout: 90_000 },
+  async (t) => {
+    const fixture = await createFixture(t, "compaction-settings-rpc-lifecycle");
+    let failure: unknown;
     try {
-      writeFileSync(planPath, JSON.stringify({ fault: "read" }));
-      await fixture.command(rpc, "status", "Automatic compaction setting could not be read: bad file", "error");
-      const readFault = record(JSON.parse(readFileSync(path.join(project, "fault-ack.json"), "utf8")));
-      assert.equal(readFault.operation, "readFileSync");
-      assert.equal(readFault.file, fixture.settings);
+      assert.equal(
+        existsSync(fixture.settings),
+        false,
+        "The original settings file starts absent",
+      );
+      const terminal = await fixture.startTerminal();
+      assert.equal(
+        existsSync(fixture.settings),
+        false,
+        "Native startup must leave settings absent before the first write",
+      );
+      let after = terminal.sequence;
+      await terminal.submitEditorText("/notification", { signal: t.signal });
+      await terminal.waitForScreen(
+        (screen) =>
+          screen.includes("Completion sound") &&
+          screen.includes("Off ← current"),
+        { after, signal: t.signal },
+      );
+      after = terminal.sequence;
+      terminal.write("\r");
+      await terminal.waitForScreen(
+        (screen) => screen.includes("Completion sound: On"),
+        { after, signal: t.signal },
+      );
+      assert.deepEqual(
+        JSON.parse(readFileSync(fixture.settings, "utf8")),
+        { completionSound: true },
+        "Selecting On creates the absent file with exactly the first field",
+      );
+      for (const { command, notice, enabled } of [
+        {
+          command: "/auto-compact 22",
+          notice: "Automatic compaction threshold: 22% remaining (on)",
+          enabled: true,
+        },
+        {
+          command: "/auto-compact off",
+          notice: "Automatic compaction: off (threshold 22%)",
+          enabled: false,
+        },
+      ]) {
+        after = terminal.sequence;
+        await terminal.submitEditorText(command, { signal: t.signal });
+        await terminal.waitForScreen((screen) => screen.includes(notice), {
+          after,
+          signal: t.signal,
+        });
+        assert.deepEqual(
+          JSON.parse(readFileSync(fixture.settings, "utf8")),
+          {
+            completionSound: true,
+            autoCompaction: { enabled, percentRemaining: 22 },
+          },
+          "Public updates preserve the first write and persist exactly two fields",
+        );
+      }
+      const terminalSession = path.join(
+        fixture.directory,
+        "terminal",
+        "session.jsonl",
+      );
+      const terminalEntries = (
+        existsSync(terminalSession) ? readFileSync(terminalSession, "utf8") : ""
+      )
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => record(JSON.parse(line)));
+      assert.ok(
+        terminalEntries.every(
+          (entry) => !["message", "compaction"].includes(String(entry.type)),
+        ),
+        "Native settings commands are handled without an agent turn or compaction",
+      );
+      fixture.diagnostics.push({
+        history: "absent-settings-first-and-later-write",
+        commands: 3,
+        providerRequests: 0,
+      });
+      const retained = {
+        completionSound: true,
+        handoffMaxTokens: 4096,
+        futureSetting: { retained: "exactly" },
+      };
+      const seed = (autoCompaction: unknown): void =>
+        writeFileSync(
+          fixture.settings,
+          JSON.stringify({ ...retained, autoCompaction }),
+        );
+      seed({ enabled: true, percentRemaining: 12.5 });
+      const { rpc, project } = await fixture.start("lifecycle", true);
+      for (const argument of ["", " status "])
+        await fixture.command(
+          rpc,
+          argument,
+          "Automatic compaction: on at 12.5% remaining",
+        );
+      seed({ enabled: true, percentRemaining: 15 });
+      for (const argument of ["  ", " status "])
+        await fixture.command(
+          rpc,
+          argument,
+          "Automatic compaction: on at 15% remaining",
+        );
+      seed({ enabled: false, percentRemaining: 15 });
+      await fixture.command(
+        rpc,
+        "status",
+        "Automatic compaction: off (threshold 15%)",
+      );
+      seed({ enabled: true, percentRemaining: 12.5 });
+      const mutations = [
+        {
+          argument: " off ",
+          enabled: false,
+          percentRemaining: 12.5,
+          notice: "Automatic compaction: off (threshold 12.5%)",
+        },
+        {
+          argument: "20",
+          enabled: false,
+          percentRemaining: 20,
+          notice: "Automatic compaction threshold: 20% remaining (off)",
+        },
+        {
+          argument: "on",
+          enabled: true,
+          percentRemaining: 20,
+          notice: "Automatic compaction: on at 20% remaining",
+        },
+        {
+          argument: "00",
+          enabled: true,
+          percentRemaining: 0,
+          notice: "Automatic compaction threshold: 0% remaining (on)",
+        },
+        {
+          argument: "15",
+          enabled: true,
+          percentRemaining: 15,
+          notice: "Automatic compaction threshold: 15% remaining (on)",
+        },
+        {
+          argument: "100",
+          enabled: true,
+          percentRemaining: 100,
+          notice: "Automatic compaction threshold: 100% remaining (on)",
+        },
+      ];
+      for (const { argument, enabled, percentRemaining, notice } of mutations) {
+        await fixture.command(rpc, argument, notice);
+        assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), {
+          ...retained,
+          autoCompaction: { enabled, percentRemaining },
+        });
+      }
+      for (const invalid of [
+        undefined,
+        { enabled: "yes", percentRemaining: 200 },
+        { enabled: "yes", percentRemaining: 900 },
+      ]) {
+        seed(invalid);
+        await fixture.command(
+          rpc,
+          "status",
+          "Automatic compaction: on at 15% remaining",
+        );
+        await fixture.command(
+          rpc,
+          "off",
+          "Automatic compaction: off (threshold 15%)",
+        );
+        assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), {
+          ...retained,
+          autoCompaction: { enabled: false, percentRemaining: 15 },
+        });
+      }
+      seed({ enabled: false, percentRemaining: 22 });
+      await fixture.command(
+        rpc,
+        "status",
+        "Automatic compaction: off (threshold 22%)",
+      );
+      seed({ enabled: "yes", percentRemaining: 900 });
+      await fixture.command(
+        rpc,
+        "20",
+        "Automatic compaction threshold: 20% remaining (on)",
+      );
+      assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), {
+        ...retained,
+        autoCompaction: { enabled: true, percentRemaining: 20 },
+      });
+      for (const argument of [
+        "-1",
+        "101",
+        "1.5",
+        "1e1",
+        "+10",
+        "10%",
+        "10 now",
+        "ON",
+        "unknown",
+      ]) {
+        const before = readFileSync(fixture.settings, "utf8");
+        await fixture.command(rpc, argument, usage, "error");
+        assert.equal(
+          readFileSync(fixture.settings, "utf8"),
+          before,
+          `${argument} must leave the file byte-identical`,
+        );
+      }
+      writeFileSync(fixture.settings, "{malformed");
+      await fixture.command(
+        rpc,
+        "status",
+        /^Automatic compaction setting could not be read:/u,
+        "error",
+      );
+      await fixture.command(
+        rpc,
+        "off",
+        /^Automatic compaction setting could not be saved:/u,
+        "error",
+      );
+      assert.equal(readFileSync(fixture.settings, "utf8"), "{malformed");
+      seed({ enabled: true, percentRemaining: 15 });
+      const before = readFileSync(fixture.settings, "utf8");
+      const planPath = path.join(project, "plan.json");
+      try {
+        writeFileSync(planPath, JSON.stringify({ fault: "read" }));
+        await fixture.command(
+          rpc,
+          "status",
+          "Automatic compaction setting could not be read: bad file",
+          "error",
+        );
+        const readFault = record(
+          JSON.parse(
+            readFileSync(path.join(project, "fault-ack.json"), "utf8"),
+          ),
+        );
+        assert.equal(readFault.operation, "readFileSync");
+        assert.equal(readFault.file, fixture.settings);
+        assert.equal(readFileSync(fixture.settings, "utf8"), before);
+        writeFileSync(planPath, JSON.stringify({ fault: "rename" }));
+        await fixture.command(
+          rpc,
+          "off",
+          "Automatic compaction setting could not be saved: disk full",
+          "error",
+        );
+        const writeFault = record(
+          JSON.parse(
+            readFileSync(path.join(project, "fault-ack.json"), "utf8"),
+          ),
+        );
+        assert.equal(writeFault.operation, "renameSync");
+        assert.equal(writeFault.destination, fixture.settings);
+        assert.equal(
+          readFileSync(fixture.settings, "utf8"),
+          before,
+          "An acknowledged failed replacement must preserve original bytes",
+        );
+      } finally {
+        writeFileSync(planPath, "{}");
+      }
+      chmodSync(fixture.settings, 0o444);
+      try {
+        await fixture.command(
+          rpc,
+          "off",
+          /^Automatic compaction setting could not be saved:/u,
+          "error",
+        );
+      } finally {
+        chmodSync(fixture.settings, 0o666);
+      }
       assert.equal(readFileSync(fixture.settings, "utf8"), before);
-      writeFileSync(planPath, JSON.stringify({ fault: "rename" }));
-      await fixture.command(rpc, "off", "Automatic compaction setting could not be saved: disk full", "error");
-      const writeFault = record(JSON.parse(readFileSync(path.join(project, "fault-ack.json"), "utf8")));
-      assert.equal(writeFault.operation, "renameSync");
-      assert.equal(writeFault.destination, fixture.settings);
-      assert.equal(readFileSync(fixture.settings, "utf8"), before, "An acknowledged failed replacement must preserve original bytes");
-    } finally { writeFileSync(planPath, "{}"); }
-    chmodSync(fixture.settings, 0o444);
-    try { await fixture.command(rpc, "off", /^Automatic compaction setting could not be saved:/u, "error"); }
-    finally { chmodSync(fixture.settings, 0o666); }
-    assert.equal(readFileSync(fixture.settings, "utf8"), before);
 
-    for (const { command, expected, enabled, percentRemaining } of [
-      { command: "/auto-compact", expected: "Automatic compaction: on at 15% remaining", enabled: true, percentRemaining: 15 },
-      { command: "/auto-compact status", expected: "Automatic compaction: on at 16% remaining", enabled: true, percentRemaining: 16 },
-      { command: "/auto-compact status", expected: "Automatic compaction: off (threshold 15%)", enabled: false, percentRemaining: 15 },
-    ]) {
-      seed({ enabled, percentRemaining });
-      const unchanged = readFileSync(fixture.settings, "utf8");
-      const after = terminal.sequence;
-      await terminal.submitEditorText(command, { signal: t.signal });
-      // Every result differs from earlier screens, so an old notification cannot satisfy the wait.
-      const screen = await terminal.waitForScreen((value) => value.includes(expected), { after, signal: t.signal });
-      assert.ok(screen.includes(expected), "TUI status comes through native terminal command dispatch");
-      assert.equal(readFileSync(fixture.settings, "utf8"), unchanged, "TUI status commands are read-only");
-      fixture.diagnostics.push({ mode: "tui", command, expected });
+      for (const { command, expected, enabled, percentRemaining } of [
+        {
+          command: "/auto-compact",
+          expected: "Automatic compaction: on at 15% remaining",
+          enabled: true,
+          percentRemaining: 15,
+        },
+        {
+          command: "/auto-compact status",
+          expected: "Automatic compaction: on at 16% remaining",
+          enabled: true,
+          percentRemaining: 16,
+        },
+        {
+          command: "/auto-compact status",
+          expected: "Automatic compaction: off (threshold 15%)",
+          enabled: false,
+          percentRemaining: 15,
+        },
+      ]) {
+        seed({ enabled, percentRemaining });
+        const unchanged = readFileSync(fixture.settings, "utf8");
+        const after = terminal.sequence;
+        await terminal.submitEditorText(command, { signal: t.signal });
+        // Every result differs from earlier screens, so an old notification cannot satisfy the wait.
+        const screen = await terminal.waitForScreen(
+          (value) => value.includes(expected),
+          { after, signal: t.signal },
+        );
+        assert.ok(
+          screen.includes(expected),
+          "TUI status comes through native terminal command dispatch",
+        );
+        assert.equal(
+          readFileSync(fixture.settings, "utf8"),
+          unchanged,
+          "TUI status commands are read-only",
+        );
+        fixture.diagnostics.push({ mode: "tui", command, expected });
+      }
+      assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), {
+        ...retained,
+        autoCompaction: { enabled: false, percentRemaining: 15 },
+      });
+    } catch (error) {
+      failure = error;
     }
-    assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")), {
-      ...retained, autoCompaction: { enabled: false, percentRemaining: 15 },
-    });
-  } catch (error) { failure = error; }
-  await fixture.finish(failure);
-});
+    await fixture.finish(failure);
+  },
+);
