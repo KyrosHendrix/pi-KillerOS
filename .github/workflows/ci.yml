@@ -75,7 +75,7 @@ jobs:
       - name: Resolve matched Pi packages
         id: pi
         env:
-          PI_TARGET: '>=1.5.2 <2'
+          PI_TARGET: '>=1.6.0 <2'
         run: |
           npm view "@earendil-works/pi-coding-agent@$PI_TARGET" version dependencies --json | node -e '
             const { appendFileSync, readFileSync } = require("node:fs");
