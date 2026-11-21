@@ -19,6 +19,7 @@ test("a process with a console keeps automatic Git children on it", () => {
 test("a process started on a hidden console keeps Git children on that console without creating files", (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "killeros-git-console-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
+  // Editors start Pi this way: windowsHide gives the child a hidden console of its own.
   const output = execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "--eval",
     `const { hideGitConsole } = await import(${JSON.stringify(moduleUrl)}); console.log(hideGitConsole());`],
   { cwd: directory, encoding: "utf8", windowsHide: true }).trim();

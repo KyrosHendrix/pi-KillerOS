@@ -1723,7 +1723,6 @@ test("explicit pause prevents another continuation after accepted goal progress"
     providerRequests: 3, naturalExits: 1, fixtureGitLaunches: 0 }));
 });
 
-// Catalog ID: goals.pause-clear. Native settlement proves cancellation, not private host-call order.
 function pauseClearHistories(t: TestContext) {
   const totals = { piLaunches: 0, providerRequests: 0, naturalExits: 0 };
   const run = async (label: string, options: GoalScenarioOptions, exercise: (fixture: GoalScenarioFixture) => Promise<void>) => {

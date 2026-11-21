@@ -17,7 +17,7 @@ import {
 } from "./goal-runtime.ts";
 import { releaseContinuationHold } from "./goal-settlement.ts";
 import {
-  checkpointPausedGoalState,
+  checkpointWithoutManualRecovery,
   createNewGoalState,
   DEFAULT_GOAL_MAX_TURNS,
   editGoalState,
@@ -188,7 +188,7 @@ async function pauseGoalCommand(scope: GoalCommandScope): Promise<void> {
       ctx.ui.notify("Goal is already paused", "info");
       return;
     }
-    const checkpoint = checkpointPausedGoalState(runtime.state, Date.now());
+    const checkpoint = checkpointWithoutManualRecovery(runtime.state, Date.now());
     try {
       persistGoalState(pi, runtime, "pause", checkpoint);
       ctx.ui.notify("Goal pause saved. Goal remains paused. Automatic compaction recovery is off.", "info");

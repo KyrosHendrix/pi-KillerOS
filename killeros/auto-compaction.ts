@@ -121,7 +121,7 @@ export function registerAutoCompaction(
   let rearmOnNextLogicalRequest = false;
   let settingsErrorReported = false;
 
-  const loadPreference = (): AutoCompactionPreference => {
+  const loadAndPublishPreference = (): AutoCompactionPreference => {
     try {
       const preference = readAutoCompactionPreference(settingsStore.load());
       onPreferenceChange(preference);
@@ -146,7 +146,7 @@ export function registerAutoCompaction(
       const argument = args.trim();
       if (!argument || argument === "status") {
         try {
-          ctx.ui.notify(describePreference(loadPreference()), "info");
+          ctx.ui.notify(describePreference(loadAndPublishPreference()), "info");
         } catch (error) {
           ctx.ui.notify(`Automatic compaction setting could not be read: ${errorMessage(error)}`, "error");
         }
@@ -267,7 +267,7 @@ export function registerAutoCompaction(
     let preference: AutoCompactionPreference;
     let settings: CompactionSettings;
     try {
-      preference = loadPreference();
+      preference = loadAndPublishPreference();
       settings = compactionSettings(ctx);
     } catch (error) {
       onPreferenceChange(undefined);
@@ -362,7 +362,7 @@ export function registerAutoCompaction(
     resetForLifecycle();
     if (ctx.mode !== "tui") return;
     try {
-      loadPreference();
+      loadAndPublishPreference();
     } catch {
     }
   });

@@ -30,6 +30,7 @@ export function createCustomInputHistory() {
   let bytes = 0;
   return {
     entries: view,
+    /** Moves `value` to the newest slot and evicts the oldest entries to fit; rejects a value larger than the byte bound. */
     remember: (value: string): boolean => {
       const size = Buffer.byteLength(value, "utf8");
       if (size > CUSTOM_INPUT_HISTORY_BYTES) return false;

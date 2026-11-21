@@ -159,8 +159,10 @@ export function unitFailed({ unit, code, topLevel }: UnitResult): boolean {
   return unit.kind === "tests" && unit.select?.mode === "only" && unit.select.tests.some((test) => !ran.includes(test));
 }
 
+/** A spec reporter line for a finished top-level test: no indentation, a result mark, and a duration. */
 const topLevelResult = /^[✔✖﹣] (.+?) \((\d[\d.]*)ms\)(?: #.*)?$/u;
 
+/** The same line as the suite prints it, behind its unit name and, in CI logs, a job and timestamp prefix. */
 const suiteResult = /(?:^|\s)\[([^\]]+)\] ([✔✖﹣] .+?\(\d[\d.]*ms\)(?: #.*)?)$/u;
 
 /** Parses one reporter line, or returns undefined for any other line. */

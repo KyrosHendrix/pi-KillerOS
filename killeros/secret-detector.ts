@@ -12,7 +12,7 @@ const TOKEN_PATTERNS = [
   /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/iu,
 ] as const;
 
-const ASSIGNMENT_PATTERN = /^[\t ]*(?:(?:[-*+]|\d+[.)])[\t ]+)?(?:\*\*|`)?["']?[\w.-]*(?:api_key|apikey|password|passwd|secret|token)[\w.-]*["']?(?:\*\*|`)?[\t ]*(?:=|:)(?:\*\*|`)?[\t ]*(?:"[^"\r\n]+"|'[^'\r\n]+'|(?!\d+(?:[.,]\d+)*[\t ]*(?:#[^\r\n]*)?\r?$)[^\s#"'][^\s]*[\t ]*(?:#[^\r\n]*)?\r?$)/imu;
+const CREDENTIAL_ASSIGNMENT_LINE_PATTERN = /^[\t ]*(?:(?:[-*+]|\d+[.)])[\t ]+)?(?:\*\*|`)?["']?[\w.-]*(?:api_key|apikey|password|passwd|secret|token)[\w.-]*["']?(?:\*\*|`)?[\t ]*(?:=|:)(?:\*\*|`)?[\t ]*(?:"[^"\r\n]+"|'[^'\r\n]+'|(?!\d+(?:[.,]\d+)*[\t ]*(?:#[^\r\n]*)?\r?$)[^\s#"'][^\s]*[\t ]*(?:#[^\r\n]*)?\r?$)/imu;
 
 export type SecretCategory = "a recognized credential" | "a key: value line that names a password, token, secret, or API key";
 
@@ -22,7 +22,7 @@ export function likelySecretCategory(text: string): SecretCategory | undefined {
   // Inspect Markdown wrappers without changing the document that callers validate or save.
   const assignments = text.replace(/^[\t ]*(?:>[\t ]*)+/gmu, "")
     .replace(/^[\t ]*\|[\t ]*([^|\r\n]+?)[\t ]*\|[\t ]*([^|\r\n]+?)[\t ]*\|/gmu, "$1: $2\n");
-  return ASSIGNMENT_PATTERN.test(text) || ASSIGNMENT_PATTERN.test(assignments)
+  return CREDENTIAL_ASSIGNMENT_LINE_PATTERN.test(text) || CREDENTIAL_ASSIGNMENT_LINE_PATTERN.test(assignments)
     ? "a key: value line that names a password, token, secret, or API key"
     : undefined;
 }

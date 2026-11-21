@@ -5,7 +5,7 @@ import {
   beginGoalTurnState,
   boundGoalText,
   checkpointActiveGoalState,
-  checkpointPausedGoalState,
+  checkpointWithoutManualRecovery,
   GOAL_VERSION,
   parseGoalState,
   pauseGoalState,
@@ -519,7 +519,7 @@ export function registerGoalRuntime(
     const current = runtime.state;
     if (!isAutomationMode(ctx) || !isSavedSession(ctx) || !current) return;
     if (current.status === "paused" && current.resumeAfterManualCompaction === true) {
-      const checkpoint = checkpointPausedGoalState(current, Date.now());
+      const checkpoint = checkpointWithoutManualRecovery(current, Date.now());
       try {
         persistGoalState(pi, runtime, "checkpoint", checkpoint);
       } catch {

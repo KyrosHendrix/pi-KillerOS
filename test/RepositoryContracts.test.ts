@@ -319,7 +319,8 @@ test("a push to main checks for recorded PR coverage before allocating Windows r
 });
 
 test("CI checks the newest peer-range Pi with matched runtime packages and a stable required-check name", () => {
-  const triggers = ci.slice(ci.indexOf("\non:"), ci.indexOf("\n# Keep the default token"));
+  const triggers = ci.split(/^(?=[\w-]+:)/mu).find((section) => section.startsWith("on:"));
+  assert.ok(triggers);
   assert.match(triggers, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n  pull_request:/u);
   assert.match(triggers, /pull_request:\s*\n\s*types:\s*\n\s*- opened\s*\n\s*- synchronize\s*\n\s*- reopened\s*\n\s*- ready_for_review\s*\n  schedule:/u);
   assert.match(triggers, /cron: '17 3 \* \* 1'/u);

@@ -2359,7 +2359,6 @@ const raceMutationProfiles: Record<string, { expectedRequests: number; settleAft
   resume: { expectedRequests: 3, settleAfterRelease: true },
   replace: { expectedRequests: 3, settleAfterRelease: true },
   session_start: { expectedRequests: 1, settleAfterRelease: false },
-  // Explicit cancellation discards the parked run without a settling model turn.
   "cancelled-navigation": { expectedRequests: 1, settleAfterRelease: false },
   session_tree: { expectedRequests: 2, settleAfterRelease: true },
 };

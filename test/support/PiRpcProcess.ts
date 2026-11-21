@@ -208,6 +208,7 @@ export class PiRpcProcess {
     });
   }
 
+  /** Ends Pi's stdin and waits for a natural exit; past `timeoutMs`, attempts forced tree cleanup if ownership is confirmed, reports whether cleanup was forced or uncertain, and rejects if exit stays unconfirmed. */
   async close(timeoutMs = 15_000): Promise<{ exit: ProcessExit; forced: boolean; treeCleanupError?: string }> {
     this.closePromise ??= this.closeOwned(timeoutMs);
     return await this.closePromise;

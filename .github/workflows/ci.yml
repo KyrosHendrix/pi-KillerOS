@@ -14,7 +14,6 @@ on:
     - cron: '17 3 * * 1'
   workflow_dispatch:
 
-# Keep the default token read-only. Jobs that need an additional scope declare it locally.
 permissions:
   actions: read
   contents: read
@@ -284,6 +283,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Branch protection requires this check name.
   quality:
     name: Quality
     needs: [tested-tree, quality-checks, quality-tests, pi-latest, pi-latest-tests]

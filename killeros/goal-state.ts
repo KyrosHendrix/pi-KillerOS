@@ -644,7 +644,7 @@ export function pauseGoalState(
   };
 }
 
-export function checkpointPausedGoalState(
+export function checkpointWithoutManualRecovery(
   current: Extract<GoalState, { status: "paused" }>,
   now: number,
 ): GoalState {
