@@ -416,7 +416,7 @@ jobs:
         run: |
           read -ra packages <<< "$PI_PACKAGES"
           test "${#packages[@]}" -eq 4
-          npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "${packages[@]}"
+          npm install --force --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "${packages[@]}"
 
       - name: Verify package files are unchanged
         if: needs.plan.outputs.pi-latest-full-suite == 'true'

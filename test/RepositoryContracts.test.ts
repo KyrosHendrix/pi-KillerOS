@@ -289,6 +289,7 @@ test("Bun lint honors repository ignores and production restrictions", () => {
         [
           "lint",
           "--no-script",
+          "--format=agent",
           "--type-aware",
           "--max-warnings=0",
           "clean.ts",
@@ -480,9 +481,11 @@ test("CI runs Bun quality jobs in parallel and aggregates their results", () => 
         /^    if: .*needs\.plan\.outputs\.pi-latest-full-suite == 'true'/mu,
       );
     if (job.startsWith("pi-latest")) {
-      assert.match(
-        source,
-        /npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false/u,
+      const platformFlag = job === "pi-latest-check" ? " --force" : "";
+      assert.ok(
+        source.includes(
+          `npm install${platformFlag} --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "\${packages[@]}"`,
+        ),
       );
     }
   }
