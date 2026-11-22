@@ -45,7 +45,6 @@ function readHistory(file: string): Record<string, unknown>[] {
     .map((line) => record(JSON.parse(line)));
 }
 
-// Catalog ID: runtime.package-preferences.
 test(
   "packed KillerOS activates, reloads, and preserves Pi display preferences",
   { timeout: 180_000 },
@@ -176,7 +175,6 @@ const history = ${JSON.stringify(history)};
 const save = value => appendFileSync(history, JSON.stringify(value) + "\\n");
 export default function(pi) {
   for (const name of ["default", "contextPercentRemaining", "formatCost", "formatContextProgress", "executeHook"]) assert.equal(typeof entry[name], "function", name);
-  // These are public packed-root consumer inputs, not simulated Pi application execution.
   for (const [tokens, contextWindow, expected] of [[89600,128000,30],[64000,128000,50],[200000,128000,0],[-1,128000,100],[null,128000,null],[1,0,null]]) {
     assert.equal(entry.contextPercentRemaining({getContextUsage:()=>({tokens,contextWindow})}), expected);
   }

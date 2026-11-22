@@ -9,13 +9,15 @@ ignorePatterns = [
 
 [lint]
 flavor = "oxlint"
-plugins = ["typescript"]
+plugins = ["typescript", "./scripts/no-comments.ts"]
 ignorePatterns = [".pi/**", "docs/**"]
+inlineConfig = false
 
 [lint.categories]
 correctness = "off"
 
 [lint.rules]
+"killeros/no-comments" = "error"
 "typescript/await-thenable" = "error"
 "typescript/ban-ts-comment" = "error"
 no-array-constructor = "error"

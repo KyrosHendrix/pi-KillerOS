@@ -2,16 +2,6 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
-/**
- * Resolves once every Git child in the trace2 event file `trace` has exited and none has started for
- * `quietMs`. Reports how long it waited and how many children were running when it first looked.
- *
- * Windows refuses to move or rename a path while a Git child has it, or a file inside it, open. A
- * scenario that moves repository metadata under a running Pi waits here first and then moves it once.
- * Pi's first footer scan of a new repository changes .git/objects, which its own watcher answers with
- * a second scan after a 250 ms debounce. The quiet period outlasts that debounce and the 500 ms watch
- * cooldown the footer scenarios use, so the wait cannot end in the gap between two scans.
- */
 export async function gitReadersFinished(
   trace: string,
   signal: AbortSignal,

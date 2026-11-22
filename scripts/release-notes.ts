@@ -1,5 +1,3 @@
-// scripts/release-notes.ts
-// Extracts the changelog section for one version. Consumed by .github/workflows/release.yml.
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 

@@ -73,7 +73,6 @@ const HOOK_PAYLOAD_LIMIT = 8_000;
 const HOOK_TIMEOUT_DEFAULT_MS = 30_000;
 const HOOK_TIMEOUT_MAX_MS = 300_000;
 
-// Reads executable project configuration through a bounded, project-local file descriptor.
 function readHookConfig(configPath: string, projectRoot: string): string {
   const actualPath = realpathSync(configPath);
   const expectedPath = path.join(
@@ -221,7 +220,6 @@ function appendBounded(output: HookOutputBuffer, chunk: Buffer | string): void {
   output.text += output.decoder.write(captured);
 }
 
-/** Terminates a Windows hook tree without depending on the caller's PATH. */
 function terminateWindowsHookTree(child: HookChildProcess): Promise<boolean> {
   return new Promise((resolve) => {
     try {
@@ -244,9 +242,7 @@ function terminateWindowsHookTree(child: HookChildProcess): Promise<boolean> {
 function terminateHookProcess(child: HookChildProcess, force: boolean): void {
   try {
     child.kill(force ? "SIGKILL" : "SIGTERM");
-  } catch {
-    // The hook may have already exited.
-  }
+  } catch {}
 }
 
 export function executeHook(
@@ -475,12 +471,6 @@ async function runObserverHooks(
   }
 }
 
-/**
- * Registers tool hooks now and returns the registration for `agent_settled` hooks.
- * Pi awaits settled handlers in registration order, so the caller registers those hooks after KillerOS's own
- * settlement handlers. A slow hook then cannot delay the receipt or completion sound, and files it edits stay out of the
- * agent's change receipt.
- */
 export function registerLifecycleHooks(pi: ExtensionAPI): () => void {
   let config: KillerosHookConfig = {};
   pi.on("session_start", (_event, ctx) => {

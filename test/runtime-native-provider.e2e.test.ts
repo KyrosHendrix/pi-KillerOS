@@ -27,8 +27,6 @@ import { removeDirectoryEventually } from "./support/FileCleanup.ts";
 import { PiTerminalProcess } from "./support/PiTerminalProcess.ts";
 import { throwScenarioFailure } from "./support/ScenarioFailure.ts";
 
-// Catalog family: runtime.native-provider-retries. Native transport histories are
-// separately selectable, including independent active and blocked retry histories.
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const cliPath = path.join(
   repositoryRoot,
@@ -92,7 +90,6 @@ type FamilyScope = Family & {
 const probeExtensionSource = String.raw`import fs from "node:fs";
 const probeFile = process.env.KILLEROS_NATIVE_PROBE;
 if (!probeFile) throw new Error("KillerOS native probe file is missing");
-// Reload re-evaluates this module while the owned event file survives.
 let sequence = fs.readFileSync(probeFile, "utf8").split("\n").filter(Boolean).length;
 function record(type, details = {}) {
   sequence += 1;
@@ -1003,7 +1000,6 @@ function assertProbeRetry(
   );
 }
 
-/** Retry events are RPC/session events, not extension hooks. Observe recovery through public run events and exact provider traffic. */
 function assertRecoveredRetry(
   probeFile: string,
   after: number,
@@ -2614,7 +2610,6 @@ async function runMistralFamily(
   );
 }
 
-// Proposed catalog ID: runtime.native-openai-api-key-400.
 test(
   "native OpenAI API-key 400 preserves high and low sampling without retry",
   { timeout: 60_000 },
@@ -2625,7 +2620,6 @@ test(
   },
 );
 
-// Proposed catalog ID: runtime.native-openai-oauth-400.
 test(
   "native OpenAI OAuth 400 preserves high and low sampling without retry",
   { timeout: 60_000 },
@@ -2641,7 +2635,6 @@ test(
   },
 );
 
-// Proposed catalog ID: runtime.native-openai-api-key-429.
 test(
   "native OpenAI 429 retries once with unchanged high and low sampling",
   { timeout: 60_000 },
@@ -2651,7 +2644,6 @@ test(
   },
 );
 
-// Proposed catalog ID: runtime.native-azure-responses.
 test(
   "native Azure Responses excludes priority before and after reload",
   { timeout: 60_000 },
@@ -2666,7 +2658,6 @@ test(
   },
 );
 
-// Proposed catalog ID: runtime.native-azure-foundry.
 test(
   "native Azure Foundry excludes priority before and after reload",
   { timeout: 60_000 },
@@ -2681,7 +2672,6 @@ test(
   },
 );
 
-// Proposed catalog IDs split frozen PiExtensionContract1492 without hidden registrations.
 test(
   "active faux provider retries preserve goal ownership until settlement",
   { timeout: 60_000 },

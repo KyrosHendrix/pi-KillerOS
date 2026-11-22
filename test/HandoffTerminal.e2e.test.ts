@@ -64,7 +64,6 @@ function providerStep(position: "success" | "before-headers" | "body") {
   };
 }
 
-/** Bound provider barriers and remove their deadline/abort listeners after completion. */
 async function waitForBarrier(
   promise: Promise<void>,
   signal: AbortSignal,
@@ -93,7 +92,6 @@ async function waitForBarrier(
   });
 }
 
-/** After the UI acknowledges Escape, require the provider connection to close within the assertion window. */
 async function assertHttpCancelled(
   closed: Promise<void>,
   signal: AbortSignal,
@@ -124,7 +122,6 @@ async function assertHttpCancelled(
   );
 }
 
-/** Watch complete owned JSON files; timeouts bound waits rather than establish ordering. */
 async function observedFile(
   file: string,
   predicate: (value: JsonObject) => boolean,
@@ -166,7 +163,6 @@ async function observedFile(
   });
 }
 
-/** Each catalog workflow owns one native PTY, its saved source, and all provider barriers. */
 async function withTerminal(
   t: TestContext,
   scenarioId: string,
@@ -269,7 +265,6 @@ async function withTerminal(
         );
         step.completed = true;
       } else {
-        // Releasing a cancelled step during failed cleanup must not leave the server callback pending.
         response.destroy();
       }
     })().catch((error: unknown) => {
@@ -565,7 +560,6 @@ async function withTerminal(
   }
 }
 
-// Catalog ID: handoff-terminal-ownership.
 test(
   "handoff owns terminal input while generating and leaves a visible idle child",
   { timeout: 90_000 },
@@ -648,7 +642,6 @@ test(
   },
 );
 
-// Catalog ID: handoff-terminal-cancel. Authentication-setup cancellation remains a separate equivalence review.
 test(
   "Escape cancels TUI generation and aborts the provider request without replacing the session",
   { timeout: 90_000 },
@@ -715,7 +708,6 @@ test(
   },
 );
 
-// Source: Handoff.test.ts:652#1. Pi owns provider authentication and the TUI supplies the cancellation.
 test(
   "Escape cancels provider-managed authentication before handoff creates a destination",
   { timeout: 120_000 },

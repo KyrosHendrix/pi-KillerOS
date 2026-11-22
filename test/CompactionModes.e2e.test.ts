@@ -55,10 +55,6 @@ type TurnEndObservation = {
   hasAutoCompactCommand: boolean;
 };
 
-/**
- * Owns the single ordered marker line written by the observation-only fixture
- * extension. It records the real host event and mode; it never emits events.
- */
 const probeExtensionSource = String.raw`
 import { appendFileSync } from "node:fs";
 
@@ -118,11 +114,6 @@ function readJsonLines(filePath: string, label: string): JsonObject[] {
   });
 }
 
-/**
- * Builds a child-only environment. The runner's process.env is never mutated,
- * and no inherited provider credential, MCP configuration, or Git config is
- * visible to the launch.
- */
 function isolatedEnvironment(
   directory: string,
   agentDirectory: string,
@@ -178,7 +169,6 @@ function readPiVersion(): string {
 
 const piVersion = readPiVersion();
 
-// Catalog ID: compaction-print-mode.
 test(scenarioTitle, { timeout: 60_000 }, async (t) => {
   assert.equal(process.platform, "win32", "KillerOS supports Windows only");
   const processEnvironmentBefore = JSON.stringify(
@@ -616,9 +606,6 @@ test(scenarioTitle, { timeout: 60_000 }, async (t) => {
       reserveTokens,
     );
 
-    // Pi's native threshold is contextWindow - reserveTokens, so 99,000 of 100,000 stays
-    // inside it. KillerOS's 100 percent threshold is exceeded, so only KillerOS could
-    // request compaction. The negative therefore isolates the missing print-mode gate.
     const remainingTokens = contextWindow - contextTokens;
     assert.equal(remainingTokens, 1_000);
     assert.ok(

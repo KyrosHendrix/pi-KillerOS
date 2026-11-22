@@ -43,7 +43,6 @@ const enter = "\x1b[13u";
 
 type RecordValue = Record<string, unknown>;
 
-/** Loopback provider fixture with per-provider routes; no live service or credentials. */
 class FastProvider {
   readonly codexBodies: RecordValue[] = [];
   readonly otherBodies: RecordValue[] = [];
@@ -167,7 +166,6 @@ function createFamily(root: string, name: string): Family {
     )?.[1];
     if (value !== undefined) env[key] = value;
   }
-  // Bound passive receipt/footer scans to the fixture, not the enclosing development checkout.
   execFileSync("git", ["init", "--quiet"], {
     cwd: project,
     env,
@@ -260,7 +258,6 @@ test(
       writeFastConfig(family.agent, port);
       const sessionFile = path.join(family.directory, "session-fast.jsonl");
 
-      // Family 1: one trusted TUI process drives toggles, status, footer, model switches, and reload.
       terminal = new PiTerminalProcess({
         file: nodeExecutable(),
         args: [
@@ -410,7 +407,6 @@ test(
       assert.deepEqual(await terminal.close(), { code: 0, forced: false });
       terminal = undefined;
 
-      // Family 2: RPC keeps the same process-local contract through notifications and payloads.
       let rpc: PiRpcProcess | undefined;
       try {
         const rpcSession = path.join(
@@ -650,8 +646,6 @@ test(
         }
       }
 
-      // Family 3: one-shot print and JSON invocations execute the registered command cleanly and
-      // cannot carry process-local state across separate processes (no footer, no settings write).
       let oneShotRequests = provider.codexBodies.length;
       for (const mode of ["print", "json"] as const) {
         const result = spawnSync(
@@ -805,7 +799,6 @@ export default function(pi) {
   });
 }`,
     );
-    // Public-API fixture: keeps Pi's native openai-responses implementation and swaps only its HTTP transport.
     writeFileSync(
       fixtureExtension,
       String.raw`import fs from "node:fs";
@@ -867,7 +860,6 @@ export default function (pi) {
     ],
     streamSimple,
   });
-  // A public provider registration uses the same native serializer and captured HTTP transport.
   pi.registerProvider({
     ...native, id: "openai-codex",
     getModels: () => [{ ...variant("fast-codex", "https://example.invalid/v1"), provider: "openai-codex" }],
@@ -1174,7 +1166,6 @@ export default function (pi) {
         );
       }
 
-      // Eligibility re-evaluates per request: switching back to the canonical model transforms again.
       await select("fast-canonical");
       await turn("eligible again", "eligible-again");
       requests = captured();

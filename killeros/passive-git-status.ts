@@ -73,9 +73,6 @@ type PassiveWorktreeSettings = Pick<
 > & { autoCrlf: string };
 
 /**
- * Reads core.autocrlf, core.filemode, and core.symlinks in one Git process instead of one each, because
- * every scan needs all three and each Git start costs tens of milliseconds on Windows.
- *
  * Git normalizes values with --type=bool-or-str, so this matches `--type=bool --get`: the last value of a key
  * wins, a missing key takes Git's default, and any value Git cannot read as a bool fails the scan. The
  * command-line probe key always matches, so the read succeeds when the repository sets none of the keys.
@@ -239,7 +236,6 @@ function traversesInspected(candidate: string, root: string): boolean {
   }
 }
 
-/** Returns an absolute Git binary outside the inspected repository without starting a locator process. */
 export function passiveGitCommand(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -286,7 +282,6 @@ export function passiveGitCommand(
   return undefined;
 }
 
-/** Environment for automatic Git children, without inherited repository selection or PATH command resolution, and with untranslated messages. */
 export function passiveGitEnv(
   base: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
@@ -422,7 +417,6 @@ async function worktreeContent(
   return readBoundedFile(absolutePath, limit);
 }
 
-/** Reads one worktree file's mode and bytes, within `limit` bytes for regular files. */
 export async function readWorktreeFile(
   root: string,
   filePath: string,
@@ -536,11 +530,6 @@ function matchesIndex(
   return blobObjectId(normalized, entry.objectId.length) === entry.objectId;
 }
 
-/**
- * Reads index and tree metadata with Git, then inspects worktree files with Node.
- * No Git command in this path asks Git to convert worktree content, so clean and process filters cannot start.
- * With `untracked` set to "paths", untracked files are listed with their mode and their bytes stay unread.
- */
 export async function inspectWorktreeWithoutFilters(
   root: string,
   runGit: PassiveGitRunner,
@@ -659,7 +648,6 @@ export async function inspectWorktreeWithoutFilters(
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_OUTPUT_LIMIT = 16 * 1024 * 1024;
 
-/** Why passive Git metadata is unavailable: the command failed, ran past its timeout, or exceeded an output or content bound. */
 export class PassiveGitFailure extends Error {
   readonly reason: "error" | "timeout" | "too-large";
   readonly stderr: Buffer;
@@ -679,7 +667,6 @@ function safeGitCommand(cwd: string): string | undefined {
   }
 }
 
-/** Runs the passive Git binary in `cwd` with optional stdin and bounded output, rejecting with a PassiveGitFailure. Pass `command` to reuse one lookup across a scan. */
 export function runPassiveGit(
   cwd: string,
   args: readonly string[],
@@ -747,7 +734,6 @@ export interface GitFileChanges {
   deleted: number;
 }
 
-/** Counts changed files for a trusted project without asking Git to inspect worktree content; undefined when unavailable. */
 export async function resolveGitFileChanges(
   cwd: string,
   trusted: boolean,
@@ -796,7 +782,6 @@ export async function resolveGitFileChanges(
   }
 }
 
-/** Resolves the current branch for a trusted project, "detached" for a detached HEAD, or undefined when unavailable. */
 export async function resolveGitBranch(
   cwd: string,
   trusted: boolean,

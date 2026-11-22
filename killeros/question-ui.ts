@@ -30,19 +30,19 @@ type QuestionSelection =
   | { kind: "aborted" };
 
 const CUSTOM_INPUT_MAX_CHARACTERS = 4_000;
+const SELECTOR_CHROME_AND_PAGING_ROWS = 13;
+
 export const CUSTOM_INPUT_HISTORY_LIMIT = 100;
 export const CUSTOM_INPUT_HISTORY_BYTES = 64 * 1024;
 export const FILTER_QUERY_MAX_CHARACTERS = 4_000;
 export const FILTER_QUERY_MAX_BYTES = 16_000;
 
-/** Distinct custom answers, oldest first, bounded by entry count and total UTF-8 bytes. */
 export function createCustomInputHistory() {
   const entries: string[] = [];
   const view: readonly string[] = entries;
   let bytes = 0;
   return {
     entries: view,
-    /** Moves `value` to the newest slot and evicts the oldest entries to fit; rejects a value larger than the byte bound. */
     remember: (value: string): boolean => {
       const size = Buffer.byteLength(value, "utf8");
       if (size > CUSTOM_INPUT_HISTORY_BYTES) return false;
@@ -192,8 +192,7 @@ export async function openQuestionUi(config: {
       "error",
     );
 
-  // Resize dismisses only this native step. Rebuild its pages without losing question state.
-  async function nativeRequest(
+  async function selectUntilResize(
     request: (stepSignal: AbortSignal) => Promise<string | undefined>,
   ) {
     checkAbort();
@@ -226,8 +225,10 @@ export async function openQuestionUi(config: {
               .map((line) => truncateToWidth(oneLine(line), size.width, "…"))
               .join("\n")
           : title(size);
-      // Reserve native borders, hints, header/footer, and both page controls.
-      const capacity = Math.max(1, size.rows - 13 - text.split("\n").length);
+      const capacity = Math.max(
+        1,
+        size.rows - SELECTOR_CHROME_AND_PAGING_ROWS - text.split("\n").length,
+      );
       start = Math.min(start, Math.max(0, entries.length - 1));
       const page = entries.slice(start, start + capacity);
       const labels = page.map((entry, index) =>
@@ -244,7 +245,7 @@ export async function openQuestionUi(config: {
         ...(start + capacity < entries.length ? [next] : []),
         ...(start > 0 ? [previous] : []),
       ];
-      const response = await nativeRequest((stepSignal) =>
+      const response = await selectUntilResize((stepSignal) =>
         ctx.ui.select(text, offered, { signal: stepSignal }),
       );
       checkAbort();

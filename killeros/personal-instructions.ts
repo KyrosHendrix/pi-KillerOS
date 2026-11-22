@@ -27,7 +27,6 @@ function readBoundedText(filePath: string): string | undefined {
   }
 }
 
-/** Checks path containment using Windows filesystem casing rules. */
 function pathInside(root: string, candidate: string): boolean {
   const normalizedRoot = root.toLowerCase();
   const normalizedCandidate = candidate.toLowerCase();
@@ -40,7 +39,6 @@ function pathInside(root: string, candidate: string): boolean {
   );
 }
 
-/** Reads one stable, unlinked import from inside Pi's agent directory. */
 function readImportedText(filePath: string): string | undefined {
   try {
     const allowedPath = path.resolve(getAgentDir());

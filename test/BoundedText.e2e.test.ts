@@ -42,7 +42,6 @@ type BoundedScenario = {
   sourceIndices: readonly [SourceIndex, ...SourceIndex[]];
 };
 
-/** Pi discovers repository and Git state by walking upward, so fixtures live outside the checkout. */
 function assertFixtureOutsideGit(directory: string): void {
   for (const candidate of new Set([directory, realpathSync(directory)])) {
     for (let ancestor = candidate; ; ancestor = path.dirname(ancestor)) {
@@ -53,7 +52,6 @@ function assertFixtureOutsideGit(directory: string): void {
   }
 }
 
-/** Removes only this run's temp root after confirming its dependency entry is still the owned junction. */
 async function removeFixtureRoot(directory: string): Promise<void> {
   const temp = realpathSync(os.tmpdir());
   assert.equal(
@@ -221,7 +219,6 @@ async function runBoundedScenario(
         });
         session.appendCustomMessageEntry("bounded-marker", after, true);
       }
-      // A trailing native message publishes the PTY width without changing the delimited tool blocks.
       session.appendCustomMessageEntry("bounded-width", "width", true);
       const file = session.getSessionFile();
       assert.ok(file);
@@ -377,7 +374,6 @@ export default function(pi) {
           lastVector = { index, expanded, width };
           const after = terminal.sequence;
           const producerRows = new Map<string, string[]>();
-          // Keep both complete tool blocks visible without repainting 1,600 mostly empty rows at every width.
           const rows =
             width < 20
               ? 1_600
@@ -505,9 +501,6 @@ export default function(pi) {
                   return false;
               }
               const screenRows = screen.split("\n");
-              // Fullscreen chrome can differ from the PTY width (the failing run showed a 79-cell
-              // editor border at 80 columns). The trailing native message renders the current session
-              // and PTY width; joining rows keeps its token visible when it wraps at width 1.
               if (!screenRows.join("").includes(`[I${index}W${width}W]`))
                 return false;
               if (expanded && width === 80 && !screen.includes("❯\u00a0z"))
@@ -590,7 +583,6 @@ export default function(pi) {
               question.length <= 6,
               `question call/result must each stay within three rows: ${JSON.stringify(lastVector)}`,
             );
-            // The goal call is an ordinary Text; only its result is bounded to one row.
             if (width >= 20)
               assert.ok(
                 goal.length <= 2,
@@ -650,7 +642,6 @@ export default function(pi) {
     }
   }
   if (errors.length) {
-    // CI collects failure.txt from the checkout; this artifact directory never becomes a child cwd.
     const failure = mkdtempSync(
       path.join(root, "node_modules", ".killeros-bounded-failure-"),
     );
@@ -695,7 +686,6 @@ test(
   },
 );
 
-// Catalog ID: BT-02. This independent history proves the exact collapsed and expanded row contract.
 test(
   "Collapsed and expanded multiline transcript text preserves all rows",
   { timeout: 60_000 },

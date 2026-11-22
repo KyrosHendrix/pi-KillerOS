@@ -226,8 +226,6 @@ class LocalProvider {
     return barrier;
   }
 
-  /** Holds the next request, then answers with one or more model tool calls in a single message.
-   * The caller queues the follow-up plan explicitly because tool results may justify any response. */
   holdToolCalls(calls: ProviderToolCall[]): ProviderBarrier {
     const barrier = makeBarrier();
     this.barriers.push(barrier);
@@ -235,17 +233,14 @@ class LocalProvider {
     return barrier;
   }
 
-  /** Answers the next request with tool calls and no hold; used for queued decision follow-ups. */
   queueToolCalls(calls: ProviderToolCall[]): void {
     this.plans.push({ kind: "calls", calls });
   }
 
-  /** Answers the next request with a plain settled response. */
   queueStop(): void {
     this.plans.push({ kind: "stop" });
   }
 
-  /** Streams content, then holds the response open mid-stream until released or aborted. */
   holdPartialResponse(content: string): ProviderBarrier {
     const barrier = makeBarrier();
     this.barriers.push(barrier);
@@ -920,7 +915,6 @@ async function waitForNotification(
   return notification;
 }
 
-/** Counts every notify record published after a cursor until the caller stops the observation. */
 function observeNotifications(
   fixture: PiFixture,
   after: number,
@@ -983,7 +977,6 @@ async function submitCommand(
   return response;
 }
 
-/** Submits an ordinary user prompt; Pi reports started (or queued while streaming), not handled. */
 async function submitPrompt(
   fixture: PiFixture,
   text: string,
@@ -1205,7 +1198,6 @@ async function runStartForms(fixture: PiFixture): Promise<void> {
     "paused",
   );
 
-  // Settle the first turn before replacement so settlement cannot invalidate the command's captured state.
   const secondBarrier = fixture.provider.holdNextRequest();
   const replacementCursor = fixture.rpc.currentSequence;
   const replacementOutcome = outcome(
@@ -1712,10 +1704,6 @@ function fixtureDiagnostics(fixtures: PiFixture[]): RecordValue[] {
   }));
 }
 
-// ---------------------------------------------------------------------------
-// Shared goal E2E infrastructure for the remaining catalog scenarios.
-// ---------------------------------------------------------------------------
-
 type TerminalFixture = {
   directory: string;
   project: string;
@@ -2002,7 +1990,6 @@ async function createTerminalFixture(
   }
 }
 
-/** Writes one editor line and submits it with an explicit CSI-u Enter (ConPTY maps bare CR to Shift+Enter). */
 function submitTerminalLine(fixture: TerminalFixture, text: string): number {
   const cursor = fixture.terminal.sequence;
   fixture.terminal.write(`${text}\x1b[13u`);
@@ -2105,7 +2092,6 @@ function sessionCustomEntries(raw: string): SessionCustomEntry[] {
   return entries;
 }
 
-/** Bounded fs.watch wait until the owned session file contains a matching durable custom entry. */
 async function waitForSessionCustomEntry(
   file: string,
   customType: string,
@@ -2168,7 +2154,6 @@ async function waitForSessionCustomEntry(
   });
 }
 
-/** Bounded fs.watch wait for a durable session-file goal state; no sleeps. */
 async function waitForSessionGoalEntries(
   file: string,
   predicate: (entries: SavedGoalEntry[]) => boolean,
@@ -2232,7 +2217,6 @@ async function waitForSessionGoalEntries(
   });
 }
 
-/** Bounded fs.watch wait for a JSON fixture-control file written by a child adapter or extension. */
 async function waitForControlFile(
   file: string,
   signal: AbortSignal,
@@ -2310,7 +2294,6 @@ function seededGoalBase(objective: string, revision: number): RecordValue {
   };
 }
 
-/** A restored active goal whose accepted continue decision authorizes exactly one more turn. */
 function authorizedContinueGoalState(objective: string): RecordValue {
   return {
     ...seededGoalBase(objective, 4),
@@ -2326,7 +2309,6 @@ function authorizedContinueGoalState(objective: string): RecordValue {
   };
 }
 
-/** A restored active goal whose turn never recorded a decision; restore must pause it. */
 function unresolvedGoalTurnState(objective: string): RecordValue {
   return {
     ...seededGoalBase(objective, 3),
@@ -2356,7 +2338,6 @@ export default function (pi: ExtensionAPI) {
 }
 `;
 
-/** Seeds panel sessions and wires the public session-switch fixture command for them. */
 function preparePanelSessions(
   fixtureDirectory: string,
   seeds: Array<{ state: RecordValue; event: string }>,
@@ -2573,7 +2554,6 @@ test(scenarioTitle, { timeout: 120_000 }, async (t: TestContext) => {
     ...cleanupErrors,
   ];
 
-  // Snapshot bounded process evidence before removing any owned fixture directory.
   const diagnostics = JSON.stringify(
     fixtureDiagnostics(fixtures),
     null,
@@ -2584,7 +2564,6 @@ test(scenarioTitle, { timeout: 120_000 }, async (t: TestContext) => {
   let reportedErrorCount = 0;
   const saveFailureEvidence = (): void => {
     try {
-      // Keep the report outside artifactDirectory so scratch cleanup cannot erase it.
       failureDirectory ??= mkdtempSync(
         path.join(
           repositoryRoot,
@@ -2681,7 +2660,6 @@ function savedLimitedGoal(
   };
 }
 
-// Catalog ID: goals.turn-limits.
 test(
   "turn budgets renew explicitly and stop silently at the limit",
   { timeout: 150_000 },
@@ -3019,10 +2997,6 @@ test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Catalog ID: goals.tool-contract.
-// ---------------------------------------------------------------------------
-
 const goalUpdateStatusSchema = {
   type: "string",
   enum: ["complete", "continue", "blocked"],
@@ -3085,7 +3059,6 @@ test(
         path.join(directory, "node_modules"),
         "junction",
       );
-      // One ordinary RPC process: provider-visible registration, valid shapes, invalid statuses, two-call serialization.
       const ordinary = await createFixture(
         directory,
         "ordinary",
@@ -3101,8 +3074,6 @@ test(
       fixtures.push(ordinary);
       await initializeFixture(ordinary);
 
-      // Registration fields: the tool is declared while authorized, with the exact status schema.
-      // The three valid shapes run as one authorized-turn chain, matching Pi's decision-follow-up loop.
       const validShapes = [
         {
           label: "continue shape",
@@ -3139,7 +3110,6 @@ test(
       ] as const;
       const shapeBarriers: ProviderBarrier[] = [];
       for (const shape of validShapes) {
-        // Interleave each turn's held decision with the plain follow-up response Pi sends after executing it.
         shapeBarriers.push(
           ordinary.provider.holdToolCalls([
             { name: "killeros_goal_update", arguments: { ...shape.decision } },
@@ -3224,7 +3194,6 @@ test(
         acknowledgeBatch(ordinary, shape.label);
         cursor = ordinary.rpc.currentSequence;
       }
-      // The complete decision finished the goal: the last settled turn dispatched nothing further.
       assertIdle(await getState(ordinary), "valid shapes");
       const shapeEntries = goalEntries(await getEntries(ordinary));
       for (const shape of validShapes)
@@ -3262,7 +3231,6 @@ test(
       observations.push({ history: "valid shapes", providerRequests: 6 });
       acknowledgeBatch(ordinary, "valid shapes");
 
-      // Invalid statuses are rejected at the schema boundary without recording a decision.
       for (const [index, status] of [
         ["active"],
         ["paused"],
@@ -3396,7 +3364,6 @@ test(
         providerRequests: 2,
       });
 
-      // Two queued goal calls in one assistant message execute sequentially under the public tool_call barrier.
       await assertFreshSession(ordinary, "two-call serialization");
       const serialBeforeRequests = ordinary.provider.requestCount;
       writeFileSync(planFile, JSON.stringify({ mode: "hold-first" }));
@@ -3430,7 +3397,6 @@ test(
         t.signal,
         "two-call first entry",
       );
-      // The child blocks inside the acknowledged barrier, so the durable check reads the owned session file directly.
       const heldEntries = await readSessionGoalEntries(
         ordinary.currentSessionFile,
       );
@@ -3504,7 +3470,6 @@ test(
         secondEnteredAfterRelease: true,
       });
 
-      // One codemode-enabled process: the goal tool stays model-visible but is unreachable from scripts.
       const codemode = await createFixture(
         directory,
         "codemode",
@@ -3668,10 +3633,6 @@ test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Catalog ID: goals.panel-tui.
-// ---------------------------------------------------------------------------
-
 function screenLines(screen: string): string[] {
   return screen.split("\n").map((line) => line.trimEnd());
 }
@@ -3721,7 +3682,6 @@ test(
       const terminal = fixture.terminal;
       const bellsAtStart = terminal.bellCount;
 
-      // Active panel while the goal's first turn is in flight at the held provider barrier.
       fixture.provider.holdPartialResponse("Working on the panel objective.");
       let cursor = submitTerminalLine(fixture, `/goal ${objective}`);
       await terminal.waitForScreen(
@@ -3764,7 +3724,6 @@ test(
         "opening the active panel must not ring the terminal bell",
       );
 
-      // Selecting Pause saves status=paused durably and aborts the in-flight turn once.
       const pauseRequest = await fixture.provider.waitForRequest(1, t.signal);
       terminal.write("\x1b[13u");
       screens.afterPause = await terminal.waitForScreen(
@@ -3793,7 +3752,6 @@ test(
       );
       assert.equal(pauseEntries.at(-1)?.state?.objective, objective);
 
-      // The paused panel offers resume and clear.
       cursor = submitTerminalLine(fixture, "/goal");
       screens.pausedPanel = await terminal.waitForScreen(
         (screen) =>
@@ -3808,7 +3766,6 @@ test(
         "a paused goal offers no pause",
       );
 
-      // Resume through the panel dispatches one continuation.
       terminal.write("\x1b[13u");
       const resumeBarrier = fixture.provider.holdPartialResponse(
         "Resumed work on the panel objective.",
@@ -3841,7 +3798,6 @@ test(
       );
       assert.equal(resumeEntries.at(-1)?.state?.objective, objective);
 
-      // Clear confirmation: cancel changes nothing and aborts nothing.
       cursor = submitTerminalLine(fixture, "/goal");
       await terminal.waitForScreen(
         (screen) =>
@@ -3890,7 +3846,6 @@ test(
         "cancelling the clear must leave the active provider request open",
       );
 
-      // Accepting the same confirmation clears the goal and aborts the in-flight turn once.
       cursor = submitTerminalLine(fixture, "/goal");
       await terminal.waitForScreen(
         (screen) =>
@@ -3932,7 +3887,6 @@ test(
       );
       assert.ok(clearEntries.at(-1));
 
-      // Direct clear clears without any panel or confirmation dialog.
       const directBarrier = fixture.provider.holdPartialResponse(
         "Working on the direct objective.",
       );
@@ -3977,7 +3931,6 @@ test(
         "the whole panel flow must not ring the terminal bell",
       );
 
-      // Restored paused, blocked, and complete goals open status-valid panels.
       for (const [index, seeded] of [
         {
           label: "paused",
@@ -4002,7 +3955,6 @@ test(
         },
       ].entries()) {
         cursor = submitTerminalLine(fixture, `/fixture-goal-session ${index}`);
-        // The withSession marker lands durably in the seeded file once the replacement settled.
         await waitForSessionCustomEntry(
           fixture.extraSessionFiles[index],
           "goals-e2e-fixture",
@@ -4113,9 +4065,7 @@ test(
           errors,
           diagnostics: runtimeDiagnostics,
         });
-      } catch {
-        /* the aggregate error below still carries the primary failure */
-      }
+      } catch {}
       throw new AggregateError(errors, "goals.panel-tui failed");
     }
     t.diagnostic(
@@ -4130,10 +4080,6 @@ test(
     );
   },
 );
-
-// ---------------------------------------------------------------------------
-// Catalog ID: goals.turn-authority.
-// ---------------------------------------------------------------------------
 
 function providerToolNames(request: ProviderRequest, label: string): string[] {
   // Pi omits the tools field entirely when nothing is declared to the model.
@@ -4152,13 +4098,12 @@ test(
     const observations: RecordValue[] = [];
     const errors: unknown[] = [];
     try {
-      // RPC live decisions: activation, turn increments, duplicate rejection, completion, and removal.
       const live = await createFixture(directory, "rpc-live", t.signal);
       fixtures.push(live);
       await initializeFixture(live);
       const objective = "Ship only after every release check passes";
-      const turn1Barrier = live.provider.holdNextRequest(); // request 1: the turn-1 goal request, answered plain (no decision)
-      live.provider.queueStop(); // request 2: ordinary request while paused
+      const turn1Barrier = live.provider.holdNextRequest();
+      live.provider.queueStop();
       const continueBarrier = live.provider.holdToolCalls([
         {
           name: "killeros_goal_update",
@@ -4168,7 +4113,7 @@ test(
             nextAction: "Record the duplicate check",
           },
         },
-      ]); // request 3: turn 2 with the accepted continue decision
+      ]);
       live.provider.queueToolCalls([
         {
           name: "killeros_goal_update",
@@ -4177,8 +4122,8 @@ test(
             evidence: "Duplicate decision attempt",
           },
         },
-      ]); // request 4: the native tool follow-up responds with a duplicate decision
-      live.provider.queueStop(); // request 5
+      ]);
+      live.provider.queueStop();
       const completeBarrier = live.provider.holdToolCalls([
         {
           name: "killeros_goal_update",
@@ -4187,9 +4132,9 @@ test(
             evidence: "npm test and npm run check passed",
           },
         },
-      ]); // request 6: turn 3 with the accepted complete decision
-      live.provider.queueStop(); // request 7
-      live.provider.queueStop(); // request 8: ordinary request after completion
+      ]);
+      live.provider.queueStop();
+      live.provider.queueStop();
 
       let cursor = live.rpc.currentSequence;
       await submitCommand(live, `/goal ${objective}`, "live start");
@@ -4308,7 +4253,6 @@ test(
         acceptedResult < duplicateResult,
         "the accepted decision precedes the duplicate rejection",
       );
-      // The rejected duplicate settles the turn and dispatches exactly one authorized follow-up; Pi never idles between them.
       const turn3 = await live.provider.waitForRequest(6, t.signal);
       assert.match(
         JSON.stringify(turn3.body.messages),
@@ -4390,7 +4334,6 @@ test(
       observations.push({ history: "rpc-live", providerRequests: 8 });
       acknowledgeBatch(live, "ordinary after completion");
 
-      // TUI live decisions through the native terminal.
       const tui = await createTerminalFixture({
         directory,
         label: "tui-live",
@@ -4407,8 +4350,8 @@ test(
           },
         },
       ]);
-      tui.provider.queueStop(); // follow-up
-      const tuiTurn2Barrier = tui.provider.holdNextRequest(); // turn 2, answered plain (no decision)
+      tui.provider.queueStop();
+      const tuiTurn2Barrier = tui.provider.holdNextRequest();
       const tuiObjective = "Finish the terminal migration";
       cursor = submitTerminalLine(tui, `/goal ${tuiObjective}`);
       await tui.terminal.waitForScreen(
@@ -4459,7 +4402,6 @@ test(
         "the TUI continue decision was accepted",
       );
 
-      // Starting without an available goal tool appends a paused goal and sends zero requests.
       const excluded = await createTerminalFixture({
         directory,
         label: "excluded-tool",
@@ -4497,7 +4439,6 @@ test(
       assert.equal(excludedState?.turns, 0);
       observations.push({ history: "excluded-tool", providerRequests: 0 });
 
-      // A restored accepted continue authorization is consumed once.
       const restored = await createFixture(
         directory,
         "restored-authorization",
@@ -4506,7 +4447,6 @@ test(
         "continue",
       );
       fixtures.push(restored);
-      // The restored authorization dispatches its turn during startup, so the request hold goes in first.
       restored.provider.holdNextRequest();
       await getState(restored);
       cursor = restored.rpc.currentSequence;
@@ -4558,7 +4498,6 @@ test(
         providerRequests: 1,
       });
 
-      // Reopen the exact in-flight checkpoint produced by consuming the saved authorization.
       const consumed = await createFixture(
         directory,
         "restored-consumed-authorization",
@@ -4593,7 +4532,6 @@ test(
       });
       acknowledgeBatch(consumed, "consumed authorization reopen");
 
-      // A restored unresolved turn pauses; blocked goals stay eligible only for verified completion.
       const unresolved = await createFixture(
         directory,
         "restored-unresolved-blocked",
@@ -4622,7 +4560,6 @@ test(
 
       const blockedDecisions: ProviderBarrier[] = [];
       for (let index = 0; index < 3; index += 1) {
-        // Interleave each held blocked decision with the plain follow-up response.
         blockedDecisions.push(
           unresolved.provider.holdToolCalls([
             {
@@ -4810,10 +4747,6 @@ test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Catalog ID: goals.dispatch-gates.
-// ---------------------------------------------------------------------------
-
 test(
   "continuation dispatch respects idle, pending, and cancellation gates",
   { timeout: 300_000 },
@@ -4824,18 +4757,17 @@ test(
     const observations: RecordValue[] = [];
     const errors: unknown[] = [];
     try {
-      // RPC gates workflow: notices, unrelated active run, pending message, repeated continue normalization.
       const gates = await createFixture(directory, "rpc-gates", t.signal);
       fixtures.push(gates);
       await initializeFixture(gates);
       const gatesObjective = "Gate the continuation dispatch";
-      const g1 = gates.provider.holdNextRequest(); // r1: turn 1, plain (paused)
-      const g2 = gates.provider.holdNextRequest(); // r2: turn 2 after resume, plain (paused)
-      const g3 = gates.provider.holdNextRequest(); // r3: unrelated ordinary run
-      const g4 = gates.provider.holdNextRequest(); // r4: the goal continuation dispatched after the run settles
-      const g5 = gates.provider.holdNextRequest(); // r5: pending-message ordinary run
-      const g6 = gates.provider.holdNextRequest(); // r6: the queued follow-up turn
-      const g7 = gates.provider.holdNextRequest(); // r7: the goal continuation dispatched after the pending message settles
+      const g1 = gates.provider.holdNextRequest();
+      const g2 = gates.provider.holdNextRequest();
+      const g3 = gates.provider.holdNextRequest();
+      const g4 = gates.provider.holdNextRequest();
+      const g5 = gates.provider.holdNextRequest();
+      const g6 = gates.provider.holdNextRequest();
+      const g7 = gates.provider.holdNextRequest();
       const r8 = gates.provider.holdToolCalls([
         {
           name: "killeros_goal_update",
@@ -4845,8 +4777,8 @@ test(
             nextAction: "Same next action",
           },
         },
-      ]); // r8: turn 1 of the repeated-report goal
-      gates.provider.queueStop(); // r9
+      ]);
+      gates.provider.queueStop();
       const r10 = gates.provider.holdToolCalls([
         {
           name: "killeros_goal_update",
@@ -4856,10 +4788,9 @@ test(
             nextAction: "Same next action",
           },
         },
-      ]); // r10: turn 2 with the normalized duplicate report
-      gates.provider.queueStop(); // r11
+      ]);
+      gates.provider.queueStop();
 
-      // RPC reports Goal started, Goal paused, and Goal resumed.
       let cursor = gates.rpc.currentSequence;
       await submitCommand(gates, `/goal ${gatesObjective}`, "gates start");
       await waitForNotification(
@@ -4870,7 +4801,6 @@ test(
         "gates start",
       );
       const gatesFirst = await gates.provider.waitForRequest(1, t.signal);
-      // Pause while turn 1 is still held; releasing first lets a fast reply settle and auto-pause the goal.
       const pauseCommandCursor = gates.rpc.currentSequence;
       await submitCommand(gates, "/goal pause", "gates pause");
       await waitForNotification(
@@ -4902,12 +4832,10 @@ test(
       await waitForSettled(gates, cursor, "gates resume");
       acknowledgeBatch(gates, "gates resume");
 
-      // A goal started during an unrelated active run sends nothing until agent_settled, then exactly one continuation.
       cursor = gates.rpc.currentSequence;
       await submitPrompt(gates, "Unrelated ordinary work", "unrelated run");
       const unrelatedCursor = gates.rpc.currentSequence;
       await gates.provider.waitForRequest(3, t.signal);
-      // The goal command waits for the active run, so its response resolves only after settlement.
       const unrelatedObjective = "Unrelated gate objective";
       const goalDuringUnrelated = outcome(
         submitCommand(
@@ -4943,7 +4871,6 @@ test(
         3,
         "the goal start must not dispatch during the unrelated run",
       );
-      // The previous goal is still the saved state: the new command has neither persisted nor claimed success.
       const beforeGoalEntries = goalEntries(await getEntries(gates));
       assert.ok(
         beforeGoalEntries.every(
@@ -4965,7 +4892,6 @@ test(
         (entry) => entry.type === "agent_settled",
         { after: unrelatedCursor, timeoutMs: 30_000, signal: t.signal },
       );
-      // The released command dispatches its continuation immediately after settlement; Pi never idles between them.
       const gateContinuation = await gates.provider.waitForRequest(4, t.signal);
       const unrelatedStarted = await gates.rpc.waitForRecord(
         (entry) =>
@@ -4996,7 +4922,6 @@ test(
       acknowledgeBatch(gates, "unrelated run gate");
       observations.push({ history: "unrelated-run gate", providerRequests: 4 });
 
-      // A pending message leaves the goal active but sends nothing and does not claim Goal started.
       await assertFreshSession(gates, "pending message reset");
       const pendingObjective = "Pending gate objective";
       cursor = gates.rpc.currentSequence;
@@ -5018,7 +4943,6 @@ test(
         1,
         "the queued follow-up counts as pending",
       );
-      // The reset session has no goal, so this deferred start needs no replacement confirmation.
       const goalDuringPending = outcome(
         submitCommand(
           gates,
@@ -5026,7 +4950,6 @@ test(
           "goal during pending message",
         ),
       );
-      // The deferred start persists only after the wait; nothing is saved or dispatched while a message is pending.
       assert.equal(
         goalEntries(await getEntries(gates)).length,
         0,
@@ -5087,7 +5010,6 @@ test(
         providerRequests: 7,
       });
 
-      // A repeated continue report with normalized-identical evidence pauses before a duplicate turn.
       await assertFreshSession(gates, "repeated report reset");
       cursor = gates.rpc.currentSequence;
       await submitCommand(
@@ -5144,7 +5066,6 @@ test(
         stopReason: repeatState.stopReason,
       });
 
-      // Final user cancellation after an accepted continue stops before the next dispatch, without manual recovery.
       const cancellation = await createFixture(
         directory,
         "final-cancellation",
@@ -5161,8 +5082,8 @@ test(
             nextAction: "Never dispatched",
           },
         },
-      ]); // turn 1 with the accepted decision
-      cancellation.provider.holdNextRequest(); // the tool follow-up, held unstreamed for the abort
+      ]);
+      cancellation.provider.holdNextRequest();
       cursor = cancellation.rpc.currentSequence;
       await submitCommand(
         cancellation,
@@ -5191,8 +5112,6 @@ test(
         "paused",
         "the cancellation leaves the goal paused",
       );
-      // Real Pi records the aborted request as an aborted assistant, so the cancellation parks the same
-      // manual-compaction recovery as any aborted goal turn; the decision stays accepted and nothing dispatches.
       assert.equal(
         cancellationState.resumeAfterManualCompaction,
         true,
@@ -5210,8 +5129,6 @@ test(
       acknowledgeBatch(cancellation, "cancellation settlement");
       observations.push({ history: "final-cancellation", providerRequests: 2 });
 
-      // An aborted assistant stays paused until a manual compaction resumes exactly one turn.
-      // A small keepRecentTokens window gives the manual compaction real history to summarize.
       const manual = await createFixture(
         directory,
         "manual-compaction",
@@ -5313,7 +5230,6 @@ test(
       acknowledgeBatch(manual, "manual compaction resume settlement");
       observations.push({ history: "manual-compaction", providerRequests: 3 });
 
-      // The TUI emits no duplicate success notices for the same transitions.
       const tui = await createTerminalFixture({
         directory,
         label: "tui-gates",
@@ -5322,7 +5238,7 @@ test(
       });
       terminalFixtures.push(tui);
       const tuiObjective = "Gate the terminal transitions";
-      tui.provider.holdNextRequest(); // turn 1, plain
+      tui.provider.holdNextRequest();
       const tuiCursor = submitTerminalLine(tui, `/goal ${tuiObjective}`);
       const tuiActive = await tui.terminal.waitForScreen(
         (screen) =>
@@ -5359,7 +5275,6 @@ test(
         false,
         "the TUI must not show the RPC-only pause notice",
       );
-      // Hold turn 2 so the active footer is observable before the resumed turn settles.
       tui.provider.holdNextRequest();
       const tuiResumeCursor = submitTerminalLine(tui, "/goal resume");
       const tuiResumed = await tui.terminal.waitForScreen(
@@ -5515,7 +5430,6 @@ test(
     const errors: unknown[] = [];
     const observations: RecordValue[] = [];
 
-    // Family 1: clean pause, resume, and clear transitions with exact continuation counts.
     {
       const fixture = await createFixture(
         directory,
@@ -5674,7 +5588,6 @@ test(
       const rpc = fixture.rpc;
       const cursor = rpc.currentSequence;
 
-      // Turn 1 (Older) runs to a settled pause; a queued, confirmed replacement then owns the goal.
       fixture.provider.holdNextRequest();
       await submitCommand(
         fixture,
@@ -5692,7 +5605,6 @@ test(
       fixture.provider.releaseAll();
       await waitForSettled(fixture, cursor, "older turn settlement");
 
-      // The replacement is submitted without awaiting: its handler waits for confirmation before responding.
       const newerCursor = rpc.currentSequence;
       const newerPending = rpcCommand(fixture, "prompt", {
         message: "/goal Newer racing objective",
@@ -5727,7 +5639,6 @@ test(
       await fixture.provider.waitForRequest(2, t.signal);
       await waitForSettled(fixture, newerCursor, "newer turn settlement");
 
-      // The clear runs sequentially after the replacement settled: the newest state must win.
       const clearCursor = rpc.currentSequence;
       await submitCommand(fixture, "/goal clear", "racing clear");
       await waitForNotification(
@@ -5781,7 +5692,6 @@ test(
       assertIdle(await getState(fixture), "races idle");
       acknowledgeBatch(fixture, "sequential controls");
 
-      // Hold a real replacement confirmation while a newer clear changes its captured goal.
       const seedCursor = rpc.currentSequence;
       await submitCommand(
         fixture,
@@ -5881,7 +5791,6 @@ test(
   },
 );
 
-// Catalog ID: goals.file-inference-races.
 test(
   "pending goal file inference respects newer commands and committed navigation",
   { timeout: 60_000 },
@@ -6264,7 +6173,6 @@ export default function(pi) {
   },
 );
 
-// Catalog ID: goals.provider-abort-reason.
 test(
   "provider abort reasons are sanitized before manual recovery is marked",
   { timeout: 30_000 },

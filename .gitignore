@@ -6,14 +6,12 @@ docs/
 *.log
 /.audit/
 
-# Local generated previews
 /design/
 /welcome-redesigns.html
 .env
 .env.*
 !.env.example
 
-# Personal local guidance and design context
 /CONTEXT.md
 /PRODUCT.md
 /DESIGN.md

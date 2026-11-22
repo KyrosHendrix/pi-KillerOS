@@ -83,14 +83,14 @@ function restoreGoalState(ctx: ExtensionContext): GoalState | undefined {
     ) {
       return undefined;
     }
-    // v2.0.18 shutdown checkpoints stopped active clocks by omitting activeStartedAt.
-    const savedState =
+    const legacyActiveCheckpoint =
       data.event === "checkpoint" &&
       isRecord(data.state) &&
       data.state.status === "active" &&
-      data.state.activeStartedAt === undefined
-        ? { ...data.state, activeStartedAt: Date.now() }
-        : data.state;
+      data.state.activeStartedAt === undefined;
+    const savedState = legacyActiveCheckpoint
+      ? { ...data.state, activeStartedAt: Date.now() }
+      : data.state;
     const restored = parseGoalState(savedState);
     if (!restored) return undefined;
     if (restored.status === "active") {
@@ -123,9 +123,7 @@ function setGoalUpdateToolActive(pi: ExtensionAPI, active: boolean): void {
         ? [...activeTools, GOAL_UPDATE_TOOL]
         : activeTools.filter((name) => name !== GOAL_UPDATE_TOOL),
     );
-  } catch {
-    // Availability is checked again immediately before a goal request.
-  }
+  } catch {}
 }
 
 export function syncGoalUpdateTool(
@@ -172,7 +170,6 @@ function saveGoalEntry(
   notifyGoalChange(runtime);
 }
 
-/** Saves a goal change; a command that captured the previous goal while it waited no longer owns it. */
 export function persistGoalState(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -183,7 +180,6 @@ export function persistGoalState(
   runtime.mutation = Symbol();
 }
 
-/** Records accepted progress for the current turn, so an edit waiting for that turn stays valid. */
 export function recordGoalProgress(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -194,7 +190,6 @@ export function recordGoalProgress(
   runtime.goalTurn = { turn: state.turns, revision: state.revision };
 }
 
-/** Removes the goal and starts a new lifecycle, so work still pending for the old goal is stale. */
 export function clearGoalState(pi: ExtensionAPI, runtime: GoalRuntime): void {
   saveGoalEntry(pi, runtime, "clear", undefined);
   runtime.mutation = Symbol();
@@ -224,7 +219,6 @@ export function transitionGoal(
   return next;
 }
 
-/** Detaches Pi's current request from any goal turn. */
 export function endGoalTurn(runtime: GoalRuntime): void {
   runtime.goalTurn = undefined;
   runtime.goalTurnInFlight = false;
@@ -245,7 +239,6 @@ function settleExecutionFlags(
   }
 }
 
-/** Pauses the goal in memory after its save failed, so automation stops while the save waits for a retry. */
 export function pauseGoalUnsaved(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -261,7 +254,6 @@ export function pauseGoalUnsaved(
   holdUnsavedGoal(pi, runtime, paused);
 }
 
-/** Keeps a goal state that could not be saved, so the next goal command retries the save. */
 export function holdUnsavedGoal(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -273,7 +265,6 @@ export function holdUnsavedGoal(
   notifyGoalChange(runtime);
 }
 
-/** Saves a paused goal, or pauses it unsaved when the session cannot record the pause. */
 export function pauseGoal(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -340,7 +331,6 @@ function safeFailureReason(reason: string): string {
   return boundGoalText(reason) || "an unspecified goal failure";
 }
 
-/** Pauses an active goal after a failure without telling the user, for callers that report it themselves. */
 export function pauseFailedGoal(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -352,7 +342,6 @@ export function pauseFailedGoal(
   return safeReason;
 }
 
-/** Pauses an active goal after a failure and tells the user how to recover. */
 export function pauseGoalAfterFailure(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -368,7 +357,6 @@ export function pauseGoalAfterFailure(
     );
 }
 
-/** Pauses a goal whose turn ended without an accepted continue, complete, or blocked decision. */
 export function pauseGoalWithoutDecision(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -402,9 +390,7 @@ function pauseGoalBeforeTurn(
 function abortGoalRequest(ctx: ExtensionContext): void {
   try {
     ctx.abort();
-  } catch {
-    // The goal is already paused; a host abort may be unavailable during startup.
-  }
+  } catch {}
 }
 
 function beginGoalTurn(
@@ -483,7 +469,6 @@ export function resumeInterruptedGoalTurn(
   return sendGoalTurn(pi, runtime, ctx, state);
 }
 
-/** Starts one goal turn only after Pi is idle and all competing workflow gates are clear. */
 export function scheduleGoalContinuation(
   pi: ExtensionAPI,
   runtime: GoalRuntime,

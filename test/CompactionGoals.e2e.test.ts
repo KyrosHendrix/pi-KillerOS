@@ -138,7 +138,6 @@ function makeBarrier(): Barrier {
   };
 }
 
-/** Serves only scripted loopback responses and rejects every unplanned Pi request. */
 class LocalProvider {
   private readonly server: Server;
   private readonly plans: RequestPlan[] = [];
@@ -389,7 +388,6 @@ class LocalProvider {
   }
 }
 
-/** Observation-only extension. Custom summaries use Pi's public compaction hook and can wait at a real summary barrier. */
 const probeExtensionSource = String.raw`import fs from "node:fs";
 import path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
@@ -1012,7 +1010,6 @@ async function runHistory(
         cleanupErrors.push(error);
       }
     }
-    // Snapshot owned evidence before the scratch directory disappears; bound arrays, not serialized bytes.
     const providerRequests = base
       ? base.provider.requests.slice(0, 40).map((request) => ({
           index: request.index,
@@ -1142,7 +1139,6 @@ async function prompt(fixture: Fixture, message: string): Promise<number> {
   return after;
 }
 
-/** Continuing workflows prove the follow-on request separately; only their final boundary must stay idle. */
 async function settle(
   fixture: Fixture,
   afterProbe: number,
@@ -1238,7 +1234,6 @@ function assertGoalToolDeclared(
   );
 }
 
-/** Parses child diagnostics when structured so a large payload stays valid JSON, never a byte slice. */
 function boundedDiagnostics(fixture: Fixture): Json | string {
   const text =
     fixture.kind === "rpc"
@@ -1281,7 +1276,6 @@ async function releaseSummary(fixture: Fixture, index: number): Promise<void> {
   renameSync(temporary, gate);
 }
 
-/** Releases every planned summary gate so a failed history waits out no held compaction barrier. */
 async function releasePlannedSummaryGates(
   fixture: Fixture,
   heldCompactions: readonly number[],
@@ -1333,7 +1327,6 @@ async function awaitRpcNotification(
   );
 }
 
-/** Collects native notices until settlement and idle state have been acknowledged. */
 function observeRpcErrors(fixture: RpcFixture): () => PiRpcRecord[] {
   const errors: PiRpcRecord[] = [];
   const controller = new AbortController();
@@ -1463,7 +1456,6 @@ async function switchRpcSession(
   );
 }
 
-// Catalog ID: compaction-goal-recovery.
 test(
   "Automatic compaction pauses a goal and resumes the same or next turn exactly once",
   { timeout: 600_000 },
@@ -1839,7 +1831,6 @@ test(
   },
 );
 
-// Catalog ID: compaction-goal-terminal-limit.
 test(
   "Terminal goals preserve ownership across later ordinary compaction",
   { timeout: 90_000 },
@@ -2701,7 +2692,6 @@ test(
   },
 );
 
-// Catalog ID: compaction-blocked-completion.
 test(
   "Accepted blocked completion owns a pending compaction and prevents restart",
   { timeout: 900_000 },
@@ -3143,7 +3133,6 @@ test(
   },
 );
 
-// Catalog ID: compaction-goal-failure-replacement.
 test(
   "Replacement, explicit pause, provider error, and failed compaction keep the old goal stopped",
   { timeout: 900_000 },
@@ -3583,7 +3572,6 @@ async function assertSkipResumePersistenceFailure(
   acknowledgeRpc(fixture);
 }
 
-// Catalog ID: compaction-goal-skip-resume.
 test(
   "Exact session-too-small skip resumes the paused goal once after settlement, fail-closed on races",
   { timeout: 600_000 },
@@ -3884,7 +3872,6 @@ test(
   },
 );
 
-// Catalog ID: compaction-goal-persistence-failure.
 test(
   "Goal pause and resume persistence failures fail closed before and after compaction",
   { timeout: 900_000 },

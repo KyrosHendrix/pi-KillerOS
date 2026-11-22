@@ -606,7 +606,6 @@ export default function (pi) {
   };
 }
 
-// Catalog ID: runtime.startup-trust.
 test(
   "installed Pi preserves continuation, startup-abort, trust, and reload",
   {

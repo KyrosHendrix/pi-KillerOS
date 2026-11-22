@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { Session } from "node:inspector";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -255,12 +256,19 @@ test("public compaction documentation states the configurable default", () => {
   );
 });
 
-test("Bun lint honors repository ignores and production restrictions", () => {
+test("Bun lint enforces repository rules and ignores", () => {
   const fixture = mkdtempSync(path.join(tmpdir(), "killeros-lint-"));
   try {
-    copyFileSync(
-      path.join(repositoryRoot, "bunfig.toml"),
-      path.join(fixture, "bunfig.toml"),
+    mkdirSync(path.join(fixture, "scripts"));
+    for (const file of ["bunfig.toml", "scripts/no-comments.ts"]) {
+      copyFileSync(path.join(repositoryRoot, file), path.join(fixture, file));
+    }
+    const allowed = "/** Example public contract. */";
+    writeFileSync(
+      path.join(fixture, "scripts/no-comments.allowlist.json"),
+      JSON.stringify({
+        "Killeros.ts": [allowed],
+      }),
     );
     writeFileSync(path.join(fixture, "clean.ts"), "export {};\n");
     for (const file of [
@@ -275,6 +283,7 @@ test("Bun lint honors repository ignores and production restrictions", () => {
       writeFileSync(
         path.join(fixture, file),
         [
+          "// Probe that must be ignored in private directories.",
           'import { spawnSync } from "node:child_process";',
           'var command = "git".toLocaleLowerCase();',
           "export const result = command.toLocaleUpperCase();",
@@ -317,6 +326,7 @@ test("Bun lint honors repository ignores and production restrictions", () => {
       const { status, output } = lint(file);
       assert.equal(status, 1, output);
       assert.match(output, /no-var/u);
+      assert.match(output, /killeros\(no-comments\)/u);
       if (file === "Killeros.ts" || file.startsWith("killeros/")) {
         assert.match(
           output,
@@ -341,6 +351,73 @@ test("Bun lint honors repository ignores and production restrictions", () => {
         assert.doesNotMatch(output, /no-floating-promises/u);
       } else {
         assert.match(output, /no-floating-promises/u);
+      }
+    }
+
+    const accepted = [
+      allowed,
+      'export const url = "https://example.test/path";',
+      "export const delimiter = /[/*]/u;",
+      "export const fixtureText = `// This is fixture data.`;",
+      "",
+    ].join("\r\n");
+    const entryFixture = path.join(fixture, "Killeros.ts");
+    writeFileSync(entryFixture, accepted);
+    const valid = lint("Killeros.ts");
+    assert.equal(valid.status, 0, valid.output);
+
+    writeFileSync(
+      entryFixture,
+      accepted +
+        [
+          "/* oxlint-disable killeros/no-comments */",
+          "// oxlint-disable killeros/no-comments",
+          "// eslint-disable killeros/no-comments",
+          allowed,
+          "export const added = /* block comment */ 1; // line comment",
+        ].join("\n"),
+    );
+    const invalid = lint("Killeros.ts");
+    assert.equal(invalid.status, 1, invalid.output);
+    assert.equal(
+      [...invalid.output.matchAll(/killeros\(no-comments\)/gu)].length,
+      6,
+      invalid.output,
+    );
+
+    writeFileSync(entryFixture, "export const cleaned = 1;\n");
+    const stale = lint("Killeros.ts");
+    assert.equal(stale.status, 1, stale.output);
+    assert.match(
+      stale.output,
+      /killeros\(no-comments\).*unused comment exception/u,
+    );
+
+    writeFileSync(path.join(fixture, "scripts/probe.ts"), accepted);
+    const moved = lint("scripts/probe.ts");
+    assert.equal(moved.status, 1, moved.output);
+    assert.match(moved.output, /killeros\(no-comments\)/u);
+
+    const allowlist: unknown = JSON.parse(
+      readFileSync(
+        new URL("../scripts/no-comments.allowlist.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    assert.ok(isUnknownRecord(allowlist));
+    const allowlistFiles = Object.keys(allowlist);
+    assert.deepEqual(allowlistFiles, [...allowlistFiles].sort());
+    for (const [file, entries] of Object.entries(allowlist)) {
+      assert.ok(
+        !file.includes("\\") &&
+          !file.startsWith(".pi/") &&
+          !file.startsWith("docs/"),
+        file,
+      );
+      assert.ok(existsSync(path.join(repositoryRoot, file)), file);
+      assert.ok(Array.isArray(entries) && entries.length > 0, file);
+      for (const entry of entries) {
+        assert.ok(typeof entry === "string" && entry.length > 0, file);
       }
     }
   } finally {

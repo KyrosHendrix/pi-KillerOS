@@ -511,7 +511,6 @@ async function exercisePersonalInstructions(options: {
     fileSymlink = { kind: "created" };
   } catch (error) {
     if (!isErrorCode(error, ["EACCES", "EPERM"])) throw error;
-    // A directory junction fails containment before the file-symlink checks and is not a substitute.
     fileSymlink = { kind: "unavailable", errorCode: error.code };
   }
   if (fileSymlink.kind === "created") {
@@ -637,7 +636,6 @@ async function reportFailure(options: {
   }
 }
 
-// Catalog ID: PI-01.
 test(
   "Personal instruction imports remain inside Pi's agent directory and reject linked files",
   {
@@ -770,7 +768,6 @@ test(
   },
 );
 
-// Catalog ID: PI-02.
 test(
   "Personal instruction truncation preserves valid UTF-8",
   {

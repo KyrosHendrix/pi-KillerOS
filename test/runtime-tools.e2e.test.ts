@@ -167,7 +167,6 @@ function assertNoFixtureFaults(provider: LocalToolProvider): void {
   );
 }
 
-/** A loopback OpenAI-completions fixture with bounded requests and acknowledged extension events. */
 class LocalToolProvider {
   readonly name: string;
   readonly requests: JsonRecord[] = [];
@@ -416,7 +415,6 @@ type PromptRun = {
   settlementIndex: number;
 };
 
-/** Owns one real Pi CLI process, its project, session, provider, and public fixture extension. */
 class PiFamily {
   readonly directory: string;
   readonly project: string;
@@ -2572,7 +2570,6 @@ async function checkVisibleErrorControl(signal: AbortSignal): Promise<void> {
     throw new AggregateError(errors, "Native TUI visible-error control failed");
 }
 
-// Catalog IDs: runtime.tool-codemode-tui and runtime.tool-codemode-rpc.
 for (const mode of ["tui", "rpc"] as const) {
   test(
     `real Pi ${mode} keeps model-only decisions sequential across codemode settings`,
@@ -2623,7 +2620,6 @@ for (const mode of ["tui", "rpc"] as const) {
   );
 }
 
-// Catalog ID: runtime.tool-codemode-contracts.
 const exclusions = [
   "killeros_*",
   "killeros_goal_update",
@@ -2631,7 +2627,6 @@ const exclusions = [
   "allowlist",
 ] as const;
 
-/** Runs one bounded part of the tool-contract family and checks the Pi launches and provider requests it owns. */
 async function runToolContracts(
   t: TestContext,
   scenarioId: string,
@@ -2650,8 +2645,6 @@ async function runToolContracts(
   t.diagnostic(JSON.stringify({ scenarioId, results, processCounts }));
 }
 
-// The family is split so each test's sequential Pi launches fit its timeout on slower machines.
-// Together the three parts launch 14 Pi processes and make 40 provider requests.
 test(
   "real Pi enforces tool exclusions in TUI",
   { timeout: 60_000 },

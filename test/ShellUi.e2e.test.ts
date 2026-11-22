@@ -81,7 +81,6 @@ export default function (pi: ExtensionAPI) {
 }
 `,
   );
-  // Adapt only the owned external branch lookup; execute real Git and preserve its result.
   const adapter = path.join(directory, "git-barrier.cjs");
   writeFileSync(
     adapter,
@@ -169,7 +168,6 @@ process.once("exit", () => { cp.execFile = original; syncBuiltinESMExports(); })
   return { directory, project, agent, start, adapter };
 }
 
-// Catalog ID: SH-02. Native terminals have positive columns; width zero needs a separate reachability disposition.
 test(
   "Header masthead and startup tips stay fixed per session and exhaust their decks",
   { timeout: 120_000 },

@@ -486,7 +486,6 @@ ${
     if (ctx.ui.notify.__fixtureObserved) return;
     const notify = ctx.ui.notify.bind(ctx.ui);
     const observed = (message, level) => {
-      // Match the original notification-only collector, not unrelated receipt notices.
       if (message.startsWith("Completion sound")) {
         appendFileSync(observerPath, JSON.stringify({type:"fixture-notice", message, level}) + "\\n");
       }
@@ -1307,7 +1306,6 @@ async function runOneShotMode(options: {
   };
 }
 
-// Catalog ID: NOT-01.
 test(
   "Notification preference persists globally, defaults off, and rejects malformed settings",
   {
@@ -1562,7 +1560,6 @@ test(
         { label: "boolean root", bytes: "true" },
       ] as const;
       for (const input of malformedInputs) {
-        // Clear earlier error notices through a successful public session reset before each fault.
         writeFileSync(
           settingsPath,
           JSON.stringify({ completionSound: false }),
@@ -2081,7 +2078,6 @@ function nestedFixtureAgentAbsent(fixture: Fixture): void {
   );
 }
 
-// Source: Notifications.test.ts:259#1. The public option observes store and ring calls in a real TUI.
 test(
   "Notification command dismisses without saving and enables once without ringing",
   {
@@ -2300,7 +2296,6 @@ test(
   },
 );
 
-// Source: Notifications.test.ts:76#1. Hold Pi's real boundary after a completed assistant result.
 test(
   "Cancellation after a normal agent result suppresses the settlement bell",
   {
@@ -2501,7 +2496,6 @@ test(
   },
 );
 
-// Catalog ID: NOT-02.
 test(
   "Completion sound rings once at final settlement and never for aborts or retries",
   {

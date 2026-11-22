@@ -147,7 +147,6 @@ function activeGoal(objective: string, now: number) {
   };
 }
 
-/** One private saved history. Only an explicit reopen shares its session across fresh CLI processes. */
 async function history(
   t: TestContext,
   scenarioId:
@@ -225,7 +224,6 @@ async function history(
         connection: "close",
       });
       if (item.reply.kind === "error") {
-        // A real SSE provider error avoids manufacturing an assistant result or a host event.
         response.end(
           `data: ${JSON.stringify({ error: { message: item.reply.message, type: "fixture_error" } })}\n\n`,
         );
@@ -634,7 +632,6 @@ async function history(
   }
 }
 
-// Catalog ID: goals.restore-valid. Each history is an assertion vector, not a nested registration.
 test(
   "valid saved goals restore and resume without losing identity",
   { timeout: 180_000 },
@@ -954,8 +951,6 @@ test(
   },
 );
 
-// Catalog ID: goals.restore-validation. Report and duration histories have independent selectors below.
-// Catalog ID: goals.provider-error.
 test(
   "a native provider failure saves a sanitized paused goal and one error notification",
   { timeout: 30_000 },
@@ -1290,7 +1285,6 @@ for (const vector of restoreValidationVectors.filter((candidate) =>
   );
 }
 
-// Catalog ID: goals.report-validation. Preserve the original epoch-zero report inputs.
 test(
   "persisted goal reports authorize only valid bounded decisions",
   { timeout: 60_000 },
@@ -1386,7 +1380,6 @@ test(
   },
 );
 
-// Catalog ID: goals.duration-overflow. Keep arithmetic qualification independently selectable.
 test(
   "goal status and pause reject unsafe duration arithmetic without a rounded write",
   { timeout: 60_000 },
@@ -1416,7 +1409,6 @@ test(
           const before = f.goals();
           const started = before.at(-1)?.state.activeStartedAt;
           assert.ok(typeof started === "number");
-          // Elapsed time is the tested input. Acknowledged native commands advance it without sleep-based event ordering.
           const deadline = Date.now() + 5_000;
           while (Date.now() - started < 4 && Date.now() < deadline)
             await f.state();
@@ -1525,7 +1517,6 @@ function toolContentText(result: Json): string {
     .join("\n");
 }
 
-// Catalog ID: goals.blockers. One registration owns the live sequences and isolated historical inputs.
 test(
   "blocker audits require three consecutive matching turns",
   { timeout: 180_000 },
@@ -1553,7 +1544,6 @@ test(
         assert.match(await f.notice(), /No goal is set/u);
         assert.deepEqual(f.goals(), []);
 
-        // Public model traffic cannot execute a tool that an inactive goal has removed from the loadout.
         const outside = f.enqueue({
           kind: "calls",
           decisions: [blocked("missing-credential")],
@@ -1575,9 +1565,6 @@ test(
         );
         assert.deepEqual(f.goals(), []);
 
-        // Per-vector truth: an omitted key reaches the handler and carries the exact production
-        // label; schema-rejected keys return the native tool-schema constraint text instead,
-        // so each vector asserts its own constraint line.
         const invalidKeys: Array<{ key: string | undefined; expect: RegExp }> =
           [
             {
@@ -1871,7 +1858,6 @@ test(
       },
     );
 
-    // Exactly 2,000 code points but 3,000 UTF-16 units and 1,500 graphemes: only code-point limits accept it and reject one more.
     const unicode = "\u{10400}".repeat(1_000) + "e\u0301".repeat(500);
     await history(
       t,
@@ -1931,7 +1917,6 @@ test(
         await f.prompt("/goal pause");
         await f.settled(paused);
         await f.close();
-        // Seed the next historical input only after exit, using the audit actually produced by the native tool.
         savedGoal(SessionManager.open(f.file), "blocker-audit", {
           ...base,
           turns: 3,
@@ -2766,9 +2751,6 @@ type GoalScenarioSummary = {
   naturalExits: number;
 };
 
-// Needed only when an exercise failed: cleardown kills the child, so the public
-// failure state (session bytes, goal entries, live RPC stream) must be captured
-// first and is then written into the bounded failure report.
 function captureGoalScenarioDiagnostics(fixture: GoalScenarioFixture): Json {
   let rpc: Json | undefined;
   if (fixture.rpc) {
@@ -2832,7 +2814,6 @@ async function runGoalScenarioHistory(
       piLaunches: fixture.piLaunches,
       providerRequests: fixture.provider.requests.length,
       naturalExits: fixture.naturalExits,
-      // Exit truth lives in the counts; a quick check: pi launches that did not exit naturally.
       forcedExits: fixture.piLaunches - fixture.naturalExits,
       fixtureGitLaunches: 0,
       cleanup:
@@ -3231,7 +3212,6 @@ test(
   },
 );
 
-// Catalog ID: goals.tool-availability. Frozen source: GoalLifecycle.test.ts:348#1.
 test(
   "goal tool availability follows RPC start pause resume and completion",
   { timeout: 90_000 },
@@ -3370,7 +3350,6 @@ test(
   },
 );
 
-// Catalog ID: goals.legacy-modes. Frozen source: GoalLifecycle.test.ts:566#1.
 test(
   "legacy saved goals stay inactive in print and JSON modes",
   { timeout: 120_000 },
@@ -3468,7 +3447,6 @@ test(
   },
 );
 
-// Catalog ID: goals.pause-after-progress. An explicit pause stops a legitimately advanced turn.
 test(
   "explicit pause prevents another continuation after accepted goal progress",
   { timeout: 60_000 },
@@ -4191,7 +4169,6 @@ test(
         );
         assert.match(notice, /Old objective|Goal paused/u);
 
-        // Pi drops a failed append from the live session too, so neither view records the attempt.
         const saved = rpcGoalEntries(await scenarioRpcEntries(fixture, signal));
         assert.equal(
           saved.some(
@@ -4662,9 +4639,6 @@ test(
           "active edit first continuation",
         );
         firstFollowup.release.release();
-        // An active goal dispatches its authorized next turn right after settling, so a mid-goal
-        // settle is never idle-observable. The next turn reaching the provider is the barrier
-        // that proves the previous run settled.
         await reached(
           activeTurn.started.promise,
           signal,
@@ -4713,9 +4687,6 @@ test(
           "Second step passed",
         );
         activeFollowup.release.release();
-        // The edit command holds continuation during the active turn and returns only after that
-        // turn settles and the objective update is persisted; that resolution is the settlement
-        // barrier here, and the edited goal's own continuation request proves it dispatched.
         const response = await editing;
         assert.equal(response.kind, "resolved");
         if (response.kind === "resolved")
@@ -4829,8 +4800,6 @@ test(
         assert.equal(record(audit.details).status, "blocker-audit");
         assert.equal(record(audit.details).streak, 1);
         firstFollowup.release.release();
-        // Same settlement barrier as the active edit: the paused pause dispatch follows the
-        // audit decision, and the barrier is the next turn reaching the provider.
         await reached(
           activeTurn.started.promise,
           signal,
@@ -5139,7 +5108,6 @@ test(
           sessionGoalEntries(fixture.sessionFile).at(-1)?.state?.status,
           "active",
         );
-        // Earlier objectives remain in the transcript; only the latest goal directive must replace A.
         const currentDirective = records(plans[5].body?.messages)
           .flatMap((message) => {
             const text =

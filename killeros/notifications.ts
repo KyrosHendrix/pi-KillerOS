@@ -46,9 +46,7 @@ function formatNotificationTitle(
 }
 
 interface CompletionNotifications {
-  /** Rewrites the terminal title; the shell header calls it because Pi resets the title after session binding. */
   applyTitle: (ctx: ExtensionContext) => void;
-  /** Registers the /notification command and the request handlers that ring on settlement. */
   register: () => void;
 }
 

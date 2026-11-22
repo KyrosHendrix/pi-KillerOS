@@ -247,7 +247,6 @@ test(SCENARIO_TITLE, async () => {
   }
 });
 
-// runtime.system-release-notes-failures
 const FAILURE_SCENARIO_ID = "runtime.system-release-notes-failures";
 test("release-notes CLI fails cleanly for missing sections, unreadable files, and bad usage", async () => {
   const errors: unknown[] = [];

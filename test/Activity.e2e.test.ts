@@ -805,7 +805,6 @@ function isolatedChildEnvironment(options: {
     const value = inherited.get(key.toLowerCase());
     if (value !== undefined) env[key] = value;
   }
-  // Activity needs no external executables; do not scan the ancestor checkout through inherited Git.
   env.PATH = nodeDirectory();
   const appData = path.join(options.root, "appdata");
   const localAppData = path.join(options.root, "localappdata");
@@ -1710,7 +1709,6 @@ async function runPendingSettlement(signal: AbortSignal): Promise<JsonObject> {
       { signal, after: editorCursor, timeoutMs: 30_000 },
     );
     const queueCursor = terminal.sequence;
-    // Ctrl+Q is Pi's default Windows follow-up key.
     terminal.write("\x11");
     await terminal.waitForScreen(
       (screen) => screen.includes("Follow-up: Pending activity follow-up"),
@@ -1831,7 +1829,6 @@ async function runPendingSettlement(signal: AbortSignal): Promise<JsonObject> {
   return result;
 }
 
-// Catalog ID: ACT-01.
 test(
   "Activity lifecycle copy tracks real request progress and settles truthfully",
   { timeout: 360_000 },
@@ -2334,7 +2331,6 @@ test(
   },
 );
 
-// Catalog ID: ACT-02.
 test(
   "Activity renders the orange glyph loop and contextual status styling",
   { timeout: 180_000 },
@@ -2746,7 +2742,6 @@ async function selectModelInTui(
   });
 }
 
-// Catalog ID: ACT-03.
 test(
   "Activity sanitizes custom tool names and appends the model suffix to every state",
   { timeout: 360_000 },

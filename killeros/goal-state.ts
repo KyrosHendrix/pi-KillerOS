@@ -24,7 +24,6 @@ const GOAL_OBJECTIVE_LIMIT = 4_000;
 export const GOAL_EVIDENCE_LIMIT = 2_000;
 export const GOAL_MAX_TURNS = 10_000;
 export const GOAL_VERSION = 1;
-/** Stable lowercase blocker identity; the goal tool schema publishes the same pattern to the model. */
 export const GOAL_BLOCKER_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,119}$/u;
 const FILE_HASH_CHUNK_SIZE = 64 * 1024;
 const FILE_HASH_LIMIT = 64 * 1024 * 1024;
@@ -94,7 +93,6 @@ function isSafePersistedText(
   );
 }
 
-/** Normalizes model or user text before it crosses the persisted goal boundary. */
 export function normalizeGoalText(
   value: string,
   limit: number,
@@ -362,7 +360,6 @@ export function parseGoalState(value: unknown): GoalState | undefined {
     return undefined;
   if (status === "paused" && turnPhase === "ready" && pending !== undefined)
     return undefined;
-  // A pause reason is only current while paused; on any other status it contradicts the state.
   if (stopReason !== undefined && status !== "paused") return undefined;
 
   const common: GoalStateCommon = {
@@ -451,7 +448,6 @@ async function snapshotHandle(handle: FileHandle): Promise<BigIntStats> {
   return handle.stat({ bigint: true });
 }
 
-/** Matches numeric Stats.mtimeMs without taking a second filesystem snapshot. */
 function legacyMtimeMs(snapshot: BigIntStats): number {
   const seconds = snapshot.mtimeNs / 1_000_000_000n;
   const nanoseconds = snapshot.mtimeNs % 1_000_000_000n;
@@ -479,7 +475,6 @@ async function hashFile(
   return hash.digest("hex");
 }
 
-/** Captures a file baseline with bounded asynchronous I/O and descriptor identity checks. */
 async function captureGoalFileBaseline(
   filePath: string,
 ): Promise<GoalFileBaseline> {
@@ -579,7 +574,11 @@ function normalizeGoalFileMention(
   return goalPathIdentity(absolute);
 }
 
-/** Counts distinct path-shaped mentions so several files cannot bind proof to one. */
+const GOAL_VERSION_PROSE_PATTERN =
+  /(?<![A-Za-z0-9_.\\/-])version\s+\d+(?:\.\d+)+(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu;
+const GOAL_NODE_JS_PROSE_PATTERN =
+  /(?<![A-Za-z0-9_.\\/-])for\s+Node\.js(?!\s+compatibility\.[A-Za-z0-9])(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))|(?<![A-Za-z0-9_.\\/-])Node\.js\s+compatibility(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu;
+
 function countGoalTargetFiles(
   objective: string,
   cwd: string,
@@ -587,17 +586,10 @@ function countGoalTargetFiles(
   targetQuoted: boolean,
 ): number {
   const source = objective.replace(GOAL_URL_PATTERN, " ");
-  // ponytail: Only these exact prose forms are excluded; quote ambiguous bare filenames for exact proof.
   const prose = source
     .replace(GOAL_QUOTED_PATTERN, " ")
-    .replace(
-      /(?<![A-Za-z0-9_.\\/-])version\s+\d+(?:\.\d+)+(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu,
-      " ",
-    )
-    .replace(
-      /(?<![A-Za-z0-9_.\\/-])for\s+Node\.js(?!\s+compatibility\.[A-Za-z0-9])(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))|(?<![A-Za-z0-9_.\\/-])Node\.js\s+compatibility(?=$|[\s,;:!?)\]}]|\.(?=$|[\s,;:!?)\]}]))/giu,
-      " ",
-    );
+    .replace(GOAL_VERSION_PROSE_PATTERN, " ")
+    .replace(GOAL_NODE_JS_PROSE_PATTERN, " ");
   const mentions = new Set<string>();
   const add = (raw: string, quoted = false): void => {
     const normalized = normalizeGoalFileMention(raw, cwd, quoted);
@@ -625,7 +617,6 @@ function countGoalTargetFiles(
   return mentions.size;
 }
 
-/** Captures one explicit output path so goal completion can verify its creation or modification. */
 export async function inferGoalVerification(
   objective: string,
   cwd: string,
@@ -731,7 +722,6 @@ export async function verifyGoalDeliverable(
   }
 }
 
-/** Truncates safe text to `limit` code points without splitting a grapheme cluster. */
 export function boundGoalText(
   value: string,
   limit = GOAL_EVIDENCE_LIMIT,
@@ -942,7 +932,6 @@ export function recordGoalDecision(
   };
 }
 
-/** Replaces the objective in place for an editable goal; pending decisions and audits belong to the previous objective. */
 export function editGoalState(
   current: GoalState,
   objective: string,

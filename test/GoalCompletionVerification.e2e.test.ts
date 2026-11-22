@@ -1103,12 +1103,6 @@ test(scenarioTitle, { timeout: 90_000 }, async () => {
   }
 });
 
-// Shared fixtures for the remaining goal completion verification scenarios.
-// Every scenario drives fresh installed Pi CLI processes through public RPC or
-// terminal input against a loopback scripted provider with exact planned
-// responses, and every race is held at an observed provider or acknowledged
-// filesystem barrier on an owned path.
-
 type ScenarioContext = {
   readonly signal: AbortSignal;
   diagnostic(message: string): void;
@@ -1222,7 +1216,6 @@ class LocalProvider {
     });
   }
 
-  /** Holds the next request's response; an optional goal decision is delivered after the barrier releases. */
   holdNextRequest(decision?: RecordValue): ProviderBarrier {
     const barrier = makeBarrier();
     this.barriers.push(barrier);
@@ -1435,7 +1428,6 @@ type GoalFixture = {
   adapterScriptPath?: string;
 };
 
-/** Builds one isolated goal fixture: owned project, saved session, loopback provider, fresh installed Pi RPC child. */
 async function createGoalFixture(
   parentDirectory: string,
   label: string,
@@ -1456,7 +1448,6 @@ async function createGoalFixture(
     const temporary = path.join(directory, "tmp");
     mkdirSync(agent);
     mkdirSync(project);
-    // Keep receipt scans inside the fixture rather than the enclosing checkout.
     execFileSync("git", ["init", "--quiet"], { cwd: project, stdio: "pipe" });
     mkdirSync(sessions);
     mkdirSync(temporary);
@@ -1665,7 +1656,6 @@ async function createGoalFixture(
   }
 }
 
-/** Confirms the real KillerOS extension registered /goal and the child is idle without provider traffic. */
 async function initializeGoalFixture(
   fixture: GoalFixture,
   label: string,
@@ -1727,7 +1717,6 @@ async function goalEntriesOf(fixture: GoalFixture): Promise<RecordValue[]> {
   return records(data.entries, "saved session entries");
 }
 
-/** Returns the killeros-goal custom entries with their durable event and state. */
 function savedGoalEntries(entries: RecordValue[]): SavedGoalEntry[] {
   return entries.flatMap((entry) => {
     if (entry.type !== "custom" || entry.customType !== "killeros-goal")
@@ -1803,7 +1792,6 @@ function toolResultText(message: RecordValue): string {
   return content.map((part) => stringField(part, "text")).join("\n");
 }
 
-/** Decides whether the provider request body carried the exact text (JSON escaping is compared in both forms). */
 function providerBodyIncludes(body: RecordValue, text: string): boolean {
   const raw = JSON.stringify(body);
   return raw.includes(text) || raw.includes(JSON.stringify(text).slice(1, -1));
@@ -1864,7 +1852,6 @@ async function waitForGoalSettled(
   assertGoalIdle(await goalState(fixture), label);
 }
 
-/** Waits for exactly `count` agent_settled records after the cursor and returns the final settlement's sequence. */
 async function waitForGoalSettlements(
   fixture: GoalFixture,
   after: number,
@@ -1930,7 +1917,6 @@ async function submitGoalPrompt(
   return record(response.data, `${label} prompt response`);
 }
 
-/** Submits an ordinary user message that starts a real agent run. */
 async function submitOrdinaryPrompt(
   fixture: GoalFixture,
   text: string,
@@ -1945,7 +1931,6 @@ async function submitOrdinaryPrompt(
   return data;
 }
 
-/** Resets to a verified fresh saved session so sequential vectors cannot share goal state. */
 async function assertFreshGoalSession(
   fixture: GoalFixture,
   label: string,
@@ -2053,7 +2038,6 @@ async function removeGoalDirectory(
   }
 }
 
-/** Reads a JSON acknowledgement file the child writes, failing fast on the child's recorded failure file. */
 async function waitForPlanJson(
   acknowledgementPath: string,
   failurePath: string | undefined,
@@ -2076,7 +2060,6 @@ async function waitForPlanJson(
   }
 }
 
-/** Reads the newline-delimited JSON observer file the fixture probe extension appends to. */
 function readProbeEvents(observerPath: string): RecordValue[] {
   if (!existsSync(observerPath)) return [];
   return readFileSync(observerPath, "utf8")
@@ -2108,12 +2091,6 @@ async function waitForProbeEvent(
   }
 }
 
-/**
- * Child-scoped Node filesystem adapter for completion verification races.
- * Armed through NODE_OPTIONS --require inside the Pi child; the holdCall-th
- * open of the owned target path is acknowledged to the parent and held until
- * the parent releases it, then restored so later opens forward unchanged.
- */
 function raceAdapterSource(): string {
   return String.raw`
 "use strict";
@@ -2237,12 +2214,6 @@ writeJsonAtomic(statusPath, status);
 `;
 }
 
-/**
- * Fixture extension observing the real goal tool run through Pi's public
- * extension API. It records lifecycle events, acknowledges when the active
- * run's abort signal has fired, and attempts public tree navigation through a
- * real extension command. It never imports KillerOS or replaces a Pi method.
- */
 function raceProbeSource(): string {
   return String.raw`
 import { appendFileSync, writeFileSync } from "node:fs";
@@ -2315,7 +2286,6 @@ export default function goalRaceProbe(pi) {
 `;
 }
 
-/** Parent-owned release file for a child-held filesystem barrier; releases at most once. */
 class FileBarrier {
   private readonly releasePath: string;
   private released = false;
@@ -2341,7 +2311,6 @@ type RaceVectorRun = (
   directory: string,
 ) => Promise<RecordValue>;
 
-/** Creates one race fixture, runs the vector, and closes the process even when the vector fails. */
 async function runGoalRaceVector(
   artifactDirectory: string,
   label: string,
@@ -2404,7 +2373,6 @@ function buildAdapterPlan(
   };
 }
 
-/** Drives one saved blocked goal through its three blocker-decision turns at the real boundary. */
 async function blockGoalThroughDecisions(
   fixture: GoalFixture,
   signal: AbortSignal,
@@ -2461,7 +2429,6 @@ async function blockGoalThroughDecisions(
   return { objective: blocked.objective, turns: blocked.turns };
 }
 
-// Catalog ID: goals.completion-races.
 test(
   "completion loses ownership when cancelled or restored mid-verification",
   { timeout: 480_000 },
@@ -2477,7 +2444,6 @@ test(
     const observations: RecordValue[] = [];
     const errors: unknown[] = [];
     try {
-      // Vector: an active goal completion cancelled before the model decision reached verification.
       observations.push(
         await runGoalRaceVector(
           artifactDirectory,
@@ -2598,7 +2564,6 @@ test(
             );
             acknowledgeGoalBatch(fixture, "active-cancel-before: aborted turn");
 
-            // A later authorized completion succeeds.
             fixture.provider.queueGoalDecision({
               status: "complete",
               evidence: "Completed after the cancelled attempt",
@@ -2669,7 +2634,6 @@ test(
         ),
       );
 
-      // Vector: an active goal completion cancelled while its file verification runs.
       observations.push(
         await runGoalRaceVector(
           artifactDirectory,
@@ -2712,8 +2676,6 @@ test(
             );
             const observerPath = path.join(directory, "probe-observer.jsonl");
             const barrier = new FileBarrier(releasePath);
-            // Hold the decision response so the deliverable changes after the goal baselined it
-            // and the parked verification is a real in-flight change check.
             const decisionBarrier = fixture.provider.holdNextRequest({
               status: "complete",
               evidence: "Verified the changed deliverable",
@@ -2759,8 +2721,6 @@ test(
                 sha256("changed deliverable during the goal"),
               );
 
-              // The abort command resolves only after the parked run settles, so it is
-              // observed through the probe's signal acknowledgement before the barrier releases.
               const beforeAbortCursor = fixture.rpc.currentSequence;
               const abortOutcome = outcome(
                 goalRpcCommand(fixture, "abort", {}, 90_000),
@@ -2833,7 +2793,6 @@ test(
             assert.equal(paused.turnDecision, undefined);
             acknowledgeGoalBatch(fixture, "active-cancel-during: aborted turn");
 
-            // A later authorized completion succeeds.
             fixture.provider.queueGoalDecision({
               status: "complete",
               evidence: "Verified after the cancelled attempt",
@@ -2916,8 +2875,6 @@ test(
         ),
       );
 
-      // Vector: a committed tree navigation attempt during file verification is refused by Pi,
-      // the owned completion stays valid, and a later committed navigation restores the other goal.
       const restoredObjective = "Goal restored from another branch";
       const restoredGoalTimestamp = Date.now();
       observations.push(
@@ -3019,7 +2976,6 @@ test(
             );
             const observerPath = path.join(directory, "probe-observer.jsonl");
             const barrier = new FileBarrier(releasePath);
-            // Hold the decision response so the deliverable changes after the replace baselined it.
             const decisionBarrier = fixture.provider.holdNextRequest({
               status: "complete",
               evidence: "Verified the deliverable before navigation",
@@ -3092,8 +3048,6 @@ test(
                 "the replaced goal must have its verification turn in flight",
               );
 
-              // Real navigation attempt through the public extension command path while the
-              // verification is parked: Pi refuses navigation while the response streams.
               await submitGoalPrompt(
                 fixture,
                 `/fixture-goal-tree navigate ${restoredEntryId}`,
@@ -3167,7 +3121,6 @@ test(
             );
             acknowledgeGoalBatch(fixture, "restore-race: owned completion");
 
-            // After settlement a real committed navigation fires session_tree and restores the other goal.
             const navigationCursor = fixture.rpc.currentSequence;
             await submitGoalPrompt(
               fixture,
@@ -3218,7 +3171,6 @@ test(
         ),
       );
 
-      // Vector: a blocked goal completion cancelled before verification preserves the blocked state.
       observations.push(
         await runGoalRaceVector(
           artifactDirectory,
@@ -3312,7 +3264,6 @@ test(
         ),
       );
 
-      // Vector: a blocked goal completion cancelled during hashing preserves the blocked state.
       observations.push(
         await runGoalRaceVector(
           artifactDirectory,
@@ -3362,7 +3313,6 @@ test(
             const observerPath = path.join(directory, "probe-observer.jsonl");
             const barrier = new FileBarrier(releasePath);
             const eligibleCursor = fixture.rpc.currentSequence;
-            // Hold the completion decision so the deliverable changes before the parked verification.
             const decisionBarrier = fixture.provider.holdNextRequest({
               status: "complete",
               evidence: "Blocked completion attempt",
@@ -3465,7 +3415,6 @@ test(
         ),
       );
 
-      // Vector: a blocked goal completion retried after a cancelled attempt completes the same saved goal.
       observations.push(
         await runGoalRaceVector(
           artifactDirectory,
@@ -3514,7 +3463,6 @@ test(
             );
             const barrier = new FileBarrier(releasePath);
             const eligibleCursor = fixture.rpc.currentSequence;
-            // Hold the completion decision so the deliverable changes before the parked verification.
             const decisionBarrier = fixture.provider.holdNextRequest({
               status: "complete",
               evidence: "Cancelled blocked attempt",
@@ -3580,7 +3528,6 @@ test(
               "blocked-cancel-retry: cancelled attempt",
             );
 
-            // A later eligible ordinary request may complete only the same saved blocked goal.
             fixture.provider.queueGoalDecision({
               status: "complete",
               evidence: "Completed on the retry after cancellation",
@@ -3723,7 +3670,6 @@ test(
 
 type GoalDecision = RecordValue;
 
-/** Checks the decision before settlement can pause a goal whose proof was rejected. */
 async function inspectFileDecision(
   fixture: GoalFixture,
   request: number,
@@ -3757,7 +3703,6 @@ async function inspectFileDecision(
   }
 }
 
-/** Starts a file goal and lets its first authorized turn settle with the planned decision. */
 async function runFileGoalStartTurn(
   fixture: GoalFixture,
   signal: AbortSignal,
@@ -3795,14 +3740,12 @@ async function runFileGoalStartTurn(
   } finally {
     decisionBarrier?.release();
   }
-  // A turn without an accepted decision produces no native tool follow-up request.
   if (followUp !== undefined)
     await inspectFileDecision(fixture, expectedRequest + 1, followUp, label);
   await waitForGoalSettled(fixture, cursor, `${label}: start turn settlement`);
   return savedGoalEntries(await goalEntriesOf(fixture));
 }
 
-/** Resumes a paused file goal and lets its next authorized turn settle with the planned decision. */
 async function runFileGoalResumeTurn(
   fixture: GoalFixture,
   signal: AbortSignal,
@@ -3831,7 +3774,6 @@ async function runFileGoalResumeTurn(
   return savedGoalEntries(await goalEntriesOf(fixture));
 }
 
-// Catalog ID: goals.file-proof.
 test(
   "file completion proves the exact deliverable changed",
   { timeout: 420_000 },
@@ -3843,7 +3785,6 @@ test(
     const observations: RecordValue[] = [];
     const errors: unknown[] = [];
     try {
-      // Process 1: rejection shapes — missing, directory, symlink, wrong path, unchanged content.
       const rejections = await createGoalFixture(
         artifactDirectory,
         "rejection-shapes",
@@ -3857,7 +3798,6 @@ test(
           evidence: "Verified the deliverable",
         } as const;
 
-        // Vector: a missing deliverable is rejected as not a regular file, then completes once written.
         const missing = path.join(rejections.project, "missing.md");
         const missingEntries = await runFileGoalStartTurn(
           rejections,
@@ -3938,7 +3878,6 @@ test(
           outcome: "rejected-then-completed",
         });
 
-        // Vector: a directory at the required path is not a regular file.
         const directory = path.join(rejections.project, "directory.md");
         const directoryEntries = await runFileGoalStartTurn(
           rejections,
@@ -3977,7 +3916,6 @@ test(
           outcome: "rejected",
         });
 
-        // Vector: a symlink at the required path is not a regular file.
         const wrong = path.join(rejections.project, "wrong.md");
         writeFileSync(wrong, "wrong destination");
         const linked = path.join(rejections.project, "linked.md");
@@ -4024,7 +3962,6 @@ test(
           outcome: "rejected",
         });
 
-        // Vector: deliverable content at a different path cannot satisfy the exact required path.
         const wrongPathTarget = path.join(rejections.project, "required.md");
         const wrongPathEntries = await runFileGoalStartTurn(
           rejections,
@@ -4075,7 +4012,6 @@ test(
           outcome: "rejected",
         });
 
-        // Vector: an unchanged pre-existing deliverable is rejected as not changed.
         const unchanged = path.join(rejections.project, "unchanged.md");
         writeFileSync(unchanged, "stale deliverable");
         const unchangedEntries = await runFileGoalStartTurn(
@@ -4291,7 +4227,6 @@ test(
         );
       }
 
-      // Process 2: change proofs — changed, mtime-only, restored timestamp, and the large-file metadata tradeoff.
       const changes = await createGoalFixture(
         artifactDirectory,
         "change-proofs",
@@ -4305,7 +4240,6 @@ test(
           evidence: "Verified the changed deliverable",
         } as const;
 
-        // Vector: a changed pre-existing deliverable completes with file verification.
         const changed = path.join(changes.project, "changed.md");
         writeFileSync(changed, "stale deliverable");
         const beforeReopen = await runFileGoalStartTurn(
@@ -4398,7 +4332,6 @@ test(
           outcome: "reopened-rejected-then-completed",
         });
 
-        // Vector: a timestamp-only change is rejected because content comparison ignores mtime.
         const baselineTime = new Date("2026-01-01T00:00:00.000Z");
         const laterTime = new Date("2026-01-02T00:00:00.000Z");
         const mtimeOnly = path.join(changes.project, "mtime-only.md");
@@ -4439,7 +4372,6 @@ test(
           outcome: "rejected",
         });
 
-        // Vector: changed content with a restored baseline timestamp completes.
         const restored = path.join(changes.project, "restored.md");
         writeFileSync(restored, "stale");
         utimesSync(restored, baselineTime, baselineTime);
@@ -4483,7 +4415,6 @@ test(
           outcome: "completed",
         });
 
-        // Vector: a file larger than 64 MiB stores size without a content hash and proves through metadata.
         const large = path.join(changes.project, "large.bin");
         writeFileSync(large, "x");
         truncateSync(large, 64 * 1024 * 1024 + 1);
@@ -4590,7 +4521,6 @@ test(
         );
       }
 
-      // Process 3: a restored verification whose content hash is null fails closed.
       const nullHashTarget = path.join(
         artifactDirectory,
         "null-hash-restore",

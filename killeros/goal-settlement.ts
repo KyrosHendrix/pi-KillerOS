@@ -49,13 +49,13 @@ function recoverGoalAfterManualCompaction(
   )
     return false;
   const state = runtime.state;
-  const sameTurn = state.turnDecision === undefined;
+  const resumeUndecidedTurn = state.turnDecision === undefined;
   const turn = runtime.goalTurn?.turn ?? state.turns;
   const generation = runtime.lifecycleGeneration;
   let resumed: GoalState;
   try {
     resumed = transitionGoal(pi, runtime, "resume", "active", undefined, {
-      resume: sameTurn ? "same-turn" : "next-turn",
+      resume: resumeUndecidedTurn ? "same-turn" : "next-turn",
     });
   } catch (error) {
     runtime.persistenceRetryNeeded = true;
@@ -67,7 +67,7 @@ function recoverGoalAfterManualCompaction(
     return false;
   }
   runtime.automaticCompaction = undefined;
-  if (sameTurn) {
+  if (resumeUndecidedTurn) {
     runtime.goalTurn = {
       turn,
       revision: runtime.state?.revision ?? state.revision,
@@ -94,7 +94,6 @@ function recoverGoalAfterManualCompaction(
   return true;
 }
 
-/** Ends a command's continuation hold if it still owns it, then lets any parked compaction recovery resume. Returns whether it released the hold. */
 export function releaseContinuationHold(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -107,7 +106,6 @@ export function releaseContinuationHold(
   return true;
 }
 
-/** Resumes the paused revision after compaction, settlement, and any owning command's continuation hold. */
 function finalizeAutomaticCompaction(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
@@ -129,26 +127,26 @@ function finalizeAutomaticCompaction(
     return;
   }
   const state = runtime.state;
-  const sameTurn = recovery.resumeSameTurn;
+  const resumeUndecidedTurn = recovery.resumeUndecidedTurn;
   const generation = runtime.lifecycleGeneration;
   runtime.automaticCompaction = undefined;
   let resumed: GoalState;
   try {
     resumed = transitionGoal(pi, runtime, "resume", "active", undefined, {
-      resume: sameTurn ? "same-turn" : "next-turn",
+      resume: resumeUndecidedTurn ? "same-turn" : "next-turn",
     });
   } catch (error) {
     runtime.persistenceRetryNeeded = true;
     reportError(
       ctx,
-      sameTurn
+      resumeUndecidedTurn
         ? "Automatic compaction succeeded, but the interrupted goal turn could not be resumed"
         : "Automatic compaction succeeded, but the goal could not be resumed",
       error,
     );
     return;
   }
-  if (sameTurn) {
+  if (resumeUndecidedTurn) {
     runtime.goalTurn = {
       turn: recovery.turn,
       revision: runtime.state?.revision ?? state.revision,
@@ -267,8 +265,7 @@ export function registerGoalSettlement(
     runtime.agentEndObserved = false;
     runtime.continuationScheduled = false;
 
-    // ctx.compact() also aborts the request. An owned compaction must settle through
-    // its success/error callback; its cancellation cannot authorize recovery.
+    // ctx.compact() also aborts the request.
     if (
       wasAborted(event) &&
       !runtime.automaticCompaction &&
@@ -292,15 +289,11 @@ export function registerGoalSettlement(
       const error = safeTerminalText(runtime.lastError ?? "");
       runtime.lastStopReason = undefined;
       runtime.lastError = undefined;
-      if (
+      const duplicateCompactionSettlement =
         runtime.automaticCompaction.turnSettled &&
         (settledTurn === undefined ||
-          settledTurn === runtime.automaticCompaction.turn)
-      ) {
-        // The interrupted turn already settled; a repeated settlement carries no new
-        // information, so keep waiting for compaction instead of failing the recovery.
-        return;
-      }
+          settledTurn === runtime.automaticCompaction.turn);
+      if (duplicateCompactionSettlement) return;
       const expectedInterruption =
         stopReason === "aborted" ||
         (stopReason === "error" && error === "This operation was aborted");
@@ -325,7 +318,10 @@ export function registerGoalSettlement(
         );
         return;
       }
-      if (!expectedInterruption && runtime.automaticCompaction.resumeSameTurn) {
+      if (
+        !expectedInterruption &&
+        runtime.automaticCompaction.resumeUndecidedTurn
+      ) {
         stopAutomaticCompactionRecovery(pi, runtime, ctx, "no turn decision");
         return;
       }
@@ -418,9 +414,7 @@ export function registerGoalSettlement(
     onRequested: (): void => {
       if (runtime.state?.status !== "active") return;
       const current = runtime.state;
-      // A turn that already accepted continue or a blocker audit owns a pending
-      // authorization; recovery must take the next-turn path, never resume the decided turn.
-      const resumeSameTurn =
+      const resumeUndecidedTurn =
         runtime.goalTurnInFlight && current.turnDecision === undefined;
       try {
         const paused = transitionGoal(
@@ -438,7 +432,7 @@ export function registerGoalSettlement(
           outcome: "pending",
           turnSettled: false,
           turn: current.turns,
-          resumeSameTurn,
+          resumeUndecidedTurn,
         };
       } catch (error) {
         pauseGoalUnsaved(

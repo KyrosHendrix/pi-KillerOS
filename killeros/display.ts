@@ -2,7 +2,6 @@ import os from "node:os";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
-/** Formats a terminal-safe, single-line project path with home abbreviation. */
 export function formatCwd(cwd: string): string {
   const safeCwd = safeTerminalText(cwd).replaceAll("\n", "");
   const home = safeTerminalText(
@@ -59,7 +58,6 @@ export function formatTokens(value: number): string {
   return `${inK}k`;
 }
 
-/** Resolves a lowercase model id for display, falling back to the name. */
 export function modelDisplayName(model: {
   name?: string;
   id?: string;
@@ -74,7 +72,6 @@ export function modelDisplayName(model: {
     .toLowerCase();
 }
 
-/** Colors a directory or branch label with KillerOS's fixed path accent. */
 export function colorDirectory(text: string): string {
   return `\x1B[38;2;240;248;154m${text}\x1B[39m`;
 }

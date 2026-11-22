@@ -33,7 +33,6 @@ import {
 import { isAutomationMode } from "./pi-context.ts";
 import { safeTerminalText } from "./safe-terminal-text.ts";
 
-/** Shown by slash-command autocomplete next to /goal. */
 export const GOAL_COMMAND_SYNTAX = "/goal [objective|edit|pause|resume|clear]";
 
 type GoalCommand =
@@ -45,7 +44,6 @@ type GoalCommand =
   | { kind: "clear" }
   | { kind: "invalid"; message: string };
 
-/** Parses raw text as a plain objective, or reports why it cannot be one. */
 function parseGoalObjectiveText(
   input: string,
 ): Extract<GoalCommand, { kind: "objective" } | { kind: "invalid" }> {
@@ -63,7 +61,6 @@ function parseGoalObjectiveText(
   };
 }
 
-/** Parses one raw /goal argument string into a closed command variant; the handler decides whether "edit" applies to the current goal. */
 function parseGoalCommand(args: string): GoalCommand {
   const input = args.trim();
   if (!input) return { kind: "status" };
@@ -540,7 +537,6 @@ async function startGoal(
   }
 }
 
-/** Registers /goal: it parses the arguments, captures the goal it acts on, and runs one subcommand. */
 export function registerGoalCommand(
   pi: ExtensionAPI,
   runtime: GoalRuntime,

@@ -37,7 +37,6 @@ function record(value: unknown): Record<string, unknown> {
   return value;
 }
 
-/** Real RPC UI notifications preserve exact counts and text without replacing the host UI. */
 async function recordsSince(
   pi: PiRpcProcess,
   after: number,
@@ -95,7 +94,6 @@ async function withHooks(
     path.join(directory, "tmp"),
   ])
     mkdirSync(folder, { recursive: true });
-  // Keep receipt scans inside the disposable project instead of the parent checkout.
   execFileSync("git", ["init", "--quiet", project]);
   const probe = path.join(directory, "reload.mjs");
   const mutator = path.join(directory, "mutate-input.mjs");
@@ -534,7 +532,6 @@ export default function(pi) {
   t.diagnostic(JSON.stringify({ ...counts, cleanup: "removed" }));
 }
 
-// Catalog ID: HK-01.
 test(
   "Project hook configuration enforces trust, file identity, size, and schema before execution",
   {
@@ -771,7 +768,6 @@ test(
     }),
 );
 
-// Catalog ID: HK-02.
 test(
   "Hook payloads and output remain valid JSON, bounded, and UTF-8 safe",
   {

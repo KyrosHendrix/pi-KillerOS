@@ -72,10 +72,8 @@ const FOCUSED_TEST_UNSAFE_CHARACTERS = [
 
 type CheckLabel = (typeof CHECK_LABELS)[number] | typeof FOCUSED_CHECK_LABEL;
 
-/** Most checks a receipt lists individually; later ones are only counted. */
 export const MAX_RECEIPT_CHECKS = 20;
 
-/** Accepts a persisted label only when KillerOS could have recognized it. */
 export function parseCheckLabel(value: unknown): CheckLabel | undefined {
   return (
     CHECK_LABELS.find((candidate) => candidate === value) ??
