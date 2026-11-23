@@ -526,6 +526,9 @@ async function createFixture(
     env?: RecordValue;
     compaction?: RecordValue;
     seedPadding?: string;
+    seedSession?: (session: SessionManager) => void;
+    sessionFile?: string;
+    loadKilleros?: false;
   } = {},
 ): Promise<PiFixture> {
   const fixtureDirectory = path.join(directory, label);
@@ -615,7 +618,8 @@ async function createFixture(
         event: savedEvent,
         state: savedGoal,
       });
-    const initialSessionFile = session.getSessionFile();
+    extra.seedSession?.(session);
+    const initialSessionFile = extra.sessionFile ?? session.getSessionFile();
     assert.ok(
       initialSessionFile,
       "the native fixture session must be saved before Pi starts",
@@ -672,8 +676,9 @@ async function createFixture(
         "--no-themes",
         "--no-mcp",
         "--no-extensions",
-        "--extension",
-        repositoryRoot,
+        ...(extra.loadKilleros === false
+          ? []
+          : ["--extension", repositoryRoot]),
         ...(extra.extensions ?? []).flatMap((extension) => [
           "--extension",
           extension,
@@ -1703,6 +1708,389 @@ function fixtureDiagnostics(fixtures: PiFixture[]): RecordValue[] {
     acknowledgedBatches: fixture.batches.slice(0, 80),
   }));
 }
+
+async function assertHostGoalStatus(
+  fixture: PiFixture,
+  after: number,
+  text: string | undefined,
+): Promise<number> {
+  const status = await fixture.rpc.waitForRecord(
+    (event) =>
+      event.type === "extension_ui_request" &&
+      event.method === "setStatus" &&
+      event.statusKey === "killeros-goal",
+    { after, signal: fixture.signal },
+  );
+  assert.equal(status.value.statusText, text);
+  return status.sequence;
+}
+
+function hostGoalEntryData(entry: RecordValue) {
+  if (entry.type !== "custom" || entry.customType !== "killeros-goal")
+    return undefined;
+  const data = record(entry.data, "killeros-goal data");
+  assert.equal(data.version, 1);
+  const state = data.state === null ? null : record(data.state, "goal state");
+  return {
+    event: data.event,
+    state: state && {
+      objective: state.objective,
+      status: state.status,
+      turns: state.turns,
+    },
+  };
+}
+
+async function assertHostGoalUpdate(
+  fixture: PiFixture,
+  after: number,
+  event: string,
+  state: { objective: string; status: string; turns: number } | null,
+): Promise<void> {
+  const update = await fixture.rpc.waitFor(
+    (entry) =>
+      entry.type === "entry_appended" &&
+      hostGoalEntryData(record(entry.entry, "appended entry"))?.event === event,
+    { after, signal: fixture.signal },
+  );
+  assert.deepEqual(hostGoalEntryData(record(update.entry, "goal entry")), {
+    event,
+    state,
+  });
+}
+
+test(
+  "Pi RPC hosts receive live goal status and saved goal updates",
+  { timeout: 90_000 },
+  async (t) => {
+    const directory = await isolatedGoalRoot("killeros-goal-host-");
+    const fixtures: PiFixture[] = [];
+    t.after(async () => {
+      const cleanup = await Promise.all(fixtures.map(closeFixture));
+      await removeDirectoryEventually(directory);
+      assert.deepEqual(cleanup.flat(), []);
+    });
+    const fixture = await createFixture(directory, "live", t.signal);
+    fixtures.push(fixture);
+    await assertHostGoalStatus(fixture, 0, undefined);
+    await initializeFixture(fixture);
+
+    let cursor = fixture.rpc.currentSequence;
+    const emptyEntries = await getEntries(fixture);
+    const emptyMessages = (await rpcCommand(fixture, "get_messages")).data;
+    await submitCommand(fixture, "/goal resume", "empty resume");
+    await waitForNotification(
+      fixture,
+      cursor,
+      "No goal is set",
+      "info",
+      "empty resume",
+    );
+    assert.deepEqual(await getEntries(fixture), emptyEntries);
+    assert.deepEqual(
+      (await rpcCommand(fixture, "get_messages")).data,
+      emptyMessages,
+    );
+    assert.equal(fixture.provider.requestCount, 0);
+
+    const objective = "Verify the RPC goal contract";
+    const original = fixture.provider.holdNextRequest();
+    cursor = fixture.rpc.currentSequence;
+    await submitCommand(fixture, `/goal ${objective}`, "host start");
+    await assertHostGoalUpdate(fixture, cursor, "set", {
+      objective,
+      status: "active",
+      turns: 0,
+    });
+    await assertHostGoalStatus(fixture, cursor, `Goal active · ${objective}`);
+    const request = await fixture.provider.waitForRequest(1, t.signal);
+
+    cursor = fixture.rpc.currentSequence;
+    await submitCommand(fixture, "/goal pause", "host pause");
+    await assertHostGoalUpdate(fixture, cursor, "pause", {
+      objective,
+      status: "paused",
+      turns: 1,
+    });
+    await assertHostGoalStatus(fixture, cursor, `Goal paused · ${objective}`);
+    await waitForSettled(fixture, cursor, "host pause");
+    original.release();
+    assert.equal(await request.completion, "closed");
+
+    cursor = fixture.rpc.currentSequence;
+    const pausedMessages = (await rpcCommand(fixture, "get_messages")).data;
+    await submitCommand(fixture, "/goal", "host inspect");
+    await fixture.rpc.waitFor(
+      (entry) =>
+        entry.method === "notify" &&
+        typeof entry.message === "string" &&
+        entry.message.startsWith("Goal paused") &&
+        entry.message.includes(objective),
+      { after: cursor, signal: t.signal },
+    );
+    const edited = "Verify the edited RPC goal";
+    await submitCommand(fixture, `/goal edit ${edited}`, "host edit");
+    await assertHostGoalUpdate(fixture, cursor, "edit", {
+      objective: edited,
+      status: "paused",
+      turns: 1,
+    });
+    await assertHostGoalStatus(fixture, cursor, `Goal paused · ${edited}`);
+    assert.deepEqual(
+      (await rpcCommand(fixture, "get_messages")).data,
+      pausedMessages,
+    );
+    assert.equal(fixture.provider.requestCount, 1);
+    acknowledgeBatch(fixture, "host controls");
+
+    for (let audit = 0; audit < 3; audit += 1) {
+      fixture.provider
+        .queueGoalDecision({
+          status: "blocked",
+          blockerKey: "waiting-for-review",
+          evidence: "Review is still pending",
+        })
+        .release();
+    }
+    cursor = fixture.rpc.currentSequence;
+    await submitCommand(fixture, "/goal resume", "host resume");
+    await assertHostGoalUpdate(fixture, cursor, "resume", {
+      objective: edited,
+      status: "active",
+      turns: 1,
+    });
+    const resumed = await assertHostGoalStatus(
+      fixture,
+      cursor,
+      `Goal active · ${edited}`,
+    );
+    await assertHostGoalUpdate(fixture, resumed, "blocked", {
+      objective: edited,
+      status: "blocked",
+      turns: 4,
+    });
+    const blocked = await assertHostGoalStatus(
+      fixture,
+      resumed,
+      `Goal blocked · ${edited}`,
+    );
+    await waitForSettled(fixture, blocked, "host blocked");
+    assert.equal(fixture.provider.requestCount, 7);
+    acknowledgeBatch(fixture, "host blocked");
+
+    fixture.provider
+      .queueGoalDecision({ status: "complete", evidence: "Review verified" })
+      .release();
+    cursor = fixture.rpc.currentSequence;
+    await submitPrompt(
+      fixture,
+      "Verify the review is complete",
+      "host completion",
+    );
+    await assertHostGoalUpdate(fixture, cursor, "complete", {
+      objective: edited,
+      status: "complete",
+      turns: 4,
+    });
+    const completed = await assertHostGoalStatus(
+      fixture,
+      cursor,
+      `Goal complete · ${edited}`,
+    );
+    await waitForSettled(fixture, completed, "host completion");
+    assert.equal(fixture.provider.requestCount, 9);
+
+    cursor = fixture.rpc.currentSequence;
+    const completedMessages = (await rpcCommand(fixture, "get_messages")).data;
+    await submitCommand(fixture, "/goal clear", "host clear");
+    await assertHostGoalUpdate(fixture, cursor, "clear", null);
+    await assertHostGoalStatus(fixture, cursor, undefined);
+    assert.deepEqual(
+      (await rpcCommand(fixture, "get_messages")).data,
+      completedMessages,
+    );
+    assert.equal(fixture.provider.requestCount, 9);
+
+    const disabled = await createFixture(
+      directory,
+      "disabled",
+      t.signal,
+      undefined,
+      undefined,
+      "read",
+      { loadKilleros: false },
+    );
+    fixtures.push(disabled);
+    const commands = records(
+      record((await rpcCommand(disabled, "get_commands")).data, "commands")
+        .commands,
+      "registered commands",
+    );
+    assert.equal(
+      commands.some((command) => command.name === "goal"),
+      false,
+    );
+  },
+);
+
+async function recoverHostGoal(fixture: PiFixture) {
+  const data = record(
+    (await rpcCommand(fixture, "get_entries")).data,
+    "entry tree",
+  );
+  const byId = new Map(
+    records(data.entries, "entries").map((entry) => [
+      stringField(entry, "id"),
+      entry,
+    ]),
+  );
+  for (let id = data.leafId; id !== null;) {
+    assert.ok(typeof id === "string", "Expected a leaf or parent entry ID");
+    const entry = byId.get(id);
+    assert.ok(entry, `Missing ancestor ${id}`);
+    const goal = hostGoalEntryData(entry);
+    if (goal) return goal.state;
+    id = entry.parentId;
+  }
+  return null;
+}
+
+test(
+  "Pi RPC hosts recover the selected goal after navigation, reload, and reconnect",
+  { timeout: 90_000 },
+  async (t) => {
+    const directory = await isolatedGoalRoot("killeros-goal-host-tree-");
+    const fixtures: PiFixture[] = [];
+    t.after(async () => {
+      const cleanup = await Promise.all(fixtures.map(closeFixture));
+      await removeDirectoryEventually(directory);
+      assert.deepEqual(cleanup.flat(), []);
+    });
+    const navigation = path.join(directory, "navigate.mjs");
+    writeFileSync(
+      navigation,
+      `export default function(pi) {
+  pi.registerCommand("fixture-tree", {
+    handler: async (id, ctx) => { await ctx.navigateTree(id, { summarize: false }); },
+  });
+  pi.registerCommand("fixture-reload", { handler: async (_args, ctx) => { await ctx.reload(); } });
+}`,
+    );
+    const paused = {
+      objective: "Review the selected branch",
+      status: "paused",
+      turns: 1,
+    };
+    const complete = {
+      objective: "Review the other branch",
+      status: "complete",
+      turns: 1,
+    };
+    const pausedLabel = `Goal paused · ${paused.objective}`;
+    const fixture = await createFixture(
+      directory,
+      "tree",
+      t.signal,
+      { ...seededGoalBase(paused.objective, 1), ...paused },
+      "pause",
+      "killeros_goal_update",
+      {
+        extensions: [navigation],
+        seedSession(session) {
+          const selected = session.getLeafEntry();
+          assert.ok(selected?.parentId);
+          session.branch(selected.parentId);
+          session.appendCustomEntry("killeros-goal", {
+            version: 1,
+            event: "complete",
+            state: {
+              ...seededGoalBase(complete.objective, 2),
+              ...complete,
+              result: "Reviewed",
+            },
+          });
+          session.appendCustomEntry("killeros-goal", {
+            version: 1,
+            event: "clear",
+            state: null,
+          });
+          session.branch(selected.id);
+          session.appendSessionInfo("Selected paused branch");
+        },
+      },
+    );
+    fixtures.push(fixture);
+    const state = await getState(fixture);
+    const sessionId = stringField(state, "sessionId");
+    const messages = (await rpcCommand(fixture, "get_messages")).data;
+    const goals = goalEntries(await getEntries(fixture));
+    assert.deepEqual(
+      goals.map((goal) => goal.event),
+      ["pause", "complete", "clear"],
+    );
+    const [pauseEntry, completeEntry, clearEntry] = goals;
+    assert.ok(pauseEntry && completeEntry && clearEntry);
+    await assertHostGoalStatus(fixture, 0, pausedLabel);
+    assert.deepEqual(await recoverHostGoal(fixture), paused);
+
+    for (const branch of [
+      {
+        id: completeEntry.id,
+        goal: complete,
+        label: `Goal complete · ${complete.objective}`,
+      },
+      { id: clearEntry.id, goal: null, label: undefined },
+      { id: pauseEntry.id, goal: paused, label: pausedLabel },
+    ]) {
+      const cursor = fixture.rpc.currentSequence;
+      await submitCommand(fixture, `/fixture-tree ${branch.id}`, "navigation");
+      await assertHostGoalStatus(fixture, cursor, branch.label);
+      assert.deepEqual(await recoverHostGoal(fixture), branch.goal);
+    }
+    let cursor = fixture.rpc.currentSequence;
+    await submitCommand(fixture, "/fixture-reload", "reload");
+    await assertHostGoalStatus(fixture, cursor, pausedLabel);
+    assert.deepEqual(
+      (await rpcCommand(fixture, "get_messages")).data,
+      messages,
+    );
+    assert.equal(fixture.provider.requestCount, 0);
+
+    cursor = fixture.rpc.currentSequence;
+    const replacement = record(
+      (await rpcCommand(fixture, "new_session")).data,
+      "new session",
+    );
+    assert.equal(replacement.cancelled, false);
+    assert.notEqual((await getState(fixture)).sessionId, sessionId);
+    await assertHostGoalStatus(fixture, cursor, undefined);
+    assert.deepEqual((await rpcCommand(fixture, "get_messages")).data, {
+      messages: [],
+    });
+    assert.equal(fixture.provider.requestCount, 0);
+    assert.deepEqual(await closeFixture(fixture), []);
+    fixtures.pop();
+
+    const reopened = await createFixture(
+      directory,
+      "reconnected",
+      t.signal,
+      undefined,
+      undefined,
+      undefined,
+      { sessionFile: fixture.initialSessionFile },
+    );
+    fixtures.push(reopened);
+    assert.equal((await getState(reopened)).sessionId, sessionId);
+    await assertHostGoalStatus(reopened, 0, pausedLabel);
+    assert.deepEqual(await recoverHostGoal(reopened), paused);
+    assert.deepEqual(
+      (await rpcCommand(reopened, "get_messages")).data,
+      messages,
+    );
+    assert.equal(reopened.provider.requestCount, 0);
+  },
+);
 
 type TerminalFixture = {
   directory: string;

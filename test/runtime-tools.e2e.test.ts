@@ -811,13 +811,9 @@ class PiFamily {
         );
       } else {
         const response = await this.rpc.waitFor(
-          (event) => event.type === "extension_ui_request",
+          (event) =>
+            event.type === "extension_ui_request" && event.method === "notify",
           { after, signal: this.options.signal },
-        );
-        assert.equal(
-          response.method,
-          "notify",
-          `RPC command ${message} must settle through its native notification`,
         );
         if (options.screenText)
           assert.ok(JSON.stringify(response).includes(options.screenText));

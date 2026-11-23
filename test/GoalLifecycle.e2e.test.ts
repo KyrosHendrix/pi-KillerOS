@@ -3992,6 +3992,17 @@ test(
               );
               assert.match(notice, failurePattern);
               assert.match(notice, /Automatic continuation is stopped/u);
+              const status = await scenarioRpc(fixture).waitFor(
+                (event) =>
+                  event.type === "extension_ui_request" &&
+                  event.method === "setStatus" &&
+                  event.statusKey === "killeros-goal",
+                { after: cursor, signal: t.signal },
+              );
+              assert.equal(
+                status.statusText,
+                `Goal paused · Persist ${control} before abort`,
+              );
             }
             const observed = await scenarioObserverEvent(
               fixture,

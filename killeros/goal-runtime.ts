@@ -23,6 +23,7 @@ import {
 import {
   GOAL_CONTINUATION_TYPE,
   notifyGoalChange,
+  onGoalChange,
   type GoalRuntime,
   type GoalState,
   type GoalStatus,
@@ -32,6 +33,7 @@ import { isRecord } from "./guards.ts";
 
 export const GOAL_ENTRY_TYPE = "killeros-goal";
 export const GOAL_UPDATE_TOOL = "killeros_goal_update";
+const GOAL_STATUS_KEY = "killeros-goal";
 
 type GoalEntryEvent =
   | "set"
@@ -591,7 +593,22 @@ export function registerGoalRuntime(
   pi: ExtensionAPI,
   runtime: GoalRuntime,
 ): void {
+  let rpcUi: ExtensionContext["ui"] | undefined;
+  let lastRpcStatus: string | null | undefined;
+  onGoalChange(runtime, () => {
+    if (!rpcUi) return;
+    const state = runtime.state;
+    const status = state
+      ? `Goal ${state.status} · ${state.objective.replace(/\s+/gu, " ")}`
+      : null;
+    if (status === lastRpcStatus) return;
+    rpcUi.setStatus(GOAL_STATUS_KEY, status ?? undefined);
+    lastRpcStatus = status;
+  });
+
   const restoreGoal = (ctx: ExtensionContext): void => {
+    rpcUi = ctx.mode === "rpc" ? ctx.ui : undefined;
+    lastRpcStatus = undefined;
     runtime.lifecycleGeneration += 1;
     const generation = runtime.lifecycleGeneration;
     const restored = restoreGoalState(ctx);
@@ -622,6 +639,7 @@ export function registerGoalRuntime(
   pi.on("session_tree", (_event, ctx) => restoreGoal(ctx));
 
   pi.on("session_shutdown", (_event, ctx) => {
+    rpcUi = undefined;
     runtime.lifecycleGeneration += 1;
     runtime.blockedCompletion = undefined;
     if (runtime.state?.status === "active") {

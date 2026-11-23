@@ -4,6 +4,12 @@ All notable changes to KillerOS are documented here. Releases use New Features f
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-11-23
+
+### Added
+
+- Show the live goal objective and state in Pi RPC hosts that display extension status, including T3 Code.
+
 ### Changed
 
 - Raised the minimum supported Pi version to 1.6.0.
