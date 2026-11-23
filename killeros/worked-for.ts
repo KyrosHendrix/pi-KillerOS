@@ -166,15 +166,14 @@ function parseChanges(value: unknown): ChangeSummary | undefined {
   )
     return undefined;
   const files = value.files.map(parseFile);
-  if (files.some((file) => !file)) return undefined;
-  const parsed = files as ChangedFile[];
-  if (value.totalFiles !== parsed.length + value.omittedFiles) return undefined;
+  if (!files.every((file) => file !== undefined)) return undefined;
+  if (value.totalFiles !== files.length + value.omittedFiles) return undefined;
   if (value.omittedFiles === 0) {
     if (
       value.additions !==
-        parsed.reduce((total, file) => total + file.additions, 0) ||
+        files.reduce((total, file) => total + file.additions, 0) ||
       value.deletions !==
-        parsed.reduce((total, file) => total + file.deletions, 0)
+        files.reduce((total, file) => total + file.deletions, 0)
     )
       return undefined;
   }
@@ -183,7 +182,7 @@ function parseChanges(value: unknown): ChangeSummary | undefined {
     totalFiles: value.totalFiles,
     additions: value.additions,
     deletions: value.deletions,
-    files: parsed,
+    files,
     omittedFiles: value.omittedFiles,
   };
 }

@@ -1,0 +1,130 @@
+{
+  "Killeros.ts": [
+    "/** Output-token budget for /handoff summaries; invalid values fall back to killeros.json, then the default. */"
+  ],
+  "killeros/auto-compaction.ts": [
+    "// Pi aborts the agent when our pending compaction starts."
+  ],
+  "killeros/bounded-text.ts": [
+    "/** A transcript component laid out once per width: Pi renders every transcript component on every frame. */"
+  ],
+  "killeros/codex-fast.ts": [
+    "// The hook exposes no dispatched provider/API. Native requests must match the selected model."
+  ],
+  "killeros/file-identity.ts": [
+    "/**\n * Compares Windows file identity from bigint stats. Node's numeric `ino` is a double, so\n * distinct 64-bit file IDs above 2^53 can collapse to one value and hide a swapped file.\n */"
+  ],
+  "killeros/goal-interface.ts": [
+    "// `type: \"string\"` keeps the plain string enum every provider accepts."
+  ],
+  "killeros/goal-settlement.ts": ["// ctx.compact() also aborts the request."],
+  "killeros/goal-state.ts": [
+    "// Goal text limits count Unicode code points, as JSON Schema `maxLength` does when Pi validates tool arguments.",
+    "// Parent segments may traverse symlinks; keep them distinct without filesystem proof.",
+    "// Resolving parent segments lexically can select a different file across a directory symlink."
+  ],
+  "killeros/handoff.ts": [
+    "// A regular user message makes Pi persist the otherwise setup-only child session."
+  ],
+  "killeros/hooks.ts": [
+    "/** @deprecated Use the object-argument form. The positional adapter will be removed in the next major release. */"
+  ],
+  "killeros/passive-git-status.ts": [
+    "/**\n * Whether automatic Git children must start with Node's `windowsHide`. That flag starts a console child with\n * CREATE_NO_WINDOW, which gives it a hidden console of its own and so a second process, conhost.exe, for every\n * Git call. A process that already has a console, visible or hidden, lets its children share it without opening\n * a window, so only a process without one hides them. The console device opens exactly when one is attached.\n */",
+    "/** Revs-only returns empty output for an unborn HEAD; command failures still reject. */",
+    "/**\n * Git normalizes values with --type=bool-or-str, so this matches `--type=bool --get`: the last value of a key\n * wins, a missing key takes Git's default, and any value Git cannot read as a bool fails the scan. The\n * command-line probe key always matches, so the read succeeds when the repository sets none of the keys.\n */",
+    "// Receipts recognize \"not a git repository\" by its text, and translated Git prints it in the user's language.",
+    "// eol controls checkout bytes; text files still normalize CRLF when compared with the index.",
+    "// Match Git's convert_is_binary heuristic, including its terminal EOF exception."
+  ],
+  "killeros/question-ui.ts": [
+    "// Pi reflows native input on resize. Keep its component and in-progress draft."
+  ],
+  "killeros/question.ts": [
+    "// `type: \"string\"` keeps the plain string enum every provider accepts."
+  ],
+  "killeros/shell-ui.ts": [
+    "// Pi resets the terminal title after session binding, before the next render."
+  ],
+  "killeros/worked-for.ts": [
+    "// Pi is not idle yet; later settlement handlers can overlap tree navigation.",
+    "// Earlier async session_tree handlers can delay our reset after Pi switches branches."
+  ],
+  "test/Activity.e2e.test.ts": [
+    "// Explicit Enter avoids ConPTY translating a bare CR into Shift+Enter.",
+    "// Explicit Enter avoids ConPTY translating a bare CR into Shift+Enter."
+  ],
+  "test/BlockedGoalCompletion.e2e.test.ts": [
+    "// Vector: the legacy non-string evidence value 42 reaches the real Pi path: typebox converts",
+    "// it to \"42\", so the eligible window completes with that string instead of rejecting."
+  ],
+  "test/BoundedText.e2e.test.ts": [
+    "// ConPTY/xterm interpret emoji and combining cells differently from Pi. The producer",
+    "// assertion checks every source grapheme; compare parsed rows for ASCII and CJK."
+  ],
+  "test/CompactionManual.e2e.test.ts": [
+    "// Probe files can lead stdout delivery. A native response bounds earlier RPC notifications."
+  ],
+  "test/CompactionSessionBoundaries.e2e.test.ts": [
+    "// Pi labels that request manual even though KillerOS initiated it automatically."
+  ],
+  "test/Display.e2e.test.ts": [
+    "// Explicit Enter avoids ConPTY translating a bare CR into Shift+Enter.",
+    "// JSON exponent overflow preserves actual infinities on native load instead of serializing NaN as null."
+  ],
+  "test/Footer.e2e.test.ts": [
+    "// Model-argument completion can consume the first Enter without executing the command.",
+    "// Corrupting HEAD must not let Git discover the checkout above the fixture.",
+    "// The first Enter may accept Pi's argument completion rather than run /model.",
+    "// ConPTY clamps its physical size to at least two columns.",
+    "// Pi's separate startup branch query legitimately exits 128 for an unborn HEAD.",
+    "// Argument completion may consume the first Enter without executing the command.",
+    "// The startup scan's echo may still be reading .git/config, and Windows cannot rename an open file.",
+    "// The startup scan's echo may still be reading .git, and Windows cannot move a directory with an open file."
+  ],
+  "test/FooterGitSafety.test.ts": [
+    "// Windows searches the working directory before PATH unless NoDefaultCurrentDirectoryInExePath is set, so a bare",
+    "// \"git\" run inside the fixture would start the fixture's own shim. Resolve the runner's Git once, from a neutral directory."
+  ],
+  "test/FooterGitSchedule.test.ts": [
+    "// Mock timers start a timer scheduled inside a callback from the end of the current tick, so advance 1 ms at a time."
+  ],
+  "test/GoalCompletionVerification.e2e.test.ts": [
+    "// Windows file IDs exceed 2^53, so numeric inode values can collide for distinct files."
+  ],
+  "test/Goals.e2e.test.ts": [
+    "// Compaction estimates context from the last assistant usage, so padded seeds carry a larger count.",
+    "// A conversation is required for SessionManager to flush the seeded file before Pi starts.",
+    "// Compaction estimates context from the last assistant usage, so padded seeds carry a larger count.",
+    "// Pi omits the tools field entirely when nothing is declared to the model."
+  ],
+  "test/HandoffTerminal.e2e.test.ts": [
+    "// A writer may be between truncation and its synchronous write. The next watch event checks the full file."
+  ],
+  "test/PassiveGitStatus.test.ts": [
+    "// Editors start Pi this way: windowsHide gives the child a hidden console of its own."
+  ],
+  "test/PiExtensionContract.test.ts": [
+    "// Observe input while the probe is alive; native PTY exit can discard unread final bytes."
+  ],
+  "test/Question.e2e.test.ts": [
+    "/** CSI-u Enter: a bare CR can arrive as Shift+Enter through ConPTY in the main editor. */",
+    "// Pi adds one column on each side of tool output and three blank rows between",
+    "// the user message and the renderer. Keep every renderer row, including blanks."
+  ],
+  "test/ShellUi.e2e.test.ts": ["// ConPTY's physical minimum is two columns."],
+  "test/runtime-native-provider.e2e.test.ts": [
+    "// Paste keeps argument autocomplete from consuming Enter instead of submitting the command."
+  ],
+  "test/runtime-tools.e2e.test.ts": [
+    "// Pi serializes a whole batch if any tool is sequential, so isolate each decision tool.",
+    "// Pi keeps the run's system prompt while completion removes the tool before its follow-up."
+  ],
+  "test/support/TimerResolution.ts": [
+    "// node:ffi warns that it is experimental on first load. Pi children and tests check stderr, so hide only that warning.",
+    "// A variable specifier keeps TypeScript from requiring declarations that @types/node does not ship yet."
+  ],
+  "test/verify-release.test.ts": [
+    "// Windows reuses PIDs between histories; count observed launches, not globally unique PID numbers."
+  ]
+}

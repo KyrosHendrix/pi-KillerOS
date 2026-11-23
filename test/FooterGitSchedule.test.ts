@@ -5,9 +5,6 @@ import {
   scheduleGitStatusWatch,
 } from "../killeros/footer.ts";
 
-// Footer Git timing runs on mocked timers so its exact boundaries are checked without wall-clock waits.
-// Footer.e2e.test.ts covers the installed watcher, scans, and rendering in real Pi.
-
 type WatchHarness = {
   change: () => void;
   fail: () => void;
@@ -99,8 +96,6 @@ test("footer watch debounces a burst into one scan after 250 ms", (t) => {
 
 test("footer watch throttles sustained changes to one scan per five seconds", (t) => {
   const watch = watchHarness(t);
-  // Thirteen changes 400 ms apart span 5.2 seconds of sustained activity. The first scans at 250 ms,
-  // and its five-second cooldown ends at 5,250 ms.
   for (let index = 0; index < 13; index++) {
     watch.change();
     watch.advance(400);

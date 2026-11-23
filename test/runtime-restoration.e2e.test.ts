@@ -391,7 +391,6 @@ test(
     };
     pi.on("tool_execution_start", event => report({kind:"start",toolName:event.toolName}));
     pi.on("tool_execution_end", event => report({kind:"end",toolName:event.toolName}));
-    // Keep the real question result callback open until the parent acknowledges its start snapshot.
     pi.on("tool_result", event => event.toolName === "question" && event.parentToolCallId === undefined
       ? report({kind:"question-result",toolName:event.toolName,isError:event.isError}) : undefined);
   }`,

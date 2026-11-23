@@ -84,7 +84,6 @@ type AcceptObservation = {
   readonly fixtureRemoved: boolean;
 };
 
-/** Builds a child environment without inherited npm, proxy, or credential settings. */
 function isolatedAcceptEnvironment(directory: string): NodeJS.ProcessEnv {
   const inherited = new Map(
     Object.entries(process.env).map(([key, value]) => [
@@ -133,7 +132,6 @@ function writeAcceptFixture(directory: string, readme: string): void {
   writeFileSync(path.join(directory, "README.md"), readme);
 }
 
-// Catalog ID: runtime.system-release-validator-accept.
 test(ACCEPT_SCENARIO_TITLE, { timeout: 120_000 }, async (t) => {
   const repositoryReadme = readFileSync(
     new URL("../README.md", import.meta.url),
@@ -289,7 +287,6 @@ test(ACCEPT_SCENARIO_TITLE, { timeout: 120_000 }, async (t) => {
   }
 });
 
-// Catalog ID: runtime.system-release-validator-reject.
 test(
   "release validator rejects direct publication and identity drift",
   { timeout: 120_000 },
@@ -504,7 +501,6 @@ function npmCliPath(): string {
   );
 }
 
-// Catalog ID: runtime.system-publication-lifecycle.
 test(
   "publication lifecycle invokes the real validator exactly once and blocks direct publish",
   { timeout: 300_000 },
@@ -573,8 +569,6 @@ test(
       }
     `,
       );
-      // Seed synthetic inherited settings to prove filtering through the real npm and validator processes.
-      // Allow only OS process-launch variables. Never inherit npm config, proxies, credentials, or OIDC.
       const env: NodeJS.ProcessEnv = {};
       for (const [key, value] of Object.entries({
         ...process.env,
@@ -641,7 +635,6 @@ test(
             stderr = stderr.slice(-32_768);
           }
         });
-        // The deadline bounds failure; process close, not elapsed silence, completes each vector.
         const timer = setTimeout(() => {
           timedOut = true;
           child.kill();

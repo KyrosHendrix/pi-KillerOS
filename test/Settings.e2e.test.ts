@@ -1278,7 +1278,6 @@ async function saveFailureIfNeeded(options: {
   });
 }
 
-// Catalog ID: SET-01.
 test(
   "Settings updates derive from the current file and preserve unrelated fields",
   { timeout: 180_000 },
@@ -1453,7 +1452,6 @@ test(
   },
 );
 
-// Catalog ID: SET-02.
 test(
   "An exited settings writer does not leave the settings lock stuck",
   { timeout: 180_000 },
@@ -1643,7 +1641,6 @@ test(
   },
 );
 
-// Catalog ID: SET-03.
 test(
   "Concurrent settings writers preserve every successful write and stale observers cannot remove a new lock",
   { timeout: 360_000 },

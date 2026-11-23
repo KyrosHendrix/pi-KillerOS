@@ -52,7 +52,6 @@ assert.ok(
 );
 const piVersion = piManifest.version;
 
-// Provider usage enters through Pi's real transport, not a replacement context API.
 test(
   "installed Pi terminal updates context capacity and the settings-driven compact hint",
   { timeout: 90_000 },
@@ -602,7 +601,6 @@ function footerSavedBranchSummaryCount(sessionFile: string): number {
     .filter((entry) => entry.type === "branch_summary").length;
 }
 
-/** Test provider requests enter through Pi's public configured transport. */
 class FooterFixtureProvider {
   readonly requests: FooterRecord[] = [];
   readonly errors: unknown[] = [];
@@ -938,7 +936,6 @@ test(
     let piLaunches = 0;
     let providerClosed = false;
     try {
-      // The project stays outside the checkout; the extension still resolves installed public packages.
       symlinkSync(
         path.join(repositoryRoot, "node_modules"),
         path.join(family.directory, "node_modules"),
@@ -1035,7 +1032,6 @@ test(
           updatedAt: seededAt,
           activeMilliseconds: 0,
           activeStartedAt: seededAt,
-          // Native restoration begins turn three; hold its HTTP reply during width checks.
           turns: 2,
           blockedAuditStartTurn: 0,
           baselineTokens: 0,
@@ -1282,7 +1278,6 @@ test(
         },
       ] as const;
       for (const item of fastModels) {
-        // The driver's editor-echo barrier requires the complete command on one row.
         terminal.resize(120, 34);
         await terminal.waitForScreen(
           (screen) => screen.split("\n").includes("─".repeat(120)),
@@ -1421,7 +1416,6 @@ test(
       );
       assert.doesNotMatch(footerLine(disabled), /\bfast\b/u);
 
-      // Parsed screens are SGR-free, so the sanitized labels match as plain text.
       const calibratedModels = [
         {
           provider: unsafeProvider,
@@ -1527,7 +1521,6 @@ test(
         5,
         "One ordinary request restores post-compaction context telemetry",
       );
-      // Wide anchor: measure the full and percentage context tokens the footer really rendered.
       terminal.resize(120, 34);
       const wideAnchor = await terminal.waitForScreen(
         (screen) => /ctx \d+% \([^()]+\/[^()]+\)/u.test(footerLine(screen)),
@@ -2085,7 +2078,6 @@ function footerTerminalCleanup(terminal: PiTerminalProcess): {
   return { exitCode, nativeResources, nativeResourcesCreated };
 }
 
-// Fixture setup uses the unchanged parent PATH; hostile child PATH vectors stay separate.
 const systemGitSearchPath =
   Object.entries(process.env).find(
     ([key]) => key.toLowerCase() === "path",
@@ -2255,7 +2247,6 @@ test(
           { signal: t.signal, after: recoveryStartupSequence },
         );
 
-        // The head-states test covers committed HEAD failures; this history covers repository config failures.
         // The startup scan's echo may still be reading .git/config, and Windows cannot rename an open file.
         await gitReadersFinished(recovery.trace, t.signal);
         const recoveryBeforeConfigFailure = readFooterTrace(recovery.trace);
@@ -2293,7 +2284,6 @@ test(
           t.signal,
           { outcome: "success", repository: "present", committed: true },
         );
-        // Recovery produces the same counts, so no new footer frame is expected.
         assert.match(
           footerRenderedGitLine(recoveryTerminal.screen()),
           /±2 \[~1 \+1 −0\]/u,

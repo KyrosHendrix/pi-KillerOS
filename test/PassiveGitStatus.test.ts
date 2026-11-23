@@ -13,9 +13,6 @@ import {
 } from "../killeros/passive-git-status.ts";
 import { nodeExecutable } from "./support/NodeRuntime.ts";
 
-// Hiding a console child starts a second process, conhost.exe, per Git call. A process with a console lets
-// its Git children share it, so only a process without one may hide them.
-
 const moduleUrl = pathToFileURL(
   path.join(import.meta.dirname, "..", "killeros", "passive-git-status.ts"),
 ).href;

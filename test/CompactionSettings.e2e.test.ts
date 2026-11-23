@@ -35,7 +35,6 @@ function record(value: unknown): Record<string, unknown> {
   return value;
 }
 
-// Child-scoped external-I/O controls affect only the owned settings file, never KillerOS or Pi methods.
 const adapterSource = String.raw`import fs from "node:fs";
 import path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
@@ -396,7 +395,6 @@ async function createFixture(t: TestContext, id: string) {
   };
 }
 
-// Catalog ID: compaction-settings-rpc-lifecycle.
 test(
   "RPC /auto-compact status, updates, normalization, and settings failure preservation",
   { timeout: 90_000 },
@@ -709,7 +707,6 @@ test(
         const unchanged = readFileSync(fixture.settings, "utf8");
         const after = terminal.sequence;
         await terminal.submitEditorText(command, { signal: t.signal });
-        // Every result differs from earlier screens, so an old notification cannot satisfy the wait.
         const screen = await terminal.waitForScreen(
           (value) => value.includes(expected),
           { after, signal: t.signal },

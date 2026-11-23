@@ -1,16 +1,4 @@
 "use strict";
-/**
- * System-level migration of blocked-goal completion behavior.
- *
- * Catalog IDs: goals.blocked-completion, goals.blocked-races.
- * Source tests: test/BlockedGoalCompletion.test.ts (legacy, read-only).
- *
- * Every launch is a real Pi CLI process: RPC mode drives goals through the
- * JSON protocol, the TUI launch drives the real terminal. The loopback
- * scripted provider owns every model decision, lifecycle races park the real
- * `verifyGoalDeliverable` open through a child-side filesystem barrier, and
- * the failed-append fault rides the real `appendFileSync` persist path.
- */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -78,7 +66,6 @@ type ProviderRequest = {
 };
 type SavedGoalEntry = { id: string; event: string; state: RecordValue | null };
 type FixturePlan = {
-  /** Adapter status sink: written once at load and on every barrier event. */
   status: string;
   verification?: {
     target: string;
@@ -125,10 +112,6 @@ const repositoryCliPath = path.join(
   "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
 );
 
-// ---------------------------------------------------------------------------
-// Small typed plumbing helpers.
-// ---------------------------------------------------------------------------
-
 function isRecord(value: unknown): value is RecordValue {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -174,10 +157,6 @@ async function outcome<T>(promise: Promise<T>): Promise<PromiseOutcome<T>> {
     return { kind: "rejected", error };
   }
 }
-
-// -----------------------------------------------------------------------
-// Loopback scripted provider.
-// -----------------------------------------------------------------------
 
 class LocalProvider {
   readonly faults: string[] = [];
@@ -237,15 +216,10 @@ class LocalProvider {
     this.queueCalls([{ name: "killeros_goal_update", args: decision }]);
   }
 
-  /** Queues one assistant response with the exact ordered tool-call batch, followed by a settling plain response. */
   queueCalls(calls: ProviderCall[]): void {
     this.plans.push({ kind: "calls", calls }, { kind: "stop" });
   }
 
-  /**
-   * Queues only the tool-call batch. Abort-family race vectors (reload, RPC abort,
-   * shutdown) never send the settling request, so a trailing stop plan would fail close().
-   */
   queueCallsOnly(calls: ProviderCall[], beforeResponse?: () => void): void {
     this.plans.push({ kind: "calls", calls, beforeResponse });
   }
@@ -409,10 +383,8 @@ class LocalProvider {
       if (plan.kind === "calls") plan.beforeResponse?.();
       if (response.destroyed || response.writableEnded) return;
       if (plan.kind === "error") {
-        // A planned 500 keeps the real pi-ai path: the request fails and the turn settles with stopReason "error".
         response.writeHead(500, { connection: "close" });
         response.end("planned provider failure");
-        // Let the socket drain before the handler resolves so close() never races an in-flight response.
         await outcome(completion);
         return;
       }
@@ -458,10 +430,6 @@ class LocalProvider {
     }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Fixture probe extension (see blockedGoalProbeSource below).
-// ---------------------------------------------------------------------------
 
 function blockedGoalProbeSource(): string {
   return String.raw`
@@ -590,10 +558,6 @@ function readPlan(planPath) {
 `;
 }
 
-// ---------------------------------------------------------------------------
-// Child-side fixture adapter: filesystem verification barrier + append fault.
-// ---------------------------------------------------------------------------
-
 function blockedGoalAdapterSource(): string {
   return String.raw`
 "use strict";
@@ -718,10 +682,6 @@ syncBuiltinESMExports();
 `;
 }
 
-// ---------------------------------------------------------------------------
-// Fixture construction and shared helpers.
-// ---------------------------------------------------------------------------
-
 function goalFileBaseline(target: string): RecordValue {
   const content = readFileSync(target);
   return {
@@ -732,7 +692,6 @@ function goalFileBaseline(target: string): RecordValue {
   };
 }
 
-/** Builds a parse-valid blocked goal state; `overrides` replaces whole fields and `omit` drops them. */
 function blockedState(
   template: RecordValue,
   overrides: RecordValue = {},
@@ -844,11 +803,6 @@ type RpcFixtureOptions = {
   plan?: FixturePlan;
 };
 
-/**
- * Creates one isolated RPC blocked-goal fixture: owned project/sessions/agent
- * directories, a loopback provider, an optionally seeded saved session, an
- * armed child adapter, and the probe extension.
- */
 async function createBlockedGoalRpcFixture(
   parentDirectory: string,
   label: string,
@@ -863,7 +817,6 @@ async function createBlockedGoalRpcFixture(
     mkdirSync(directory);
     ownsDirectory = true;
     const agent = path.join(directory, "agent");
-    // Saved sessions retain cwd across fresh-process recovery after fixture cleanup.
     const project = path.join(parentDirectory, `${label}-project`);
     const sessions = path.join(directory, "sessions");
     const temporary = path.join(directory, "tmp");
@@ -1166,7 +1119,6 @@ function toolResultError(
   return error;
 }
 
-/** Reads goal entries directly from the session file on disk; the durable truth after a failed in-memory append. */
 function savedGoalEntriesFromSessionFile(
   sessionFile: string,
   label: string,
@@ -1328,7 +1280,6 @@ async function promptOrdinaryRun(
   );
 }
 
-/** Confirms the child is idle, /goal is registered, and a seeded goal (if any) restored without provider traffic. */
 async function initializeBlockedGoalFixture(
   fixture: BlockedGoalFixture,
   label: string,
@@ -1361,7 +1312,6 @@ async function initializeBlockedGoalFixture(
   acknowledgeGoalBatch(fixture, `${label}: startup`);
 }
 
-/** Drives one blocked goal through three real blocker turns at the RPC boundary. */
 async function blockGoalThroughRealTurns(
   fixture: BlockedGoalFixture,
   label: string,
@@ -1432,7 +1382,6 @@ async function blockGoalThroughRealTurns(
 
 const blockGoalStateByFixture = new Map<string, RecordValue>();
 
-/** Returns the blocked state that `blockGoalThroughRealTurns` persisted for the fixture. */
 function blockGoalState(fixture: BlockedGoalFixture): RecordValue {
   const state = blockGoalStateByFixture.get(fixture.directory);
   assert.ok(
@@ -1442,7 +1391,6 @@ function blockGoalState(fixture: BlockedGoalFixture): RecordValue {
   return state;
 }
 
-/** Closes the RPC fixture, records cleanup proof, and removes the owned directory. */
 async function closeRpcFixture(
   fixture: BlockedGoalFixture,
   label: string,
@@ -1564,7 +1512,6 @@ function writeReleaseFile(releasePath: string, label: string): void {
   }
 }
 
-/** Writes a seed plan the probe's /fixture-seed command consumes through the real replacement context. */
 function writeSeedPlan(
   directory: string,
   label: string,
@@ -1582,7 +1529,6 @@ function writeSeedPlan(
   return seedPath;
 }
 
-/** Seeds a fresh in-process session (new_session + setup) through the probe's real replacement context. */
 async function seedFreshSession(
   fixture: BlockedGoalFixture,
   label: string,
@@ -1629,10 +1575,6 @@ async function seedFreshSession(
   return fixture.currentSessionFile;
 }
 
-// ---------------------------------------------------------------------------
-// Evidence journal: one run-owned directory, never shared across test invocations.
-// ---------------------------------------------------------------------------
-
 const evidenceDirectory = mkdtempSync(
   path.join(os.tmpdir(), "killeros-blocked-goal-evidence-"),
 );
@@ -1676,7 +1618,6 @@ async function removeArtifactDirectory(directory: string): Promise<void> {
   await removeDirectoryNow(directory);
 }
 
-/** Best-effort per-catalog launch journal; failures are collected and asserted at scenario end. */
 function writeRunsJournal(
   catalog: string,
   launches: LaunchObservation[],
@@ -1708,10 +1649,6 @@ function writeRunsJournal(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Scenario 1: goals.blocked-completion.
-// ---------------------------------------------------------------------------
-
 const invalidStatuses = [
   "continue",
   "blocked",
@@ -1723,7 +1660,6 @@ const invalidStatuses = [
 ] as const;
 const invalidEvidenceValues = ["", "  ", oversizedEvidence] as const;
 
-// Catalog ID: goals.blocked-completion.
 test(
   `${completionCatalogId}: a later ordinary request can complete the same blocked goal once`,
   { timeout: 130_000 },
@@ -1848,7 +1784,6 @@ test(
   },
 );
 
-/** Launch 1: TUI live block, early rejection, one eligible request with invalids, and a verified file completion. */
 async function runTuiBlockedCompletion(
   signal: AbortSignal,
   artifactDirectory: string,
@@ -1872,8 +1807,6 @@ async function runTuiBlockedCompletion(
   let observerPath = "";
   let failure: unknown;
   try {
-    // Keep receipt scans and filesystem watchers inside this fixture, even when
-    // other test processes are changing the enclosing checkout.
     const gitOptions = {
       cwd: project,
       env: buildFixtureEnvironment(directory, agent, temporary),
@@ -2001,8 +1934,6 @@ async function runTuiBlockedCompletion(
       changedContent,
       "the verified deliverable exists at the original path",
     );
-    // Numeric evidence 42 is deferred to the RPC leg: typebox converts it to "42" and the
-    // real Pi then completes the goal, so this batch only carries truly rejected evidence.
     provider.queueCalls([
       ...invalidStatuses.map((status) => ({
         name: "killeros_goal_update" as const,
@@ -2051,7 +1982,6 @@ async function runTuiBlockedCompletion(
         screen.includes("Goal completed") && !screen.includes("/goal blocked"),
       { signal, timeoutMs: 120_000 },
     );
-    // Goal completion renders during tool execution, before the final provider response settles.
     const completionSettlement = await waitForProbeEvent(
       { directory, observerPath },
       (event) =>
@@ -2184,7 +2114,6 @@ async function runTuiBlockedCompletion(
       "TUI early rejection",
     );
     assert.ok(earlyRejection.text.length > 0);
-    // "continue" and "blocked" are valid enum values and must be rejected by the tool execute path.
     const executeStatusRejections = results.filter(
       (result) =>
         result.isError &&
@@ -2205,7 +2134,6 @@ async function runTuiBlockedCompletion(
       /no active/iu,
       "completion must reject a duplicate decision without appending another event",
     );
-    // The other five statuses, empty evidence, and oversized evidence fail host validation.
     const hostRejections = results.filter(
       (result) =>
         result.isError &&
@@ -2299,7 +2227,6 @@ async function runTuiBlockedCompletion(
       : new Error(errorText(failure), { cause: failure });
 }
 
-/** Launch 2: RPC eligibility lifecycle - provider error, settlement cut-off, unrelated request, and model-reported completion. */
 async function runEligibilityLifecycle(
   signal: AbortSignal,
   artifactDirectory: string,
@@ -2313,7 +2240,6 @@ async function runEligibilityLifecycle(
   );
   try {
     await initializeBlockedGoalFixture(fixture, label, 0);
-    // One live RPC sequence creates the blocked state through three real blocker turns.
     await blockGoalThroughRealTurns(fixture, label, signal);
     const initialEntries = await goalEntriesOf(fixture);
     const blockedHistory = savedGoalEntries(initialEntries);
@@ -2329,7 +2255,6 @@ async function runEligibilityLifecycle(
       "the blocked goal must have exactly three authorized continuation messages",
     );
 
-    // Vector: eligibility survives provider failure but ends at agent_settled.
     fixture.provider.queueError();
     await promptOrdinaryRun(
       fixture,
@@ -2381,7 +2306,6 @@ async function runEligibilityLifecycle(
     );
     acknowledgeGoalBatch(fixture, `${label}: failed eligible window`);
 
-    // Vector: ordinary work has no mandatory decision.
     const unrelatedCursor = fixture.acknowledgedSequence;
     fixture.provider.queuePlainStop();
     await promptOrdinaryRun(
@@ -2412,7 +2336,6 @@ async function runEligibilityLifecycle(
     );
     acknowledgeGoalBatch(fixture, `${label}: unrelated window`);
 
-    // Vector: invalid statuses and invalid evidence share one eligible window, then the normalized completion succeeds.
     const invalidCursor = fixture.acknowledgedSequence;
     fixture.provider.queueCalls([
       ...invalidStatuses.map((status) => ({
@@ -2642,7 +2565,6 @@ async function runEligibilityLifecycle(
   }
 }
 
-/** Launch 3: file proof history - exact-path and content failures plus the retry after each failure. */
 async function runFileProofHistory(
   t: TestContext,
   artifactDirectory: string,
@@ -2839,7 +2761,6 @@ async function runFileProofHistory(
       acknowledgeGoalBatch(fixture, caseLabel);
     }
 
-    // Each follow-up request acknowledges the previous tool result before changing its real file input.
     await seedFreshSession(fixture, `${label}-same-request-retry`, proofSeed);
     const retryCases = fileCases.filter(
       (fileCase) => fileCase.name !== "null-content",
@@ -2959,7 +2880,6 @@ async function runFileProofHistory(
   }
 }
 
-/** Launches 4 and 5: legacy positive-turn history and zero-turn closure, each through a fresh seeded process. */
 async function runLegacyTurnHistories(
   signal: AbortSignal,
   artifactDirectory: string,
@@ -3077,7 +2997,6 @@ async function runLegacyTurnHistories(
     );
     acknowledgeGoalBatch(positiveFixture, `${positiveLabel}: completed`);
 
-    // Restart equivalence: a fresh in-process session seeded with the completed state must open with the tool inactive.
     await seedFreshSession(
       positiveFixture,
       `${positiveLabel}-reopen`,
@@ -3221,10 +3140,6 @@ async function runLegacyTurnHistories(
   return observations;
 }
 
-// ---------------------------------------------------------------------------
-// Scenario 2: goals.blocked-races.
-// ---------------------------------------------------------------------------
-
 type RaceContext = {
   fixture: BlockedGoalFixture;
   label: string;
@@ -3242,11 +3157,6 @@ function raceBlockedState(target: string, revision = 1): RecordValue {
   });
 }
 
-/**
- * Parks one verified completion at the real child-side open barrier. With
- * `settleAfterRelease` the trailing settling response is planned (normal races);
- * abort-family vectors omit it because the run never reaches the model again.
- */
 async function parkParkedCompletion(
   fixture: BlockedGoalFixture,
   target: string,
@@ -3279,7 +3189,6 @@ async function parkParkedCompletion(
   );
 }
 
-/** Sends a mid-run prompt without awaiting its response (the response arrives only after the handler completes). */
 async function sendMidRunPrompt(
   fixture: BlockedGoalFixture,
   text: string,
@@ -3302,7 +3211,6 @@ async function sendMidRunPrompt(
   );
 }
 
-/** Polls the probe observer for the first matching event; same acknowledgement-file sync style as waitForPlanJson. */
 async function waitForProbeEvent(
   fixture: Pick<BlockedGoalFixture, "directory" | "observerPath">,
   predicate: (event: RecordValue) => boolean,
@@ -3405,7 +3313,6 @@ function assertCompletedGoal(
   return completed;
 }
 
-// Catalog ID: goals.blocked-races.
 test(
   `${racesCatalogId}: blocked completion stays single-owner across mutations and retries`,
   { timeout: 175_000 },
@@ -3588,7 +3495,6 @@ test(
         },
       );
 
-      // Vector 8: refused navigation followed by an abort rejects the pending completion.
       await runMutationRaceVector(
         t.signal,
         artifactDirectory,
@@ -3625,8 +3531,6 @@ test(
             0,
             "no session_tree notification may commit before the cancellation",
           );
-          // Real Pi accepts the RPC abort even after the refused navigation; the parked tool
-          // is observed through the probe's signal acknowledgement before the barrier releases.
           const abortOutcome = outcome(
             goalRpcCommand(ctx.fixture, "abort", {}, 60_000),
           );
@@ -3677,8 +3581,6 @@ test(
         },
       );
 
-      // Vector: shutdown during the parked verification; the durable session stays blocked and
-      // the child exits naturally. shutdownTargets feeds the later reopen control launch.
       const shutdownTargets = await runParkedShutdownFixture(
         t.signal,
         artifactDirectory,
@@ -3686,7 +3588,6 @@ test(
         divergences,
       );
 
-      // Vector 10: run the independent shutdown reopen control before the corrupt-session recovery.
       await runRecoveryFixture(
         t.signal,
         artifactDirectory,
@@ -3811,7 +3712,6 @@ test(
       artifactDirectory = createArtifactDirectory(
         "killeros-blocked-goal-mutations-",
       );
-      // Clear, resume, and reload each own a process, session, and deliverable file.
       await runMutationRaceVector(
         t.signal,
         artifactDirectory,
@@ -3870,8 +3770,6 @@ test(
             "handled",
             `${ctx.label}: the resume prompt must be handled while parked`,
           );
-          // Resume authorizes a fresh turn after the parked ordinary request settles.
-          // A decisionless response must pause that turn rather than continue indefinitely.
           ctx.fixture.provider.queuePlainStop();
           writeReleaseFile(
             verifyBarrierPaths(ctx.fixture).release,
@@ -4315,7 +4213,6 @@ test(
         "seeded",
       );
 
-      // Pi keeps a failed append out of the session, so a fresh reopen restores the blocked goal intact.
       await runRecoveryFixture(
         t.signal,
         artifactDirectory,
@@ -4426,7 +4323,6 @@ test(
   },
 );
 
-/** Per-catalog mutation-race profile: how the parked run ends and how many provider requests prove it. */
 const raceMutationProfiles: Record<
   string,
   { expectedRequests: number; settleAfterRelease: boolean }
@@ -4439,7 +4335,6 @@ const raceMutationProfiles: Record<
   session_tree: { expectedRequests: 2, settleAfterRelease: true },
 };
 
-/** Creates one verification-barrier mutation race with one fixture and closes it even on failure. */
 async function runMutationRaceVector(
   signal: AbortSignal,
   artifactDirectory: string,
@@ -4528,7 +4423,6 @@ async function runMutationRaceVector(
   }
 }
 
-/** Creates a non-parked races fixture for the competing-attempts vector. */
 async function runAllAtOnceFixture(
   signal: AbortSignal,
   artifactDirectory: string,
@@ -4573,12 +4467,6 @@ async function runAllAtOnceFixture(
   }
 }
 
-/**
- * Shuts the child down through the real stdin end while the completion verification is
- * parked at the open barrier: the runtime disposes (session_shutdown reason "quit")
- * without settling the parked run, the release then lets the abandoned tool unwind, and
- * the child still exits naturally. Copies the durable session out for the reopen control.
- */
 async function runParkedShutdownFixture(
   signal: AbortSignal,
   artifactDirectory: string,
@@ -4680,7 +4568,6 @@ async function runParkedShutdownFixture(
       undefined,
       `${label}: parked shutdown cleanup must be confirmed`,
     );
-    // The abandoned completion never appends; the durable session stays blocked for the reopen control.
     const durable = savedGoalEntriesFromSessionFile(
       featureFixture.currentSessionFile,
       `${label}: durable after shutdown`,
@@ -4730,7 +4617,6 @@ async function runParkedShutdownFixture(
   }
 }
 
-/** A session file plus its owning launch label, enough for a fresh reopen process. */
 type RecoveryTargets = { sessionFile: string; label: string };
 
 async function runAppendFaultFixture(
@@ -4803,7 +4689,6 @@ async function runAppendFaultFixture(
       `${label}: initial continuation messages`,
     );
     const resultsBeforeFault = goalToolResults(originalEntries).length;
-    // The first completion hits the one-shot filesystem fault.
     fixture.provider.queueCalls([
       {
         name: "killeros_goal_update",
@@ -4863,7 +4748,6 @@ async function runAppendFaultFixture(
       true,
       `${label}: the fixture must report that the planned append fault fired`,
     );
-    // Preserve the failed history before retrying so reopen still checks the unresolved native corruption.
     const reopenSessionFile = path.join(
       artifactDirectory,
       `${label}-reopen-session.jsonl`,
@@ -4989,7 +4873,6 @@ async function runRecoveryFixture(
   }
 }
 
-/** Reopens one durable saved session file in a fresh process with the same fixture environment. */
 async function createReopenedFixture(
   parentDirectory: string,
   label: string,
@@ -5004,7 +4887,6 @@ async function createReopenedFixture(
     mkdirSync(directory);
     ownsDirectory = true;
     const agent = path.join(directory, "agent");
-    // Keep process-local resources separate while the saved session's original cwd remains available.
     const project = path.join(directory, "project");
     const temporary = path.join(directory, "tmp");
     mkdirSync(agent);

@@ -686,7 +686,6 @@ async function runHistory(
   };
 }
 
-// Catalog ID: runtime.print-json-trust.
 test(
   "installed Pi print and JSON preserve trust and reject interactive workflows",
   { timeout: 60_000 },

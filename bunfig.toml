@@ -9,16 +9,19 @@ ignorePatterns = [
 
 [lint]
 flavor = "oxlint"
-plugins = ["typescript"]
+plugins = ["typescript", "./scripts/no-comments.ts"]
 ignorePatterns = [".pi/**", "docs/**"]
+inlineConfig = false
 
 [lint.categories]
 correctness = "off"
 
 [lint.rules]
+"killeros/no-comments" = "error"
 "typescript/await-thenable" = "error"
 "typescript/ban-ts-comment" = "error"
 no-array-constructor = "error"
+no-async-promise-executor = "error"
 "typescript/no-array-delete" = "error"
 "typescript/no-base-to-string" = "error"
 "typescript/no-duplicate-enum-values" = "error"
@@ -63,6 +66,10 @@ no-unused-vars = [
 "typescript/require-await" = "off"
 "typescript/restrict-plus-operands" = "error"
 "typescript/restrict-template-expressions" = "error"
+"typescript/switch-exhaustiveness-check" = [
+  "error",
+  { considerDefaultExhaustiveForUnions = false, allowDefaultCaseForExhaustiveSwitch = true, requireDefaultForNonUnion = true },
+]
 "typescript/triple-slash-reference" = "error"
 "typescript/unbound-method" = "error"
 prefer-const = ["error", { ignoreReadBeforeAssign = true }]
@@ -83,6 +90,17 @@ no-restricted-properties = [
 ]
 
 [[lint.overrides]]
+files = ["Killeros.ts", "killeros/**/*.ts", "scripts/**/*.ts"]
+[lint.overrides.rules]
+"typescript/no-non-null-assertion" = "error"
+"typescript/no-unsafe-type-assertion" = "error"
+
+[[lint.overrides]]
 files = ["test/**/*.ts"]
 [lint.overrides.rules]
-"typescript/no-floating-promises" = "off"
+"typescript/no-floating-promises" = [
+  "error",
+  { allowForKnownSafeCalls = [
+    { from = "package", name = ["test", "describe", "it", "before", "after", "beforeEach", "afterEach"], package = "node:test" },
+  ] },
+]

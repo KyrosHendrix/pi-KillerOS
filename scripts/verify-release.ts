@@ -50,7 +50,6 @@ try {
     throw new Error(`CHANGELOG.md has no section for version ${version}`);
   }
   const readme = readFileSync("README.md", "utf8");
-  // Check all version pins, including examples wrapped onto another line.
   const pinnedVersions = [
     ...readme.matchAll(
       /@v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/gu,

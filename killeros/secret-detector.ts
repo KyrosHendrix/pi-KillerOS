@@ -19,11 +19,9 @@ export type SecretCategory =
   | "a recognized credential"
   | "a key: value line that names a password, token, secret, or API key";
 
-/** Names the kind of high-confidence credential material in the text, without returning the matched value. */
 export function likelySecretCategory(text: string): SecretCategory | undefined {
   if (TOKEN_PATTERNS.some((pattern) => pattern.test(text)))
     return "a recognized credential";
-  // Inspect Markdown wrappers without changing the document that callers validate or save.
   const assignments = text
     .replace(/^[\t ]*(?:>[\t ]*)+/gmu, "")
     .replace(
@@ -36,7 +34,6 @@ export function likelySecretCategory(text: string): SecretCategory | undefined {
     : undefined;
 }
 
-/** Detects high-confidence credential material without returning the matched value. */
 export function containsLikelySecret(text: string): boolean {
   return likelySecretCategory(text) !== undefined;
 }

@@ -80,7 +80,6 @@ function stringField(value: RecordValue, key: string, label: string): string {
   return field;
 }
 
-/** Loopback provider: exact scripted tool-call/text responses, request capture, no live service. */
 class QuestionProvider {
   readonly requests: RecordValue[] = [];
   readonly faults: string[] = [];
@@ -343,7 +342,6 @@ function terminalArgs(sessionFile: string, tools: string): string[] {
   ];
 }
 
-/** Staged editor submission: write the text, observe it on the editor line, then send explicit CSI-u Enter. */
 async function submitEditorText(
   terminal: PiTerminalProcess,
   text: string,
@@ -358,15 +356,12 @@ type ChoiceView = {
   dialogTitle: string;
 };
 
-/** Reads the focused native selector: dialog title lines, ordered offered entries, and the cursor row. */
 function readChoices(screen: string): ChoiceView {
   const lines = screen.split("\n");
   const entries: Array<{ position: number; text: string }> = [];
   let selected: number | undefined;
   let firstEntryLine = -1;
   for (let index = 0; index < lines.length; index++) {
-    // Selector rows render as "→ N. label" for the cursor row and "  N. label" otherwise,
-    // optionally indented by the dialog container; other transcript rows never match the body shapes.
     const rawLine = lines[index] ?? "";
     const arrowMatch = /^ ?→ (.*)$/u.exec(rawLine);
     const plainMatch = /^ +(.*)$/u.exec(rawLine);
@@ -396,18 +391,15 @@ function readChoices(screen: string): ChoiceView {
   return { entries, selected, dialogTitle: titleLines.join("\n") };
 }
 
-/** An entry offered only by the main question selector, never by its sub-dialogs. */
 const mainSelectorEntry = /^\d+\. (Custom answer|Edit custom answer)$/u;
 const moreActionsTitle = /^More actions$/u;
 
-/** Confirms an offered entry and waits for its dialog state to change, not merely for another spinner frame. */
 async function chooseOffered(
   terminal: PiTerminalProcess,
   target: RegExp,
   label: string,
   options: { signal: AbortSignal },
 ): Promise<string> {
-  // Capture the cursor at entry so stale pre-action frames can never satisfy the wait.
   const entryCursor = terminal.sequence;
   const screen = await terminal.waitForScreen(
     (candidate) => {
@@ -471,7 +463,6 @@ async function chooseOffered(
   return wanted.text;
 }
 
-/** Waits for a native text-input dialog with the given title (selector rows replaced by an input row). */
 async function waitForInputDialog(
   terminal: PiTerminalProcess,
   title: string,
@@ -486,10 +477,6 @@ async function waitForInputDialog(
   );
 }
 
-/**
- * Waits for a focused selector whose screen mentions title. Spinner animation emits fresh frames of the
- * previous dialog, so callers pass entry/dialogTitle discriminators whenever the title is ambiguous.
- */
 async function waitForSelector(
   terminal: PiTerminalProcess,
   title: string | RegExp,
@@ -524,14 +511,12 @@ async function waitForSelector(
   );
 }
 
-/** Pastes a literal value into the focused input dialog, waits for the echo, and submits it. */
 async function submitInputDialog(
   terminal: PiTerminalProcess,
   value: string,
   options: { signal: AbortSignal; controlDirectory?: string },
 ): Promise<{ echo: string; after: number }> {
   const pasted = terminal.sequence;
-  // A unique removable suffix proves the complete paste arrived, even for spaces or repeated Unicode.
   const acknowledgement = `__input_${pasted}__`;
   terminal.write(`\x1b[200~${value}${acknowledgement}\x1b[201~`);
   const control = value.length > 1000 ? options.controlDirectory : undefined;
@@ -562,7 +547,6 @@ type QuestionResult = {
   isError: boolean | undefined;
 };
 
-/** Reads persisted question tool results; tolerates the brief ENOENT window during atomic session rewrites. */
 function readQuestionResults(sessionFile: string): QuestionResult[] {
   const results: QuestionResult[] = [];
   const parse = (content: string): void => {
@@ -610,10 +594,6 @@ function readQuestionResults(sessionFile: string): QuestionResult[] {
   }
 }
 
-/**
- * Waits for the fixture to see the complete paste. Under load, ConPTY can take longer than a fixed
- * deadline to deliver a large paste, so this fails only when Pi's stdin stops receiving chunks.
- */
 async function waitForPasteAck(
   control: string,
   acknowledgement: string,
@@ -648,7 +628,6 @@ async function waitForPasteAck(
   }
 }
 
-/** Waits without blocking the test event loop, so terminal output and abort signals keep processing. */
 async function waitForControlFile(
   file: string,
   accept: (content: string) => boolean,
@@ -683,7 +662,6 @@ async function renderQuestionFrame(
   await terminal.waitForScreen(() => true, { signal, after });
 }
 
-/** Bounded durability wait until the session file persists the expected number of question results. */
 function waitForResultCount(
   sessionFile: string,
   expected: number,
@@ -702,7 +680,6 @@ function waitForResultCount(
   }
 }
 
-/** The vector-labelled question result for one turn, asserted against the durable session. */
 function singleResult(
   sessionFile: string,
   index: number,
@@ -746,7 +723,6 @@ function rowCountsWith(screen: string, pattern: RegExp): number {
   return screen.split("\n").filter((line) => pattern.test(line.trim())).length;
 }
 
-/** Requires the actual collapsed call before checking its single-selection presentation. */
 function assertSingleCall(screen: string, question: string): void {
   const rows = screen.split("\n");
   const index = rows.findIndex((row) => row.includes(`question ${question}`));
@@ -758,7 +734,6 @@ function assertSingleCall(screen: string, question: string): void {
   );
 }
 
-// Catalog ID: Q-01.
 test(
   "Question schema, bounds, model-only exposure, and non-TUI rejection",
   { timeout: 300_000 },
@@ -776,7 +751,6 @@ test(
     let sessionFile = "";
 
     try {
-      // Family A: one TUI process carrying the provider-visible schema, the bound matrix, and two-call serialization.
       await provider.listen();
       sessionFile = writeProviderConfig(family.agent, provider, true);
       provider.plan(
@@ -934,7 +908,6 @@ test(
         { signal: t.signal },
       );
 
-      // Vector schema:mode-enum: exact provider-visible mode property; ranked is not offered.
       await submitEditorText(terminal, "q1 turn one", { signal: t.signal });
       screens.t1Dialog = await waitForSelector(
         terminal,
@@ -1010,7 +983,6 @@ test(
         "bounds:single-omitted: omitted bounds with one option open the dialog without a mode field",
       );
 
-      // Vector bounds:single-1-1: explicit 1/1 single bounds are accepted.
       await submitEditorText(terminal, "q1 turn two", { signal: t.signal });
       await waitForSelector(terminal, "Schema explicit single bounds", {
         signal: t.signal,
@@ -1034,7 +1006,6 @@ test(
         "bounds:single-1-1: explicit 1/1 bounds behave like omitted bounds",
       );
 
-      // Vectors bounds:single-min-only and bounds:single-1-2: two invalid calls in one message reject without dialogs.
       await submitEditorText(terminal, "q1 turn three", { signal: t.signal });
       screens.t3Done = await terminal.waitForScreen(
         (screen) => screen.includes("Q1T3 DONE"),
@@ -1066,7 +1037,6 @@ test(
         "bounds:single-1-2: the second invalid call in the same message is also rejected",
       );
 
-      // Vectors bounds:single-max-only and bounds:single-2-2.
       await submitEditorText(terminal, "q1 turn four", { signal: t.signal });
       const t4Done = await terminal.waitForScreen(
         (screen) => screen.includes("Q1T4 DONE"),
@@ -1128,7 +1098,6 @@ test(
         "bounds:single-2-2: explicit 2/2 single bounds are rejected before rendering",
       );
 
-      // Vectors bounds:multi-2-1 and bounds:multi-max-3-one-option.
       await submitEditorText(terminal, "q1 turn five", { signal: t.signal });
       const t5Done = await terminal.waitForScreen(
         (screen) => screen.includes("Q1T5 DONE"),
@@ -1190,7 +1159,6 @@ test(
         "Invalid multiple bounds leave no interactive selector after settlement",
       );
 
-      // Vector schema:ranked-rejected: the schema boundary rejects the undocumented mode.
       await submitEditorText(terminal, "q1 turn six", { signal: t.signal });
       await terminal.waitForScreen((screen) => screen.includes("Q1T6 DONE"), {
         signal: t.signal,
@@ -1201,7 +1169,6 @@ test(
         "schema:ranked-rejected: a ranked mode call fails at the schema boundary",
       );
 
-      // Vector bounds:multi-max-10-nine-options: nine options make a maximum of ten valid; Escape cancels the open dialog.
       await submitEditorText(terminal, "q1 turn seven", { signal: t.signal });
       screens.t7Dialog = await waitForSelector(
         terminal,
@@ -1231,7 +1198,6 @@ test(
         "bounds:multi-max-10-nine-options: cancelling a valid wide dialog discards pending answers",
       );
 
-      // Vector bounds:multi-1-2: a complete multi-select answer under the accepted bound.
       await submitEditorText(terminal, "q1 turn eight", { signal: t.signal });
       await waitForSelector(terminal, "Multiple one of two", {
         signal: t.signal,
@@ -1260,7 +1226,6 @@ test(
         "bounds:multi-1-2: one predefined option plus a custom slot accepts the source 1/2 bounds",
       );
 
-      // Vector sequential:two-calls: one dialog at a time, order preserved end to end.
       await submitEditorText(terminal, "q1 turn nine", { signal: t.signal });
       screens.t9First = await waitForSelector(terminal, "Sequential first", {
         signal: t.signal,
@@ -1329,7 +1294,6 @@ test(
         ["First pick", "Second pick"],
         "sequential:two-calls: the durable session preserves the execution order",
       );
-      // The accepted-bound source matrix also distinguishes an explicit mode from explicit bounds.
       for (const [offset, question] of [
         "Single mode without bounds",
         "Default mode with single bounds",
@@ -1377,8 +1341,6 @@ test(
         questionResults: 15,
       });
 
-      // Family B: one RPC process with codemode — the question tool stays model-visible but script-unreachable,
-      // and a model-issued call is rejected with the interactive-mode requirement and no custom UI.
       const rpcProvider = new QuestionProvider();
       providers.push(rpcProvider);
       await rpcProvider.listen();
@@ -1574,7 +1536,6 @@ test(
         uiDialogRequests: uiDialogCount,
       });
 
-      // Families C and D: print and JSON one-shots reject the interactive question and exit naturally.
       const runOneShot = async (
         mode: "print" | "json",
       ): Promise<{ stdout: string; provider: QuestionProvider }> => {
@@ -2840,7 +2801,6 @@ test(
   },
 );
 
-/** Author exact legacy payloads through public storage, never through live input adapters. */
 function makeHistoricalSource(
   family: Family,
   label: string,
@@ -3165,7 +3125,6 @@ async function runHistoricalQuestionRendering(t: TestContext) {
       "The committed switch selects the second history only",
     );
 
-    // The imported four-answer result deliberately preserves source 211's two-option 1/2 call.
     const multiple = sources[2];
     assert.ok(multiple);
     await submitEditorText(terminal, "/fixture-render-source 2", {
@@ -3312,7 +3271,6 @@ async function runHistoricalQuestionRendering(t: TestContext) {
   return { piLaunches: 1, providerRequests: 0, observations };
 }
 
-// Catalog ID: Q-03.
 test(
   "Question transcript renderers strip controls, bound collapsed rows, and expand completely",
   { timeout: 300_000 },
@@ -3471,7 +3429,6 @@ test(
           assert.ok(terminal);
           await renderQuestionFrame(terminal, control, t.signal, key);
         };
-        // A resize preserves transcript position. Start at the bottom before searching upward.
         await navigate(jumpLatest);
         await terminal.waitForScreen(
           (screen) =>
@@ -3490,9 +3447,7 @@ test(
               after: before,
               timeoutMs: 4_000,
             });
-          } catch {
-            // A page-up at the transcript top may not produce a new frame; keep the bounded search going.
-          }
+          } catch {}
         }
         t.diagnostic(JSON.stringify({ label, observedPages }));
         throw new Error(
@@ -3500,7 +3455,6 @@ test(
         );
       };
 
-      // Vector controls:stripped: unsafe question text is sanitized in dialog and transcript, with no parsed bells or titles.
       await submitEditorText(terminal, "q3 turn one", { signal: t.signal });
       screens.t1Dialog = await waitForSelector(terminal, "spoof", {
         signal: t.signal,
@@ -3529,7 +3483,6 @@ test(
         titlesBefore,
         "controls:stripped: an OSC payload never changes the parsed title",
       );
-      // Expanded: the sanitized line break survives as its own transcript row and the option detail renders sanitized.
       const t1ExpandCursor = terminal.sequence;
       terminal.write(expandToggle);
       await terminal.waitForScreen(
@@ -3594,7 +3547,6 @@ test(
         { signal: t.signal, after: t1CollapseCursor },
       );
 
-      // Vector controls:answer-stripped: typed control characters are stripped from the published custom answer.
       await submitEditorText(terminal, "q3 turn two", { signal: t.signal });
       await waitForSelector(terminal, "Controls in the answer", {
         signal: t.signal,
@@ -3621,7 +3573,6 @@ test(
         "controls:answer-stripped: controls never reach the published answer",
       );
 
-      // Vectors multi:range and multi:overflow: the range row, the exact overflow count, and every expanded answer.
       await submitEditorText(terminal, "q3 turn three", { signal: t.signal });
       screens.t3Call = await waitForSelector(
         terminal,
@@ -3683,7 +3634,6 @@ test(
         { signal: t.signal, after: t3CollapseCursor },
       );
 
-      // The original renderer contract bounds collapsed calls and custom answers to three rows, not one.
       await submitEditorText(terminal, "q3 turn four", { signal: t.signal });
       screens.t4Dialog = await waitForSelector(terminal, "QQQQ", {
         signal: t.signal,
@@ -3757,7 +3707,6 @@ test(
         "collapsed:big-question: previews stay hidden collapsed",
       );
 
-      // Vector expanded:nine-options: option 9, description 9, and preview 9 render only when expanded.
       const t4ExpandResizeCursor = terminal.sequence;
       terminal.resize(80, 30);
       terminal.write(expandToggle);
@@ -3843,7 +3792,6 @@ test(
         { signal: t.signal, after: t4CollapseCursor },
       );
 
-      // Vector collapsed:long-answer and expanded:long-answer: a 4,000-character custom answer.
       await submitEditorText(terminal, "q3 turn five", { signal: t.signal });
       await waitForSelector(terminal, "Long custom rendering", {
         signal: t.signal,
@@ -4054,7 +4002,6 @@ test(
   },
 );
 
-/** Fixture extension source: public marker input, armed behaviors, and session observation for Q-05. */
 function questionControlExtensionSource(
   controlDirectory: string,
   observeFrames = false,
@@ -4174,7 +4121,6 @@ export default function (pi: ExtensionAPI) {
 `;
 }
 
-// Catalog ID: Q-05.
 test(
   "Question cancellation and invalidation never publish a late answer",
   { timeout: 420_000 },
@@ -4183,7 +4129,6 @@ test(
     const observations: RecordValue[] = [];
     let piLaunches = 0;
 
-    // Family A: Esc cancellation, public aborts at both dialog steps, the late-answer race, and the kill barrier.
     {
       const family = createFamily(repositoryRoot, "cancel");
       const control = path.join(family.directory, "control");
@@ -4249,7 +4194,6 @@ test(
           "startup session file",
         );
 
-        // Vector cancel:esc-selector: Escape discards the pending multi-select answer.
         await submitEditorText(terminal, "q5 a1", { signal: t.signal });
         await waitForSelector(terminal, "Esc selector question", {
           signal: t.signal,
@@ -4275,7 +4219,6 @@ test(
           "cancel:esc-selector: Escape at the selector discards pending answers",
         );
 
-        // Vector cancel:esc-input: Escape at the custom input returns to the selector without an answer.
         await submitEditorText(terminal, "q5 a2", { signal: t.signal });
         await waitForSelector(terminal, "Esc input question", {
           signal: t.signal,
@@ -4304,7 +4247,6 @@ test(
           "cancel:esc-input: a cancelled custom input publishes no custom answer",
         );
 
-        // Vector abort:selector: a public abort while the selector is visibly open rejects without an answer.
         let requestsBefore = provider.requests.length;
         await submitEditorText(terminal, "q5 a3", { signal: t.signal });
         screens.abortSelectorOpen = await waitForSelector(
@@ -4342,7 +4284,6 @@ test(
           "abort:selector: the abort result is an error",
         );
 
-        // Vector abort:input: the same public abort with the custom input dialog visibly open.
         requestsBefore = provider.requests.length;
         await submitEditorText(terminal, "q5 a4", { signal: t.signal });
         await waitForSelector(terminal, "Abort input question", {
@@ -4377,9 +4318,6 @@ test(
           "abort:input: the input-step abort rejects with the abort message",
         );
 
-        // The source's abort-between-steps callback window still needs a public-boundary equivalence review.
-
-        // Vector race:late-answer: the abort fires as the confirm key arrives; the answer must not publish.
         requestsBefore = provider.requests.length;
         for (const [index, mode, title] of [
           [0, "race", "Race question"],
@@ -4432,7 +4370,6 @@ test(
           );
         }
 
-        // Vector shutdown:hard-kill: an open dialog publishes nothing when the process dies.
         await submitEditorText(terminal, "q5 a6", { signal: t.signal });
         screens.killOpen = await waitForSelector(terminal, "Kill question", {
           signal: t.signal,
@@ -4512,7 +4449,6 @@ test(
       }
       await removeDirectoryEventually(family.directory);
 
-      // Family A2: a fresh process still publishes questions after the hard shutdown.
       const recoveryFamily = createFamily(repositoryRoot, "recover");
       const recoveryProvider = new QuestionProvider();
       let recoveryTerminal: PiTerminalProcess | undefined;
@@ -4615,7 +4551,6 @@ test(
       await removeDirectoryEventually(recoveryFamily.directory);
     }
 
-    // Family B: session replacement during a pending question aborts it and allows a fresh question afterward.
     {
       const family = createFamily(repositoryRoot, "newsession");
       const control = path.join(family.directory, "control");
@@ -4663,7 +4598,6 @@ test(
           "startup: the fixture observes the initial session file",
         );
 
-        // Vector invalidate:session-start: a public new-session request closes the open dialog.
         await submitEditorText(terminal, "/fixture-arm new", {
           signal: t.signal,
         });
@@ -4715,7 +4649,6 @@ test(
           "invalidate:session-start: the open question rejects with the abort message",
         );
 
-        // A fresh question works in the replacement session.
         await submitEditorText(terminal, "q5 n2", { signal: t.signal });
         await waitForSelector(terminal, "Fresh question", { signal: t.signal });
         await chooseOffered(
@@ -4793,7 +4726,6 @@ test(
       await removeDirectoryEventually(family.directory);
     }
 
-    // Family C: committed tree navigation refuses while a question is pending, then commits once idle.
     {
       const family = createFamily(repositoryRoot, "tree");
       const control = path.join(family.directory, "control");
@@ -4836,7 +4768,6 @@ test(
           { signal: t.signal },
         );
 
-        // Vector invalidate:tree-refused: navigation refuses while the question is pending and the dialog survives.
         await submitEditorText(terminal, "/fixture-arm nav-refuse", {
           signal: t.signal,
         });
@@ -4928,7 +4859,6 @@ test(
           "Kept",
         );
 
-        // Vector invalidate:tree-commit: the same navigation commits once idle, through the real session_tree path.
         await submitEditorText(terminal, "/fixture-arm nav-commit", {
           signal: t.signal,
         });
@@ -5033,7 +4963,6 @@ test(
       await removeDirectoryEventually(family.directory);
     }
 
-    // Family D: a shutdown request defers while a question is pending, then exits gracefully after settlement.
     {
       const family = createFamily(repositoryRoot, "shutdown");
       const control = path.join(family.directory, "control");
@@ -5072,7 +5001,6 @@ test(
           { signal: t.signal },
         );
 
-        // Vector shutdown:deferred: the request does not exit mid-question; the dialog stays open and answerable.
         await submitEditorText(terminal, "q5 s1", { signal: t.signal });
         screens.shutdownDialogOpen = await waitForSelector(
           terminal,

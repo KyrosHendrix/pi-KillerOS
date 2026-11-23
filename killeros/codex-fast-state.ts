@@ -11,7 +11,6 @@ declare global {
   var __killerosCodexFastState: unknown;
 }
 
-// Accepts process-global state only when it is safe to reuse across extension versions.
 function isCodexFastState(value: unknown): value is CodexFastState {
   return (
     typeof value === "object" &&

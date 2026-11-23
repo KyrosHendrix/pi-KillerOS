@@ -17,13 +17,11 @@ import { createKillerosSettingsStore } from "./settings.ts";
 import { isRecord } from "./guards.ts";
 
 export const DEFAULT_AUTO_COMPACTION_PERCENT_REMAINING = 15;
-/** Shown by slash-command autocomplete next to /auto-compact. */
 export const AUTO_COMPACT_COMMAND_SYNTAX =
   "/auto-compact [status|on|off|<percent>]";
 const AUTO_COMPACTION_MESSAGE_TYPE = "killeros-auto-compaction";
 const AUTO_COMPACTION_MESSAGE =
   "Continue the interrupted task from the compacted context.";
-/** Pi's exact rejection when a session has no eligible history to summarize; an expected skip, not a failure. */
 const SESSION_TOO_SMALL_COMPACTION_ERROR =
   "Nothing to compact (session too small)";
 
@@ -38,12 +36,10 @@ export interface AutoCompactionGoalHandlers {
   onRequested(): void;
   onCompleted(ctx: ExtensionContext): void;
   onFailed(ctx: ExtensionContext, error: unknown): void;
-  /** Recovers the goal paused for a request Pi rejected as session-too-small, without claiming success. */
   onSkipped(ctx: ExtensionContext): void;
 }
 
 interface AutoCompactionDependencies {
-  /** Receives the current preference, or undefined when killeros.json cannot be read. */
   onPreferenceChange: (
     preference: AutoCompactionPreference | undefined,
   ) => void;
@@ -95,7 +91,6 @@ function reserveTokens(
     : 0;
 }
 
-/** Matches only Pi's exact rejection text on a real Error; near-matches and stringified values stay failures. */
 function isSessionTooSmallCompactionError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -252,7 +247,6 @@ export function registerAutoCompaction(
     notifyFailure(ctx, error);
   };
 
-  /** Ends a request with Pi's expected eligibility rejection: silent, rearmed, and never a failure. */
   const finishSkip = (ctx: ExtensionContext, goal: boolean): void => {
     request = undefined;
     armed = true;
@@ -264,7 +258,6 @@ export function registerAutoCompaction(
     }
   };
 
-  /** Single entry point for rejected requests: classifies before any sanitization, stale tokens stay inert. */
   const finishRequestError = (
     ctx: ExtensionContext,
     token: symbol,
@@ -279,7 +272,6 @@ export function registerAutoCompaction(
     finishFailure(ctx, goal, error);
   };
 
-  /** Dispatches one ordinary continuation after compaction and the interrupted run have both finished. */
   const finalizeOrdinaryContinuation = (
     ctx: ExtensionContext,
     token: symbol,
@@ -309,13 +301,10 @@ export function registerAutoCompaction(
   };
 
   pi.on("agent_start", (_event, ctx) => {
-    // Terminal decisions clear active status before turn_end, but still own this run.
     goalRequestOwned = goalHandlers.isActive(ctx);
   });
 
-  // Capture later blocked completion before goal settlement discards its permission.
-  // A compaction already pending as ordinary work must also stop after that decision.
-  const observeTerminalDecision = (): void => {
+  const preserveTerminalGoalRequestOwnership = (): void => {
     if (!goalHandlers.hasAcceptedTerminalDecision()) return;
     goalRequestOwned = true;
     if (request?.phase === "compacting") {
@@ -323,10 +312,10 @@ export function registerAutoCompaction(
       if (request.compactionCompleted) request = undefined;
     }
   };
-  pi.on("agent_end", observeTerminalDecision);
+  pi.on("agent_end", preserveTerminalGoalRequestOwnership);
 
   pi.on("turn_end", (_event, ctx) => {
-    observeTerminalDecision();
+    preserveTerminalGoalRequestOwnership();
     if (!isAutomationMode(ctx) || request) return;
 
     let preference: AutoCompactionPreference;
@@ -374,7 +363,7 @@ export function registerAutoCompaction(
     try {
       ctx.compact({
         onComplete: () => {
-          observeTerminalDecision();
+          preserveTerminalGoalRequestOwnership();
           if (request?.phase !== "compacting" || request.token !== token)
             return;
           rearmOnNextLogicalRequest = preference.percentRemaining === 100;
@@ -401,8 +390,7 @@ export function registerAutoCompaction(
 
   pi.on("agent_settled", (event, ctx) => {
     goalRequestOwned = false;
-    // Pi aborts the agent when our pending compaction starts. Its callback owns
-    // recovery, including cancellation; the settlement flag alone is ambiguous.
+    // Pi aborts the agent when our pending compaction starts.
     if (wasAborted(event) && request?.phase !== "compacting") {
       request = undefined;
       return;

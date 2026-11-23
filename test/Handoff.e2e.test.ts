@@ -124,7 +124,6 @@ async function until(
   throw new Error("Timed out waiting for the CLI fixture result");
 }
 
-/** Runs the real installed CLI with isolated settings and a loopback-only scripted provider. */
 async function fixture(
   t: TestContext,
   respond: (body: RecordValue, count: number) => Reply | Promise<Reply>,
@@ -425,7 +424,6 @@ export default function(pi) {
     ${
       options.denyDestinationWrite
         ? `
-    // Adapt only destination creation at the external filesystem boundary.
     fs.openSync = function(file, flags, ...rest) {
       if (typeof file === "string" && path.dirname(file) === ${JSON.stringify(sessions)}
           && file.endsWith(".jsonl") && flags === "wx") {
@@ -825,7 +823,6 @@ test(
       1,
     );
 
-    // Each further source: switch, hand off with the focus, verify the fenced multiline objective or decision truth.
     await f.switchTo(f.seeded[1]?.file);
     await f.prompt(`/handoff ${focus}`);
     const multilineRequest = summaryRequest(f.bodies.at(-1));
@@ -1125,7 +1122,6 @@ test(
   },
 );
 
-// Source: Handoff.test.ts:167#1. The provider returns an aborted result without user cancellation.
 test(
   "handoff reports an aborted provider result as an unfinished summary",
   { timeout: 90_000 },
@@ -1711,7 +1707,6 @@ test(
   },
 );
 
-// Source: Handoff.test.ts:377#1. The queued command runs between two real goal turns.
 test(
   "handoff refuses an active goal at the idle settlement boundary",
   { timeout: 120_000 },
@@ -2273,7 +2268,6 @@ for (const group of unsafeGroups)
         const unsafe = unsafeValues[request];
         request += 1;
         assert.ok(unsafe);
-        // Structurally valid ten-section summary with the unsafe value appended to Constraints.
         return {
           text: summary(undefined, `Preserve the existing work.\n${unsafe}`),
         };
@@ -2433,7 +2427,6 @@ test(
       } else {
         const rejectCursor = f.cli.currentSequence;
         await f.prompt("/handoff");
-        // Earlier accepts may have created children; a rejection creates none beyond those.
         const accepted = plan
           .slice(0, index)
           .filter((entry) => entry.kind === "accept").length;
@@ -2508,7 +2501,6 @@ test(
       if (lifecycle === "reload") {
         await f.assertSourceOnly(source.file);
       } else {
-        // The replacement creates its own new session; the invalidated handoff must leave no child of the source.
         const handoffChildren = readdirSync(f.sessions)
           .map((name) => path.join(f.sessions, name))
           .filter((file) => file !== source.file)

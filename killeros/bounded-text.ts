@@ -9,7 +9,6 @@ import {
 export abstract class WidthCachedComponent implements Component {
   private cached?: { width: number; lines: string[] };
 
-  /** Returns the lines for `width`, reusing the last layout while the width is unchanged. */
   render(width: number): string[] {
     if (width <= 0) return [];
     if (this.cached?.width !== width)
@@ -24,7 +23,6 @@ export abstract class WidthCachedComponent implements Component {
   protected abstract layout(width: number): string[];
 }
 
-/** Transcript text wrapped to the width and, when `maxRows` is set, cut to that many rows with an ellipsis. */
 export class BoundedText extends WidthCachedComponent {
   private readonly text: string;
   private readonly maxRows?: number;

@@ -907,9 +907,7 @@ async function createBaseFixtureAsync(
     provider.releaseAll();
     try {
       await provider.close();
-    } catch {
-      /* preserve setup failure; outer fixture cleanup reports owned files */
-    }
+    } catch {}
     await removeDirectoryEventually(directory);
     throw error;
   }
@@ -1580,7 +1578,6 @@ function assertOnlySettledReceipts(
   return receipts;
 }
 
-// Catalog ID: compaction-threshold-reserve-gating.
 test(
   "Threshold and reserve gating use the live context window, Pi enablement, and command changes",
   { timeout: 240_000 },
@@ -2055,7 +2052,6 @@ test(
   },
 );
 
-// Catalog ID: compaction-ordinary-continuation-rearm.
 test(
   "One hidden ordinary continuation, settlement ordering, and 100 percent rearm",
   { timeout: 240_000 },
@@ -2544,7 +2540,6 @@ test(
   },
 );
 
-// Catalog ID: compaction-cancellation-aborted-settlement.
 test(
   "Cancelled ordinary and goal compaction cannot recover after an aborted settlement",
   { timeout: 420_000 },

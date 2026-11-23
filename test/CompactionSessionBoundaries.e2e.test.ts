@@ -1,22 +1,3 @@
-/**
- * End-to-end catalog scenario suite for session and tree boundaries around real
- * automatic compaction recovery.
- *
- * Each catalog ID owns exactly one top-level test:
- * - compaction-session-replacement (RPC, one Pi launch)
- * - compaction-tui-reload-tree (TUI, two Pi launches)
- * - compaction-tui-tree-manual-recovery (TUI, two Pi launches)
- *
- * Every test drives the real installed Pi CLI with a loopback scripted provider
- * and a probe extension that uses only public Pi extension APIs. Private
- * killeros modules are never imported in child code, fixture behavior
- * synchronizes on observed provider requests or acknowledged compaction
- * barriers, and every hold is released in `finally` paths so a failed phase
- * can never retry into a pass. Every cursor handed to `waitForProbe`,
- * `waitForPreparation`, or `settle` is a probe-file line number; RPC and
- * terminal sequence counters are separate spaces and never used as probe
- * cursors.
- */
 import assert from "node:assert/strict";
 import {
   existsSync,
@@ -80,7 +61,6 @@ type TwoBranchSeed = SeedResult & {
   branchBLeafId: string;
   branchALeafId: string;
 };
-/** Paths of one scenario scratch base; every launch owns its own loopback provider. */
 type BasePaths = {
   directory: string;
   project: string;
@@ -171,7 +151,6 @@ function makeBarrier(): Barrier {
   };
 }
 
-/** Serves only scripted loopback responses and rejects every unplanned Pi request. */
 class LocalProvider {
   private readonly server: Server;
   private readonly plans: RequestPlan[] = [];
@@ -422,13 +401,6 @@ class LocalProvider {
   }
 }
 
-/**
- * Observation and control extension. Sequences and compaction ordinals are
- * derived from the shared probe log (not in-memory counters) so a TUI reload
- * that replaces the runtime resumes the same log without gaps. Held summaries
- * wait at a real gate file; cancel toggles route through one command so the
- * driver can arm a boundary before provoking it. Public APIs only.
- */
 const probeExtensionSource = String.raw`import fs from "node:fs";
 import path from "node:path";
 
@@ -550,7 +522,6 @@ export default function boundaryProbe(pi) {
     return armed.fork ? { cancel: true } : undefined;
   });
   pi.on("session_before_compact", async (event) => {
-    // The plan is re-read per invocation so a relaunched runtime follows the shared plan.
     const plan = readPlan();
     const index = compactionOrdinal() + 1;
     const action = plan.compactActions?.[index - 1] ?? "default";
@@ -766,12 +737,6 @@ function isolatedEnvironment(base: BasePaths): NodeJS.ProcessEnv {
   return env;
 }
 
-/**
- * Writes the base-level agent configuration and probe surfaces once per
- * scratch base. percentRemaining stays at 15 so a 10k-goal decision turn never
- * arms an eligible turn_end while a 90k turn always does, matching the
- * CompactionGoals next-turn precedent.
- */
 function writeBaseConfiguration(
   base: BasePaths,
   options: ScenarioOptions,
@@ -817,7 +782,6 @@ function writeBaseConfiguration(
   );
 }
 
-/** Rewrites models.json per launch so each child talks only to its own loopback provider. */
 function writeModelsFile(base: BasePaths, providerUrl: string): void {
   writeFileSync(
     path.join(base.agent, "models.json"),
@@ -849,7 +813,6 @@ function writeModelsFile(base: BasePaths, providerUrl: string): void {
   );
 }
 
-/** Seeds a real two-entry conversation so Pi's native compaction eligibility holds on every branch used. */
 function seedHistory(
   project: string,
   sessions: string,
@@ -887,11 +850,6 @@ function seedHistory(
   return { file: sessionFile, firstUserId: first };
 }
 
-/**
- * Seeds the restored two-branch history for the manual-recovery scenario:
- * a marker goal with a compaction entry on branch A and a separate paused
- * goal without a marker on branch B. The leaf ends on branch A.
- */
 function seedTwoBranchSession(
   project: string,
   sessions: string,
@@ -922,7 +880,6 @@ function seedTwoBranchSession(
     },
   });
   assert.ok(commonAncestor);
-  // Branch A: real work, a paused goal with the manual-recovery marker, then a compaction entry as the leaf.
   const branchAUser = manager.appendMessage({
     role: "user",
     content: "Branch A work request.",
@@ -971,7 +928,6 @@ function seedTwoBranchSession(
   );
   const branchALeafId = manager.getBranch().at(-1)?.id ?? "";
   manager.branch(commonAncestor);
-  // Branch B: different work and a separate paused goal without the marker.
   const branchBUser = manager.appendMessage({
     role: "user",
     content: "Branch B work request.",
@@ -1008,7 +964,6 @@ function seedTwoBranchSession(
   });
   const branchBLeafId = manager.getBranch().at(-1)?.id ?? "";
   assert.ok(branchBLeafId);
-  // Restore the active leaf to branch A's end before launching the TUI.
   manager.branch(branchALeafId);
   const sessionFile = manager.getSessionFile();
   assert.ok(
@@ -1219,14 +1174,8 @@ async function startFixture(
   }
 }
 
-/** Launch records by fixture so mid-scenario child closures feed the natural-exit ledger. */
 const launchRecordOf = new WeakMap<Fixture, LaunchRecord>();
 
-/**
- * Closes only the child runtime; each launch's provider stays answerable until
- * scenario close, which also releases every recorded launch barrier and any
- * compaction gate a failed phase left acknowledged.
- */
 async function closeChildFixture(fixture: Fixture): Promise<void> {
   if (fixture.kind === "rpc") {
     assert.deepEqual(
@@ -1291,7 +1240,6 @@ async function createScenario(
   return scenario;
 }
 
-/** Parses child diagnostics when structured so a large payload stays valid JSON, never a byte slice. */
 function boundedDiagnostics(fixture: Fixture): Json | string {
   const text =
     fixture.kind === "rpc"
@@ -1310,8 +1258,6 @@ async function closeScenario(
   primaryError: unknown,
 ): Promise<ScenarioRecord> {
   const cleanupErrors: unknown[] = [];
-  // A failed phase can leave a child parked inside an acknowledged compaction
-  // gate; release every planned gate first so launches can still exit naturally.
   try {
     await releasePlannedSummaryGates(
       scenario.base.directory,
@@ -1487,10 +1433,6 @@ function assertIdle(state: Json, label: string): void {
   );
 }
 
-/**
- * Submits one RPC prompt and returns the probe-file cursor captured before the
- * submission, so downstream probe waits anchor on real probe line numbers.
- */
 async function prompt(fixture: RpcFixture, message: string): Promise<number> {
   const before = probeCursor(fixture);
   const response = await rpcCommand(fixture, "prompt", { message });
@@ -1503,7 +1445,6 @@ async function prompt(fixture: RpcFixture, message: string): Promise<number> {
   return before;
 }
 
-/** Continuing workflows prove the follow-on request separately; only their final boundary must stay idle. */
 async function settle(
   fixture: Fixture,
   afterProbe: number,
@@ -1619,7 +1560,6 @@ async function releaseSummary(fixture: Fixture, index: number): Promise<void> {
   renameSync(temporary, gate);
 }
 
-/** Releases every planned summary gate so a failed scenario waits out no held compaction barrier. */
 async function releasePlannedSummaryGates(
   directory: string,
   heldCompactions: readonly number[],
@@ -1645,7 +1585,6 @@ function acknowledgeRpc(fixture: RpcFixture): void {
   );
 }
 
-/** Native teardown can report cancellation before shutdown invalidates the pending callback. */
 async function assertCancellationNotificationsThroughState(
   fixture: RpcFixture,
   after: number,
@@ -1815,7 +1754,6 @@ async function forkRpcCancelled(
   );
 }
 
-/** Observe the pasted command before sending Enter, including while compaction is pending. */
 async function writeTuiCommand(
   fixture: TuiFixture,
   command: string,
@@ -1823,7 +1761,6 @@ async function writeTuiCommand(
   await fixture.terminal.submitEditorText(command, { signal: fixture.signal });
 }
 
-/** Same as prompt() for the TUI editor path, anchored on the pre-submission probe cursor. */
 async function tuiPrompt(
   fixture: TuiFixture,
   message: string,
@@ -1840,7 +1777,6 @@ async function armProbeCancel(
   await prompt(fixture, `/boundary-armed-cancel ${mode}`);
 }
 
-/** Navigation rides a small TUI command so it still executes while a compaction is held. */
 async function probeNavigate(
   fixture: TuiFixture,
   targetId: string,
@@ -1891,7 +1827,6 @@ function assertToolDeclared(
   );
 }
 
-// Catalog ID: compaction-session-replacement.
 test(
   "Session replacement and forking leave real compaction continuations exactly once or inert",
   { timeout: 900_000 },
@@ -1922,9 +1857,6 @@ test(
         assert.equal(fixture.kind, "rpc");
         const fileB = scenario.seedFile("the committed replacement target");
 
-        // Phase 1 (sw-cancelled): the interrupted request settles while its summary is held, the
-        // cancelled replacement keeps the source session, and releasing the gate yields exactly one
-        // hidden continuation plus its follow-up POST (oracle 1).
         fixture.provider.enqueue({
           kind: "text",
           content: "First settled work reaches the held summary.",
@@ -1942,7 +1874,6 @@ test(
           "held summary for the first replacement attempt",
           p1,
         );
-        // KillerOS checks usage at turn_end, then calls Pi's public ctx.compact API.
         // Pi labels that request manual even though KillerOS initiated it automatically.
         assert.equal(
           held1.reason,
@@ -2047,7 +1978,6 @@ test(
         await armProbeCancel(fixture, "off");
         acknowledgeRpc(fixture);
 
-        // Phase 2: replacement aborts the pending summary and selects the destination.
         fixture.provider.enqueue({
           kind: "text",
           content: "Committed replacement work reaches a held second summary.",
@@ -2125,8 +2055,6 @@ test(
         assertIdle(await getState(fixture), "sw-committed final idle");
         acknowledgeRpc(fixture);
 
-        // Phase 3 (fork-cancelled): the cancelled fork stays in the source session and its pending
-        // summary still owns exactly one ordinary continuation (oracle 3).
         fixture.provider.enqueue({
           kind: "text",
           content: "Cancelled-fork work reaches the held third summary.",
@@ -2221,7 +2149,6 @@ test(
         );
         acknowledgeRpc(fixture);
 
-        // Phase 4: a committed fork aborts the pending summary and creates a child.
         fixture.provider.enqueue({
           kind: "text",
           content: "Committed-fork work reaches the held fourth summary.",
@@ -2284,8 +2211,6 @@ test(
         acknowledgeRpc(fixture);
         const childSessionFile = fixture.sessionFile;
 
-        // Phase 5 (goal): an active goal's accepted next turn rides a held summary; a committed
-        // replacement back to the goal-free source file denies it without any new authorization.
         fixture.provider.enqueue({
           kind: "goal",
           decision: goalDecision("continue", 1),
@@ -2377,7 +2302,6 @@ test(
         assertIdle(await getState(fixture), "goal after replacement");
         acknowledgeRpc(fixture);
 
-        // Phase 6: replacement aborts a held native summary; the server may see a closed response.
         const destinationContinuations = countSavedMessages(
           fileB.file,
           "killeros-auto-compaction",
@@ -2441,7 +2365,6 @@ test(
         assertIdle(await getState(fixture), "stale native failure final idle");
         acknowledgeRpc(fixture);
 
-        // Exercise each cancelled replacement with a fresh goal and a held recovery request.
         for (const [offset, mode] of (["switch", "fork"] as const).entries()) {
           const source = scenario.seedFile(`cancelled goal ${mode} source`);
           await switchRpcSession(fixture, source.file);
@@ -2561,7 +2484,6 @@ test(
           acknowledgeRpc(fixture);
         }
 
-        // Every written file stays readable and parseable after the full workflow.
         for (const file of [
           scenario.base.sessionA,
           fileB.file,
@@ -2607,7 +2529,6 @@ test(
   },
 );
 
-// Catalog ID: compaction-tui-reload-tree.
 test(
   "TUI ordinary and goal continuations survive reload and committed tree boundaries",
   { timeout: 900_000 },
@@ -2634,9 +2555,6 @@ test(
           "the reload history exposes a forkable first user entry",
         );
 
-        // Launch 1 uses the ordinary TUI history. Ordinal 2 is the native summary held at the
-        // provider across /reload: its action is "default" and it is deliberately never held at
-        // an extension gate, because extension promises must not span a reload.
         const tui = await scenario.launch("tui", {
           label: "tui-reload-ordinary-history",
           sessionFile: reloadTarget.file,
@@ -2644,8 +2562,6 @@ test(
         });
         assert.equal(tui.kind, "tui");
 
-        // Phase A (ordinary-start): one high-usage ordinary prompt emits exactly one
-        // hidden continuation and one follow-up POST in TUI mode (oracle 1).
         tui.provider.enqueue({
           kind: "text",
           content: "The uninterrupted ordinary request completes.",
@@ -2688,8 +2604,6 @@ test(
           "ordinary-start: one prompt plus one follow-up POST",
         );
 
-        // Phase B (reload-pending): native TUI refuses reload while compaction is pending.
-        // Observe that refusal, finish the failed summary, then reload at the legal idle boundary.
         tui.provider.enqueue({
           kind: "text",
           content: "The pre-reload request leaves a native summary pending.",
@@ -2781,8 +2695,6 @@ test(
           timeoutMs: waitTimeoutMs,
         });
 
-        // Phase C (post-reload-recovery): a fresh ordinary request compacting after the reload still
-        // emits exactly one hidden continuation and one follow-up POST (oracle 4).
         tui.provider.enqueue({
           kind: "text",
           content: "The post-reload request compacts freshly.",
@@ -2830,8 +2742,6 @@ test(
           "post-reload-recovery: the new continuation joins the earlier one",
         );
 
-        // Phase D: native Pi refuses tree navigation while compaction is pending.
-        // The refused move preserves recovery; a later idle move commits without new work.
         tui.provider.enqueue({
           kind: "text",
           content: "The tree-navigation request leaves its summary pending.",
@@ -2925,7 +2835,6 @@ test(
         });
         await closeChildFixture(tui);
 
-        // Launch 2 uses the goal TUI history: the same-turn recovery and the pending-goal tree race.
         const goalTarget = scenario.seedFile("the TUI goal history");
         const goalTui = await scenario.launch("tui", {
           label: "tui-goal-history",
@@ -2936,9 +2845,6 @@ test(
         const goalTerminal = goalTui.terminal;
         const launchTwoCursor = probeCursor(goalTui);
 
-        // Phase E (goal-recovery): the /goal start aborts mid-run when its compaction starts; the
-        // held gate releases a complete summary and the goal resumes the SAME turn exactly once
-        // without a new decision (oracle 2).
         const proofFile = path.join(goalTui.project, "goal-recovery-proof.txt");
         const proofContent =
           "The public write tool executed before the compaction interrupted the run.";
@@ -3052,7 +2958,6 @@ test(
           1,
           "goal-recovery: the same-turn recovery grants no logical turn",
         );
-        // Initial set and turn authorization both persist active state before compaction pauses it.
         assert.equal(
           goalStates(goalTui)
             .map((state) => state.status)
@@ -3061,8 +2966,6 @@ test(
           "goal-recovery: the save order for one same-turn recovery is exact",
         );
 
-        // Phase F: native Pi refuses navigation during the held goal summary.
-        // The accepted decision remains valid and grants one turn before a legal idle navigation.
         goalTui.provider.enqueue({
           kind: "goal",
           decision: goalDecision("continue", 2),
@@ -3214,7 +3117,6 @@ test(
   },
 );
 
-// Catalog ID: compaction-tui-tree-manual-recovery.
 test(
   "Tree navigation evaluates only the destination branch and cannot revive an old manual marker",
   { timeout: 900_000 },
@@ -3228,7 +3130,6 @@ test(
       },
       t,
       async (scenario) => {
-        // Launch 1: the restored two-branch history with zero provider POSTs (oracle 4).
         const restored = seedTwoBranchSession(
           scenario.base.project,
           scenario.base.sessions,
@@ -3240,7 +3141,6 @@ test(
         });
         assert.equal(restoredTui.kind, "tui");
 
-        // Navigate the restored session from A to B and back through the public probe command.
         await probeNavigate(restoredTui, restored.branchBLeafId);
         const navToB = await waitForProbe(
           restoredTui.probeFile,
@@ -3372,7 +3272,6 @@ test(
         );
         await closeChildFixture(restoredTui);
 
-        // Launch 2: the live pending-manual-recovery/navigation race with real requests.
         const liveTarget = scenario.seedFile(
           "the live manual-recovery history",
         );
@@ -3383,8 +3282,6 @@ test(
         });
         assert.equal(liveTui.kind, "tui");
 
-        // Phase (a) live-abort: the fresh /goal run is aborted while its request is held at the
-        // provider; the aborted settlement saves the paused marker.
         const liveBarrier = makeBarrier();
         liveTui.provider.enqueue({
           kind: "held",
@@ -3434,8 +3331,6 @@ test(
           "live-abort: exactly one provider POST",
         );
 
-        // Phase (b): native refusal while compacting preserves the live marker.
-        // Recover the same turn, then abandon it through a legal idle navigation.
         await writeTuiCommand(liveTui, "/compact");
         const heldB = await waitForPreparation(
           liveTui,
@@ -3488,8 +3383,6 @@ test(
           2,
           "initial authorization plus exactly one manual recovery",
         );
-        // Retain a complete historical exchange on the destination branch. Rewinding
-        // to the first user's null parent leaves nothing for a later compact to summarize.
         const historyAssistant = flatEntries(liveTarget.file).find(
           (entry) =>
             entry.type === "message" &&
@@ -3531,8 +3424,6 @@ test(
           "abandoned-marker: only the completed recovery's resume entry exists",
         );
 
-        // Phase (c) second-marker: a fresh /goal (no confirm dialog exists without a goal) parks a
-        // second marker through the same live abort.
         const secondBarrier = makeBarrier();
         liveTui.provider.enqueue({
           kind: "held",
@@ -3543,7 +3434,6 @@ test(
             usageTokens: 90_000,
           },
         });
-        // Clear any editor input before starting the independent goal on retained history.
         liveTui.terminal.write("\x15");
         const pC = await tuiPrompt(
           liveTui,
@@ -3564,7 +3454,6 @@ test(
           "second-marker: exactly one provider POST for the fresh goal start",
         );
 
-        // Phase (d): Pi refuses navigation while compacting; recovery completes before the later idle cancellation.
         await writeTuiCommand(liveTui, "/boundary-armed-cancel tree");
         const armed = await waitForProbe(
           liveTui.probeFile,
@@ -3610,7 +3499,6 @@ test(
           0,
           "preserved-marker: the refused pending navigation never commits a tree change",
         );
-        // The recovery plan is enqueued before the release so the resuming marker is scripted on time.
         liveTui.provider.enqueue({
           kind: "text",
           content:

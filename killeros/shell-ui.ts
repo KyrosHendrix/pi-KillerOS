@@ -236,7 +236,6 @@ function extractTerminalSequence(
   return undefined;
 }
 
-/** Styles valid slash-command tokens while preserving embedded terminal control sequences. */
 function highlightSlashCommands(
   line: string,
   isValidCommand: (name: string) => boolean,

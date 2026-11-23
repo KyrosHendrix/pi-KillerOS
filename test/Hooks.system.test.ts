@@ -26,10 +26,6 @@ const taskkill = path.join(
   "taskkill.exe",
 );
 
-// The test holds no handle to descendants or to closed shells, so Windows may give their PIDs to unrelated processes,
-// such as another test's Pi console host. Each tree records the PIDs it saw exit and never signals them again;
-// the record is per tree so a PID one tree saw exit cannot hide another tree's live process.
-
 function isAlive(pid: number, exitedPids: Set<number>): boolean {
   if (exitedPids.has(pid)) return false;
   try {
@@ -85,7 +81,6 @@ async function stopProcess(
   await waitForExit(pid, exitedPids);
 }
 
-/** Starts a real owned process and waits for its complete readiness line before testing cleanup. */
 async function startProcess(t: TestContext, source = "") {
   const child = spawn(
     nodeExecutable(),
@@ -131,7 +126,6 @@ function timeoutCount(): number {
     .filter((resource) => resource === "Timeout").length;
 }
 
-// Catalog ID: HK-03.
 test(
   "Exported executeHook enforces real timeout, abort, and resource cleanup contracts",
   {
@@ -341,7 +335,6 @@ test(
   },
 );
 
-/** A descendant acknowledges its complete PID and writes only after an explicit external release. */
 async function startTree(t: TestContext, directory: string) {
   mkdirSync(directory);
   const ready = path.join(directory, "ready");
@@ -436,7 +429,6 @@ async function startTree(t: TestContext, directory: string) {
   };
 }
 
-// Catalog ID: HK-04.
 test(
   "Windows hook cleanup terminates descendants or reports bounded uncertainty",
   { timeout: 30_000 },
@@ -543,7 +535,6 @@ test(
             confirmedBranchExecuted: true,
           }),
         );
-        // No manual termination or release may precede this proof of confirmed cleanup.
         for (const pid of naturalTree.pids)
           await waitForExit(pid, naturalTree.exitedPids);
         writeFileSync(naturalTree.release, "write");
@@ -571,7 +562,6 @@ test(
         const spawnProcess: HookProcess = () => ({
           get pid() {
             if (variant === "disabled-cleanup") return undefined;
-            // This public adapter closes the actual shell while cleanup owns the actual descendant PID.
             tree.shell.kill();
             return tree.descendantPid;
           },
@@ -643,7 +633,6 @@ test(
           await marked;
           assert.equal(readFileSync(tree.marker, "utf8"), "late");
         } else {
-          // Confirm all owned PIDs are gone before releasing the attempted late write.
           for (const pid of tree.pids) {
             if (pid !== tree.descendantPid)
               await stopProcess(pid, tree.exitedPids);

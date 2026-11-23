@@ -121,7 +121,6 @@ const scheduleDelay: ScheduleDelay = (refresh, delayMs) => {
   return () => clearTimeout(timer);
 };
 
-/** Schedules the fallback Git scan independently from footer rendering. */
 export function scheduleGitStatusFallback(
   refresh: () => void,
   schedule: ScheduleFallback = scheduleFallback,
@@ -129,7 +128,6 @@ export function scheduleGitStatusFallback(
   return schedule(refresh, GIT_STATUS_REFRESH_INTERVAL_MS);
 }
 
-/** Throttles filesystem changes and falls back silently when watching is unavailable. */
 export function scheduleGitStatusWatch(
   cwd: string,
   refresh: () => void,
@@ -207,7 +205,6 @@ function validCapacity(value: number | undefined): value is number {
 
 function formatContextTokens(tokens: number): string {
   const unit = tokens >= 1_000_000 ? 1_000_000 : tokens >= 1_000 ? 1_000 : 1;
-  // Floor labels so rounding never promises tokens that are not available.
   const count =
     unit === 1 ? Math.floor(tokens) : Math.floor(tokens / (unit / 100)) / 100;
   return `${count}${unit === 1_000_000 ? "M" : unit === 1_000 ? "K" : ""}`;

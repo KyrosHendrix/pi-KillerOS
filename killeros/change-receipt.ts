@@ -17,11 +17,10 @@ import path from "node:path";
 import { createInflate } from "node:zlib";
 
 const MAX_DIFF_OPERATIONS = 500_000;
-/** Most changed files a receipt lists individually; later ones are only counted. */
+const MAX_FUZZY_RENAME_PAIRS = 400;
 export const MAX_RECEIPT_FILES = 20;
 const GIT_OBJECT_HEADER_LIMIT = 1_024;
 
-/** Every reason a receipt can record for missing change data; persisted receipts are checked against this list. */
 export const CHANGE_UNAVAILABLE_REASONS = [
   "not-git",
   "head-changed",
@@ -481,7 +480,6 @@ function binarySimilarity(left: Buffer, right: Buffer): number {
   return equalBytes / maximum;
 }
 
-// ponytail: fuzzy rename matching is quadratic up to 400 pairs; use Git's diff engine if larger rename batches matter.
 async function compare(
   repo: Repository,
   baseline: Snapshot,
@@ -576,7 +574,7 @@ async function compare(
     renames.set(oldFile.path, { ...exact, additions: 0, deletions: 0 });
     consumedAdditions.add(exact.path);
   }
-  if (removed.length * added.length <= 400) {
+  if (removed.length * added.length <= MAX_FUZZY_RENAME_PAIRS) {
     for (const oldFile of removed) {
       if (renames.has(oldFile.path)) continue;
       const oldIsBinary = isBinary(oldFile.file.content);

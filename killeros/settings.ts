@@ -22,7 +22,6 @@ type KillerosSettingsUpdate =
 
 interface KillerosSettingsStore {
   load(): KillerosSettings;
-  /** Derive a field update from the latest settings while holding the writer lock. */
   update(patch: KillerosSettingsUpdate): void;
 }
 
@@ -92,24 +91,25 @@ function moveLockAside(lockPath: string): boolean {
   return true;
 }
 
-function recoverSettingsLock(lockPath: string, expectedPid: number): boolean {
-  const recoveryPath = `${lockPath}.recovery`;
+function tryRecoverDeadOwnerLock(
+  lockPath: string,
+  expectedPid: number,
+): boolean {
+  const exclusiveRecoveryDirectory = `${lockPath}.recovery`;
   try {
-    mkdirSync(recoveryPath);
+    mkdirSync(exclusiveRecoveryDirectory);
   } catch (error) {
     if (hasErrorCode(error, "EEXIST")) return false;
     throw error;
   }
   try {
-    // Recheck under exclusive recovery ownership; another waiter may have replaced the lock.
     return (
       readLockOwnerPid(lockPath) === expectedPid &&
       !isProcessRunning(expectedPid) &&
       moveLockAside(lockPath)
     );
   } finally {
-    // ponytail: a crash during recovery leaves .recovery for manual removal; never steal it and risk lost writes.
-    rmdirSync(recoveryPath);
+    rmdirSync(exclusiveRecoveryDirectory);
   }
 }
 
@@ -133,7 +133,7 @@ function acquireSettingsLock(settingsPath: string): () => void {
         if (
           currentOwnerPid &&
           !isProcessRunning(currentOwnerPid) &&
-          recoverSettingsLock(lockPath, currentOwnerPid)
+          tryRecoverDeadOwnerLock(lockPath, currentOwnerPid)
         )
           continue;
         if (Date.now() >= deadline)
@@ -157,7 +157,6 @@ function acquireSettingsLock(settingsPath: string): () => void {
   };
 }
 
-/** Reads and updates killeros.json in Pi's agent directory. */
 export function createKillerosSettingsStore(): KillerosSettingsStore {
   const settingsPath = join(getAgentDir(), "killeros.json");
   return {

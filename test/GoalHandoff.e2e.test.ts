@@ -82,7 +82,6 @@ function decision(args: RecordValue, id = "decision"): Reply {
 }
 type Reply = { text?: string; delta?: RecordValue; finish?: string };
 
-/** Runs the real installed CLI, with isolated settings and a loopback-only scripted provider. */
 async function fixture(
   t: TestContext,
   respond: (body: RecordValue, count: number) => Reply | Promise<Reply>,
@@ -417,7 +416,6 @@ test(
     const f = await fixture(t, (body) => {
       if (records(body.messages).at(-1)?.role === "tool") {
         if (!complete) {
-          // This exchange holds Pi before settlement can advance to the next goal turn.
           const saved = f.lastGoal();
           audits++;
           assert.equal(audits, decisions);

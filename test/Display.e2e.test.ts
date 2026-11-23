@@ -51,7 +51,6 @@ const durationCases = [
   },
 ] as const;
 
-// Catalog ID: DISP-01.
 test(
   "Time formatting preserves seconds across unit boundaries in goal and footer displays",
   { timeout: 120_000 },
@@ -444,7 +443,6 @@ export default function (pi: ExtensionAPI) {
   },
 );
 
-// Catalog ID: DISP-02.
 test(
   "Display telemetry clamps values, rounds thresholds, and sanitizes Windows paths",
   { timeout: 90_000 },

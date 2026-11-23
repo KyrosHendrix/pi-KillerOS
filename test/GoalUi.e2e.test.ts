@@ -100,7 +100,6 @@ function rawOutput(terminal: PiTerminalProcess): string {
       "rawBase64" in diagnostic &&
       typeof diagnostic.rawBase64 === "string",
   );
-  // Keep foreground resets so a stale color cannot satisfy the role oracle.
   return Buffer.from(diagnostic.rawBase64, "base64")
     .toString("utf8")
     .replace(
@@ -121,7 +120,6 @@ function section(screen: string, start: string, end: string): string {
   return screen.slice(from + start.length, to);
 }
 
-// Catalog ID: GUI-01. Historical rendering is not proof that a live goal can produce every saved shape.
 test(
   "Goal transcript and update renderers sanitize controls, stay compact, and expose lifecycle history",
   { timeout: 180_000 },

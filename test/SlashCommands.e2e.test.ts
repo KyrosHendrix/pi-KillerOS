@@ -35,7 +35,6 @@ function strings(value: unknown): string[] {
   });
 }
 
-// The observer composes the editor installed by KillerOS. It never supplies a replacement editor or resolver.
 async function fixture(
   t: TestContext,
   id: string,
@@ -369,7 +368,6 @@ function reloaded(state: Record<string, unknown>): boolean {
   );
 }
 
-// Catalog ID: SL-01.
 test(
   "Slash tokenization, resolution, and highlighting agree in the live editor",
   { timeout: 240_000 },
@@ -497,7 +495,6 @@ test(
   },
 );
 
-// Catalog ID: SL-02.
 test(
   "Editor and autocomplete use the shared resolver, theme role, and safe widths",
   { timeout: 240_000 },
@@ -604,7 +601,6 @@ test(
   },
 );
 
-// Catalog ID: SL-03.
 test(
   "Goal completions and /exit follow lifecycle contracts",
   { timeout: 240_000 },

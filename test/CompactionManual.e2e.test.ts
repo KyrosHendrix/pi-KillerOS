@@ -134,7 +134,6 @@ function makeBarrier(): Barrier {
   };
 }
 
-/** Serves scripted loopback requests and makes every unexpected request a fixture fault. */
 class LocalProvider {
   private readonly server: Server;
   private readonly plans: ProviderPlan[] = [];
@@ -424,7 +423,6 @@ class LocalProvider {
   }
 }
 
-/** Observation-only hooks; compaction cancellation and barriers use Pi's public hook result. */
 const probeExtensionSource = String.raw`import fs from "node:fs";
 import path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
@@ -1259,7 +1257,6 @@ async function collectRpcBatch(
     records.push(stored.value);
     cursor = stored.sequence;
   }
-  // A held compact command still owns its response cursor while notifications are inspected.
   fixture.rpc.acknowledge(
     Math.min(through, ...fixture.pendingRpcCursors.values()),
   );
@@ -1750,7 +1747,6 @@ function assertSessionSnapshot(
   }
 }
 
-// Catalog ID: compaction-manual-recovery.
 test(
   "Manual compaction resumes only the exact marked goal after the interrupted turn settles",
   { timeout: 1_200_000 },
@@ -2169,7 +2165,6 @@ test(
           fixture.provider.enqueue(
             textPlan("The overflow retry completes ordinary work.", 500),
           );
-          // The current turn exceeds the native 100-token keep window, leaving the earlier ordinary prefix summarizable.
           const overflowPrompt = `Continue unrelated work through native overflow recovery. ${"Preserve this ordinary history for the recovery summary. ".repeat(8)}`;
           const overflowTurn = await startOrdinaryPrompt(
             fixture,
@@ -2226,7 +2221,6 @@ test(
           );
           rpcCursor = fixture.rpc.currentSequence;
 
-          // Overflow has just compacted the retained branch. Add a new ordinary turn before another real summary.
           fixture.provider.enqueue(
             textPlan(
               "Ordinary work adds fresh history without resuming the marked goal.",
@@ -2761,7 +2755,6 @@ function addSessionPath(fixture: Fixture, label: string): string {
   return sessionFile;
 }
 
-// Catalog ID: compaction-manual-failure-persistence.
 test(
   "Failed, cancelled, or unsavable manual recovery leaves the marked goal paused",
   { timeout: 900_000 },

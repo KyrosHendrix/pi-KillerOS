@@ -18,7 +18,6 @@ export function sameFileIdentity(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-/** Why a file was refused: it is not one regular, single-link file, or it was swapped while being opened. */
 export class UnstableFileError extends Error {
   readonly reason: "not-regular" | "changed";
 
@@ -32,7 +31,6 @@ export class UnstableFileError extends Error {
   }
 }
 
-/** Reads up to `limit` bytes of a regular, single-link file through a descriptor proven to be the inspected path. */
 export function readUnlinkedFile(
   filePath: string,
   limit: number,

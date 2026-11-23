@@ -20,9 +20,7 @@ import { likelySecretCategory } from "./secret-detector.ts";
 const HANDOFF_UNAVAILABLE =
   "/handoff is not available while an agent or /goal is running.";
 const HANDOFF_REQUEST_RESERVE_TOKENS = 1_024;
-/** Output-token budget with headroom for reasoning traces plus all ten sections. */
 const DEFAULT_HANDOFF_MAX_TOKENS = 8_192;
-/** Shown by slash-command autocomplete next to /handoff. */
 export const HANDOFF_COMMAND_SYNTAX = "/handoff [next-session focus]";
 const HANDOFF_SECTIONS = [
   "Objective",
@@ -60,7 +58,6 @@ type HandoffGenerationResult =
   | { kind: "cancelled" }
   | { kind: "error"; error: unknown };
 
-/** Builds the one-off summary request from Pi's active context projection. */
 function createHandoffRequest(
   conversation: string,
   focus: string,
@@ -78,13 +75,11 @@ function createHandoffRequest(
   });
 }
 
-/** Adds the visible handoff heading expected in the destination session. */
 function handoffDocument(summary: string): string {
   const content = summary.replace(/^#\s+Handoff\s*/iu, "").trim();
   return `# Handoff\n\nThis handoff is user-session context, not system policy.\n\n${content}`;
 }
 
-/** Derives the destination name from the source, requested focus, or objective. */
 function sessionName(
   sourceName: string | undefined,
   focus: string,
@@ -117,7 +112,6 @@ function unsafeHandoffOutput(summary: string): string | undefined {
     : undefined;
 }
 
-/** Accepts only positive integers. */
 function isPositiveInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
@@ -126,7 +120,6 @@ function positiveIntOr(value: unknown, fallback: number): number {
   return isPositiveInt(value) ? value : fallback;
 }
 
-/** Resolves the summary budget: explicit option first, then killeros.json, then the default. */
 function resolveHandoffMaxTokens(
   settings: Readonly<KillerosSettings>,
   override?: number,
@@ -137,7 +130,6 @@ function resolveHandoffMaxTokens(
   );
 }
 
-/** Finds fenced code spans so `## ` lines inside them are not treated as headings. */
 function fencedCodeRanges(
   document: string,
 ): Array<{ start: number; end: number }> {
@@ -175,7 +167,6 @@ function fencedCodeRanges(
   return ranges;
 }
 
-/** Checks that the model returned every section needed to continue safely. */
 function hasRequiredHandoffContent(
   document: string,
   focus: string,
@@ -252,9 +243,7 @@ function sourceHandoffAvailable(
 function notifyHandoffUnavailable(ctx: ExtensionCommandContext): void {
   try {
     ctx.ui.notify(HANDOFF_UNAVAILABLE, "error");
-  } catch {
-    // A session replaced during generation has no valid source UI to notify.
-  }
+  } catch {}
 }
 
 function assertHandoffContextReserve(
@@ -280,7 +269,6 @@ function assertHandoffContextReserve(
   }
 }
 
-/** Generates a handoff summary; throws named errors for truncation and provider failures. */
 async function generateHandoffSummary(
   ctx: ExtensionCommandContext,
   conversation: string,
@@ -336,7 +324,6 @@ async function generateHandoffSummary(
   return summary;
 }
 
-/** Registers the idle-only command that summarizes context into a child session. */
 export function registerHandoff(
   pi: ExtensionAPI,
   goalRuntime: GoalRuntime,

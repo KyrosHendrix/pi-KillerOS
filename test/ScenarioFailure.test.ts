@@ -49,7 +49,6 @@ function fixtureEnvironment(
   return env;
 }
 
-// Catalog ID: runtime.system-scenario-failure.
 test(
   "scenario failures expose nested errors and bounded reports under forced exit",
   {
