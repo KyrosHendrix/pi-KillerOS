@@ -270,7 +270,10 @@ test("Bun lint enforces repository rules and ignores", () => {
         "Killeros.ts": [allowed],
       }),
     );
-    writeFileSync(path.join(fixture, "clean.ts"), "export {};\n");
+    writeFileSync(
+      path.join(fixture, "clean.ts"),
+      'declare module "node:test" { export default function test(name: string, run: () => void): Promise<void>; }\n',
+    );
     for (const file of [
       ".pi/verification/probe.ts",
       "docs/probe.ts",
@@ -289,6 +292,15 @@ test("Bun lint enforces repository rules and ignores", () => {
           "export const result = command.toLocaleUpperCase();",
           "export { spawnSync };",
           "Promise.resolve(1);",
+          "export const promise = new Promise(async (resolve) => { resolve(1); });",
+          "export const cast = (value: unknown) => value as string;",
+          "export const nonNull = (value: string | undefined) => value!;",
+          'export function closed(value: "start" | "stop") {',
+          '  switch (value) { case "start": return 1; default: return 0; }',
+          "}",
+          "export function open(value: string) {",
+          '  switch (value) { case "start": return 1; }',
+          "}",
         ].join("\n"),
       );
     }
@@ -327,6 +339,14 @@ test("Bun lint enforces repository rules and ignores", () => {
       assert.equal(status, 1, output);
       assert.match(output, /no-var/u);
       assert.match(output, /killeros\(no-comments\)/u);
+      assert.match(output, /no-async-promise-executor/u);
+      assert.match(output, /no-floating-promises/u);
+      assert.equal(
+        [...output.matchAll(/typescript\(switch-exhaustiveness-check\)/gu)]
+          .length,
+        2,
+        output,
+      );
       if (file === "Killeros.ts" || file.startsWith("killeros/")) {
         assert.match(
           output,
@@ -348,11 +368,23 @@ test("Bun lint enforces repository rules and ignores", () => {
         assert.doesNotMatch(output, /no-restricted-(?:imports|properties)/u);
       }
       if (file.startsWith("test/")) {
-        assert.doesNotMatch(output, /no-floating-promises/u);
+        assert.doesNotMatch(output, /no-unsafe-type-assertion/u);
+        assert.doesNotMatch(output, /no-non-null-assertion/u);
       } else {
-        assert.match(output, /no-floating-promises/u);
+        assert.match(output, /no-unsafe-type-assertion/u);
+        assert.match(output, /no-non-null-assertion/u);
       }
     }
+
+    const testRegistration =
+      'import test from "node:test";\ntest("registered", () => {});\n';
+    writeFileSync(path.join(fixture, "test/probe.ts"), testRegistration);
+    const testCall = lint("test/probe.ts");
+    assert.equal(testCall.status, 0, testCall.output);
+    writeFileSync(path.join(fixture, "scripts/probe.ts"), testRegistration);
+    const scriptCall = lint("scripts/probe.ts");
+    assert.equal(scriptCall.status, 1, scriptCall.output);
+    assert.match(scriptCall.output, /no-floating-promises/u);
 
     const accepted = [
       allowed,
